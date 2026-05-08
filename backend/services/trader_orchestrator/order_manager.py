@@ -236,12 +236,50 @@ def _derive_min_upside_price_cap(min_upside_percent: Any) -> float | None:
     return _valid_execution_bound(100.0 / (100.0 + float(upside)))
 
 
-def _allow_taker_limit_buy_above_signal(strategy_params: dict[str, Any] | None) -> bool:
-    return StrategySDK.allow_taker_limit_buy_above_signal_price(strategy_params or {}, default=False)
+_ALLOW_TAKER_LIMIT_BUY_ABOVE_SIGNAL_ALIASES = (
+    "allow_taker_limit_buy_above_signal",
+    "allow_taker_limit_pay_up",
+    "allow_taker_limit_to_exceed_signal_price",
+    "allow_buy_above_signal_price",
+)
+_AGGRESSIVE_LIMIT_BUY_SUBMIT_AS_GTC_ALIASES = (
+    "aggressive_limit_buy_submit_as_gtc",
+    "submit_aggressive_buy_limits_as_gtc",
+    "submit_taker_limit_buy_as_gtc",
+)
 
 
-def _aggressive_limit_buy_submit_as_gtc(strategy_params: dict[str, Any] | None) -> bool:
-    return StrategySDK.aggressive_limit_buy_submit_as_gtc(strategy_params or {}, default=False)
+def _strategy_params_have_alias(params: dict[str, Any] | None, aliases: tuple[str, ...]) -> bool:
+    if not isinstance(params, dict):
+        return False
+    if any(alias in params for alias in aliases):
+        return True
+    execution_policy = params.get("execution_policy")
+    if isinstance(execution_policy, dict) and any(alias in execution_policy for alias in aliases):
+        return True
+    return False
+
+
+def _allow_taker_limit_buy_above_signal(
+    strategy_params: dict[str, Any] | None,
+    risk_limits: dict[str, Any] | None = None,
+) -> bool:
+    if _strategy_params_have_alias(strategy_params, _ALLOW_TAKER_LIMIT_BUY_ABOVE_SIGNAL_ALIASES):
+        return StrategySDK.allow_taker_limit_buy_above_signal_price(strategy_params or {}, default=False)
+    if isinstance(risk_limits, dict):
+        return bool(risk_limits.get("allow_taker_limit_buy_above_signal", False))
+    return False
+
+
+def _aggressive_limit_buy_submit_as_gtc(
+    strategy_params: dict[str, Any] | None,
+    risk_limits: dict[str, Any] | None = None,
+) -> bool:
+    if _strategy_params_have_alias(strategy_params, _AGGRESSIVE_LIMIT_BUY_SUBMIT_AS_GTC_ALIASES):
+        return StrategySDK.aggressive_limit_buy_submit_as_gtc(strategy_params or {}, default=False)
+    if isinstance(risk_limits, dict):
+        return bool(risk_limits.get("aggressive_limit_buy_submit_as_gtc", False))
+    return False
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:
@@ -491,6 +529,7 @@ async def submit_execution_leg(
     leg: dict[str, Any],
     notional_usd: float,
     strategy_params: dict[str, Any] | None = None,
+    risk_limits: dict[str, Any] | None = None,
 ) -> LegSubmitResult:
     mode_key = str(mode or "").strip().lower()
     if mode_key not in {"live", "shadow"}:
@@ -825,16 +864,30 @@ async def submit_execution_leg(
     allow_taker_limit_buy_above_signal = _resolve_leg_execution_bool(
         leg=leg,
         key="allow_taker_limit_buy_above_signal",
-        strategy_default=_allow_taker_limit_buy_above_signal(params),
+        strategy_default=_allow_taker_limit_buy_above_signal(params, risk_limits),
     )
     aggressive_limit_buy_submit_as_gtc = _resolve_leg_execution_bool(
         leg=leg,
         key="aggressive_limit_buy_submit_as_gtc",
-        strategy_default=_aggressive_limit_buy_submit_as_gtc(params),
+        strategy_default=_aggressive_limit_buy_submit_as_gtc(params, risk_limits),
+    )
+
+    # Compute execution-price bounds once and reuse for both shadow and
+    # live paths.  In shadow we lift the estimator's `limit_price` ceiling
+    # to `max_execution_price` when chase-up is enabled — without this,
+    # `ensemble_estimate` breaks on the first ask above mid and returns
+    # `limit_price_not_executable`, neutralizing the toggle in shadow mode.
+    price_policy = str(leg.get("price_policy") or "").strip().lower()
+    enforce_fallback = price_policy != "taker_limit"
+    quote_aggressively = price_policy == "taker_limit"
+    max_execution_price, min_execution_price = _resolve_execution_price_bounds(
+        leg=leg,
+        strategy_params=params,
+        fallback_price=price,
+        allow_taker_limit_buy_above_signal=allow_taker_limit_buy_above_signal,
     )
 
     if mode_key == "shadow":
-        price_policy = str(leg.get("price_policy") or "").strip().lower()
         order_type = "taker_limit" if price_policy == "taker_limit" else "maker_limit"
         book_payload, recent_trades, book_age_ms, quote_source, quote_error = await _resolve_shadow_book_and_tape(
             token_id=token_id,
@@ -893,11 +946,44 @@ async def submit_execution_leg(
         cached_entry = _cox_cache.get(survival_covariates.get("market_type_strata") or "pooled")
         if cached_entry is not None:
             _ts, cox_snapshot = cached_entry
+
+        # Effective ceiling fed into the simulator.  Default = live mid /
+        # signal entry price (current behaviour).  When chase-up is on
+        # for a BUY, lift the ceiling to the strongest explicit cap from
+        # strategy_params / leg / metadata; if none, use 1.0 (the natural
+        # market boundary).  Note: `max_execution_price` from
+        # `_resolve_execution_price_bounds` includes the signal-price
+        # fallback even when chase=True, so it cannot be used here — the
+        # whole point of chase-up is to ignore that fallback.
+        shadow_limit_price = float(price or 0.0)
+        if (
+            allow_taker_limit_buy_above_signal
+            and order_side == "BUY"
+            and shadow_limit_price > 0.0
+        ):
+            metadata_for_caps = leg.get("metadata") if isinstance(leg.get("metadata"), dict) else {}
+            explicit_buy_caps = [
+                _valid_execution_bound(leg.get("max_execution_price")),
+                _valid_execution_bound(metadata_for_caps.get("max_execution_price")),
+                _valid_execution_bound(params.get("max_execution_price")),
+                _valid_execution_bound(params.get("max_entry_price")),
+                _valid_execution_bound(params.get("max_probability")),
+                _derive_min_upside_price_cap(params.get("min_upside_percent")),
+            ]
+            tightest_explicit_cap = min(
+                (cap for cap in explicit_buy_caps if cap is not None),
+                default=None,
+            )
+            if tightest_explicit_cap is not None and tightest_explicit_cap > shadow_limit_price:
+                shadow_limit_price = float(tightest_explicit_cap)
+            elif tightest_explicit_cap is None:
+                shadow_limit_price = 1.0
+
         ensemble = ensemble_estimate(
             order_book=book_payload,
             side=order_side,
             size_shares=shares,
-            limit_price=price,
+            limit_price=shadow_limit_price,
             order_type=order_type,
             recent_trades=recent_trades,
             book_age_ms=book_age_ms,
@@ -1038,16 +1124,6 @@ async def submit_execution_leg(
             shares=estimate.filled_shares,
             notional_usd=effective_shadow_notional,
         )
-
-    price_policy = str(leg.get("price_policy") or "").strip().lower()
-    enforce_fallback = price_policy != "taker_limit"
-    quote_aggressively = price_policy == "taker_limit"
-    max_execution_price, min_execution_price = _resolve_execution_price_bounds(
-        leg=leg,
-        strategy_params=params,
-        fallback_price=price,
-        allow_taker_limit_buy_above_signal=allow_taker_limit_buy_above_signal,
-    )
 
     # Capture the at-submit-time market microstructure snapshot so the
     # Cox PH trainer has labeled training rows for live orders too.
@@ -1214,6 +1290,7 @@ async def submit_execution_wave(
     signal: Any,
     legs_with_notionals: list[tuple[dict[str, Any], float]],
     strategy_params: dict[str, Any] | None = None,
+    risk_limits: dict[str, Any] | None = None,
 ) -> list[LegSubmitResult]:
     if not legs_with_notionals:
         return []
@@ -1225,6 +1302,7 @@ async def submit_execution_wave(
                 leg=leg,
                 notional_usd=notional,
                 strategy_params=strategy_params,
+                risk_limits=risk_limits,
             ),
             timeout=_LEG_SUBMIT_TIMEOUT_SECONDS,
         )

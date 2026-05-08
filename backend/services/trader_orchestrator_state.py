@@ -384,6 +384,11 @@ def _normalize_global_runtime_settings(value: Any) -> dict[str, Any]:
     timeout_override = source.get("trader_cycle_timeout_seconds")
     timeout_value = safe_float(timeout_override, 0.0)
     trader_cycle_timeout_seconds = None if timeout_value <= 0 else max(3.0, min(120.0, float(timeout_value)))
+    runtime_trigger_override = source.get("runtime_trigger_cycle_timeout_seconds")
+    runtime_trigger_value = safe_float(runtime_trigger_override, 0.0)
+    runtime_trigger_cycle_timeout_seconds = (
+        None if runtime_trigger_value <= 0 else max(3.0, min(60.0, float(runtime_trigger_value)))
+    )
     return {
         "pending_live_exit_guard": _normalize_pending_live_exit_guard(source.get("pending_live_exit_guard")),
         "live_risk_clamps": _normalize_live_risk_clamps(
@@ -394,6 +399,7 @@ def _normalize_global_runtime_settings(value: Any) -> dict[str, Any]:
         "live_market_context": _normalize_live_market_context(source.get("live_market_context")),
         "live_provider_health": _normalize_live_provider_health(source.get("live_provider_health")),
         "trader_cycle_timeout_seconds": trader_cycle_timeout_seconds,
+        "runtime_trigger_cycle_timeout_seconds": runtime_trigger_cycle_timeout_seconds,
     }
 
 
@@ -10163,6 +10169,11 @@ async def compose_trader_orchestrator_config(
             "trader_cycle_timeout_seconds": (
                 float(global_runtime.get("trader_cycle_timeout_seconds"))
                 if global_runtime.get("trader_cycle_timeout_seconds") is not None
+                else None
+            ),
+            "runtime_trigger_cycle_timeout_seconds": (
+                float(global_runtime.get("runtime_trigger_cycle_timeout_seconds"))
+                if global_runtime.get("runtime_trigger_cycle_timeout_seconds") is not None
                 else None
             ),
         },

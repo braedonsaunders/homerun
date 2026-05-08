@@ -512,6 +512,7 @@ export interface TraderOrchestratorConfig {
       block_seconds: number
     }
     trader_cycle_timeout_seconds: number | null
+    runtime_trigger_cycle_timeout_seconds: number | null
   }
 }
 

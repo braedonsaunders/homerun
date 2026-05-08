@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import Text, and_, cast, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import settings
 from models.database import AsyncSessionLocal, TradeSignal, TradeSignalEmission
@@ -2027,6 +2028,186 @@ class IntentRuntime:
         prewarm_token_ids: set[str] = set()
         normalized_source = str(source or "").strip().lower()
 
+        # Plan 0010: ensure every published `(source, dedupe_key)` has a
+        # committed `trade_signals` row by the time `publish_opportunities`
+        # returns.  This closes both modes of the FK race that surface
+        # downstream as `trader_decisions_signal_id_fkey` violations:
+        #
+        # 1. **Post-restart staleness.**  The DB carried a row for
+        #    `(source, dedupe_key)` from a previous worker-trading
+        #    process; the in-memory cache is empty after restart.  A
+        #    naïve `uuid.uuid4().hex` mints a fresh id; the projection's
+        #    `signal_bus.upsert_trade_signal` finds the row by
+        #    `(source, dedupe_key)` and UPDATEs it in place — keeping
+        #    the OLD id.  The runtime cache holds the NEW id, the
+        #    orchestrator's `_ensure_runtime_signal_persisted` ON
+        #    CONFLICT silences, and `trader_decisions.signal_id`
+        #    references the in-memory id that never lands.
+        # 2. **In-process publish→consume gap.**  The dedupe_key is
+        #    genuinely new (no DB row, no cache entry).  `publish_*`
+        #    mints a uuid, populates the cache, and the orchestrator
+        #    (in-process callback for traders source) picks the signal
+        #    up microseconds later — long before the asynchronous
+        #    projection loop has committed the corresponding row.  The
+        #    orchestrator's `_ensure_runtime_signal_persisted` issues
+        #    its own INSERT inside an open trader-cycle transaction,
+        #    but production has shown that this in-tx INSERT is not
+        #    sufficient to satisfy the FK at flush time on the
+        #    `worker-trading` plane (the row stays uncommitted across
+        #    multiple inner queries; the trader cycle's 10s budget
+        #    can lapse mid-tx; concurrent projection-side INSERTs for
+        #    the same `(source, dedupe_key)` can interleave under load).
+        #
+        # The fix:
+        #   (a) Outside `self._lock`, prefetch existing
+        #       `(source, dedupe_key) → id` rows from `trade_signals`.
+        #   (b) For dedupe_keys with no row yet, mint candidate uuids
+        #       and synchronously INSERT skeleton rows
+        #       (`ON CONFLICT (source, dedupe_key) DO NOTHING`) in a
+        #       dedicated, committed session BEFORE the lock is
+        #       acquired.  The projection loop's later UPSERT updates
+        #       the same row in place (so all the rich fields — payload,
+        #       runtime_sequence, expires_at, etc. — still flow through
+        #       the projection's batched path).
+        #   (c) Re-query the table for the canonical id of any dedupe_key
+        #       whose INSERT lost a race to a peer publisher.
+        #   (d) Inside the lock, the new-id allocation prefers the
+        #       canonical id (`prefetched_ids ∪ committed_ids`) over a
+        #       fresh uuid.
+        #
+        # Cost: one SELECT + at most one batched INSERT per
+        # `publish_opportunities` call, scoped to cache-missing
+        # dedupe_keys.  Steady-state scanner publishes hit the cache
+        # for >99% of dedupe_keys, so both queries are no-ops; traders
+        # publishes are bounded to a handful of dedupe_keys per call.
+        prefetch_meta_by_dedupe: dict[str, dict[str, str]] = {}
+        for opportunity in opportunities:
+            try:
+                contract_market_id, *_unused = build_signal_contract_from_opportunity(opportunity)
+            except Exception:
+                continue
+            if not contract_market_id:
+                continue
+            candidate_dedupe_key = make_dedupe_key(
+                getattr(opportunity, "stable_id", None),
+                getattr(opportunity, "strategy", None),
+                contract_market_id,
+            )
+            if (
+                candidate_dedupe_key
+                and candidate_dedupe_key not in self._signal_ids_by_dedupe_key
+                and candidate_dedupe_key not in prefetch_meta_by_dedupe
+            ):
+                prefetch_meta_by_dedupe[candidate_dedupe_key] = {
+                    "market_id": str(contract_market_id),
+                }
+
+        prefetch_dedupe_keys = list(prefetch_meta_by_dedupe.keys())
+        prefetched_ids: dict[str, str] = {}
+        if prefetch_dedupe_keys:
+            try:
+                async with AsyncSessionLocal() as prefetch_session:
+                    prefetch_result = await prefetch_session.execute(
+                        select(TradeSignal.id, TradeSignal.dedupe_key).where(
+                            TradeSignal.source == str(source),
+                            TradeSignal.dedupe_key.in_(prefetch_dedupe_keys),
+                        )
+                    )
+                    for row_id, row_dedupe in prefetch_result.all():
+                        normalized_dedupe = str(row_dedupe or "").strip()
+                        if normalized_dedupe:
+                            prefetched_ids[normalized_dedupe] = str(row_id)
+            except Exception as prefetch_exc:
+                # Prefetch is a hint; on failure, fall back to fresh
+                # uuids and rely on the projection loop's existing
+                # behaviour.  Logged at debug because the FK race
+                # surfaces loudly enough downstream if we ever hit
+                # this branch under steady-state load.
+                logger.debug(
+                    "intent_runtime: trade_signals dedupe_key prefetch failed; falling back to uuid",
+                    exc_info=prefetch_exc,
+                    source=str(source),
+                    prefetch_dedupe_count=len(prefetch_dedupe_keys),
+                )
+
+        # Skeleton-INSERT pass for dedupe_keys with no existing DB row.
+        # We commit before acquiring `self._lock` so the row is visible
+        # to every consumer (orchestrator, fast_trader, projection loop,
+        # API surface) the moment publish_opportunities returns.  The
+        # projection loop's later UPSERT then fills in the rich fields
+        # via UPDATE on the same row.
+        committed_ids: dict[str, str] = {}
+        skeleton_dedupe_keys = [
+            dk for dk in prefetch_dedupe_keys if dk not in prefetched_ids
+        ]
+        if skeleton_dedupe_keys:
+            # Defensive TTL (plan 0011): if the rest of publish_opportunities
+            # dies between this commit and the projection loop's UPSERT
+            # (process kill, connection drop, unhandled exception), the
+            # skeleton row would otherwise live in ``trade_signals``
+            # forever — invisible to the terminal-row pruner which keys
+            # on ``expires_at < now()``.  The projection loop overwrites
+            # ``expires_at`` with the strategy's intended value as soon
+            # as it commits, so this TTL only takes effect for orphaned
+            # skeletons.  Bounded by the retention sweep on the
+            # discovery plane (see ``services.skeleton_signal_retention``).
+            skeleton_ttl_seconds = max(
+                60,
+                int(getattr(settings, "INTENT_RUNTIME_SKELETON_TTL_SECONDS", 300) or 300),
+            )
+            skeleton_expires_at = now + timedelta(seconds=skeleton_ttl_seconds)
+            skeleton_rows = [
+                {
+                    "id": uuid.uuid4().hex,
+                    "source": str(source),
+                    "signal_type": signal_type,
+                    "market_id": prefetch_meta_by_dedupe[dk]["market_id"],
+                    "dedupe_key": dk,
+                    "status": "pending",
+                    "expires_at": skeleton_expires_at,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                for dk in skeleton_dedupe_keys
+            ]
+            try:
+                async with AsyncSessionLocal() as skeleton_session:
+                    await skeleton_session.execute(
+                        pg_insert(TradeSignal)
+                        .values(skeleton_rows)
+                        .on_conflict_do_nothing(
+                            index_elements=["source", "dedupe_key"]
+                        )
+                    )
+                    await skeleton_session.commit()
+                    # Re-query to get the canonical id for every
+                    # skeleton dedupe_key — covers both the rows we
+                    # just inserted and the rare conflict-loser rows
+                    # where a peer publisher beat us between prefetch
+                    # and skeleton-INSERT.
+                    after_result = await skeleton_session.execute(
+                        select(TradeSignal.id, TradeSignal.dedupe_key).where(
+                            TradeSignal.source == str(source),
+                            TradeSignal.dedupe_key.in_(skeleton_dedupe_keys),
+                        )
+                    )
+                    for row_id, row_dedupe in after_result.all():
+                        normalized_dedupe = str(row_dedupe or "").strip()
+                        if normalized_dedupe:
+                            committed_ids[normalized_dedupe] = str(row_id)
+            except Exception as skeleton_exc:
+                # Skeleton-INSERT failure must not break publish.  The
+                # downstream FK race re-surfaces loudly enough that we
+                # do NOT need to log at WARNING for every transient DB
+                # blip; the orchestrator-side log already captures the
+                # failure mode if this fallback ever fires.
+                logger.debug(
+                    "intent_runtime: trade_signals skeleton INSERT failed; falling back to uuid",
+                    exc_info=skeleton_exc,
+                    source=str(source),
+                    skeleton_dedupe_count=len(skeleton_dedupe_keys),
+                )
+
         async with self._lock:
             for opportunity in opportunities:
                 market_id, direction, entry_price, market_question, payload_json, strategy_context_json = (
@@ -2192,7 +2373,18 @@ class IntentRuntime:
                             else "upsert_update"
                         )
                 else:
-                    signal_id = uuid.uuid4().hex
+                    # Plan 0010: prefer the canonical `trade_signals.id`
+                    # for this dedupe_key (prefetched OR skeleton-inserted
+                    # outside the lock) over a fresh uuid, so the
+                    # in-memory cache never diverges from the row the
+                    # projection loop will eventually update AND every
+                    # downstream consumer can FK against a row that is
+                    # already committed in `trade_signals`.
+                    signal_id = (
+                        prefetched_ids.get(dedupe_key)
+                        or committed_ids.get(dedupe_key)
+                        or uuid.uuid4().hex
+                    )
                     incoming_snapshot["id"] = signal_id
                     _ea = str(
                         (incoming_snapshot.get("payload_json") or {})

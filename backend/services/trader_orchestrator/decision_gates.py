@@ -204,11 +204,17 @@ def _normalize_text_list(value: Any) -> list[str]:
     return out
 
 
-def _resolve_market_data_age_budget_ms(strategy_params: dict[str, Any], timeframe: str) -> int:
+def _resolve_market_data_age_budget_ms(
+    strategy_params: dict[str, Any],
+    timeframe: str,
+    risk_limits: dict[str, Any] | None = None,
+) -> int:
     default_budget = max(50, int(safe_float(getattr(settings, "EXECUTION_MARKET_DATA_MAX_AGE_MS", 1200), 1200.0)))
     candidate = _timeframe_param_value(strategy_params, "max_market_data_age_ms", timeframe)
     if candidate is None:
         candidate = strategy_params.get("max_market_data_age_ms")
+    if candidate is None and isinstance(risk_limits, dict):
+        candidate = risk_limits.get("max_market_data_age_ms")
     parsed = safe_float(candidate, float(default_budget))
     if parsed is None:
         return default_budget
@@ -857,7 +863,7 @@ def apply_platform_decision_gates(
 
         source = str(market_data_context.get("source") or "")
         timeframe = str(market_data_context.get("timeframe") or "")
-        max_age_ms = _resolve_market_data_age_budget_ms(params, timeframe)
+        max_age_ms = _resolve_market_data_age_budget_ms(params, timeframe, effective_risk_limits)
         global_max_age_ms = safe_float(global_live_market_context.get("max_market_data_age_ms"), None)
         if global_max_age_ms is not None and global_max_age_ms > 0.0:
             max_age_ms = max(50, min(max_age_ms, int(global_max_age_ms)))
@@ -1264,7 +1270,7 @@ def apply_platform_decision_gates(
         age_ms = safe_float(market_data_context.get("age_ms"), None)
         observed_at = market_data_context.get("observed_at")
         ws_subscription_current = _coerce_bool(market_data_context.get("ws_subscription_current"), False)
-        max_age_ms = _resolve_market_data_age_budget_ms(params, timeframe)
+        max_age_ms = _resolve_market_data_age_budget_ms(params, timeframe, effective_risk_limits)
         age_required = bool(source and source in set(required_sources))
         if (
             signal_source == "scanner"

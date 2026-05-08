@@ -408,6 +408,9 @@ class StrategySDK:
         "halt_on_consecutive_losses": True,
         "max_consecutive_losses": 4,
         "circuit_breaker_drawdown_pct": 12.0,
+        "max_entry_drift_pct": 10.0,
+        "max_market_data_age_ms": None,
+        "allow_taker_limit_buy_above_signal": False,
         "portfolio": {
             "enabled": False,
             "target_utilization_pct": 100.0,
@@ -446,6 +449,38 @@ class StrategySDK:
             "type": "number",
             "min": 0,
             "max": 100,
+        },
+        {
+            "key": "max_entry_drift_pct",
+            "label": "Max Entry Drift From Signal (%)",
+            "type": "number",
+            "min": 0,
+            "max": 100,
+            "description": (
+                "Symmetric tolerance: |live_price - signal_entry_price| / signal_entry_price * 100. "
+                "Default 10%. Lower → strategies skip when market moves; higher → more fills at worse prices."
+            ),
+        },
+        {
+            "key": "max_market_data_age_ms",
+            "label": "Max Market Data Age (ms)",
+            "type": "integer",
+            "min": 50,
+            "max": 300000,
+            "description": (
+                "Per-bot ceiling for live quote staleness at gate-time. Empty → fall back to "
+                "strategy_params.max_market_data_age_ms or env EXECUTION_MARKET_DATA_MAX_AGE_MS."
+            ),
+        },
+        {
+            "key": "allow_taker_limit_buy_above_signal",
+            "label": "Allow Taker Limit Buy Above Signal Price",
+            "type": "boolean",
+            "description": (
+                "When ON, shadow simulator may fill BUY legs at prices above signal entry_price (chase up). "
+                "Default OFF means simulator rejects whenever the book has moved up since signal — the dominant "
+                "cause of `Execution submission: limit_price_not_executable` blocks."
+            ),
         },
         {
             "key": "portfolio",
@@ -1898,6 +1933,17 @@ class StrategySDK:
         cfg["max_consecutive_losses"] = StrategySDK._coerce_int(cfg.get("max_consecutive_losses"), 4, 0, 1000)
         cfg["circuit_breaker_drawdown_pct"] = StrategySDK._coerce_float(
             cfg.get("circuit_breaker_drawdown_pct"), 12.0, 0.0, 100.0
+        )
+        cfg["max_entry_drift_pct"] = StrategySDK._coerce_float(
+            cfg.get("max_entry_drift_pct"), 10.0, 0.0, 100.0
+        )
+        raw_max_md_age = cfg.get("max_market_data_age_ms")
+        if raw_max_md_age is None or (isinstance(raw_max_md_age, str) and not raw_max_md_age.strip()):
+            cfg["max_market_data_age_ms"] = None
+        else:
+            cfg["max_market_data_age_ms"] = StrategySDK._coerce_int(raw_max_md_age, 10000, 50, 300_000)
+        cfg["allow_taker_limit_buy_above_signal"] = _coerce_bool(
+            cfg.get("allow_taker_limit_buy_above_signal"), False
         )
         default_portfolio = StrategySDK.TRADER_RISK_DEFAULTS.get("portfolio")
         portfolio_cfg = dict(default_portfolio) if isinstance(default_portfolio, dict) else {}
