@@ -44,19 +44,30 @@ logger = get_logger("ws_feeds")
 
 
 def _is_expected_close(exc: Exception) -> bool:
-    """Return True for expected lifecycle closures from remote peers."""
+    """Return True for expected lifecycle closures from remote peers.
 
+    Polymarket's CLOB WS drops sessions every ~12 min as a server-side
+    rotation — we observe ``ConnectionClosedError(None, None, None)``
+    (no rcvd/sent close frame, raw TCP). Older logic relied on
+    ``getattr(exc, "code", None)`` but ``code`` is a property in
+    websockets 11+ that delegates to ``rcvd``/``sent``; with both
+    None the property can raise inside the ``getattr`` call (caught,
+    returns the default) so the previous flow worked by accident.
+    Be explicit: classify all ConnectionClosed* with no protocol
+    close code (or the normal-closure codes) as expected.
+    """
     if not WEBSOCKETS_AVAILABLE:
         return False
 
     if isinstance(exc, (websockets.exceptions.ConnectionClosedOK, websockets.exceptions.ConnectionClosedError)):
-        close_code = getattr(exc, "code", None)
-        if close_code is None:
-            received = getattr(exc, "rcvd", None)
-            sent = getattr(exc, "sent", None)
-            close_code = getattr(received, "code", None) or getattr(sent, "code", None)
-        # None means no close frame was received (raw TCP drop) — this is
-        # normal for WS servers that disconnect idle/overloaded clients.
+        received = getattr(exc, "rcvd", None)
+        sent = getattr(exc, "sent", None)
+        rcvd_code = getattr(received, "code", None) if received is not None else None
+        sent_code = getattr(sent, "code", None) if sent is not None else None
+        close_code = rcvd_code if rcvd_code is not None else sent_code
+        # None means no close frame was received (raw TCP drop) — normal
+        # for WS servers that rotate sessions or drop idle/overloaded
+        # clients. 1000/1001/1005 are the standard normal-close codes.
         return close_code is None or close_code in {1000, 1001, 1005}
     return False
 

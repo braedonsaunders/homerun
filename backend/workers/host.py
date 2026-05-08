@@ -423,6 +423,15 @@ class WorkerHost:
         self._position_monitor_started = False
         self._fill_monitor_started = False
         self._restart_grace: dict[str, float] = {}  # module_name -> monotonic time of last restart
+        # Crash history: module_name -> list of monotonic crash timestamps
+        # within the last 1h (older entries pruned on access). Used to:
+        #   * surface a structured "high crash rate" log when a worker is
+        #     thrashing — without this the operator only sees one
+        #     "Worker task crashed" line per crash, with no easy way to
+        #     spot frequency
+        #   * escalate restart cooldown so a thrashing worker doesn't
+        #     hammer its dependencies
+        self._crash_history: dict[str, list[float]] = {}
         self._plane_lock = _WorkerPlaneLock(self._plane_name)
 
     def _enabled(self, key: str) -> bool:
@@ -613,9 +622,68 @@ class WorkerHost:
                 exc_info=exc,
             )
 
+    def _record_crash_and_get_cooldown(self, module_name: str) -> tuple[int, float]:
+        """Record this crash and return (crashes_in_last_hour, cooldown_seconds).
+
+        Cooldown escalates so a thrashing worker doesn't hammer downstream
+        services in tight restart loops:
+          1-2 crashes/hr → 1s   (current behavior)
+          3-5 crashes/hr → 5s
+          6-9 crashes/hr → 15s
+          10+ crashes/hr → 60s + ERROR-level alert
+        """
+        import time as _time
+        now = _time.monotonic()
+        history = self._crash_history.setdefault(module_name, [])
+        cutoff = now - 3600.0
+        # Prune entries older than 1h
+        while history and history[0] < cutoff:
+            history.pop(0)
+        history.append(now)
+        crashes_in_window = len(history)
+        if crashes_in_window >= 10:
+            cooldown = 60.0
+        elif crashes_in_window >= 6:
+            cooldown = 15.0
+        elif crashes_in_window >= 3:
+            cooldown = 5.0
+        else:
+            cooldown = 1.0
+        return crashes_in_window, cooldown
+
     async def _restart_worker_task(self, module_name: str, *, reason: str) -> None:
         if self._shutting_down:
             return
+        # Track crash + apply escalating cooldown BEFORE spawning the
+        # replacement, so a thrashing worker has a backoff window between
+        # failures rather than a flat 1s.
+        crashes_in_window, cooldown_seconds = self._record_crash_and_get_cooldown(module_name)
+        worker_label = _worker_name_from_module(module_name)
+        if crashes_in_window >= 10:
+            logger.error(
+                "Worker thrashing — high crash rate",
+                plane=self._plane_name,
+                worker=worker_label,
+                crashes_in_last_hour=crashes_in_window,
+                cooldown_seconds=cooldown_seconds,
+                reason=reason,
+            )
+        elif crashes_in_window >= 3:
+            logger.warning(
+                "Worker crash rate elevated",
+                plane=self._plane_name,
+                worker=worker_label,
+                crashes_in_last_hour=crashes_in_window,
+                cooldown_seconds=cooldown_seconds,
+                reason=reason,
+            )
+        if cooldown_seconds > 1.0:
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=cooldown_seconds - 1.0)
+                return  # shutdown requested during cooldown
+            except asyncio.TimeoutError:
+                pass
+
         current = self._worker_tasks.get(module_name)
         if current is not None:
             await self._cancel_worker_task(module_name, current)
@@ -631,6 +699,7 @@ class WorkerHost:
             plane=self._plane_name,
             worker=_worker_name_from_module(module_name),
             reason=reason,
+            crashes_in_last_hour=crashes_in_window,
         )
 
     async def _monitor_worker_task(self, module_name: str) -> None:
@@ -1257,6 +1326,25 @@ class WorkerHost:
         def _global_exception_handler(loop_ref, context):
             exc = context.get("exception")
             message = context.get("message", "Unhandled asyncio exception")
+            # Pull task/future identity so "Future exception was never retrieved"
+            # logs become actionable. Without this, the operator gets a stream
+            # of "ConnectionError suppressed" with no clue which background
+            # task lost its handle. Prefer 'task' if asyncio supplied it,
+            # else 'future' if it's a Task instance.
+            task_or_future = context.get("task") or context.get("future")
+            task_name = None
+            task_coro = None
+            if task_or_future is not None:
+                try:
+                    task_name = task_or_future.get_name()
+                except Exception:
+                    task_name = None
+                try:
+                    coro = task_or_future.get_coro() if hasattr(task_or_future, "get_coro") else None
+                    if coro is not None:
+                        task_coro = getattr(coro, "__qualname__", None) or getattr(coro, "__name__", None)
+                except Exception:
+                    task_coro = None
             if _should_suppress_asyncio_exception(message, exc):
                 logger.warning(
                     "Asyncio callback error (suppressed)",
@@ -1264,6 +1352,8 @@ class WorkerHost:
                     context_message=message,
                     error_type=type(exc).__name__ if exc is not None else None,
                     error=str(exc) if exc is not None else None,
+                    task_name=task_name,
+                    task_coro=task_coro,
                 )
                 return
             if exc is not None:
@@ -1271,6 +1361,8 @@ class WorkerHost:
                     "Unhandled asyncio exception",
                     plane=self._plane_name,
                     context_message=message,
+                    task_name=task_name,
+                    task_coro=task_coro,
                     exc_info=exc,
                 )
             else:
@@ -1278,6 +1370,8 @@ class WorkerHost:
                     "Unhandled asyncio exception",
                     plane=self._plane_name,
                     context_message=message,
+                    task_name=task_name,
+                    task_coro=task_coro,
                 )
 
         loop.set_exception_handler(_global_exception_handler)

@@ -26,6 +26,7 @@ import asyncio
 import os as _os
 import time as _time
 import warnings as _warnings
+import weakref
 from config import settings
 from models.types import PreciseFloat as Float
 
@@ -4817,6 +4818,18 @@ def _on_checkout(dbapi_connection, connection_record, connection_proxy):
     connection_record.info["checkout_time"] = _time.monotonic()
     connection_record.info["checkout_task_name"] = task_name
     connection_record.info["checkout_task_coro"] = coro_name
+    # Weakref to the owning task so the reaper can cancel it (not just
+    # invalidate the underlying connection) when checkout exceeds the
+    # hard limit. Without this, the reaper closes the socket and moves
+    # on, but the owning task is still scheduled — it will surface a
+    # confusing InterfaceError on its next await of the (now-dead)
+    # connection. Cancelling the task surfaces the error at its real
+    # source. weakref so we don't pin the task in memory.
+    try:
+        task = asyncio.current_task()
+        connection_record.info["checkout_task_ref"] = weakref.ref(task) if task is not None else None
+    except RuntimeError:
+        connection_record.info["checkout_task_ref"] = None
     try:
         cursor = dbapi_connection.cursor()
         try:
@@ -5229,6 +5242,34 @@ async def _reap_stale_checkouts() -> None:
                 reaped += 1
         except Exception as e:
             _db_logger.warning("REAPER: Failed to invalidate connection: %s", e)
+
+        # Cancel the owning task as well — without this, the task is
+        # still scheduled and surfaces a confusing InterfaceError on
+        # its next await of the (now-dead) connection. Cancelling
+        # propagates an asyncio.CancelledError at the actual await
+        # point, which the task's structured try/finally can handle
+        # cleanly. weakref so a GC'd task doesn't pin memory.
+        task_ref = info.get("checkout_task_ref")
+        owning_task = None
+        if callable(task_ref):
+            try:
+                owning_task = task_ref()
+            except Exception:
+                owning_task = None
+        if owning_task is not None and not owning_task.done():
+            try:
+                owning_task.cancel()
+                _db_logger.warning(
+                    "REAPER: Cancelled owning task=%s coro=%s after invalidating its connection",
+                    task_name,
+                    coro_name,
+                )
+            except Exception as cancel_exc:
+                _db_logger.warning(
+                    "REAPER: Failed to cancel owning task=%s: %s",
+                    task_name,
+                    cancel_exc,
+                )
 
     return reaped
 

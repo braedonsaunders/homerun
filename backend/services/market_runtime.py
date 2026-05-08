@@ -1529,8 +1529,14 @@ class MarketRuntime:
         trigger: str,
         full_source_sweep: bool,
     ) -> None:
+        # Deepcopy the (potentially large) crypto markets payload OFF the
+        # event loop. The 2026-05-07 soak observed dispatch_seconds=7.67s
+        # in the refresh-timing log — almost entirely this deepcopy. The
+        # lock-protected slot is single-writer (only _refresh_crypto_markets
+        # produces) so doing the copy in a thread doesn't introduce a race.
+        copied_payload = await asyncio.to_thread(copy.deepcopy, payload)
         async with self._pending_opportunity_lock:
-            self._pending_opportunity_payload = copy.deepcopy(payload)
+            self._pending_opportunity_payload = copied_payload
             self._pending_opportunity_trigger = str(trigger)
             self._pending_opportunity_full_source_sweep = (
                 self._pending_opportunity_full_source_sweep or bool(full_source_sweep)
@@ -1553,11 +1559,15 @@ class MarketRuntime:
             if payload is None or trigger is None:
                 return
             try:
+                # Same off-loop deepcopy rationale — the event payload is
+                # passed to every event_dispatcher handler and we don't
+                # want one slow handler to mutate the source list.
+                copied_for_event = await asyncio.to_thread(copy.deepcopy, payload)
                 event = DataEvent(
                     event_type=EventType.CRYPTO_UPDATE,
                     source="market_runtime",
                     timestamp=utcnow(),
-                    payload={"markets": copy.deepcopy(payload), "trigger": str(trigger)},
+                    payload={"markets": copied_for_event, "trigger": str(trigger)},
                 )
                 handler_count = len(event_dispatcher._handlers.get(EventType.CRYPTO_UPDATE, []))
                 opportunities = await event_dispatcher.dispatch(event)

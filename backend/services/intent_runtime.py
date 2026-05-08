@@ -569,6 +569,15 @@ class IntentRuntime:
         self._pending_reactivation_tokens: set[str] = set()
         self._reactivation_drain_task: asyncio.Task[None] | None = None
         self._reactivation_drain_event: asyncio.Event | None = None
+        # Drop counters for queue saturation. Without this, a queue at
+        # the 5000 cap silently blocks producers (every callsite of
+        # _enqueue_projection awaits put()), turning a backpressure
+        # signal into a stall on the trading loop. The drop path
+        # (only triggered when backpressure has been published and
+        # producers still didn't yield) is preferable to an unbounded
+        # producer wait. Operator can read these via the SLO snapshot.
+        self._projection_dropped_at_cap: int = 0
+        self._projection_drop_log_at: float = 0.0
 
     def _track_task(self, task: asyncio.Task[Any], *, name: str) -> asyncio.Task[Any]:
         self._background_tasks.add(task)
@@ -2488,7 +2497,31 @@ class IntentRuntime:
     async def _enqueue_projection(self, payload: dict[str, Any]) -> None:
         if not self._started:
             return
-        await self._projection_queue.put(payload)
+        # Try non-blocking first to avoid stalling producers on the
+        # trading loop. If the queue is full, the backpressure signal
+        # has already been published (at 50% via _run_projection_loop)
+        # and producers should have voluntarily slowed. If they didn't,
+        # drop with a counted warning rather than block — a stalled
+        # producer is worse than a dropped projection (the next state
+        # snapshot from the same source supersedes anyway via the
+        # upsert coalesce path).
+        try:
+            self._projection_queue.put_nowait(payload)
+            return
+        except asyncio.QueueFull:
+            pass
+        self._projection_dropped_at_cap += 1
+        now = time.monotonic()
+        if (now - self._projection_drop_log_at) >= 5.0:
+            self._projection_drop_log_at = now
+            logger.warning(
+                "Intent runtime projection dropped at queue cap",
+                projection_kind=str(payload.get("kind") or "").strip().lower() or None,
+                source=str(payload.get("source") or "").strip().lower() or None,
+                queue_size=self._projection_queue.qsize(),
+                queue_max=self._projection_queue.maxsize,
+                cumulative_dropped=self._projection_dropped_at_cap,
+            )
 
     async def _retry_projection_payload(self, payload: dict[str, Any]) -> None:
         retry_count = int(payload.get("_projection_retry_count") or 0)

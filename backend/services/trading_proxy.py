@@ -165,10 +165,22 @@ def get_sync_proxy_client() -> httpx.Client:
         return existing_client
 
     proxy_url = _get_proxy_url()
+    # Extend httpx keepalive_expiry well beyond the observed worst-case
+    # event-loop stall (10.45s in the 2026-05-07 soak). With the default
+    # 5s expiry, every loop stall >5s reaped the warm CLOB connection
+    # and forced the next post_order through cold TCP+TLS handshake —
+    # observed as "Server disconnected" 555× in the soak. 60s gives
+    # generous headroom against future stalls without keeping idle
+    # connections forever.
     kwargs = {
         "http2": True,
         "timeout": cfg.timeout,
         "verify": cfg.verify_ssl,
+        "limits": httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=100,
+            keepalive_expiry=60.0,
+        ),
     }
     if proxy_url:
         kwargs["proxy"] = proxy_url
@@ -202,9 +214,16 @@ def get_async_proxy_client() -> httpx.AsyncClient:
         return existing_client
 
     proxy_url = _get_proxy_url()
+    # Same keepalive_expiry rationale as get_sync_proxy_client — keep
+    # the warm CLOB connection alive across event-loop stalls.
     kwargs = {
         "timeout": cfg.timeout,
         "verify": cfg.verify_ssl,
+        "limits": httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=100,
+            keepalive_expiry=60.0,
+        ),
     }
     if proxy_url:
         kwargs["proxy"] = proxy_url

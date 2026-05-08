@@ -907,7 +907,14 @@ _RUNTIME_TRIGGER_DEFAULT_CYCLE_TIMEOUT_SECONDS = 10.0
 _TERMINAL_STALE_ORDER_CHECK_INTERVAL_SECONDS = 30
 _TERMINAL_STALE_ORDER_MIN_AGE_MINUTES = 3
 _TERMINAL_STALE_ORDER_ALERT_COOLDOWN_SECONDS = 300
-_TRADER_MAINTENANCE_STEP_TIMEOUT_SECONDS = 20.0
+# Lowered from 20.0s on 2026-05-07 — maintenance runs INLINE inside the
+# trader cycle (which itself is bounded at 20s). With two maintenance
+# steps each at 20s, a single contended one could blow the entire cycle
+# budget — observed in soak as stage_timings_ms={'maintenance': 11922.0}
+# eating the whole 12.89s slow-cycle window. Tighter per-step caps mean
+# slow steps re-run on the next maintenance interval rather than
+# starving signal processing.
+_TRADER_MAINTENANCE_STEP_TIMEOUT_SECONDS = 8.0
 _TRADER_PENDING_EXIT_SUMMARY_TIMEOUT_SECONDS = 5.0
 _WS_FAILURE_PAUSE_THRESHOLD = 10
 _ws_auto_paused = False
