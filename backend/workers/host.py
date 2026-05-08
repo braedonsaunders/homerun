@@ -20,7 +20,7 @@ os.environ["HOMERUN_PROCESS_ROLE"] = "worker"
 # user-channel WS feed — running it in two processes against the
 # same wallet causes the server to drop both connections).
 
-from config import RUNTIME_SETTINGS_PRECEDENCE, apply_runtime_settings_overrides
+from config import RUNTIME_SETTINGS_PRECEDENCE, apply_runtime_settings_overrides, settings
 from models.database import AsyncSessionLocal
 from models.model_registry import register_all_models
 from services.event_bus import event_bus
@@ -504,6 +504,66 @@ class WorkerHost:
                 )
             try:
                 await asyncio.sleep(300.0)  # 5 minutes
+            except asyncio.CancelledError:
+                raise
+
+    async def _run_skeleton_signal_retention_loop(self) -> None:
+        """Periodic sweep that DELETEs orphaned `trade_signals`
+        skeleton rows on the discovery plane.
+
+        Plan 0010's publish-side skeleton-INSERT commits a placeholder
+        ``(source, dedupe_key)`` row BEFORE the projection loop
+        enriches it.  If publish dies mid-call, the row stays in
+        ``trade_signals`` with ``payload_json IS NULL`` and
+        ``runtime_sequence IS NULL``, and is invisible to the
+        terminal-row pruner (which keys on ``expires_at < now()``).
+        Plan 0011 stamps a defensive ``expires_at = now + ttl`` on
+        the skeleton AND adds this loop, which deletes skeletons
+        older than ``max_age_seconds`` outright.  Discovery-plane
+        only — keeps the orphan-deletion path off the trader-cycle's
+        10 s budget.
+
+        Default cadence: 15 min.  Default age threshold: 1 hour.
+        """
+        interval_seconds = max(
+            60,
+            int(getattr(settings, "INTENT_RUNTIME_SKELETON_RETENTION_INTERVAL_SECONDS", 900) or 900),
+        )
+        max_age_seconds = max(
+            60,
+            int(getattr(settings, "INTENT_RUNTIME_SKELETON_RETENTION_MAX_AGE_SECONDS", 3600) or 3600),
+        )
+        # Stagger initial fire so we don't compete with startup queries.
+        await asyncio.sleep(60.0)
+        while not self._shutting_down:
+            try:
+                from services.skeleton_signal_retention import prune_stuck_skeletons
+
+                async with AsyncSessionLocal() as session:
+                    deleted = await prune_stuck_skeletons(
+                        session,
+                        max_age_seconds=max_age_seconds,
+                    )
+                # Log every sweep at INFO so the operator can correlate
+                # with publish failures.  Steady-state ``deleted=0`` is
+                # the healthy case; non-zero rows mean the publish path
+                # is dying mid-call somewhere upstream.
+                logger.info(
+                    "Stuck-skeleton retention sweep",
+                    plane=self._plane_name,
+                    deleted=deleted,
+                    max_age_seconds=max_age_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Stuck-skeleton retention sweep failed",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                await asyncio.sleep(float(interval_seconds))
             except asyncio.CancelledError:
                 raise
 
@@ -1010,6 +1070,17 @@ class WorkerHost:
             self._background_tasks.append(asyncio.create_task(
                 self._run_trade_signal_pruner_loop(),
                 name="trade-signal-pruner",
+            ))
+
+        # Stuck-skeleton retention sweep (plan 0011): DELETEs orphaned
+        # ``trade_signals`` rows whose projection-loop UPSERT never
+        # landed.  Lives on the discovery plane so the orphan-deletion
+        # path stays off the trader-cycle's 10 s budget.  See
+        # ``services.skeleton_signal_retention``.
+        if self._plane_name == "discovery":
+            self._background_tasks.append(asyncio.create_task(
+                self._run_skeleton_signal_retention_loop(),
+                name="skeleton-signal-retention",
             ))
 
         # Recording-session manager — promotes scheduled sessions, ticks

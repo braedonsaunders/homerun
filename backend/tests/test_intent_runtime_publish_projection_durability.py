@@ -30,11 +30,23 @@ On `main` (pre-fix) test 1 fails because line 2174
 id.  Test 2 fails because the publish path returns BEFORE the
 projection loop has committed the row, leaving downstream
 consumers staring at an in-memory-only id.
+
+Plan 0011 (`docs/plans/0011-skeleton-trade-signal-ttl-and-retention.md`)
+adds a fourth invariant:
+
+3. **Defensive TTL on the skeleton row.**  The skeleton-INSERT pass
+   commits ``expires_at = now + INTENT_RUNTIME_SKELETON_TTL_SECONDS``
+   so a skeleton orphaned by a mid-call publish failure becomes
+   visible to the existing terminal-row pruner.  The projection
+   loop's later UPSERT overwrites this defensive TTL with the
+   strategy-intended ``expires_at``; the TTL only matters when
+   projection never ran.
 """
 
 from __future__ import annotations
 
 import sys
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -45,11 +57,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from config import settings  # noqa: E402
 from models.database import Base, TradeSignal  # noqa: E402
 from models.opportunity import Opportunity  # noqa: E402
 from services import intent_runtime as intent_runtime_module  # noqa: E402
 from services.intent_runtime import IntentRuntime  # noqa: E402
-from services.signal_bus import make_dedupe_key  # noqa: E402
+from services.signal_bus import make_dedupe_key, upsert_trade_signal  # noqa: E402
 from tests.postgres_test_db import build_postgres_session_factory  # noqa: E402
 from utils.utcnow import utcnow  # noqa: E402
 
@@ -395,6 +408,162 @@ async def test_publish_adopts_existing_id_when_db_row_is_terminal(
             "plan 0010 invariant: even terminal-status pre-existing rows "
             "must have their id adopted on republish, otherwise the "
             "fresh-uuid path collides with `uq_trade_signals_source_dedupe`."
+        )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_skeleton_row_carries_defensive_expires_at_overwritten_by_projection(
+    monkeypatch, tmp_path
+):
+    """Plan 0011 invariant.  The skeleton-INSERT pass MUST stamp the
+    placeholder row with ``expires_at = now + skeleton_ttl_seconds``
+    so that an orphaned skeleton (publish dies before projection
+    commits) becomes visible to the existing
+    ``_run_trade_signal_pruner_loop`` (which keys on
+    ``expires_at < now()``).  The projection loop's later UPSERT
+    MUST then overwrite that defensive TTL with the strategy's
+    intended ``expires_at`` — the skeleton TTL is purely a safety
+    net for the orphan path, never the operational expiry.
+    """
+    _patch_traders_strategy_loader(monkeypatch)
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "publish_projection_skeleton_expires_at"
+    )
+    try:
+        opportunity = _make_traders_opportunity()
+        dedupe_key = _expected_dedupe_key(opportunity)
+
+        rows = await _trade_signals_by_dedupe(
+            session_factory, source="traders", dedupe_key=dedupe_key
+        )
+        assert rows == [], "fixture sanity: dedupe_key must not pre-exist"
+
+        monkeypatch.setattr(
+            intent_runtime_module, "AsyncSessionLocal", session_factory
+        )
+
+        runtime = IntentRuntime()
+        runtime._ensure_hot_subscriptions = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            intent_runtime_module,
+            "publish_signal_batch",
+            AsyncMock(return_value="batch-test"),
+        )
+
+        skeleton_ttl_seconds = max(
+            60,
+            int(getattr(settings, "INTENT_RUNTIME_SKELETON_TTL_SECONDS", 300) or 300),
+        )
+
+        publish_started_at = utcnow().replace(tzinfo=None)
+        published = await runtime.publish_opportunities(
+            [opportunity], source="traders", signal_type_override="copy_trade"
+        )
+        assert published == 1
+        in_memory_id = next(iter(runtime._signals_by_id.keys()))
+
+        # Read the skeleton row directly from the DB (not the cache):
+        # we need to verify the column the publish path committed.
+        async with session_factory() as session:
+            skeleton_row = await session.get(TradeSignal, in_memory_id)
+        assert skeleton_row is not None, (
+            "plan 0011 invariant: skeleton row must exist in DB after "
+            "publish (this is also the plan 0010 invariant)."
+        )
+        assert skeleton_row.payload_json is None, (
+            "fixture sanity: this test simulates the orphan path "
+            "(publish dies before projection commits), so payload_json "
+            "must still be NULL when we observe the row."
+        )
+        skeleton_expires_at = skeleton_row.expires_at
+        assert skeleton_expires_at is not None, (
+            "plan 0011 invariant: skeleton row MUST carry a non-NULL "
+            "expires_at so the terminal-row pruner can reach it.  "
+            "Pre-fix the column was NULL, leaving orphans invisible."
+        )
+        # Normalize to naive UTC for tz-agnostic comparison.  The
+        # ``expires_at`` column is ``TIMESTAMP WITHOUT TIME ZONE`` per
+        # the model definition, but asyncpg's tz handling depends on
+        # the server's timezone setting, so we normalize defensively.
+        skeleton_expires_naive = (
+            skeleton_expires_at.replace(tzinfo=None)
+            if skeleton_expires_at.tzinfo is not None
+            else skeleton_expires_at
+        )
+        # Allow up to +5 s of skew: we measured `publish_started_at`
+        # before the publish call, the publish path itself sets
+        # `now = utcnow()` slightly later, and DB round-trip adds a
+        # few more ms.  The lower bound is `publish_started_at + ttl`
+        # minus a small slack; the upper bound is whatever-now-was-
+        # inside-publish + ttl + small slack.
+        ttl_lower_bound = publish_started_at + timedelta(seconds=skeleton_ttl_seconds - 5)
+        ttl_upper_bound = utcnow().replace(tzinfo=None) + timedelta(
+            seconds=skeleton_ttl_seconds + 5
+        )
+        assert ttl_lower_bound <= skeleton_expires_naive <= ttl_upper_bound, (
+            f"skeleton expires_at must be within "
+            f"[{ttl_lower_bound!r}, {ttl_upper_bound!r}] for "
+            f"ttl_seconds={skeleton_ttl_seconds}; got "
+            f"{skeleton_expires_naive!r} (raw={skeleton_expires_at!r})."
+        )
+
+        # Now simulate the projection loop committing the strategy-
+        # intended row.  Use a clearly-different `expires_at` so we
+        # can prove the skeleton TTL was overwritten.
+        strategy_expires_at = utcnow().replace(tzinfo=None) + timedelta(hours=6)
+        async with session_factory() as session:
+            await upsert_trade_signal(
+                session,
+                source="traders",
+                source_item_id="projection-source-item-id",
+                signal_type="copy_trade",
+                strategy_type=COPY_TRADE_STRATEGY,
+                market_id=COPY_TRADE_MARKET_ID,
+                market_question="Will it happen?",
+                direction="buy_yes",
+                entry_price=0.41,
+                edge_percent=9.0,
+                confidence=0.7,
+                liquidity=120.0,
+                expires_at=strategy_expires_at,
+                payload_json={"signal_emitted_at": utcnow().isoformat()},
+                strategy_context_json={"source_key": "traders"},
+                dedupe_key=dedupe_key,
+                commit=True,
+            )
+
+        async with session_factory() as session:
+            after_projection = await session.get(TradeSignal, in_memory_id)
+        assert after_projection is not None
+        assert after_projection.payload_json is not None, (
+            "fixture sanity: projection upsert must have written "
+            "payload_json — without it, the skeleton-orphan filter "
+            "(payload_json IS NULL) would still match this row."
+        )
+        # The strategy's intended expires_at MUST win — the defensive
+        # TTL is purely a safety net, never the operational value.
+        # Normalize both sides to naive UTC for tz-agnostic equality.
+        after_projection_expires_naive = (
+            after_projection.expires_at.replace(tzinfo=None)
+            if after_projection.expires_at is not None
+            and after_projection.expires_at.tzinfo is not None
+            else after_projection.expires_at
+        )
+        assert after_projection_expires_naive == strategy_expires_at, (
+            f"plan 0011 invariant: projection-loop UPSERT must overwrite "
+            f"the skeleton's defensive TTL with the strategy's intended "
+            f"expires_at.  Expected {strategy_expires_at!r}; got "
+            f"{after_projection_expires_naive!r}.  If they don't match, "
+            f"the skeleton TTL is leaking into operational expiry "
+            f"semantics — escalate as a missed UPSERT column."
+        )
+        assert after_projection_expires_naive != skeleton_expires_naive, (
+            "plan 0011 sanity: this test is only meaningful when the "
+            "strategy expires_at is observably different from the "
+            "skeleton TTL — pick a wider gap if these values can ever "
+            "collide in production."
         )
     finally:
         await engine.dispose()

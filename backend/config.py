@@ -92,6 +92,29 @@ class Settings(BaseSettings):
     SCANNER_STRICT_WS_MAX_AGE_MS: int = 30000  # WS-only max age for scanner-source strict execution
     SCANNER_SKIPPED_SIGNAL_REACTIVATION_COOLDOWN_SECONDS: int = 0  # Disabled; material changes still reactivate skipped signals
     INTENT_RUNTIME_DEFERRED_MAX_AGE_SECONDS: float = 15.0  # Force-release deferred signals after this many seconds without a WS tick
+    # Defensive TTL written onto skeleton ``trade_signals`` rows committed by
+    # ``intent_runtime.publish_opportunities`` BEFORE the projection loop's
+    # UPSERT runs (plan 0010 / plan 0011).  The projection loop overwrites
+    # ``expires_at`` with the strategy's intended value as soon as it
+    # commits, so this knob only matters when publish_opportunities dies
+    # mid-call (process kill, connection drop, unhandled exception); in
+    # that case the skeleton row stays in ``trade_signals`` with
+    # ``payload_json IS NULL`` and would otherwise live forever (the
+    # existing terminal-row pruner keys on ``expires_at < now()``).
+    INTENT_RUNTIME_SKELETON_TTL_SECONDS: int = 300
+    # Cadence of the stuck-skeleton retention sweep that DELETEs rows
+    # matching (``payload_json IS NULL`` AND ``runtime_sequence IS NULL``
+    # AND ``status = 'pending'`` AND ``created_at < now() - max_age``)
+    # — i.e. skeletons whose projection-loop UPSERT never landed.  Runs on
+    # the ``discovery`` plane only; the trading plane already runs the
+    # terminal-row pruner.  See ``services.skeleton_signal_retention``.
+    INTENT_RUNTIME_SKELETON_RETENTION_INTERVAL_SECONDS: int = 900
+    # Age threshold for the retention sweep above.  A skeleton younger
+    # than this is considered "still in flight" (the projection loop may
+    # commit any moment); only rows older than this are deleted.  The
+    # service-level helper bounds this to ``>= 60`` defensively to avoid
+    # racing the projection loop in dev / under heavy load.
+    INTENT_RUNTIME_SKELETON_RETENTION_MAX_AGE_SECONDS: int = 3600
 
     # Scanner Settings
     SCAN_WATCHDOG_SECONDS: int = 600  # Max seconds before a scan cycle is killed

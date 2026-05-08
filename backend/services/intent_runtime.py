@@ -2129,6 +2129,21 @@ class IntentRuntime:
             dk for dk in prefetch_dedupe_keys if dk not in prefetched_ids
         ]
         if skeleton_dedupe_keys:
+            # Defensive TTL (plan 0011): if the rest of publish_opportunities
+            # dies between this commit and the projection loop's UPSERT
+            # (process kill, connection drop, unhandled exception), the
+            # skeleton row would otherwise live in ``trade_signals``
+            # forever — invisible to the terminal-row pruner which keys
+            # on ``expires_at < now()``.  The projection loop overwrites
+            # ``expires_at`` with the strategy's intended value as soon
+            # as it commits, so this TTL only takes effect for orphaned
+            # skeletons.  Bounded by the retention sweep on the
+            # discovery plane (see ``services.skeleton_signal_retention``).
+            skeleton_ttl_seconds = max(
+                60,
+                int(getattr(settings, "INTENT_RUNTIME_SKELETON_TTL_SECONDS", 300) or 300),
+            )
+            skeleton_expires_at = now + timedelta(seconds=skeleton_ttl_seconds)
             skeleton_rows = [
                 {
                     "id": uuid.uuid4().hex,
@@ -2137,6 +2152,7 @@ class IntentRuntime:
                     "market_id": prefetch_meta_by_dedupe[dk]["market_id"],
                     "dedupe_key": dk,
                     "status": "pending",
+                    "expires_at": skeleton_expires_at,
                     "created_at": now,
                     "updated_at": now,
                 }
