@@ -21,16 +21,20 @@ DB_RETRY_MAX_DELAY_SECONDS = 0.4
 _DB_CONNECTION_BROKEN_MARKERS = (
     "cannot switch to state",
     "another operation",
+    "server disconnected",
     "connection is closed",
     "underlying connection is closed",
     "connection has been closed",
     "connection was closed",
+    "connection has been invalidated",
+    "connection invalidated",
     "closed the connection unexpectedly",
     "terminating connection",
     "connection reset by peer",
     "broken pipe",
     "connectiondoesnotexist",
     "closed in the middle of operation",
+    "got result for unknown protocol state",
 )
 
 _DB_RETRYABLE_MARKERS = (
@@ -38,6 +42,10 @@ _DB_RETRYABLE_MARKERS = (
     "serialization failure",
     "could not serialize access",
     "lock not available",
+    "lock timeout",
+    "canceling statement due to lock timeout",
+    "statement timeout",
+    "canceling statement due to statement timeout",
     "too many clients already",
     "sorry, too many clients already",
     "remaining connection slots are reserved",
@@ -77,6 +85,15 @@ def is_retryable_db_error(exc: Exception) -> bool:
     context = getattr(exc, "__context__", None)
     if isinstance(context, timeout_types):
         return False
+    sqlstate = str(
+        getattr(getattr(exc, "orig", None), "sqlstate", "")
+        or getattr(getattr(exc, "__cause__", None), "sqlstate", "")
+        or getattr(getattr(exc, "__context__", None), "sqlstate", "")
+        or getattr(exc, "sqlstate", "")
+        or ""
+    ).strip()
+    if sqlstate in {"40P01", "40001", "55P03", "57014"}:
+        return True
     message = _db_error_message(exc)
     return any(marker in message for marker in _DB_RETRYABLE_MARKERS)
 

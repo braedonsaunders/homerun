@@ -113,7 +113,6 @@ _DELTA_QUEUE_MAX = 10000              # 2x snapshot queue — deltas are higher 
 _SNAPSHOT_FLUSH_BATCH = 250
 _DELTA_FLUSH_BATCH = 500
 _FLUSH_INTERVAL_SECONDS = 0.20
-_FLUSH_COMMIT_TIMEOUT_SECONDS = 2.0
 
 # Reject reasons surfaced via get_data_quality_stats().
 _REJECT_REASONS = (
@@ -709,14 +708,29 @@ class LiveMarketDataIngestor:
         async with AsyncSessionLocal() as session:
             try:
                 session.add_all(rows)
-                await asyncio.wait_for(session.commit(), timeout=_FLUSH_COMMIT_TIMEOUT_SECONDS)
+                await session.commit()
             except Exception as exc:
                 with suppress(Exception):
                     await session.rollback()
+                requeued = 0
+                dropped = 0
+                for row in rows:
+                    try:
+                        queue.put_nowait(row)
+                        requeued += 1
+                    except asyncio.QueueFull:
+                        dropped += 1
+                if dropped:
+                    if kind == "snapshot":
+                        self._snapshot_dropped += dropped
+                    elif kind == "delta":
+                        self._delta_dropped += dropped
                 logger.warning(
                     f"LiveMarketDataIngestor failed to persist {kind} batch",
                     exc_info=exc,
                     rows=len(rows),
+                    requeued=requeued,
+                    dropped=dropped,
                 )
                 return
         latency_ms = (time.perf_counter() - t0) * 1000.0

@@ -1766,6 +1766,21 @@ async def _flush_decision_checks_bulk(session: AsyncSession, payloads: list[dict
             })
     if not rows:
         return
+    decision_ids = {str(row["decision_id"]) for row in rows if row.get("decision_id")}
+    if decision_ids:
+        existing_decision_ids = {
+            str(decision_id)
+            for decision_id in (
+                await session.execute(
+                    select(TraderDecision.id).where(TraderDecision.id.in_(tuple(decision_ids)))
+                )
+            )
+            .scalars()
+            .all()
+        }
+        rows = [row for row in rows if str(row["decision_id"]) in existing_decision_ids]
+    if not rows:
+        return
     await session.execute(pg_insert(TraderDecisionCheck).values(rows))
 
 
@@ -1815,11 +1830,26 @@ async def _flush_consumptions_bulk(
         })
     if not rows:
         return
+    decision_ids = {str(row["decision_id"]) for row in rows if row.get("decision_id")}
+    if decision_ids:
+        existing_decision_ids = {
+            str(decision_id)
+            for decision_id in (
+                await session.execute(
+                    select(TraderDecision.id).where(TraderDecision.id.in_(tuple(decision_ids)))
+                )
+            )
+            .scalars()
+            .all()
+        }
+        for row in rows:
+            if row.get("decision_id") and str(row["decision_id"]) not in existing_decision_ids:
+                row["decision_id"] = None
     stmt = pg_insert(TraderSignalConsumption).values(rows)
     stmt = stmt.on_conflict_do_update(
         constraint="uq_trader_signal_consumption",
         set_={
-            "decision_id": stmt.excluded.decision_id,
+            "decision_id": func.coalesce(stmt.excluded.decision_id, TraderSignalConsumption.decision_id),
             "outcome": stmt.excluded.outcome,
             "reason": stmt.excluded.reason,
             "payload_json": stmt.excluded.payload_json,

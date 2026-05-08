@@ -30,6 +30,22 @@ def test_retryable_error_detects_connection_saturation_messages() -> None:
     assert _is_retryable_db_error(reserved_slots) is True
 
 
+def test_retryable_error_detects_lock_timeout_shapes() -> None:
+    message_shape = OperationalError(
+        "UPDATE trader_orders",
+        {},
+        Exception("canceling statement due to lock timeout"),
+    )
+
+    class _LockTimeoutOrig(Exception):
+        sqlstate = "55P03"
+
+    sqlstate_shape = OperationalError("UPDATE trader_orders", {}, _LockTimeoutOrig())
+
+    assert _is_retryable_db_error(message_shape) is True
+    assert _is_retryable_db_error(sqlstate_shape) is True
+
+
 @pytest.mark.asyncio
 async def test_commit_with_retry_replays_dirty_updates_after_lock() -> None:
     engine, Session = await build_postgres_session_factory(Base, "worker_state_commit_retry_dirty")

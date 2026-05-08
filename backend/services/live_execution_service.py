@@ -30,9 +30,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_FLOOR
 import uuid
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 
 from config import settings
 from services.pause_state import global_pause_state
@@ -2508,6 +2508,7 @@ class LiveExecutionService:
             async with AsyncSessionLocal() as session:
                 _persist_record("session_checkout", _stage_started)
                 try:
+                    await session.execute(text("SET LOCAL lock_timeout = '1500ms'"))
                     # Cycle 9 of the perf-harness loop showed ``select
                     # _signals`` averaging 1.9s/call under DB pool
                     # contention (30 slow events, 56s cumulative).
@@ -2646,15 +2647,21 @@ class LiveExecutionService:
                         except Exception:
                             pass
                     return
-                except (OperationalError, InterfaceError) as exc:
-                    await session.rollback()
+                except (DBAPIError, OperationalError, InterfaceError) as exc:
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
                     is_last = attempt >= _DB_RETRY_ATTEMPTS - 1
                     if not _is_retryable_db_error(exc) or is_last:
                         logger.error("Failed to persist live trading orders", exc_info=exc)
                         return
                     needs_retry = True
                 except Exception as exc:
-                    await session.rollback()
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
                     logger.error("Failed to persist live trading orders", exc_info=exc)
                     return
             if needs_retry:
