@@ -346,6 +346,7 @@ def scanner_payload(settings: AppSettings) -> dict[str, Any]:
             getattr(settings, "scanner_strict_ws_max_age_ms", None),
             30000,
         ),
+        "market_filter_tags": list(getattr(settings, "market_filter_tags", None) or []),
     }
 
 
@@ -816,6 +817,17 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
             getattr(scan, "skipped_signal_reactivation_cooldown_seconds", 180)
         )
         settings.scanner_strict_ws_max_age_ms = int(getattr(scan, "strict_ws_max_age_ms", 30000))
+        # Operator-managed tag whitelist. The Pydantic field validator
+        # already normalised this list (lowercased, trimmed, deduped),
+        # so we just persist it. Setting an empty list clears the filter.
+        # Stamping ``market_filter_updated_at`` only when the value
+        # actually changes keeps the audit timestamp meaningful.
+        new_tags = list(getattr(scan, "market_filter_tags", None) or [])
+        prev_tags = list(getattr(settings, "market_filter_tags", None) or [])
+        if new_tags != prev_tags:
+            settings.market_filter_tags = new_tags
+            from datetime import datetime as _dt, timezone as _tz
+            settings.market_filter_updated_at = _dt.now(_tz.utc).replace(tzinfo=None)
 
     if live_execution:
         trade = live_execution

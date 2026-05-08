@@ -70,6 +70,18 @@ export interface ScannerSettings {
   max_opportunities_per_strategy: number
   skipped_signal_reactivation_cooldown_seconds: number
   strict_ws_max_age_ms: number
+  market_filter_tags: string[]
+}
+
+export interface MarketFilterAvailableTag {
+  name: string
+  last_seen: string | null
+  occurrences: number
+}
+
+export interface MarketFilterAvailableTagsResponse {
+  tags: MarketFilterAvailableTag[]
+  total: number
 }
 
 export interface DiscoverySettings {
@@ -378,6 +390,11 @@ export const updateNotificationSettings = async (settings: Partial<NotificationS
 
 export const updateScannerSettings = async (settings: Partial<ScannerSettings>): Promise<{ status: string; message: string }> => {
   const { data } = await api.put('/settings/scanner', settings)
+  return unwrapApiData(data)
+}
+
+export const getMarketFilterAvailableTags = async (): Promise<MarketFilterAvailableTagsResponse> => {
+  const { data } = await api.get('/settings/market-filter/available-tags')
   return unwrapApiData(data)
 }
 
