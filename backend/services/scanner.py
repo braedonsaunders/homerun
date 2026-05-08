@@ -2524,6 +2524,12 @@ class ArbitrageScanner:
         if not opportunities:
             return 0
 
+        import time as _time
+        _overall_start = _time.monotonic()
+        _hydrate_elapsed = 0.0
+        _lookup_elapsed = 0.0
+        _attach_elapsed = 0.0
+
         ts = now or datetime.now(timezone.utc)
         self._remember_market_tokens_from_opportunities(opportunities)
 
@@ -2540,6 +2546,7 @@ class ArbitrageScanner:
                     if market_id not in self._market_price_history:
                         needed_ids.add(market_id)
         if needed_ids:
+            _t = _time.monotonic()
             try:
                 await self._hydrate_history_from_db(needed_ids)
             except Exception as exc:
@@ -2548,6 +2555,7 @@ class ArbitrageScanner:
                     market_count=len(needed_ids),
                     exc_info=exc,
                 )
+            _hydrate_elapsed = _time.monotonic() - _t
 
         should_block = bool(block_for_backfill or timeout_seconds is None)
         if should_block:
@@ -2569,19 +2577,54 @@ class ArbitrageScanner:
         else:
             self._queue_market_history_backfill(opportunities)
 
-        market_history = self.get_market_history_for_opportunities(opportunities)
-        attached = 0
-        for opp in opportunities:
-            for market in opp.markets:
-                history: list[dict[str, object]] = []
-                for market_id in self._market_history_lookup_ids(market):
-                    candidate = market_history.get(market_id, [])
-                    if len(candidate) > len(history):
-                        history = candidate
-                if len(history) < 2:
-                    continue
-                market["price_history"] = history
-                attached += 1
+        # 2026-05-08: the sync tail below used to dominate the 3 s wall-clock
+        # budget set by ``market_runtime._attach_polymarket_price_history``
+        # (observed history_seconds=4.2-6.9 s in the 2026-05-08 soak without
+        # the outer ``asyncio.wait_for`` firing — meaning the slow portion
+        # is sync work that ``wait_for`` cannot preempt). Offload the
+        # O(opportunities × markets × aliases) loops to a worker thread so
+        # (a) the event loop stays responsive and (b) ``asyncio.wait_for``
+        # can actually cancel the awaiting coroutine when the budget is
+        # blown. Mutating ``market["price_history"]`` from a thread is
+        # safe because the caller is the single writer of this payload
+        # until we return.
+        _t = _time.monotonic()
+        market_history = await asyncio.to_thread(
+            self.get_market_history_for_opportunities, opportunities
+        )
+        _lookup_elapsed = _time.monotonic() - _t
+
+        def _attach_loop() -> int:
+            count = 0
+            for opp in opportunities:
+                for market in opp.markets:
+                    history: list[dict[str, object]] = []
+                    for market_id in self._market_history_lookup_ids(market):
+                        candidate = market_history.get(market_id, [])
+                        if len(candidate) > len(history):
+                            history = candidate
+                    if len(history) < 2:
+                        continue
+                    market["price_history"] = history
+                    count += 1
+            return count
+
+        _t = _time.monotonic()
+        attached = await asyncio.to_thread(_attach_loop)
+        _attach_elapsed = _time.monotonic() - _t
+
+        _total_elapsed = _time.monotonic() - _overall_start
+        if _total_elapsed >= 1.5:
+            logger.info(
+                "Scanner attach_price_history sub-timing",
+                opportunities=len(opportunities),
+                needed_ids=len(needed_ids),
+                hydrate_seconds=round(_hydrate_elapsed, 3),
+                lookup_seconds=round(_lookup_elapsed, 3),
+                attach_seconds=round(_attach_elapsed, 3),
+                total_seconds=round(_total_elapsed, 3),
+                attached=attached,
+            )
         return attached
 
     async def _hydrate_history_from_db(self, market_ids: set[str]) -> int:
@@ -3073,7 +3116,12 @@ class ArbitrageScanner:
             # Phase 6 — Persist catalog to DB
             duration = _time.monotonic() - _t0
             try:
-                from models.database import AsyncSessionLocal
+                # NOTE: Do *not* re-import ``AsyncSessionLocal`` here. It is
+                # already imported at module scope; a local ``from ... import``
+                # makes Python treat ``AsyncSessionLocal`` as a local name for
+                # the *entire* function, which breaks the earlier ``Phase 2b``
+                # market_tag_aggregator block (UnboundLocalError before this
+                # line has executed).
                 from services.shared_state import write_market_catalog
 
                 async with AsyncSessionLocal() as session:
@@ -3108,7 +3156,8 @@ class ArbitrageScanner:
         except Exception as e:
             # Persist the error so UI can display catalog health
             try:
-                from models.database import AsyncSessionLocal
+                # ``AsyncSessionLocal`` is available from the module-level
+                # import — do *not* re-import locally (see phase 6 note).
                 from services.shared_state import write_market_catalog
 
                 async with AsyncSessionLocal() as session:
@@ -3424,7 +3473,10 @@ class ArbitrageScanner:
         then markets and events are loaded in separate queries.
         """
         try:
-            from models.database import AsyncSessionLocal
+            # ``AsyncSessionLocal`` is imported at module scope — a local
+            # ``from ... import`` here would turn it into a function-scoped
+            # local and mask the module binding for the rest of this
+            # function (see the refresh_catalog note).
             from services.shared_state import read_market_catalog, relink_event_markets
 
             async with AsyncSessionLocal() as session:

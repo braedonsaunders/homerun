@@ -223,6 +223,21 @@ async def _fetch_market_info(row: TraderOrder) -> dict[str, Any] | None:
 
 _MARKET_INFO_PREFETCH_CONCURRENCY = 4
 _CLOSED_POSITIONS_VERIFY_MAX_FETCH = 300
+# Cap the number of rows fed into ``_prefetch_market_info`` per cycle.
+# Each row costs 1-2 HTTP round-trips to Polymarket's gamma API; a
+# backlog of 400 rows × 500 ms = 50 s of wall-clock work, blowing the
+# 30 s verifier budget observed in the 2026-05-08 soak. With a 100-row
+# cap, at most one in-flight prefetch takes ~15 s even under the
+# slowest observed API latency, leaving margin for phase-3 writes.
+# The remaining rows are picked up by the next verifier tick
+# (interval = 300 s) so we still make progress without timing out.
+_BOT_LINEAGE_PREFETCH_MAX_ROWS = 100
+# Per-market HTTP lookup budget. A single pathological
+# ``get_market_by_condition_id`` call that hangs for 10 s would
+# otherwise stall the whole prefetch fan-out behind its worker. The
+# worker pool has only 4 slots, so one slow call dominates 25% of
+# total throughput.
+_MARKET_INFO_FETCH_TIMEOUT_SECONDS = 8.0
 
 
 async def _prefetch_market_info(
@@ -251,7 +266,15 @@ async def _prefetch_market_info(
             except asyncio.QueueEmpty:
                 return
             try:
-                results[str(row.id)] = await _fetch_market_info(row)
+                # Per-fetch wall-clock bound. Without this, a single
+                # pathological ``get_market_by_*`` call that hangs for
+                # 10+ s would stall the fan-out behind the worker.
+                results[str(row.id)] = await asyncio.wait_for(
+                    _fetch_market_info(row),
+                    timeout=_MARKET_INFO_FETCH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                results[str(row.id)] = None
             except Exception:
                 results[str(row.id)] = None
             finally:
@@ -833,10 +856,26 @@ async def verify_orders_from_bot_lineage(
     # pattern was the dominant source of "polymarket_trade_verifier
     # (bot_lineage) timed out after 30.0s" — N rows × per-row HTTP
     # held the session well past the 30s budget.
+    #
+    # Cap the per-cycle prefetch batch so a 400-row backlog can't still
+    # blow the 30 s budget.  Un-prefetched rows fall through Path B
+    # below with ``market_info=None`` → they stay unmatched and are
+    # reattempted on the next reconciliation tick (300 s later).
     market_info_by_id: dict[str, dict[str, Any] | None] = {}
+    deferred_prefetch_rows = 0
     if rows_needing_market_info:
+        prefetch_batch = rows_needing_market_info[:_BOT_LINEAGE_PREFETCH_MAX_ROWS]
+        deferred_prefetch_rows = len(rows_needing_market_info) - len(prefetch_batch)
         async with release_conn(session):
-            market_info_by_id = await _prefetch_market_info(rows_needing_market_info)
+            market_info_by_id = await _prefetch_market_info(prefetch_batch)
+        if deferred_prefetch_rows > 0:
+            logger.info(
+                "polymarket_trade_verifier (bot_lineage) deferring rows past prefetch cap",
+                total_needing_info=len(rows_needing_market_info),
+                prefetched=len(prefetch_batch),
+                deferred=deferred_prefetch_rows,
+                cap=_BOT_LINEAGE_PREFETCH_MAX_ROWS,
+            )
 
     # ── Phase 3: writes only.  All HTTP is done; the session/transaction
     # is held strictly for SQL.

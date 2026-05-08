@@ -282,6 +282,8 @@ def patch_clob_client_proxy() -> bool:
                 except Exception:
                     pass
 
+            _install_clob_request_hardening(clob_helpers)
+
             _clob_patch_signature = signature
             if patching_proxy:
                 logger.info(
@@ -294,6 +296,153 @@ def patch_clob_client_proxy() -> bool:
     except Exception as exc:
         logger.error("Failed to patch CLOB client proxy", exc_info=exc)
         return False
+
+
+# Sentinel attribute on ``py_clob_client_v2.http_helpers.helpers.request``
+# so we don't double-wrap if ``patch_clob_client_proxy`` is called multiple
+# times (legitimately — e.g. on proxy-config reload).
+_CLOB_REQUEST_HARDENED_ATTR = "_clob_request_hardened_v1"
+# Module-level counters so operators can track how often the hardening
+# layer is masking transient remote disconnects without re-reading the
+# noisy vendor ERROR log line.
+_clob_retry_total: int = 0
+_clob_retry_last_log_mono: float = 0.0
+_CLOB_RETRY_LOG_INTERVAL_SECONDS: float = 10.0
+
+
+def _install_clob_request_hardening(clob_helpers) -> None:
+    """Wrap the vendor ``request`` with an idempotent transient-error retry.
+
+    Rationale (2026-05-08 soak log):
+      - The vendor caches a single ``httpx.Client`` with HTTP/2 and long
+        keepalive. Polymarket's CLOB endpoint periodically closes idle
+        HTTP/2 connections; the next request on the dead connection
+        raises ``httpx.RemoteProtocolError("Server disconnected")`` which
+        the vendor logs at ERROR and re-raises as ``PolyApiException``.
+      - The vendor only retries in ``post(..., retry_on_error=True)``.
+        GET / DELETE / PUT + POSTs that didn't opt in surface every
+        transient disconnect up the stack, producing the "Server
+        disconnected" burst pattern observed in the log.
+      - A *single* retry after 30 ms is nearly always enough because the
+        httpx pool transparently re-opens the connection on the next
+        attempt. This is the same strategy the vendor uses internally
+        for POST; we just apply it uniformly and move the noisy ERROR
+        log into a counted-INFO.
+
+    Idempotency: ``_CLOB_REQUEST_HARDENED_ATTR`` on the wrapper prevents
+    double-wrapping when ``patch_clob_client_proxy`` is re-invoked during
+    proxy-config reloads.
+    """
+    import time as _time
+    import httpx as _httpx
+
+    original_request = getattr(clob_helpers, "request", None)
+    if original_request is None:
+        return
+    if getattr(original_request, _CLOB_REQUEST_HARDENED_ATTR, False):
+        return
+
+    try:
+        from py_clob_client_v2.exceptions import PolyApiException as _PolyApiException
+    except Exception:
+        _PolyApiException = None  # type: ignore[assignment]
+
+    def _is_transient(exc: Exception) -> bool:
+        if isinstance(exc, (
+            _httpx.RemoteProtocolError,
+            _httpx.ConnectError,
+            _httpx.TimeoutException,
+            _httpx.NetworkError,
+        )):
+            return True
+        if _PolyApiException is not None and isinstance(exc, _PolyApiException):
+            # The vendor wraps ``httpx.RequestError`` as
+            # ``PolyApiException(error_msg="Request exception!")`` with
+            # ``status_code=None``.  Treat status-less exceptions as
+            # transient — 5xx is already retried by the vendor's ``post``.
+            return getattr(exc, "status_code", None) is None
+        return False
+
+    def _hardened_request(endpoint, method, headers=None, data=None, params=None):
+        global _clob_retry_total, _clob_retry_last_log_mono
+        try:
+            return original_request(endpoint, method, headers, data, params)
+        except Exception as exc:
+            if not _is_transient(exc):
+                raise
+            # Retry once after a short pause. The 30 ms matches the
+            # vendor's internal post-retry cadence.
+            _time.sleep(0.03)
+            try:
+                result = original_request(endpoint, method, headers, data, params)
+            except Exception:
+                # Both attempts failed — re-raise the SECOND exception so
+                # the caller sees the latest state rather than a stale one.
+                raise
+            _clob_retry_total += 1
+            now = _time.monotonic()
+            if (now - _clob_retry_last_log_mono) >= _CLOB_RETRY_LOG_INTERVAL_SECONDS:
+                _clob_retry_last_log_mono = now
+                logger.info(
+                    "CLOB transient-error retry succeeded",
+                    method=method,
+                    error_type=type(exc).__name__,
+                    cumulative_retries=_clob_retry_total,
+                )
+            return result
+
+    setattr(_hardened_request, _CLOB_REQUEST_HARDENED_ATTR, True)
+    clob_helpers.request = _hardened_request
+
+    # Downgrade the vendor's noisy ERROR log for transient disconnect
+    # patterns — our retry handles them and the bare ERROR line is
+    # misleading in post-incident triage. We keep the log (so ops can
+    # grep for it) but demote it to DEBUG.
+    import logging as _logging
+
+    class _ClobTransientLogFilter(_logging.Filter):
+        _TRANSIENT_FRAGMENTS = (
+            "Server disconnected",
+            "ConnectError",
+            "ReadTimeout",
+            "ConnectTimeout",
+            "RemoteProtocolError",
+        )
+
+        def filter(self, record: _logging.LogRecord) -> bool:  # type: ignore[override]
+            if record.levelno < _logging.ERROR:
+                return True
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return True
+            if any(frag in msg for frag in self._TRANSIENT_FRAGMENTS):
+                record.levelno = _logging.DEBUG
+                record.levelname = "DEBUG"
+            return True
+
+    vendor_logger = _logging.getLogger("py_clob_client_v2.http_helpers.helpers")
+    if not any(
+        isinstance(f, _ClobTransientLogFilter) for f in vendor_logger.filters
+    ):
+        vendor_logger.addFilter(_ClobTransientLogFilter())
+    # Re-bind the GET/POST/DELETE/PUT helpers to the hardened wrapper.
+    # They all close over ``request`` at module scope, so a simple
+    # rebind is the minimum-invasive way to route them through the
+    # wrapper without touching vendor source.
+    for _name in ("get", "post", "delete", "put"):
+        _wrapper = getattr(clob_helpers, _name, None)
+        if _wrapper is None:
+            continue
+        # The vendor defines e.g. ``def get(...): return request(...)``
+        # — those look up ``request`` in module globals at call time,
+        # so our module-level rebind above is sufficient. No further
+        # work needed, but we assert the module reference just to be safe.
+        try:
+            _wrapper.__globals__["request"] = _hardened_request  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    logger.info("Installed CLOB request hardening (transient-retry + log-squelch)")
 
 
 async def verify_vpn_active(cfg: Optional[ProxyConfig] = None) -> dict:

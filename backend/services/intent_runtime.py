@@ -578,6 +578,18 @@ class IntentRuntime:
         # producer wait. Operator can read these via the SLO snapshot.
         self._projection_dropped_at_cap: int = 0
         self._projection_drop_log_at: float = 0.0
+        self._projection_coalesced_on_enqueue: int = 0
+        # Producer-side coalescing buffer: one live "upsert" payload per
+        # (source, signal_type) is in-flight on the queue at a time. A
+        # second enqueue for the same key mutates the queued payload in
+        # place (merging snapshots / sweep_missing / keep_dedupe_keys)
+        # rather than adding a new entry. Previously a burst of 40 upserts
+        # from the same source took 40 queue slots; at 5000 cap the queue
+        # could saturate in 3 minutes and drop projections. With coalescing,
+        # the queue holds at most N_distinct_upsert_keys entries (~10).
+        # The pending map is accessed only from the event loop, so no lock
+        # is needed.
+        self._pending_upsert_buffers: dict[tuple[str, str], dict[str, Any]] = {}
 
     def _track_task(self, task: asyncio.Task[Any], *, name: str) -> asyncio.Task[Any]:
         self._background_tasks.add(task)
@@ -2494,9 +2506,76 @@ class IntentRuntime:
         except Exception:
             logger.debug("Failed to publish runtime signals_update event")
 
+    def _merge_upsert_payload_inplace(
+        self, target: dict[str, Any], incoming: dict[str, Any]
+    ) -> None:
+        """Merge ``incoming`` upsert payload into ``target`` in place.
+
+        Mirrors ``_coalesce_upsert_payloads`` but mutates the target so
+        the queued reference stays live for the drainer. Later snapshots
+        supersede earlier ones per dedupe key (dict ``update``);
+        ``keep_dedupe_keys`` are unioned; ``sweep_missing`` is ORed.
+        """
+        tgt_snapshots = target.get("snapshots")
+        if not isinstance(tgt_snapshots, dict):
+            tgt_snapshots = {}
+            target["snapshots"] = tgt_snapshots
+        inc_snapshots = incoming.get("snapshots")
+        if isinstance(inc_snapshots, dict):
+            tgt_snapshots.update(inc_snapshots)
+
+        merged_keep: set[str] = {
+            str(key)
+            for key in (target.get("keep_dedupe_keys") or [])
+            if str(key).strip()
+        }
+        merged_keep.update(
+            str(key)
+            for key in (incoming.get("keep_dedupe_keys") or [])
+            if str(key).strip()
+        )
+        target["keep_dedupe_keys"] = sorted(merged_keep)
+
+        target["sweep_missing"] = bool(target.get("sweep_missing")) or bool(
+            incoming.get("sweep_missing")
+        )
+
+        tgt_retry = int(target.get("_projection_retry_count") or 0)
+        inc_retry = int(incoming.get("_projection_retry_count") or 0)
+        merged_retry = max(tgt_retry, inc_retry)
+        if merged_retry > 0:
+            target["_projection_retry_count"] = merged_retry
+        else:
+            target.pop("_projection_retry_count", None)
+
+    @staticmethod
+    def _upsert_coalesce_key(payload: dict[str, Any]) -> tuple[str, str]:
+        source = str(payload.get("source") or "").strip().lower()
+        signal_type = str(payload.get("signal_type") or "").strip().lower()
+        return (source, signal_type)
+
     async def _enqueue_projection(self, payload: dict[str, Any]) -> None:
         if not self._started:
             return
+        # Producer-side coalescing for upsert payloads. If a payload
+        # for the same (source, signal_type) is already in the queue,
+        # merge the new snapshots into the queued buffer in place
+        # rather than enqueueing a second entry. This bounds queue
+        # growth to O(distinct-upsert-keys) instead of O(producer-rate),
+        # which previously saturated the 5000 cap during bursts.
+        coalesce_key: tuple[str, str] | None = None
+        kind = str(payload.get("kind") or "").strip().lower()
+        if kind == "upsert":
+            coalesce_key = self._upsert_coalesce_key(payload)
+            existing = self._pending_upsert_buffers.get(coalesce_key)
+            if existing is not None:
+                self._merge_upsert_payload_inplace(existing, payload)
+                self._projection_coalesced_on_enqueue += 1
+                return
+            # First upsert for this key in-flight: register the buffer
+            # so subsequent enqueues can coalesce into it.
+            self._pending_upsert_buffers[coalesce_key] = payload
+
         # Try non-blocking first to avoid stalling producers on the
         # trading loop. If the queue is full, the backpressure signal
         # has already been published (at 50% via _run_projection_loop)
@@ -2509,7 +2588,11 @@ class IntentRuntime:
             self._projection_queue.put_nowait(payload)
             return
         except asyncio.QueueFull:
-            pass
+            # Roll back the pending registration so a future enqueue
+            # is not permanently suppressed by a reference that never
+            # made it to the queue.
+            if coalesce_key is not None:
+                self._pending_upsert_buffers.pop(coalesce_key, None)
         self._projection_dropped_at_cap += 1
         now = time.monotonic()
         if (now - self._projection_drop_log_at) >= 5.0:
@@ -2521,6 +2604,7 @@ class IntentRuntime:
                 queue_size=self._projection_queue.qsize(),
                 queue_max=self._projection_queue.maxsize,
                 cumulative_dropped=self._projection_dropped_at_cap,
+                coalesced_on_enqueue=self._projection_coalesced_on_enqueue,
             )
 
     async def _retry_projection_payload(self, payload: dict[str, Any]) -> None:
@@ -2529,6 +2613,13 @@ class IntentRuntime:
         if is_db_pressure_active():
             delay_seconds = max(delay_seconds, min(db_pressure_remaining_seconds() + 0.25, 30.0))
         await asyncio.sleep(delay_seconds)
+        # Re-queue through _enqueue_projection so the coalesce buffer
+        # is refreshed — merging into any in-flight payload for the
+        # same key rather than adding a second queue slot.
+        kind = str(payload.get("kind") or "").strip().lower()
+        if kind == "upsert":
+            await self._enqueue_projection(payload)
+            return
         await self._projection_queue.put(payload)
 
     async def _run_projection_loop(self) -> None:
@@ -2555,6 +2646,14 @@ class IntentRuntime:
                 )
             try:
                 kind = str(payload.get("kind") or "").strip().lower()
+                # Remove from the enqueue-side coalescing buffer so the
+                # NEXT upsert for the same (source, signal_type) starts
+                # a fresh queued payload instead of mutating this one
+                # after we've started processing it.
+                if kind == "upsert":
+                    self._pending_upsert_buffers.pop(
+                        self._upsert_coalesce_key(payload), None
+                    )
                 if kind == "status":
                     status_payloads = [payload]
                     carry_payload: dict[str, Any] | None = None
@@ -2567,6 +2666,10 @@ class IntentRuntime:
                         if queued_kind == "status":
                             status_payloads.append(queued)
                             continue
+                        if queued_kind == "upsert":
+                            self._pending_upsert_buffers.pop(
+                                self._upsert_coalesce_key(queued), None
+                            )
                         carry_payload = queued
                         break
                     await self._project_status_batch(status_payloads)
@@ -2583,6 +2686,13 @@ class IntentRuntime:
                             break
                         queued_kind = str(queued.get("kind") or "").strip().lower()
                         queued_source = str(queued.get("source") or "").strip().lower()
+                        if queued_kind == "upsert":
+                            # Always retire the coalesce slot when we
+                            # pop an upsert, regardless of whether it
+                            # matches the current batch source.
+                            self._pending_upsert_buffers.pop(
+                                self._upsert_coalesce_key(queued), None
+                            )
                         if queued_kind == "upsert" and queued_source == source:
                             upsert_payloads.append(queued)
                             continue

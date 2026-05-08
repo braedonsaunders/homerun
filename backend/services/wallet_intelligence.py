@@ -1772,12 +1772,25 @@ class CrossPlatformTracker:
             wallets = [str(address).strip().lower() for address in result.scalars().all() if str(address or "").strip()]
 
         market_id_set = set(market_ids)
-        semaphore = asyncio.Semaphore(5)
+        # 2026-05-08: raise concurrency to drain the 100-wallet fan-out
+        # in less wall-clock time, and bound the per-wallet HTTP call
+        # so one slow wallet endpoint can't stall the worker pool. The
+        # cross_platform step budget is 25 s; at the previous
+        # semaphore=5 limit, 100 wallets × ~500 ms observed mean ≈ 10 s,
+        # and a single 10 s-stall wallet (we saw them in the soak) took
+        # out 20% of pool throughput. semaphore=10 + per-call 6 s cap
+        # holds the wall clock at ~6 s worst-case even with a handful
+        # of slow wallets.
+        semaphore = asyncio.Semaphore(10)
+        _WALLET_POSITIONS_TIMEOUT_SECONDS = 6.0
 
         async def check_wallet(wallet_addr: str):
             async with semaphore:
                 try:
-                    positions = await polymarket_client.get_wallet_positions(wallet_addr)
+                    positions = await asyncio.wait_for(
+                        polymarket_client.get_wallet_positions(wallet_addr),
+                        timeout=_WALLET_POSITIONS_TIMEOUT_SECONDS,
+                    )
                     traded = set()
                     for pos in positions:
                         mid = pos.get("market", "") or pos.get("condition_id", "") or pos.get("asset", "")
@@ -1785,6 +1798,11 @@ class CrossPlatformTracker:
                             traded.add(mid)
                     if traded:
                         wallet_markets[wallet_addr] = traded
+                except asyncio.TimeoutError:
+                    # Wallet-positions API stalled; skip this wallet for
+                    # the cycle. It will be retried on the next tracked-
+                    # traders intelligence run (~10 min cadence).
+                    pass
                 except Exception:
                     pass
 
