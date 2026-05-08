@@ -1242,7 +1242,7 @@ async def test_release_stale_deferred_signals_releases_ready_scanner_signal_on_n
     assert published_batches[0]["event_type"] == "upsert_reactivated"
 
 
-def test_build_signal_contract_treats_trader_strategy_like_other_ws_driven_strategies(monkeypatch):
+def test_build_signal_contract_publishes_trader_strategy_with_immediate_activation(monkeypatch):
     monkeypatch.setattr(
         "services.strategy_loader.strategy_loader.get_strategy",
         lambda slug: SimpleNamespace(
@@ -1258,7 +1258,7 @@ def test_build_signal_contract_treats_trader_strategy_like_other_ws_driven_strat
     opportunity = Opportunity(
         strategy="custom_copy_trade",
         title="Copy trade signal",
-        description="Trader-source strategy still uses WS execution activation",
+        description="Trader-source strategy publishes with immediate activation",
         total_cost=0.41,
         expected_payout=1.0,
         gross_profit=0.09,
@@ -1282,12 +1282,12 @@ def test_build_signal_contract_treats_trader_strategy_like_other_ws_driven_strat
     )
 
     assert payload["strategy_runtime"]["source_key"] == "traders"
-    assert payload["strategy_runtime"]["execution_activation"] == "ws_post_arm_tick"
-    assert strategy_context["execution_activation"] == "ws_post_arm_tick"
+    assert payload["strategy_runtime"]["execution_activation"] == "immediate"
+    assert strategy_context["execution_activation"] == "immediate"
 
 
 @pytest.mark.asyncio
-async def test_publish_opportunities_defers_trader_signal_until_post_arm_ws_tick(monkeypatch):
+async def test_publish_opportunities_defers_signal_when_activation_is_ws_post_arm_tick(monkeypatch):
     published_batches: list[dict[str, object]] = []
 
     async def _publish_signal_batch(**kwargs):
@@ -1299,15 +1299,15 @@ async def test_publish_opportunities_defers_trader_signal_until_post_arm_ws_tick
             self.observed_at_epoch = datetime.now(timezone.utc).timestamp()
 
         def is_fresh(self, token_id: str, *, max_age_seconds: float | None = None) -> bool:
-            assert token_id == "trader-token"
+            assert token_id == "deferred-token"
             return True
 
         def get_mid_price(self, token_id: str):
-            assert token_id == "trader-token"
+            assert token_id == "deferred-token"
             return 0.41
 
         def get_observed_at_epoch(self, token_id: str) -> float:
-            assert token_id == "trader-token"
+            assert token_id == "deferred-token"
             return self.observed_at_epoch
 
     cache = _Cache()
@@ -1332,11 +1332,11 @@ async def test_publish_opportunities_defers_trader_signal_until_post_arm_ws_tick
             {
                 "markets": [{"id": "market-1"}],
                 "strategy_runtime": {
-                    "source_key": "traders",
-                    "subscriptions": ["trader_activity"],
+                    "source_key": "future_unknown_source",
+                    "subscriptions": ["future_unknown_topic"],
                     "execution_activation": "ws_post_arm_tick",
                 },
-                "positions_to_take": [{"token_id": "trader-token"}],
+                "positions_to_take": [{"token_id": "deferred-token"}],
             },
             {},
         ),
@@ -1347,14 +1347,14 @@ async def test_publish_opportunities_defers_trader_signal_until_post_arm_ws_tick
     opportunity = SimpleNamespace(
         id="opp-2",
         stable_id="stable-2",
-        strategy="custom_copy_trade",
+        strategy="custom_future_strategy",
         roi_percent=5.0,
         confidence=0.7,
         min_liquidity=900.0,
         resolution_date=None,
     )
 
-    published = await runtime.publish_opportunities([opportunity], source="traders")
+    published = await runtime.publish_opportunities([opportunity], source="future_unknown_source")
 
     assert published == 0
     assert published_batches == []
