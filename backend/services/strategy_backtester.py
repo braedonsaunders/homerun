@@ -98,6 +98,24 @@ def _has_custom_detect_sync(strategy) -> bool:
     return method is not base_method
 
 
+def _has_custom_detect_plain(strategy) -> bool:
+    """Check if strategy implements its own ``detect()`` (the
+    backwards-compatible name).  Most strategies in this codebase
+    override the plain method rather than ``detect_sync``/``detect_async``,
+    and ``_run_detect_once`` already knows how to route to it.  Replay
+    discovery must recognise this override too — historically it didn't,
+    which silently skipped 20+ scanner strategies (tail_end_carry,
+    stat_arb, news_edge, every BTC/ETH variant, etc.).
+    """
+    method = getattr(type(strategy), "detect", None)
+    if method is None:
+        return False
+    from services.strategies.base import BaseStrategy
+
+    base_method = getattr(BaseStrategy, "detect", None)
+    return method is not base_method
+
+
 def _timeframe_to_seconds(value: str | int | None, *, default_seconds: int = 1800) -> int:
     if isinstance(value, int):
         return max(60, int(value))
@@ -1909,6 +1927,402 @@ class _SyntheticOpp:
         self._synthetic = True
 
 
+# ── Replay event sourcing ─────────────────────────────────────────────────
+#
+# Backtest discovery used to hard-code ``events=[]`` when calling
+# ``strategy.detect_async``.  That made event-driven strategies — copy
+# trading, news, insider detection — silently produce zero opportunities
+# in replay, even when their live counterparts had been firing all week.
+# The fix: for strategies whose ``detect`` reads ``events``, materialise
+# the same historical event stream the live system saw and feed it in
+# at the right tick.  Each strategy slug declares which event source it
+# consumes; the dispatcher below loads, shapes, and bins those events.
+#
+# Adding a new event-driven strategy:
+#   1. Implement a ``_load_<kind>_events_for_replay`` helper that
+#      returns rows in (start_dt, end_dt] sorted by timestamp.
+#   2. Implement a ``_<kind>_event_to_strategy_input`` helper that
+#      shapes one row into the dict the strategy iterates in detect().
+#   3. Add the slug to ``_REPLAY_EVENT_SOURCE_BY_SLUG``.
+#
+# The ``traders_copy_trade`` slug is wired to ``wallet_trade``: events
+# come from the ``WalletMonitorEvent`` table the live ws-monitor
+# persists, shaped to mirror exactly what ``TradersCopyTradeSignalService``
+# builds at runtime so the strategy can't tell replay from live.
+
+_REPLAY_EVENT_SOURCE_BY_SLUG: dict[str, str] = {
+    "traders_copy_trade": "wallet_trade",
+}
+
+
+def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
+    """Return the event source kind for a strategy, or None if its
+    detect() doesn't iterate events.  Looked up by slug; falls back to
+    inspecting ``accepted_signal_strategy_types`` for strategies that
+    declare their event channel that way.
+    """
+    norm = (slug or "").strip().lower()
+    if norm in _REPLAY_EVENT_SOURCE_BY_SLUG:
+        return _REPLAY_EVENT_SOURCE_BY_SLUG[norm]
+    accepted = getattr(strategy, "accepted_signal_strategy_types", None)
+    if isinstance(accepted, (list, tuple)):
+        for entry in accepted:
+            kind = _REPLAY_EVENT_SOURCE_BY_SLUG.get(
+                str(entry or "").strip().lower()
+            )
+            if kind:
+                return kind
+    return None
+
+
+def _extract_scope_wallets(strategy: Any) -> set[str] | None:
+    """Pull the wallet scope out of a copy-trade strategy's config so we
+    can filter ``WalletMonitorEvent`` to the wallets this strategy
+    cares about.  Returns ``None`` when no explicit individual-wallet
+    scope is configured (caller should fall back to all monitored
+    wallets — the table itself is naturally scope-limited because the
+    ws-monitor only persists events for tracked wallets).
+    """
+    cfg = getattr(strategy, "config", {}) or {}
+    if not isinstance(cfg, dict):
+        return None
+    scope = cfg.get("traders_scope")
+    if not isinstance(scope, dict):
+        return None
+    wallets = scope.get("individual_wallets")
+    if not isinstance(wallets, list) or not wallets:
+        return None
+    out: set[str] = set()
+    for w in wallets:
+        s = str(w or "").strip().lower()
+        if s:
+            out.add(s)
+    return out or None
+
+
+# Hard cap on wallet events loaded into a single replay.  Sized for the
+# ws-monitor's typical 7-day volume (~10k events across the tracked
+# wallet set) with headroom; if a window legitimately holds more we
+# warn rather than silently truncate.
+_REPLAY_WALLET_EVENT_CAP = 50000
+
+
+async def _load_wallet_events_for_replay(
+    *,
+    session: Any,
+    start_dt: datetime,
+    end_dt: datetime,
+    scope_wallets: set[str] | None,
+) -> tuple[list[Any], bool]:
+    """Load ``WalletMonitorEvent`` rows in window, optionally scoped to
+    a set of wallet addresses.  Returns ``(rows, truncated)`` — the
+    ``truncated`` flag is True iff the cap was hit.
+    """
+    from sqlalchemy import select as _select
+    from services.wallet_ws_monitor import WalletMonitorEvent
+
+    stmt = (
+        _select(WalletMonitorEvent)
+        .where(
+            WalletMonitorEvent.detected_at >= start_dt,
+            WalletMonitorEvent.detected_at <= end_dt,
+        )
+        .order_by(WalletMonitorEvent.detected_at.asc())
+        .limit(_REPLAY_WALLET_EVENT_CAP + 1)
+    )
+    if scope_wallets:
+        stmt = stmt.where(WalletMonitorEvent.wallet_address.in_(list(scope_wallets)))
+    rows = list((await session.execute(stmt)).scalars().all())
+    truncated = len(rows) > _REPLAY_WALLET_EVENT_CAP
+    if truncated:
+        rows = rows[:_REPLAY_WALLET_EVENT_CAP]
+    return rows, truncated
+
+
+def _build_token_to_market_lookup(catalog_markets: list[Any]) -> dict[str, dict[str, Any]]:
+    """Walk the catalog once and produce a ``token_id → market_payload``
+    map matching the shape ``TradersCopyTradeSignalService`` builds via
+    ``_resolve_market_snapshot``.  Replay can resolve markets from the
+    catalog without an API call.
+    """
+    import json as _json
+
+    out: dict[str, dict[str, Any]] = {}
+    for m in catalog_markets or []:
+        if not isinstance(m, dict):
+            continue
+        market_id = str(m.get("condition_id") or m.get("id") or "").strip()
+        question = str(m.get("question") or "").strip()
+        slug = str(m.get("event_slug") or m.get("slug") or "").strip() or None
+        liquidity_raw = m.get("liquidity")
+        try:
+            liquidity = float(liquidity_raw) if liquidity_raw is not None else None
+        except (TypeError, ValueError):
+            liquidity = None
+
+        token_ids_raw = m.get("clob_token_ids")
+        if isinstance(token_ids_raw, str):
+            try:
+                token_ids_raw = _json.loads(token_ids_raw)
+            except (_json.JSONDecodeError, TypeError):
+                token_ids_raw = []
+        outcomes_raw = m.get("outcomes")
+        if isinstance(outcomes_raw, str):
+            try:
+                outcomes_raw = _json.loads(outcomes_raw)
+            except (_json.JSONDecodeError, TypeError):
+                outcomes_raw = []
+
+        token_ids_list = [str(t).strip() for t in (token_ids_raw or []) if t]
+        outcomes_list = [str(o).strip() for o in (outcomes_raw or [])]
+
+        for idx, token_id in enumerate(token_ids_list):
+            if not token_id:
+                continue
+            outcome = outcomes_list[idx] if idx < len(outcomes_list) else ""
+            out[token_id] = {
+                "market_id": market_id or f"token:{token_id}",
+                "market_question": question or f"Token {token_id}",
+                "market_slug": slug,
+                "outcome": outcome,
+                "liquidity": liquidity,
+                "token_id": token_id,
+            }
+    return out
+
+
+def _wallet_event_to_strategy_input(
+    event: Any, *, market_payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Shape one ``WalletMonitorEvent`` row into the dict the
+    ``traders_copy_trade`` strategy iterates in detect().  Mirrors
+    ``TradersCopyTradeSignalService._process_wallet_trade_event``
+    so the strategy receives the same payload it would in live.
+    """
+    side = str(getattr(event, "side", "") or "").strip().upper()
+    if side not in {"BUY", "SELL"}:
+        return None
+    token_id = str(getattr(event, "token_id", "") or "").strip()
+    if not token_id:
+        return None
+    try:
+        entry_price = float(getattr(event, "price", 0.0) or 0.0)
+        size = float(getattr(event, "size", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if entry_price <= 0.0 or size <= 0.0:
+        return None
+    source_wallet = str(getattr(event, "wallet_address", "") or "").strip().lower()
+
+    detected_at = getattr(event, "detected_at", None)
+    if isinstance(detected_at, datetime) and detected_at.tzinfo is None:
+        detected_at = detected_at.replace(tzinfo=timezone.utc)
+    detected_iso = detected_at.isoformat() if isinstance(detected_at, datetime) else None
+
+    tx_hash = str(getattr(event, "tx_hash", "") or "")
+    order_hash = str(getattr(event, "order_hash", "") or "")
+    log_index = int(getattr(event, "log_index", 0) or 0)
+    block_number = int(getattr(event, "block_number", 0) or 0)
+    latency_ms = float(getattr(event, "detection_latency_ms", 0.0) or 0.0)
+
+    copy_event_payload = {
+        "wallet_address": source_wallet,
+        "token_id": token_id,
+        "side": side,
+        "size": size,
+        "price": entry_price,
+        "tx_hash": tx_hash,
+        "order_hash": order_hash,
+        "log_index": log_index,
+        "block_number": block_number,
+        "timestamp": detected_iso,
+        "detected_at": detected_iso,
+        "latency_ms": latency_ms,
+        "confidence": 0.70,
+    }
+    source_trade_payload = {
+        "wallet_address": source_wallet,
+        "side": side,
+        "source_notional_usd": entry_price * size,
+        "size": size,
+        "price": entry_price,
+        "tx_hash": tx_hash,
+        "order_hash": order_hash,
+        "log_index": log_index,
+        "detected_at": detected_iso,
+    }
+    source_item_id = (
+        f"{tx_hash}:{source_wallet}:{token_id}:{side}:{log_index}:{order_hash}"
+    )
+    return {
+        "copy_event": copy_event_payload,
+        "source_trade": source_trade_payload,
+        "market": dict(market_payload),
+        "source_item_id": source_item_id,
+        "dedupe_key": "",
+    }
+
+
+# ── Per-tick price grid (book-driven strategies) ─────────────────────────
+#
+# The discovery loop needs ``prices_at_tick = {token_id: {best_bid,
+# best_ask, mid, ...}}`` for each tick.  Two replay sources can build
+# that grid:
+#
+#   * ``BookReplay``     — reads ``market_microstructure_snapshots``
+#     (throttled to 0.5s/token by the live ingestor; sparse on calm
+#     markets).
+#   * ``BookDeltaReplay`` — reads ``book_delta_events`` and replays them
+#     atop a snapshot anchor, so it surfaces every level change the
+#     live system saw.
+#
+# When deltas dominate the window the matcher already auto-selects
+# ``BookDeltaReplay``; we mirror that selection here so discovery sees
+# the same data the matcher will fill against.  The streaming approach
+# below visits each replay snapshot once and freezes per-token state
+# at every tick boundary, bounding memory at O(tokens × ticks).
+
+
+async def _probe_should_prefer_deltas(
+    *,
+    session: Any,
+    token_ids: list[str],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> bool:
+    """Decide whether ``BookDeltaReplay`` should drive the per-tick
+    price grid.  Mirrors the matcher's auto-selection threshold so
+    discovery and matching see the same source.  Probes a token
+    sample (capped at 50) to keep the check cheap.
+    """
+    if not token_ids:
+        return False
+    from sqlalchemy import select as _select, func as _func
+    from models.database import MarketMicrostructureSnapshot, BookDeltaEvent
+
+    sample = token_ids[: min(50, len(token_ids))]
+    window_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-6)
+    try:
+        snap_count = int(
+            (
+                await session.execute(
+                    _select(_func.count(MarketMicrostructureSnapshot.id)).where(
+                        MarketMicrostructureSnapshot.token_id.in_(sample),
+                        MarketMicrostructureSnapshot.observed_at >= start_dt,
+                        MarketMicrostructureSnapshot.observed_at <= end_dt,
+                        MarketMicrostructureSnapshot.snapshot_type == "book",
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        delta_count = int(
+            (
+                await session.execute(
+                    _select(_func.count(BookDeltaEvent.id)).where(
+                        BookDeltaEvent.token_id.in_(sample),
+                        BookDeltaEvent.observed_at >= start_dt,
+                        BookDeltaEvent.observed_at <= end_dt,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+    except Exception as exc:
+        logger.warning("delta-probe query failed; defaulting to snapshots: %s", exc)
+        return False
+
+    deltas_per_token_per_hour = delta_count / max(len(sample), 1) / window_hours
+    return delta_count > 5 * max(snap_count, 1) and deltas_per_token_per_hour >= 10.0
+
+
+async def _build_per_tick_prices_grid(
+    *,
+    session: Any,
+    token_ids: list[str],
+    ticks: list[datetime],
+    end_dt: datetime,
+    use_deltas: bool,
+) -> dict[str, list[dict[str, Any] | None]]:
+    """For each token, return per-tick price state lists (length =
+    len(ticks)).  Each entry is ``{best_bid, best_ask, mid, price,
+    spread_bps, observed_at}`` or ``None`` when no state was available
+    at-or-before that tick.
+
+    Streams the chosen source ONCE; bins into ticks at boundary
+    crossings.  Truncations on the underlying replay are ignored — the
+    grid simply reflects whatever state the replay was able to produce.
+    """
+    if not token_ids or not ticks:
+        return {}
+    from services.backtest.book_replay import BookDeltaReplay, BookReplay
+
+    if use_deltas:
+        replay: Any = BookDeltaReplay(
+            session=session,
+            token_ids=token_ids,
+            start=ticks[0],
+            end=end_dt,
+        )
+    else:
+        replay = BookReplay(
+            session=session,
+            token_ids=token_ids,
+            start=ticks[0],
+            end=end_dt,
+            snapshot_type="book",
+        )
+
+    cur_state: dict[str, dict[str, Any]] = {}
+    grid: dict[str, list[dict[str, Any] | None]] = {}
+    next_tick_idx = 0
+
+    def _freeze_tick(tick_idx: int) -> None:
+        for tid, st in cur_state.items():
+            bucket = grid.get(tid)
+            if bucket is None:
+                bucket = [None] * len(ticks)
+                grid[tid] = bucket
+            bucket[tick_idx] = dict(st)
+
+    async for snap in replay.iter_snapshots():
+        bb = snap.best_bid or 0.0
+        ba = snap.best_ask or 0.0
+        if bb <= 0 and ba <= 0:
+            continue
+
+        observed = snap.observed_at
+        if observed is not None and observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        # Freeze any tick whose boundary is in the past relative to this
+        # snap — the strategy at tick ``i`` sees state observed_at <=
+        # ticks[i], so we capture state BEFORE applying snaps that
+        # arrive after the boundary.
+        while (
+            next_tick_idx < len(ticks)
+            and observed is not None
+            and ticks[next_tick_idx] < observed
+        ):
+            _freeze_tick(next_tick_idx)
+            next_tick_idx += 1
+
+        mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else (bb or ba)
+        cur_state[snap.token_id] = {
+            "best_bid": bb,
+            "best_ask": ba,
+            "mid": mid,
+            "price": mid,
+            "spread_bps": snap.spread_bps,
+            "observed_at": observed,
+        }
+
+    while next_tick_idx < len(ticks):
+        _freeze_tick(next_tick_idx)
+        next_tick_idx += 1
+
+    return grid
+
+
 async def _replay_discover_opportunities(
     *,
     strategy: Any,
@@ -1918,53 +2332,66 @@ async def _replay_discover_opportunities(
     sample_interval_seconds: int,
     max_ticks: int,
     candidate_token_ids: list[str] | None = None,
+    use_deltas_for_prices: bool = False,
 ) -> list[_SyntheticOpp]:
     """Replay-discovery: walk historical market state at sampled time
     ticks across [start_dt, end_dt] and call strategy.detect_async at
     each tick, accumulating returned opportunities.
 
-    The (events, markets, prices) tuple at each tick is reconstructed
-    from:
+    Inputs reconstructed at each tick:
       * markets — current Polymarket market catalog filtered to
         active-during-window markets, optionally narrowed to
-        ``candidate_token_ids`` when caller provides a scope.  We use
-        the CURRENT catalog (not historical) for the metadata since
-        Polymarket markets are short-lived and metadata rarely
-        changes during a market's life — only the prices do.
+        ``candidate_token_ids`` when caller provides a scope (book-
+        driven strategies).  Event-driven strategies bypass that
+        narrowing — events drive the universe.
       * prices — best_bid / best_ask / mid reconstructed per token
-        from the most-recent ``MarketMicrostructureSnapshot`` at-or-
-        before the tick.  This is what we backfilled from polybacktest
-        and the live ingestor.
-      * events — empty for now.  Few strategies use the events list;
-        crypto / news strategies that do will surface that as a
-        validation warning rather than fail.
+        from either ``MarketMicrostructureSnapshot`` (default) or
+        ``BookDeltaReplay`` (when ``use_deltas_for_prices=True``,
+        chosen by the caller when delta coverage materially dominates
+        snapshot coverage — same logic the matcher uses).
+      * events — for strategies whose ``detect`` reads events
+        (``traders_copy_trade``, etc.), the same historical event
+        stream the live system saw, loaded from the appropriate source
+        table and binned by tick so each detect() call sees the
+        events that arrived since the previous tick.  For book-only
+        strategies this remains an empty list.
 
     Returns a list of ``_SyntheticOpp`` instances that quack like
     ``OpportunityHistory`` rows — the existing evaluate /
     orchestrator-gate / matcher pipeline consumes them unchanged.
     """
     import json as _json
-    from sqlalchemy import select as _select, text as _text
-    from models.database import (
-        AsyncSessionLocal as _Sess,
-        MarketMicrostructureSnapshot as _MMS,
-    )
+    from sqlalchemy import text as _text
+    from models.database import AsyncSessionLocal as _Sess
 
-    if not _has_custom_detect_async(strategy) and not _has_custom_detect_sync(strategy):
-        # Strategy uses the default ``detect()`` which is usually a
-        # no-op — historical replay can't do anything for it.
+    if (
+        not _has_custom_detect_async(strategy)
+        and not _has_custom_detect_sync(strategy)
+        and not _has_custom_detect_plain(strategy)
+    ):
+        # Strategy uses none of the three detect methods — base class
+        # default ``detect()`` returns []; historical replay has nothing
+        # to do.  Hold-only / scheduler-driven strategies fall here.
         return []
+
+    event_kind = _replay_event_kind_for_strategy(slug, strategy)
 
     # Step 1: build the time grid.  Cap at ``max_ticks`` total samples
     # so a 30-day window doesn't blow up into 1500 detect() calls.
     total_seconds = max(60.0, (end_dt - start_dt).total_seconds())
     n_ticks = min(max_ticks, max(1, int(total_seconds / max(60, sample_interval_seconds))))
     actual_interval = total_seconds / n_ticks
+    from datetime import timedelta as _td_replay
+    ticks: list[datetime] = [
+        start_dt + _td_replay(seconds=actual_interval * i) for i in range(n_ticks)
+    ]
 
     # Step 2: load the current market catalog from the live scanner
-    # (in-memory cache, no API call).  Filter to markets with at least
-    # one mms book row in the window — anything else can't be price-
-    # reconstructed and would just produce stale prices in detect.
+    # (in-memory cache, no API call).  For book-driven strategies we
+    # narrow to markets with at least one token in scope.  For event-
+    # driven strategies the candidate filter is bypassed — events drive
+    # the universe, and the catalog is used only for token→market
+    # lookups.
     try:
         from services.shared_state import _read_market_catalog_file
         catalog = _read_market_catalog_file()
@@ -1972,7 +2399,7 @@ async def _replay_discover_opportunities(
         catalog = None
 
     candidate_set: set[str] | None = (
-        set(candidate_token_ids) if candidate_token_ids else None
+        set(candidate_token_ids) if (candidate_token_ids and event_kind is None) else None
     )
 
     catalog_markets: list[Any] = []
@@ -1999,11 +2426,12 @@ async def _replay_discover_opportunities(
             catalog_markets.append(m)
 
     if not catalog_markets:
+        # Without a catalog we can't even shape event payloads (the
+        # ``market`` field is required).  Bail out quietly — same
+        # behaviour as before for book-driven strategies.
         return []
 
-    # Step 3: pre-fetch every mms snapshot we'll need across all
-    # candidate tokens in one chunked query.  Index by token; within
-    # each token, sort by observed_at for fast bisect lookup.
+    # Step 3: derive the token universe from the catalog.
     all_token_ids: list[str] = []
     seen_t: set[str] = set()
     for m in catalog_markets:
@@ -2013,93 +2441,133 @@ async def _replay_discover_opportunities(
                 seen_t.add(ts)
                 all_token_ids.append(ts)
 
-    snaps_by_token: dict[str, list[Any]] = {}
-    CHUNK = 100
-    async with _Sess() as session:
-        await session.execute(_text("SET statement_timeout = 60000"))
-        for i in range(0, len(all_token_ids), CHUNK):
-            chunk = all_token_ids[i : i + CHUNK]
-            try:
-                rows = (await session.execute(
-                    _select(
-                        _MMS.token_id,
-                        _MMS.observed_at,
-                        _MMS.best_bid,
-                        _MMS.best_ask,
-                        _MMS.spread_bps,
-                    )
-                    .where(
-                        _MMS.token_id.in_(chunk),
-                        _MMS.observed_at >= start_dt,
-                        _MMS.observed_at <= end_dt,
-                        _MMS.snapshot_type == "book",
-                    )
-                    .order_by(_MMS.token_id, _MMS.observed_at)
-                )).all()
-            except Exception:
-                rows = []
-            for r in rows:
-                snaps_by_token.setdefault(str(r[0]), []).append(
-                    {"observed_at": r[1], "best_bid": r[2], "best_ask": r[3], "spread_bps": r[4]}
+    # Step 4: build the per-tick prices grid.  Book-driven strategies
+    # require this; event-driven ones don't read prices in detect()
+    # (the strategy reads the live mid from the embedded ``market``
+    # payload), so we skip the work for them.
+    grid: dict[str, list[dict[str, Any] | None]] = {}
+    if event_kind is None:
+        async with _Sess() as price_session:
+            await price_session.execute(
+                _text("SET statement_timeout = 60000")
+            )
+            # Auto-select source unless the caller has explicitly
+            # requested deltas.  Cheap probe (one count per source
+            # over a 50-token sample) — same threshold the matcher
+            # uses, so discovery and matching see the same data.
+            chosen_use_deltas = use_deltas_for_prices
+            if not chosen_use_deltas:
+                chosen_use_deltas = await _probe_should_prefer_deltas(
+                    session=price_session,
+                    token_ids=all_token_ids,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
                 )
+            try:
+                grid = await _build_per_tick_prices_grid(
+                    session=price_session,
+                    token_ids=all_token_ids,
+                    ticks=ticks,
+                    end_dt=end_dt,
+                    use_deltas=chosen_use_deltas,
+                )
+            except Exception as exc:
+                logger.warning("replay_discover: price grid build failed: %s", exc)
+                grid = {}
 
-    # Step 4: walk the time grid + run detect at each tick.
+    # Step 5: build the per-tick events grid.  Each tick's slice covers
+    # events whose timestamp lands in (prev_tick, this_tick] — same
+    # delivery cadence the live scanner sees.
+    events_by_tick: list[list[Any]] = [[] for _ in range(n_ticks)]
+    wallet_event_truncated = False
+    if event_kind == "wallet_trade":
+        market_lookup = _build_token_to_market_lookup(catalog_markets)
+        scope_wallets = _extract_scope_wallets(strategy)
+        async with _Sess() as ev_session:
+            await ev_session.execute(_text("SET statement_timeout = 60000"))
+            try:
+                wme_rows, wallet_event_truncated = await _load_wallet_events_for_replay(
+                    session=ev_session,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    scope_wallets=scope_wallets,
+                )
+            except Exception as exc:
+                logger.warning("replay_discover: wallet event load failed: %s", exc)
+                wme_rows = []
+        for ev in wme_rows:
+            ev_ts = getattr(ev, "detected_at", None)
+            if not isinstance(ev_ts, datetime):
+                continue
+            if ev_ts.tzinfo is None:
+                ev_ts = ev_ts.replace(tzinfo=timezone.utc)
+            offset = (ev_ts - start_dt).total_seconds()
+            if offset < 0:
+                continue
+            idx = min(n_ticks - 1, int(offset // actual_interval))
+            token_id = str(getattr(ev, "token_id", "") or "").strip()
+            market_payload = market_lookup.get(token_id)
+            if not market_payload:
+                # Token not in current catalog — same outcome live would
+                # produce: ``_resolve_market_snapshot`` would fail and
+                # ``_process_wallet_trade_event`` would skip the event.
+                continue
+            shaped = _wallet_event_to_strategy_input(ev, market_payload=market_payload)
+            if shaped is not None:
+                events_by_tick[idx].append(shaped)
+
+    # Step 6: walk the time grid + run detect at each tick.
     detected_total: list[_SyntheticOpp] = []
     detect_failures = 0
 
-    from datetime import timedelta as _td_replay
     for tick_i in range(n_ticks):
-        tick_t = start_dt + _td_replay(seconds=actual_interval * tick_i)
+        tick_t = ticks[tick_i]
 
-        # Build prices dict at this tick.  Strategies expect a dict
-        # keyed by token_id with at least best_bid/best_ask/mid.  We
-        # also include observed_at and spread_bps which some
-        # strategies inspect.
+        # Prices at this tick — built from the streaming grid for book-
+        # driven strategies, empty for event-driven ones.
         prices_at_tick: dict[str, dict[str, Any]] = {}
-        for token_id in all_token_ids:
-            snaps = snaps_by_token.get(token_id) or []
-            if not snaps:
-                continue
-            # Find the most recent snap at-or-before tick_t.
-            target_ts = tick_t
-            # Linear scan from end is fine — snaps sorted ASC, most
-            # ticks land late in the list.  For very large per-token
-            # lists we could bisect, but the typical density caps
-            # this naturally.
-            chosen = None
-            for snap in reversed(snaps):
-                if snap["observed_at"] <= target_ts:
-                    chosen = snap
-                    break
-            if chosen is None:
-                continue
-            bb = float(chosen["best_bid"]) if chosen["best_bid"] is not None else 0.0
-            ba = float(chosen["best_ask"]) if chosen["best_ask"] is not None else 0.0
-            if bb <= 0 and ba <= 0:
-                continue
-            mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else (bb or ba)
-            prices_at_tick[token_id] = {
-                "best_bid": bb,
-                "best_ask": ba,
-                "mid": mid,
-                "price": mid,
-                "spread_bps": (
-                    float(chosen["spread_bps"]) if chosen["spread_bps"] is not None else None
-                ),
-                "observed_at": chosen["observed_at"],
-            }
+        if grid:
+            for token_id, states in grid.items():
+                if tick_i < len(states):
+                    st = states[tick_i]
+                    if st is not None:
+                        prices_at_tick[token_id] = st
 
-        if not prices_at_tick:
-            continue
+        events_at_tick = events_by_tick[tick_i]
 
-        # Filter markets to those whose tokens have prices at this tick.
-        markets_at_tick: list[dict] = []
-        for m in catalog_markets:
-            tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
-            if any(t in prices_at_tick for t in tok_ids):
-                markets_at_tick.append(m)
-        if not markets_at_tick:
-            continue
+        # Decide which markets to surface to detect().  Event-driven
+        # strategies receive the catalog narrowed to the markets their
+        # events actually touch this tick (the strategy then reads the
+        # ``market`` payload from the event itself, but a non-empty
+        # markets list keeps any defensive ``if not markets`` guards
+        # in strategy code happy).  Book-driven strategies see markets
+        # whose tokens have reconstructable prices.
+        if event_kind is not None:
+            if not events_at_tick:
+                continue
+            event_token_ids: set[str] = set()
+            for item in events_at_tick:
+                if isinstance(item, dict):
+                    market_meta = item.get("market") or {}
+                    if isinstance(market_meta, dict):
+                        tid = str(market_meta.get("token_id") or "").strip()
+                        if tid:
+                            event_token_ids.add(tid)
+            markets_at_tick: list[dict] = []
+            for m in catalog_markets:
+                tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
+                if any(t in event_token_ids for t in tok_ids):
+                    markets_at_tick.append(m)
+        else:
+            if not prices_at_tick:
+                continue
+            markets_at_tick = []
+            for m in catalog_markets:
+                tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
+                if any(t in prices_at_tick for t in tok_ids):
+                    markets_at_tick.append(m)
+            if not markets_at_tick:
+                continue
 
         # Call strategy.detect_async with the reconstructed inputs.
         # Wrap dict-shaped catalog markets into Market pydantic models
@@ -2115,12 +2583,12 @@ async def _replay_discover_opportunities(
                 except Exception:
                     continue
         except Exception:
-            market_models = markets_at_tick
+            market_models = list(markets_at_tick)
 
         try:
             opps_at_tick = await _run_detect_once(
                 strategy,
-                events=[],
+                events=events_at_tick,
                 markets=market_models,
                 prices=prices_at_tick,
                 timeout_seconds=8.0,
@@ -2151,6 +2619,12 @@ async def _replay_discover_opportunities(
         logger.info(
             "replay_discover: %d detect() failures across %d ticks",
             detect_failures, n_ticks,
+        )
+    if wallet_event_truncated:
+        logger.warning(
+            "replay_discover: wallet event load truncated at cap=%d — widen the "
+            "time window granularity or raise the cap if this becomes load-bearing",
+            _REPLAY_WALLET_EVENT_CAP,
         )
 
     return detected_total
@@ -2224,13 +2698,21 @@ async def _measure_data_coverage(
     opp_tokens: list[str],
     start_dt: datetime,
     end_dt: datetime,
+    event_kind: str | None = None,
+    scope_wallets: set[str] | None = None,
 ) -> dict[str, Any]:
     """Compute per-window data-coverage stats for the opp_tokens universe.
 
     Returns a dict suitable for ``ExecutionBacktestResult.data_coverage``.
-    Cheap — two chunked aggregate queries (snapshots, deltas).  Failure
-    is non-fatal; we return a stub dict with ``error`` set so the caller
+    Cheap — two chunked aggregate queries (snapshots, deltas), plus an
+    optional event-source query when ``event_kind`` is set.  Failure is
+    non-fatal; we return a stub dict with ``error`` set so the caller
     surfaces a single warning rather than aborting the run.
+
+    For event-driven strategies (``event_kind="wallet_trade"``), the
+    fidelity rating is anchored on event count rather than snapshot
+    density — the live system fires opps on events, so "0 events in
+    window" is the right zero, not "0 snapshots/hr".
     """
     from sqlalchemy import select, func as sa_func
     from models.database import MarketMicrostructureSnapshot, BookDeltaEvent
@@ -2244,15 +2726,47 @@ async def _measure_data_coverage(
         "median_snaps_per_token_per_hour": 0.0,
         "p10_snaps_per_token_per_hour": 0.0,
         "median_deltas_per_token_per_hour": 0.0,
+        "event_kind": event_kind,
+        "events_total": 0,
+        "events_per_hour": 0.0,
         "fidelity_rating": "none",
         "recommended_action": "",
     }
-    if not opp_tokens or end_dt <= start_dt:
+    if (not opp_tokens and not event_kind) or end_dt <= start_dt:
         coverage["recommended_action"] = "No opp tokens in window — nothing to measure."
         return coverage
 
     window_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-6)
     CHUNK = 50
+
+    # Event-source coverage (event-driven strategies only).  Cheap one-
+    # query count of the relevant event table; the recommendation logic
+    # below uses this when ``event_kind`` is set.
+    if event_kind == "wallet_trade":
+        try:
+            from services.wallet_ws_monitor import WalletMonitorEvent
+
+            ev_stmt = (
+                select(sa_func.count(WalletMonitorEvent.id))
+                .where(
+                    WalletMonitorEvent.detected_at >= start_dt,
+                    WalletMonitorEvent.detected_at <= end_dt,
+                )
+            )
+            if scope_wallets:
+                ev_stmt = ev_stmt.where(
+                    WalletMonitorEvent.wallet_address.in_(list(scope_wallets))
+                )
+            events_total = int(
+                (await session.execute(ev_stmt)).scalar_one() or 0
+            )
+            coverage["events_total"] = events_total
+            coverage["events_per_hour"] = events_total / window_hours
+        except Exception as exc:
+            coverage["error"] = (
+                (coverage.get("error") + " | " if coverage.get("error") else "")
+                + f"event count query failed: {exc}"
+            )
 
     # Snapshot density per token
     snaps_per_token: dict[str, int] = {}
@@ -2328,20 +2842,66 @@ async def _measure_data_coverage(
     coverage["p10_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.1)
     coverage["median_deltas_per_token_per_hour"] = _percentile(rates_deltas, 0.5)
 
-    # Fidelity rating from snapshot density (the engine's data source).
-    median_rate = coverage["median_snaps_per_token_per_hour"]
-    if median_rate >= _FIDELITY_HIGH_SNAPS_PER_HOUR:
-        coverage["fidelity_rating"] = "high"
-    elif median_rate >= _FIDELITY_MEDIUM_SNAPS_PER_HOUR:
-        coverage["fidelity_rating"] = "medium"
-    elif median_rate > 0:
-        coverage["fidelity_rating"] = "low"
+    # Fidelity rating.  Event-driven strategies anchor on the event
+    # source — snapshot density is irrelevant when the strategy doesn't
+    # discover via books.  Book-driven strategies use snapshot density
+    # as the historical default.
+    if event_kind == "wallet_trade":
+        events_total = int(coverage["events_total"])
+        # Thresholds tuned against typical copy-trading workloads:
+        # >= 50 events / 7 days is "high" (multiple intents per day).
+        if events_total >= 50:
+            coverage["fidelity_rating"] = "high"
+        elif events_total >= 10:
+            coverage["fidelity_rating"] = "medium"
+        elif events_total > 0:
+            coverage["fidelity_rating"] = "low"
+        else:
+            coverage["fidelity_rating"] = "none"
     else:
-        coverage["fidelity_rating"] = "none"
+        median_rate = coverage["median_snaps_per_token_per_hour"]
+        if median_rate >= _FIDELITY_HIGH_SNAPS_PER_HOUR:
+            coverage["fidelity_rating"] = "high"
+        elif median_rate >= _FIDELITY_MEDIUM_SNAPS_PER_HOUR:
+            coverage["fidelity_rating"] = "medium"
+        elif median_rate > 0:
+            coverage["fidelity_rating"] = "low"
+        else:
+            coverage["fidelity_rating"] = "none"
 
-    # Recommendations — most useful when fidelity is bad but data is
-    # available in deltas (i.e. the live system has been ingesting but
-    # the snapshot table is sparse for the chosen window).
+    # Recommendations.
+    if event_kind == "wallet_trade":
+        events_total = int(coverage["events_total"])
+        events_per_hour = float(coverage["events_per_hour"])
+        scope_label = (
+            f"{len(scope_wallets)} scoped wallets" if scope_wallets
+            else "all monitored wallets"
+        )
+        if events_total == 0:
+            coverage["recommended_action"] = (
+                "No wallet trade events in window for this strategy's scope "
+                f"({scope_label}).  Either the tracked wallets weren't trading "
+                "in the chosen period, or wallet monitoring wasn't running.  "
+                "Check Data Lab → Traders → Wallet monitor for capture status."
+            )
+        elif events_total < 10:
+            coverage["recommended_action"] = (
+                f"Sparse events: {events_total} wallet trade(s) in window "
+                f"({events_per_hour:.2f}/hr, {scope_label}).  Backtest will "
+                "fire only a handful of intents — not statistically meaningful.  "
+                "Widen the time window or broaden the wallet scope for more samples."
+            )
+        else:
+            coverage["recommended_action"] = (
+                f"Event coverage OK: {events_total} wallet trade(s) in window "
+                f"({events_per_hour:.2f}/hr, {scope_label}). ✓"
+            )
+        return coverage
+
+    # Book-driven recommendations — most useful when fidelity is bad
+    # but data is available in deltas (i.e. the live system has been
+    # ingesting but the snapshot table is sparse for the chosen window).
+    median_rate = coverage["median_snaps_per_token_per_hour"]
     has_delta_coverage = (
         coverage["tokens_with_deltas"] > 0.5 * len(opp_tokens)
         and coverage["median_deltas_per_token_per_hour"] >= 5.0
@@ -2837,47 +3397,86 @@ async def run_execution_backtest(
 
                     # ── Pre-flight data-coverage measurement ─────────────
                     # Cheap (chunked aggregate queries).  Surfaces how
-                    # dense the historical book data is for THIS run's
+                    # dense the historical data is for THIS run's
                     # opp universe.  Operators see this BEFORE eating a
                     # 30s replay that ends in "0 trades because the book
                     # was sampled once every 3 hours".
+                    #
+                    # For event-driven strategies (copy-trade, news,
+                    # insider) the fidelity is anchored on event count
+                    # rather than book density — the strategy doesn't
+                    # discover via books and "low snapshots" is the
+                    # wrong signal.
+                    bt_event_kind = _replay_event_kind_for_strategy(slug, strategy)
+                    bt_scope_wallets = (
+                        _extract_scope_wallets(strategy)
+                        if bt_event_kind == "wallet_trade"
+                        else None
+                    )
                     coverage = await _measure_data_coverage(
                         session=session,
                         opp_tokens=candidate_tokens,
                         start_dt=start_dt,
                         end_dt=end_dt,
+                        event_kind=bt_event_kind,
+                        scope_wallets=bt_scope_wallets,
                     )
                     result.data_coverage = coverage
                     fidelity = coverage.get("fidelity_rating", "unknown")
                     rec = coverage.get("recommended_action") or ""
-                    median_rate = coverage.get("median_snaps_per_token_per_hour", 0.0)
-                    p10_rate = coverage.get("p10_snaps_per_token_per_hour", 0.0)
-                    n_with_deltas = coverage.get("tokens_with_deltas", 0)
-                    deltas_total = coverage.get("deltas_total", 0)
-                    # Loud, prominent warning when coverage is degraded.
-                    # The funnel line above tells the operator how many
-                    # tokens HAVE any data; this tells them whether that
-                    # data is dense enough to trust the fill simulation.
-                    if fidelity in ("low", "none"):
-                        result.validation_warnings.append(
-                            f"⚠ DATA FIDELITY: {fidelity.upper()} — median "
-                            f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}). "
-                            f"Backtest fills are NOT representative of live.  "
-                            f"book_delta_events has {deltas_total:,} rows across "
-                            f"{n_with_deltas} of {len(candidate_tokens)} tokens "
-                            f"(live system's data — not yet used by the matcher). "
-                            f"{rec}"
-                        )
-                    elif fidelity == "medium":
-                        result.validation_warnings.append(
-                            f"DATA FIDELITY: medium — median {median_rate:.1f} "
-                            f"snaps/token/hr.  {rec}"
-                        )
+                    if bt_event_kind:
+                        events_total = int(coverage.get("events_total", 0))
+                        events_per_hour = float(coverage.get("events_per_hour", 0.0))
+                        # Event-driven: report event coverage rather
+                        # than snapshot density.  Same severity gating
+                        # so the UI badge renders consistently.
+                        if fidelity in ("low", "none"):
+                            result.validation_warnings.append(
+                                f"⚠ EVENT COVERAGE: {fidelity.upper()} — "
+                                f"{events_total} {bt_event_kind} event(s) in window "
+                                f"({events_per_hour:.2f}/hr).  {rec}"
+                            )
+                        elif fidelity == "medium":
+                            result.validation_warnings.append(
+                                f"EVENT COVERAGE: medium — {events_total} "
+                                f"{bt_event_kind} event(s) in window "
+                                f"({events_per_hour:.2f}/hr).  {rec}"
+                            )
+                        else:
+                            result.validation_warnings.append(
+                                f"EVENT COVERAGE: high — {events_total} "
+                                f"{bt_event_kind} event(s) in window "
+                                f"({events_per_hour:.2f}/hr) ✓"
+                            )
                     else:
-                        result.validation_warnings.append(
-                            f"DATA FIDELITY: high — median {median_rate:.1f} "
-                            f"snaps/token/hr ✓"
-                        )
+                        median_rate = coverage.get("median_snaps_per_token_per_hour", 0.0)
+                        p10_rate = coverage.get("p10_snaps_per_token_per_hour", 0.0)
+                        n_with_deltas = coverage.get("tokens_with_deltas", 0)
+                        deltas_total = coverage.get("deltas_total", 0)
+                        # Loud, prominent warning when coverage is degraded.
+                        # The funnel line above tells the operator how many
+                        # tokens HAVE any data; this tells them whether that
+                        # data is dense enough to trust the fill simulation.
+                        if fidelity in ("low", "none"):
+                            result.validation_warnings.append(
+                                f"⚠ DATA FIDELITY: {fidelity.upper()} — median "
+                                f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}). "
+                                f"Backtest fills are NOT representative of live.  "
+                                f"book_delta_events has {deltas_total:,} rows across "
+                                f"{n_with_deltas} of {len(candidate_tokens)} tokens "
+                                f"(live system's data — not yet used by the matcher). "
+                                f"{rec}"
+                            )
+                        elif fidelity == "medium":
+                            result.validation_warnings.append(
+                                f"DATA FIDELITY: medium — median {median_rate:.1f} "
+                                f"snaps/token/hr.  {rec}"
+                            )
+                        else:
+                            result.validation_warnings.append(
+                                f"DATA FIDELITY: high — median {median_rate:.1f} "
+                                f"snaps/token/hr ✓"
+                            )
                 # If the strategy has zero opportunities (e.g. a fresh
                 # strategy), fall back to "top tokens by snapshot
                 # volume in window" so the engine still has something
