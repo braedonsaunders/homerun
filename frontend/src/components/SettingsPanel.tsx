@@ -128,19 +128,19 @@ const DEFAULT_UI_LOCK_SETTINGS: UILockSettings = {
 
 const SETTINGS_TRANSFER_CATEGORIES: Array<{
   id: SettingsTransferCategory
-  label: string
-  description: string
+  labelKey: string
+  descriptionKey: string
 }> = [
-  { id: 'bot_traders', label: 'Bot Traders', description: 'Configured trader bots, orchestrator settings, and trade state' },
-  { id: 'strategies', label: 'Strategies', description: 'Strategy definitions, source code, and version snapshots' },
-  { id: 'data_sources', label: 'Data Sources', description: 'Data-source definitions and retention/config' },
-  { id: 'market_credentials', label: 'Market Credentials', description: 'Polymarket + Kalshi API credentials' },
-  { id: 'vpn_configuration', label: 'VPN Configuration', description: 'Trading proxy URL and VPN enforcement settings' },
-  { id: 'llm_configuration', label: 'LLM Configuration', description: 'Provider, model, API keys, and spend cap' },
+  { id: 'bot_traders', labelKey: 'settings.transfer.botTraders', descriptionKey: 'settings.transfer.botTradersDesc' },
+  { id: 'strategies', labelKey: 'settings.transfer.strategies', descriptionKey: 'settings.transfer.strategiesDesc' },
+  { id: 'data_sources', labelKey: 'settings.transfer.dataSources', descriptionKey: 'settings.transfer.dataSourcesDesc' },
+  { id: 'market_credentials', labelKey: 'settings.transfer.marketCredentials', descriptionKey: 'settings.transfer.marketCredentialsDesc' },
+  { id: 'vpn_configuration', labelKey: 'settings.transfer.vpnConfiguration', descriptionKey: 'settings.transfer.vpnConfigurationDesc' },
+  { id: 'llm_configuration', labelKey: 'settings.transfer.llmConfiguration', descriptionKey: 'settings.transfer.llmConfigurationDesc' },
   {
     id: 'telegram_configuration',
-    label: 'Telegram Setup',
-    description: 'Bot token, chat ID, and notification delivery rules',
+    labelKey: 'settings.transfer.telegramSetup',
+    descriptionKey: 'settings.transfer.telegramSetupDesc',
   },
 ]
 
@@ -839,31 +839,39 @@ export default function SettingsPanel({
           searchForm.search_polymarket_enabled && 'Poly',
           searchForm.search_kalshi_enabled && 'Kalshi',
         ].filter(Boolean)
-        return platforms.length ? platforms.join(' + ') : 'Disabled'
+        return platforms.length ? platforms.join(' + ') : t('settings.status.disabled')
       }
       case 'notifications':
-        return notificationsForm.enabled ? 'Enabled' : 'Disabled'
+        return notificationsForm.enabled ? t('settings.status.enabled') : t('settings.status.disabled')
       case 'security':
-        return uiLockForm.enabled ? `Auto-lock ${uiLockForm.idle_timeout_minutes}m` : 'Disabled'
+        return uiLockForm.enabled
+          ? t('settings.status.autoLock', { minutes: uiLockForm.idle_timeout_minutes })
+          : t('settings.status.disabled')
       case 'scanner':
-        return `caps ${scannerForm.max_opportunities_total}/${scannerForm.max_opportunities_per_strategy} · ws ${scannerForm.strict_ws_max_age_ms}ms`
+        return t('settings.status.scannerCaps', {
+          total: scannerForm.max_opportunities_total,
+          perStrategy: scannerForm.max_opportunities_per_strategy,
+          ws: scannerForm.strict_ws_max_age_ms,
+        })
       case 'discovery':
         return discoveryForm.maintenance_enabled
-          ? `${discoveryForm.max_discovered_wallets.toLocaleString()} cap`
-          : 'Disabled'
+          ? t('settings.status.walletCap', { count: discoveryForm.max_discovered_wallets.toLocaleString() })
+          : t('settings.status.disabled')
       case 'vpn':
-        return vpnForm.enabled ? 'Active' : 'Disabled'
+        return vpnForm.enabled ? t('settings.status.active') : t('settings.status.disabled')
       case 'network':
-        return networkForm.allow_network_access ? 'LAN Enabled' : 'Localhost Only'
+        return networkForm.allow_network_access ? t('settings.status.lanEnabled') : t('settings.status.localhostOnly')
       case 'providers': {
         const s = providerSettingsQuery.data
         if (!s) return '—'
-        return s.polybacktest_api_key_set ? 'Polybacktest configured' : 'Polybacktest not configured'
+        return s.polybacktest_api_key_set
+          ? t('settings.status.polybacktestConfigured')
+          : t('settings.status.polybacktestNotConfigured')
       }
       case 'maintenance':
-        return maintenanceForm.auto_cleanup_enabled ? 'Auto-clean on' : 'Manual'
+        return maintenanceForm.auto_cleanup_enabled ? t('settings.status.autoCleanOn') : t('settings.status.manual')
       case 'transfer':
-        return `${selectedTransferCategories.length} selected`
+        return t('settings.status.selected', { count: selectedTransferCategories.length })
       default:
         return ''
     }
@@ -901,17 +909,17 @@ export default function SettingsPanel({
     }
   }
 
-  const sections: { id: SettingsSection; icon: any; label: string; description: string }[] = [
-    { id: 'search', icon: Search, label: 'Search', description: 'Platforms, result limits' },
-    { id: 'scanner', icon: Database, label: 'Scanner', description: 'Scan limits, thresholds, and pool caps' },
-    { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
-    { id: 'security', icon: Lock, label: 'UI Lock', description: 'Local screen lock and inactivity timeout' },
-    { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
-    { id: 'network', icon: Wifi, label: 'Network Access', description: 'Allow LAN devices to reach the dashboard' },
-    { id: 'discovery', icon: Database, label: 'Discovery', description: 'Wallet discovery growth and maintenance' },
-    { id: 'providers', icon: Database, label: 'Data Providers', description: 'Polybacktest API key and reverse-engineer defaults' },
-    { id: 'maintenance', icon: Database, label: 'Database', description: 'Cleanup & maintenance' },
-    { id: 'transfer', icon: Upload, label: 'Import / Export', description: 'Migrate trading configuration bundle' },
+  const sections: { id: SettingsSection; icon: any; labelKey: string; descriptionKey: string }[] = [
+    { id: 'search', icon: Search, labelKey: 'settings.sections.search', descriptionKey: 'settings.sections.searchDesc' },
+    { id: 'scanner', icon: Database, labelKey: 'settings.sections.scanner', descriptionKey: 'settings.sections.scannerDesc' },
+    { id: 'notifications', icon: Bell, labelKey: 'settings.sections.notifications', descriptionKey: 'settings.sections.notificationsDesc' },
+    { id: 'security', icon: Lock, labelKey: 'settings.sections.security', descriptionKey: 'settings.sections.securityDesc' },
+    { id: 'vpn', icon: Shield, labelKey: 'settings.sections.vpn', descriptionKey: 'settings.sections.vpnDesc' },
+    { id: 'network', icon: Wifi, labelKey: 'settings.sections.network', descriptionKey: 'settings.sections.networkDesc' },
+    { id: 'discovery', icon: Database, labelKey: 'settings.sections.discovery', descriptionKey: 'settings.sections.discoveryDesc' },
+    { id: 'providers', icon: Database, labelKey: 'settings.sections.providers', descriptionKey: 'settings.sections.providersDesc' },
+    { id: 'maintenance', icon: Database, labelKey: 'settings.sections.maintenance', descriptionKey: 'settings.sections.maintenanceDesc' },
+    { id: 'transfer', icon: Upload, labelKey: 'settings.sections.transfer', descriptionKey: 'settings.sections.transferDesc' },
   ]
 
   return (
@@ -922,7 +930,7 @@ export default function SettingsPanel({
           <h2 className="text-lg font-bold tracking-tight">{t('settings.title')}</h2>
           {settings?.updated_at && (
             <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Updated {new Date(settings.updated_at).toLocaleString()}
+              {t('settings.updatedAt')} {new Date(settings.updated_at).toLocaleString()}
             </span>
           )}
         </div>
@@ -974,8 +982,8 @@ export default function SettingsPanel({
                   <Icon className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="flex-1 text-left min-w-0">
-                  <div className="text-sm font-medium leading-tight">{section.label}</div>
-                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground truncate">{section.description}</div>
+                  <div className="text-sm font-medium leading-tight">{t(section.labelKey)}</div>
+                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground truncate">{t(section.descriptionKey)}</div>
                 </div>
                 <Badge variant="outline" className={cn("text-[10px] px-2 py-0.5 border-0 shrink-0", statusColor)}>
                   {status}
@@ -1847,8 +1855,8 @@ export default function SettingsPanel({
                               <CardContent className="p-3">
                                 <div className="flex items-start justify-between gap-2">
                                   <div>
-                                    <p className="text-sm font-medium">{category.label}</p>
-                                    <p className="text-xs text-muted-foreground">{category.description}</p>
+                                    <p className="text-sm font-medium">{t(category.labelKey)}</p>
+                                    <p className="text-xs text-muted-foreground">{t(category.descriptionKey)}</p>
                                   </div>
                                   <Switch
                                     checked={transferCategories[category.id]}
