@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy import and_, func, select, text, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -715,10 +715,26 @@ def _json_safe_runtime_signal_value(value: Any) -> Any:
     return value
 
 
-async def _ensure_runtime_signal_persisted(session, signal: Any) -> None:
+async def _ensure_runtime_signal_persisted(
+    session,
+    signal: Any,
+    *,
+    accumulate: Optional[Callable[[str, float], None]] = None,
+) -> None:
+    """Idempotently upsert a runtime signal row.
+
+    Round 8-B instrumentation: when ``accumulate`` is supplied, timing
+    buckets for (a) JSON-safe payload prep and (b) the actual DB
+    ``execute`` are recorded separately.  ps_signal_persist was the
+    single worst bucket in the post-R7 soak (2.3-6.8s per cycle) but
+    there was zero sub-breakdown, so we couldn't tell whether the time
+    was in Python-side payload serialization or Postgres round-trip
+    latency.  Now we can.
+    """
     signal_id = str(getattr(signal, "id", "") or "").strip()
     if not signal_id:
         return
+    _prep_started = time.monotonic() if accumulate is not None else 0.0
     row_values = dict(
         id=signal_id,
         source=str(getattr(signal, "source", "") or "").strip(),
@@ -745,11 +761,16 @@ async def _ensure_runtime_signal_persisted(session, signal: Any) -> None:
         created_at=utcnow(),
         updated_at=utcnow(),
     )
+    if accumulate is not None:
+        accumulate("ps_sp_prep", _prep_started)
+        _exec_started = time.monotonic()
     await session.execute(
         pg_insert(TradeSignal)
         .values(**row_values)
         .on_conflict_do_nothing()
     )
+    if accumulate is not None:
+        accumulate("ps_sp_execute", _exec_started)
 
 
 async def get_open_position_count_for_trader(session, trader_id, mode=None, position_cap_scope=None):
@@ -5727,7 +5748,16 @@ async def _run_trader_once_inner(
                 try:
                     _enter_stage("signal_persist")
                     _ps_persist_started = time.monotonic()
-                    await _ensure_runtime_signal_persisted(session, signal)
+                    # Round 8-B: pass `accumulate` so the helper records
+                    # ps_sp_prep (row_values + JSON-safe serialization)
+                    # and ps_sp_execute (the DB round-trip) separately.
+                    # Post-R7 ps_signal_persist was 2.3-6.8s per cycle
+                    # with zero sub-breakdown — we need to know whether
+                    # Python or Postgres owns the time before we can
+                    # optimize further.
+                    await _ensure_runtime_signal_persisted(
+                        session, signal, accumulate=_accumulate
+                    )
                     _accumulate("ps_signal_persist", _ps_persist_started)
                     if source_config is None:
                         _enter_stage("no_source_config_skip")
@@ -7177,11 +7207,19 @@ async def _run_trader_once_inner(
                     _accumulate("ps_dw_experiment", _ps_dw_experiment_mono)
 
                     _ps_dw_checks_mono = time.monotonic()
-                    await create_trader_decision_checks(
-                        session,
+                    # Round 8-A: route decision_checks through the audit
+                    # buffer so the N-row INSERT no longer sits inside
+                    # the per-signal transaction.  Post-R7 soak showed
+                    # ps_dw_checks owning 1.4-4.4s of every cycle — it
+                    # was the ONE unbuffered per-check write left, and
+                    # `buffer_decision_checks` + `_flush_decision_checks_bulk`
+                    # already exist in trader_hot_state for exactly this
+                    # purpose.  Deduplicated bulk flush runs in the
+                    # background audit task, so the per-signal critical
+                    # path drops to a buffer append under `_audit_lock`.
+                    await hot_state.buffer_decision_checks(
                         decision_id=decision_row.id,
                         checks=checks_payload,
-                        commit=False,
                     )
                     _accumulate("ps_dw_checks", _ps_dw_checks_mono)
                     if freshness_status in {"passed", "blocked"} and freshness_source in {"scanner", "crypto"}:
