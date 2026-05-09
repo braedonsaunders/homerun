@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Database, Globe2, Newspaper, Radio } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '../lib/utils'
 import { getNewsFeedStatus, getUnifiedDataSources } from '../services/api'
@@ -29,6 +30,7 @@ interface DataPanelProps {
 }
 
 export default function DataPanel({ isConnected, view, onViewChange, onOpenCopilot }: DataPanelProps) {
+  const { t } = useTranslation()
   const { data: worldSummary } = useQuery({
     queryKey: ['events-summary'],
     queryFn: getEventsSummary,
@@ -66,7 +68,7 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
           )}
         >
           <Globe2 className="w-3.5 h-3.5" />
-          Map
+          {t('dataTab.map')}
         </Button>
 
         <Button
@@ -81,7 +83,7 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
           )}
         >
           <Radio className="w-3.5 h-3.5" />
-          Events
+          {t('dataTab.events')}
           {eventCount > 0 && (
             <span className="ml-1 px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-400 text-[10px] font-data">
               {eventCount}
@@ -101,7 +103,7 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
           )}
         >
           <Newspaper className="w-3.5 h-3.5" />
-          Stories
+          {t('dataTab.stories')}
           {storyCount > 0 && (
             <span className="ml-1 px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[10px] font-data">
               {storyCount}
@@ -121,7 +123,7 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
           )}
         >
           <Database className="w-3.5 h-3.5" />
-          Sources
+          {t('dataTab.sources')}
           {sourceCount > 0 && (
             <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 text-[10px] font-data">
               {sourceCount}

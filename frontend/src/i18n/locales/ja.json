@@ -17,7 +17,23 @@
     "news": "ニュース",
     "weather": "天気",
     "crypto": "暗号資産",
-    "sports": "スポーツ"
+    "sports": "スポーツ",
+    "search": "検索",
+    "viewModeCards": "カード",
+    "viewModeList": "リスト",
+    "viewModeTerminal": "ターミナル"
+  },
+  "dataTab": {
+    "map": "マップ",
+    "events": "イベント",
+    "stories": "ストーリー",
+    "sources": "ソース"
+  },
+  "strategiesTab": {
+    "strategies": "戦略",
+    "research": "リサーチ",
+    "machineLearning": "機械学習",
+    "validation": "検証"
   },
   "traderSub": {
     "discovery": "ディスカバリー",

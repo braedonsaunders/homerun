@@ -17,7 +17,23 @@
     "news": "News",
     "weather": "Weather",
     "crypto": "Crypto",
-    "sports": "Sports"
+    "sports": "Sports",
+    "search": "Search",
+    "viewModeCards": "Cards",
+    "viewModeList": "List",
+    "viewModeTerminal": "Terminal"
+  },
+  "dataTab": {
+    "map": "Map",
+    "events": "Events",
+    "stories": "Stories",
+    "sources": "Sources"
+  },
+  "strategiesTab": {
+    "strategies": "Strategies",
+    "research": "Research",
+    "machineLearning": "Machine Learning",
+    "validation": "Validation"
   },
   "traderSub": {
     "discovery": "Discovery",

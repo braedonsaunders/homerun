@@ -17,7 +17,23 @@
     "news": "뉴스",
     "weather": "날씨",
     "crypto": "암호화폐",
-    "sports": "스포츠"
+    "sports": "스포츠",
+    "search": "검색",
+    "viewModeCards": "카드",
+    "viewModeList": "목록",
+    "viewModeTerminal": "터미널"
+  },
+  "dataTab": {
+    "map": "지도",
+    "events": "이벤트",
+    "stories": "스토리",
+    "sources": "소스"
+  },
+  "strategiesTab": {
+    "strategies": "전략",
+    "research": "리서치",
+    "machineLearning": "머신러닝",
+    "validation": "검증"
   },
   "traderSub": {
     "discovery": "디스커버리",

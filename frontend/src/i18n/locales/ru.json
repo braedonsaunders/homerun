@@ -17,7 +17,23 @@
     "news": "Новости",
     "weather": "Погода",
     "crypto": "Крипто",
-    "sports": "Спорт"
+    "sports": "Спорт",
+    "search": "Поиск",
+    "viewModeCards": "Карточки",
+    "viewModeList": "Список",
+    "viewModeTerminal": "Терминал"
+  },
+  "dataTab": {
+    "map": "Карта",
+    "events": "События",
+    "stories": "Новости",
+    "sources": "Источники"
+  },
+  "strategiesTab": {
+    "strategies": "Стратегии",
+    "research": "Исследования",
+    "machineLearning": "Машинное обучение",
+    "validation": "Валидация"
   },
   "traderSub": {
     "discovery": "Обнаружение",

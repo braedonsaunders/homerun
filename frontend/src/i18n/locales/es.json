@@ -17,7 +17,23 @@
     "news": "Noticias",
     "weather": "Clima",
     "crypto": "Cripto",
-    "sports": "Deportes"
+    "sports": "Deportes",
+    "search": "Buscar",
+    "viewModeCards": "Tarjetas",
+    "viewModeList": "Lista",
+    "viewModeTerminal": "Terminal"
+  },
+  "dataTab": {
+    "map": "Mapa",
+    "events": "Eventos",
+    "stories": "Noticias",
+    "sources": "Fuentes"
+  },
+  "strategiesTab": {
+    "strategies": "Estrategias",
+    "research": "Investigación",
+    "machineLearning": "Aprendizaje Automático",
+    "validation": "Validación"
   },
   "traderSub": {
     "discovery": "Descubrimiento",

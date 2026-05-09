@@ -2207,7 +2207,7 @@ function App() {
                         )}
                       >
                         <Globe className="w-3.5 h-3.5" />
-                        Search
+                        {t('opportunitiesTab.search')}
                         <span className="ml-0.5 max-w-[120px] truncate text-[10px] opacity-70">&quot;{polymarketSearchSubmitted}&quot;</span>
                         <span
                           role="button"
@@ -2236,9 +2236,9 @@ function App() {
                     {(opportunityTabs.find((t) => t.key === opportunitiesView)?.config.hasViewModeSwitcher || opportunitiesView === 'search') && (
                       <div className="flex items-center gap-0.5 ml-3 border border-border/50 rounded-lg p-0.5 bg-card/50">
                         {([
-                          { mode: 'card' as const, icon: LayoutGrid, label: 'Cards' },
-                          { mode: 'list' as const, icon: List, label: 'List' },
-                          { mode: 'terminal' as const, icon: Terminal, label: 'Terminal' },
+                          { mode: 'card' as const, icon: LayoutGrid, label: t('opportunitiesTab.viewModeCards') },
+                          { mode: 'list' as const, icon: List, label: t('opportunitiesTab.viewModeList') },
+                          { mode: 'terminal' as const, icon: Terminal, label: t('opportunitiesTab.viewModeTerminal') },
                         ]).map(({ mode, icon: Icon, label }) => (
                           <Tooltip key={mode} delayDuration={0}>
                             <TooltipTrigger asChild>
@@ -2964,7 +2964,7 @@ function App() {
                     )}
                   >
                     <Target className="w-3.5 h-3.5" />
-                    Discovery
+                    {t('traderSub.discovery')}
                   </Button>
                   <Button
                     variant="outline"
@@ -2978,7 +2978,7 @@ function App() {
                     )}
                   >
                     <Users className="w-3.5 h-3.5" />
-                    Tracked
+                    {t('traderSub.tracked')}
                   </Button>
                   <Button
                     variant="outline"
@@ -2992,7 +2992,7 @@ function App() {
                     )}
                   >
                     <Activity className="w-3.5 h-3.5" />
-                    Pool
+                    {t('traderSub.pool')}
                   </Button>
                   <Button
                     variant="outline"
@@ -3006,7 +3006,7 @@ function App() {
                     )}
                   >
                     <Search className="w-3.5 h-3.5" />
-                    Analysis
+                    {t('traderSub.analysis')}
                   </Button>
                   <Button
                     variant="outline"
@@ -3020,7 +3020,7 @@ function App() {
                     )}
                   >
                     <Network className="w-3.5 h-3.5" />
-                    Graph
+                    {t('traderSub.graph')}
                   </Button>
                   <Button
                     variant="outline"
@@ -3034,7 +3034,7 @@ function App() {
                     )}
                   >
                     <Code2 className="w-3.5 h-3.5" />
-                    Manage
+                    {t('traderSub.manage')}
                   </Button>
                 </div>
                 <div

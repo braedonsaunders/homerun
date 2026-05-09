@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Brain, Layers3, Shield, Sparkles } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { cn } from '../lib/utils'
 import UnifiedStrategiesManager from './UnifiedStrategiesManager'
 import MLModelsPanel from './MLModelsPanel'
@@ -25,6 +26,7 @@ export default function StrategiesPanel({
   onSourceFilterApplied,
   onOpenCopilot,
 }: StrategiesPanelProps) {
+  const { t } = useTranslation()
   const [viewMode, setViewMode] = useState<ViewMode>('strategies')
 
   // Honor a "Research" deep-link from the strategy editor's Research button.
@@ -66,7 +68,7 @@ export default function StrategiesPanel({
           )}
         >
           <Layers3 className="w-3.5 h-3.5" />
-          Strategies
+          {t('strategiesTab.strategies')}
         </button>
         <button
           onClick={() => setViewMode('research')}
@@ -78,7 +80,7 @@ export default function StrategiesPanel({
           )}
         >
           <Sparkles className="w-3.5 h-3.5" />
-          Research
+          {t('strategiesTab.research')}
         </button>
         <button
           onClick={() => setViewMode('ml-models')}
@@ -90,7 +92,7 @@ export default function StrategiesPanel({
           )}
         >
           <Brain className="w-3.5 h-3.5" />
-          Machine Learning
+          {t('strategiesTab.machineLearning')}
         </button>
         <button
           onClick={() => setViewMode('validation')}
@@ -102,7 +104,7 @@ export default function StrategiesPanel({
           )}
         >
           <Shield className="w-3.5 h-3.5" />
-          Validation
+          {t('strategiesTab.validation')}
         </button>
       </div>
 

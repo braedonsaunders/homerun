@@ -17,7 +17,23 @@
     "news": "新闻",
     "weather": "天气",
     "crypto": "加密货币",
-    "sports": "体育"
+    "sports": "体育",
+    "search": "搜索",
+    "viewModeCards": "卡片",
+    "viewModeList": "列表",
+    "viewModeTerminal": "终端"
+  },
+  "dataTab": {
+    "map": "地图",
+    "events": "事件",
+    "stories": "新闻",
+    "sources": "来源"
+  },
+  "strategiesTab": {
+    "strategies": "策略",
+    "research": "研究",
+    "machineLearning": "机器学习",
+    "validation": "验证"
   },
   "traderSub": {
     "discovery": "发现",
