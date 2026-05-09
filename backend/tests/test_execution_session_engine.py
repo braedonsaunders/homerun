@@ -1952,3 +1952,113 @@ async def test_execute_signal_requests_bundle_recovery_after_partial_fill(monkey
     assert bundle_recovery["recovered_to_flat"] is True
     assert bundle_recovery["residual_exposure"] is False
 
+
+@pytest.mark.asyncio
+async def test_execute_signal_shadow_persists_with_commit_so_async_session_close_does_not_rollback(monkeypatch):
+    # Regression: in shadow mode ``submit_order`` opens a per-call
+    # ``AsyncSessionLocal`` and never commits it itself.  Without an
+    # explicit commit inside ``execute_signal`` the ``async with`` exit
+    # rolls back every flushed trader_order/leg/session, but the worker
+    # has already mutated ``hot_state`` because the result status was
+    # ``executed``.  Result: phantom open positions in memory, empty
+    # ``trader_orders`` table, ``trader_open_positions`` blocker creeping
+    # up to ``next=14 max=12`` until the worker is restarted.  This test
+    # asserts the engine itself emits ``commit()`` so the persisted rows
+    # survive the per-call session lifetime.
+    db = _FailureProjectionDb()
+    engine = session_engine_module.ExecutionSessionEngine(db)
+
+    plan = {"policy": "SINGLE_LEG", "plan_id": "plan-shadow-commit"}
+    legs = [
+        {
+            "leg_id": "leg-shadow-commit-1",
+            "market_id": "market-shadow-commit-1",
+            "market_question": "Will the shadow path commit before close?",
+            "token_id": "token-shadow-commit-1",
+            "side": "buy",
+            "outcome": "yes",
+            "requested_notional_usd": 10.0,
+            "requested_shares": 20.0,
+            "limit_price": 0.5,
+            "price_policy": "taker_limit",
+            "time_in_force": "IOC",
+            "post_only": False,
+        }
+    ]
+    constraints = {"max_unhedged_notional_usd": 0.0, "hedge_timeout_seconds": 20}
+    monkeypatch.setattr(engine, "_build_plan", lambda *args, **kwargs: (plan, legs, constraints))
+    monkeypatch.setattr(session_engine_module, "supports_reprice", lambda _policy: False)
+    monkeypatch.setattr(session_engine_module, "execution_waves", lambda _policy, leg_rows: [leg_rows])
+    monkeypatch.setattr(session_engine_module, "requires_pair_lock", lambda _policy, _constraints: False)
+    monkeypatch.setattr(session_engine_module, "set_trade_signal_status", AsyncMock(return_value=True))
+    monkeypatch.setattr(session_engine_module, "sync_trader_position_inventory", AsyncMock(return_value={}))
+    monkeypatch.setattr(session_engine_module.event_bus, "publish", AsyncMock(return_value=None))
+    monkeypatch.setattr(engine, "_publish_hot_signal_status", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        session_engine_module,
+        "submit_execution_wave",
+        AsyncMock(
+            return_value=[
+                _leg_result(
+                    leg_id="leg-shadow-commit-1",
+                    status="executed",
+                    notional_usd=10.0,
+                    shares=20.0,
+                    provider_order_id="provider-shadow-commit-1",
+                    provider_clob_order_id="clob-shadow-commit-1",
+                    effective_price=0.5,
+                    payload={
+                        "provider": "test",
+                        "token_id": "token-shadow-commit-1",
+                        "filled_size": 20.0,
+                        "average_fill_price": 0.5,
+                        "filled_notional_usd": 10.0,
+                    },
+                )
+            ]
+        ),
+    )
+
+    signal = SimpleNamespace(
+        id="signal-shadow-commit",
+        source="copy_trade",
+        trace_id="trace-shadow-commit",
+        strategy_type="copy_trade",
+        strategy_context_json={},
+        payload_json={},
+        market_id="market-shadow-commit-1",
+        market_question="Will the shadow path commit before close?",
+        direction="buy_yes",
+        entry_price=0.5,
+        edge_percent=4.0,
+        confidence=0.7,
+    )
+    result = await engine.execute_signal(
+        trader_id="trader-shadow-commit",
+        signal=signal,
+        decision_id="decision-shadow-commit",
+        strategy_key="copy_trade",
+        strategy_version=None,
+        strategy_params={},
+        risk_limits={},
+        mode="shadow",
+        size_usd=10.0,
+        reason="shadow-commit-regression",
+    )
+
+    assert result.status == "completed"
+    assert result.orders_written == 1
+    # The whole point: ``execute_signal`` MUST commit() before returning,
+    # otherwise the per-call submit_session that wraps this call (in
+    # shadow path) rolls back every ``self.db.add(...) + flush()`` above
+    # and the ``trader_orders`` row never reaches Postgres.
+    assert db.commit_calls >= 1, (
+        "execute_signal must commit the persisted projection before "
+        "returning; otherwise per-call submit_session rollback strands "
+        "trader_orders in memory while hot_state records phantoms"
+    )
+    trader_rows = db.persisted_rows_by_type.get("TraderOrder") or []
+    execution_rows = db.persisted_rows_by_type.get("ExecutionSessionOrder") or []
+    assert len(trader_rows) == 1
+    assert len(execution_rows) == 1
+

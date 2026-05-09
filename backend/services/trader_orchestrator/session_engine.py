@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import ExecutionSessionEvent, ExecutionSessionLeg, ExecutionSessionOrder, TraderOrder, release_conn
@@ -54,9 +55,12 @@ from services.trader_orchestrator_state import (
 )
 from services.trader_orchestrator.fast_idempotency import derive_clob_idempotency_key
 from utils.converters import safe_float, safe_int
+from utils.logger import get_logger
 from utils.signal_helpers import normalize_position_side
 from utils.utcnow import utcnow
 import services.trader_hot_state as hot_state
+
+logger = get_logger(__name__)
 
 
 _MIN_BUNDLE_EXECUTION_SHARES = 5.0
@@ -1244,6 +1248,47 @@ class ExecutionSessionEngine:
                         mode=mode_key,
                         commit=False,
                     )
+            # Persist the flushed session/leg/order/event rows to Postgres
+            # before returning.  Without this commit, when ``submit_order``
+            # uses a per-call ``AsyncSessionLocal`` (the shadow path —
+            # see workers/trader_orchestrator_worker.py::submit_order),
+            # ``async with`` exit calls ``session.close()`` which
+            # implicitly rolls back every flush above.  The caller would
+            # still see ``status="executed"`` and mutate ``hot_state``
+            # via ``upsert_active_order``, leaving phantom open positions
+            # against an empty database — exactly the race that was
+            # blocking shadow Copy Trade with ``next=14 max=12``.  Commit
+            # here is also safe when the worker reuses a shared session
+            # (fast/live paths): a no-op if there's nothing pending.
+            try:
+                await self.db.commit()
+            except DBAPIError as commit_exc:
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
+                logger.error(
+                    "execution_session persist commit failed",
+                    session_id=str(getattr(session_row, "id", "") or ""),
+                    trader_id=str(getattr(session_row, "trader_id", "") or ""),
+                    mode=str(getattr(session_row, "mode", "") or ""),
+                    signal_status=normalized_signal_status,
+                    trader_order_count=len(trader_orders),
+                    error_class=type(commit_exc).__name__,
+                    error=str(getattr(commit_exc, "orig", commit_exc))[:200],
+                )
+                raise
+            if trader_orders:
+                logger.info(
+                    "execution_session persisted",
+                    session_id=str(getattr(session_row, "id", "") or ""),
+                    trader_id=str(getattr(session_row, "trader_id", "") or ""),
+                    mode=str(getattr(session_row, "mode", "") or ""),
+                    signal_status=normalized_signal_status,
+                    trader_order_count=len(trader_orders),
+                    execution_order_count=len(execution_orders),
+                    leg_count=len(leg_rows),
+                )
             try:
                 await event_bus.publish("execution_session", _serialize_execution_session(session_row))
             except Exception:
