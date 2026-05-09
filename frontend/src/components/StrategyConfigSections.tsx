@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -75,6 +76,7 @@ function StrategyConfigCard({
   strategy: StrategyPlugin
   queryClient: ReturnType<typeof useQueryClient>
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [localConfig, setLocalConfig] = useState<Record<string, unknown>>({})
   const [localEnabled, setLocalEnabled] = useState(Boolean(strategy.enabled))
@@ -112,15 +114,15 @@ function StrategyConfigCard({
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['plugins'] })
-      setSaveMsg({ type: 'success', text: 'Saved' })
+      setSaveMsg({ type: 'success', text: t('strategyConfigSections.saved') })
       setDirty(false)
       setTimeout(() => setSaveMsg(null), 2000)
     },
     onError: (error: unknown) => {
       const message =
         error && typeof error === 'object' && 'message' in error
-          ? String((error as { message?: string }).message || 'Save failed')
-          : 'Save failed'
+          ? String((error as { message?: string }).message || t('strategyConfigSections.saveFailed'))
+          : t('strategyConfigSections.saveFailed')
       setSaveMsg({ type: 'error', text: message })
       setTimeout(() => setSaveMsg(null), 4000)
     },
@@ -147,11 +149,11 @@ function StrategyConfigCard({
             {strategy.name}
           </h4>
           <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted/60 text-muted-foreground">
-            {fieldCount} params
+            {t('strategyConfigSections.paramsCount', { n: fieldCount })}
           </span>
           {dirty && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
-              unsaved
+              {t('strategyConfigSections.unsaved')}
             </span>
           )}
           {saveMsg && (
@@ -175,7 +177,7 @@ function StrategyConfigCard({
         <div className="flex items-center gap-1.5">
           {!localEnabled && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/10 text-red-400">
-              disabled
+              {t('strategyConfigSections.disabled')}
             </span>
           )}
           <Switch
@@ -234,7 +236,7 @@ function StrategyConfigCard({
               className="gap-1 text-[10px] h-6"
             >
               <ExternalLink className="w-2.5 h-2.5" />
-              Edit Code
+              {t('strategyConfigSections.editCode')}
             </Button>
 
             <Button
@@ -251,7 +253,7 @@ function StrategyConfigCard({
               ) : (
                 <Save className="w-2.5 h-2.5" />
               )}
-              {saveMutation.isPending ? 'Saving...' : 'Save Config'}
+              {saveMutation.isPending ? t('strategyConfigSections.saving') : t('strategyConfigSections.saveConfig')}
             </Button>
           </div>
         </div>

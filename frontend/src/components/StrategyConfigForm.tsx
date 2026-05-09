@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
@@ -73,6 +74,7 @@ function CommaSeparatedListInput({
   value: unknown
   onChange: (value: unknown) => void
 }) {
+  const { t } = useTranslation()
   const normalizedCsv = useMemo(() => _csvListFromValue(value).join(', '), [value])
   const [draftCsv, setDraftCsv] = useState(normalizedCsv)
   const [isFocused, setIsFocused] = useState(false)
@@ -106,7 +108,7 @@ function CommaSeparatedListInput({
           setDraftCsv(parsed.join(', '))
         }}
         className="mt-1 h-8 text-xs font-mono"
-        placeholder="value1, value2"
+        placeholder={t('strategyConfigForm.csvPlaceholder')}
       />
     </div>
   )
@@ -121,6 +123,7 @@ function JsonArrayField({
   value: unknown
   onChange: (val: unknown) => void
 }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const items: Record<string, unknown>[] = Array.isArray(value) ? value : []
   const schema = field.item_schema || {}
@@ -165,7 +168,7 @@ function JsonArrayField({
         </svg>
         {field.label}
         <span className="ml-1 inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900 px-2 py-0.5 text-xs font-medium text-blue-800 dark:text-blue-200">
-          {items.length} {items.length === 1 ? 'item' : 'items'}
+          {items.length === 1 ? t('strategyConfigForm.itemSingle', { n: items.length }) : t('strategyConfigForm.itemPlural', { n: items.length })}
         </span>
       </button>
       {field.description && (
@@ -182,7 +185,7 @@ function JsonArrayField({
                 type="button"
                 onClick={() => removeItem(idx)}
                 className="absolute top-2 right-2 text-gray-400 hover:text-red-500 transition-colors"
-                title="Remove item"
+                title={t('strategyConfigForm.removeItem')}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -219,7 +222,7 @@ function JsonArrayField({
                               updateItem(idx, key, e.target.value)
                             }
                           }}
-                          placeholder={`${key} (JSON)`}
+                          placeholder={t('strategyConfigForm.keyJson', { key })}
                           className="block w-full rounded-md border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white text-xs shadow-sm focus:border-blue-500 focus:ring-blue-500"
                         />
                       </div>
@@ -249,7 +252,7 @@ function JsonArrayField({
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            Add Item
+            {t('strategyConfigForm.addItem')}
           </button>
         </div>
       )}
@@ -268,6 +271,7 @@ function ArrayStringOptionsInput({
   options: Array<{ value: string; label: string }>
   onChange: (value: unknown) => void
 }) {
+  const { t } = useTranslation()
   const selectedValues = useMemo(() => {
     if (!Array.isArray(value)) return new Set<string>()
     return new Set(
@@ -304,14 +308,14 @@ function ArrayStringOptionsInput({
       <div className="flex items-center justify-between gap-2">
         <Label className="text-[11px] text-muted-foreground">{field.label}</Label>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-muted-foreground">{selectedValues.size} selected</span>
+          <span className="text-[10px] text-muted-foreground">{t('strategyConfigForm.selectedCount', { n: selectedValues.size })}</span>
           {selectedValues.size > 0 ? (
             <button
               type="button"
               onClick={clearSelected}
               className="text-[10px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
             >
-              Clear
+              {t('strategyConfigForm.clear')}
             </button>
           ) : null}
         </div>
@@ -319,7 +323,7 @@ function ArrayStringOptionsInput({
       <Input
         value={filterText}
         onChange={(event) => setFilterText(event.target.value)}
-        placeholder="Filter options..."
+        placeholder={t('strategyConfigForm.filterOptions')}
         className="h-8 text-xs"
       />
       <div className="max-h-36 overflow-y-auto rounded-md border border-border/70 bg-background/70 p-2 space-y-1">
@@ -342,7 +346,7 @@ function ArrayStringOptionsInput({
             )
           })
         ) : (
-          <p className="text-[11px] text-muted-foreground">No options match this filter.</p>
+          <p className="text-[11px] text-muted-foreground">{t('strategyConfigForm.noOptionsMatch')}</p>
         )}
       </div>
     </div>

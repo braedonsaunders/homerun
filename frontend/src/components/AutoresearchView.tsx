@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query'
 import {
   Play,
@@ -126,6 +127,7 @@ export default function AutoresearchView({
   forceTopTab,
   forceArMode,
 }: AutoresearchViewProps) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const abortRef = useRef<AbortController | null>(null)
 
@@ -284,7 +286,7 @@ export default function AutoresearchView({
                   decision: 'pending',
                   new_score: Number.isFinite(score) ? score : 0,
                   score_delta: 0,
-                  reasoning: 'Iteration started; waiting for proposal.',
+                  reasoning: t('autoresearchView.iterationStartedWaiting'),
                   changed_params: null,
                   duration_seconds: 0,
                   source_diff: null,
@@ -368,7 +370,7 @@ export default function AutoresearchView({
       controller.signal,
       arMode === 'code' ? { mode: 'code', strategy_id: selectedStrategyId || undefined } : { mode: 'params' },
     )
-  }, [trader.id, queryClient, arMode, selectedStrategyId, selectedStrategyKey])
+  }, [trader.id, queryClient, arMode, selectedStrategyId, selectedStrategyKey, t])
 
   const handleStop = useCallback(async () => {
     abortRef.current?.abort()
@@ -417,7 +419,7 @@ export default function AutoresearchView({
                   : 'border-transparent text-muted-foreground hover:text-foreground'
               )}
             >
-              <SlidersHorizontal className="w-3 h-3" /> Parameters
+              <SlidersHorizontal className="w-3 h-3" /> {t('autoresearchView.parameters')}
             </button>
             <button
               onClick={() => setTopTab('autoresearch')}
@@ -428,7 +430,7 @@ export default function AutoresearchView({
                   : 'border-transparent text-muted-foreground hover:text-foreground'
               )}
             >
-              <FlaskConical className="w-3 h-3" /> Autoresearch
+              <FlaskConical className="w-3 h-3" /> {t('autoresearchView.autoresearch')}
             </button>
           </div>
         )}
@@ -439,40 +441,40 @@ export default function AutoresearchView({
             <div className="flex h-full min-h-0 flex-col gap-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
-                  <p className="text-[11px] font-medium">Parameter Workspace</p>
+                  <p className="text-[11px] font-medium">{t('autoresearchView.parameterWorkspace')}</p>
                   <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
-                    {dynamicStrategyParamSections.reduce((sum, s) => sum + s.fieldKeys.length, 0)} fields
+                    {t('autoresearchView.fieldsCount', { n: dynamicStrategyParamSections.reduce((sum, s) => sum + s.fieldKeys.length, 0) })}
                   </Badge>
                   {tuneDraftDirty && (
-                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-amber-500">UNSAVED</span>
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-amber-500">{t('autoresearchView.unsaved')}</span>
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[10px]"
                     onClick={() => { applyTraderDraftSettings(trader); setTuneDraftDirty(false) }}>
-                    Discard Edits
+                    {t('autoresearchView.discardEdits')}
                   </Button>
                   <Button type="button" size="sm" variant="outline" className="h-6 px-2 text-[10px]"
                     onClick={() => revertTuneParametersMutation.mutate()}
                     disabled={revertTuneParametersMutation.isPending || !tuneRevertSnapshot || tuneRevertSnapshot.traderId !== trader.id}>
                     {revertTuneParametersMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-                    Revert Last Applied
+                    {t('autoresearchView.revertLastApplied')}
                   </Button>
                   <Button type="button" size="sm" className="h-6 px-2 text-[10px]"
                     onClick={() => saveTuneParametersMutation.mutate()}
                     disabled={saveTuneParametersMutation.isPending || !tuneDraftDirty}>
                     {saveTuneParametersMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-                    Save Parameters
+                    {t('autoresearchView.saveParameters')}
                   </Button>
                 </div>
               </div>
               {tuneRevertSnapshot && tuneRevertSnapshot.traderId === trader.id && (
-                <p className="text-[10px] text-muted-foreground/80">Revert snapshot captured at {formatTimestamp(tuneRevertSnapshot.capturedAt)}.</p>
+                <p className="text-[10px] text-muted-foreground/80">{t('autoresearchView.revertSnapshotCaptured', { time: formatTimestamp(tuneRevertSnapshot.capturedAt) })}</p>
               )}
               {tuneSaveError && <p className="text-[10px] text-red-500">{tuneSaveError}</p>}
               {tuneRevertError && <p className="text-[10px] text-red-500">{tuneRevertError}</p>}
               {dynamicStrategyParamSections.length === 0 ? (
-                <p className="text-[10px] text-muted-foreground/80">No dynamic parameter fields available for this bot.</p>
+                <p className="text-[10px] text-muted-foreground/80">{t('autoresearchView.noDynamicFields')}</p>
               ) : (
                 <Tabs value={tuneParamSectionTab} onValueChange={setTuneParamSectionTab}
                   className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -489,7 +491,7 @@ export default function AutoresearchView({
                   {dynamicStrategyParamSections.map((section) => (
                     <TabsContent key={section.sectionKey} value={section.sectionKey} className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden">
                       {section.groups.length === 0 ? (
-                        <p className="text-[10px] text-muted-foreground/80">No grouped parameter fields.</p>
+                        <p className="text-[10px] text-muted-foreground/80">{t('autoresearchView.noGroupedFields')}</p>
                       ) : (
                         <Tabs defaultValue={section.groups[0].key} className="flex min-h-0 flex-1 flex-col overflow-hidden">
                           <div className="shrink-0 overflow-x-auto pb-1">
@@ -535,12 +537,12 @@ export default function AutoresearchView({
                   {forceArMode === 'params' ? (
                     <>
                       <SlidersHorizontal className="w-3 h-3 text-cyan-400" />
-                      <span>Parameter experimenter — operates on this bot's live strategy params.</span>
+                      <span>{t('autoresearchView.paramExperimenter')}</span>
                     </>
                   ) : (
                     <>
                       <Code2 className="w-3 h-3 text-purple-400" />
-                      <span>Code experimenter — evolves strategy source against the backtest data plane.</span>
+                      <span>{t('autoresearchView.codeExperimenter')}</span>
                     </>
                   )}
                 </div>
@@ -553,7 +555,7 @@ export default function AutoresearchView({
                       arMode === 'params' ? 'bg-cyan-500/20 text-cyan-400' : 'text-muted-foreground hover:text-foreground'
                     )}
                   >
-                    <SlidersHorizontal className="w-3 h-3" /> Parameters
+                    <SlidersHorizontal className="w-3 h-3" /> {t('autoresearchView.parameters')}
                   </button>
                   <button
                     onClick={() => setArMode('code')}
@@ -562,7 +564,7 @@ export default function AutoresearchView({
                       arMode === 'code' ? 'bg-purple-500/20 text-purple-400' : 'text-muted-foreground hover:text-foreground'
                     )}
                   >
-                    <Code2 className="w-3 h-3" /> Code
+                    <Code2 className="w-3 h-3" /> {t('autoresearchView.code')}
                   </button>
                 </div>
               )}
@@ -579,7 +581,7 @@ export default function AutoresearchView({
                     onChange={(e) => setSelectedStrategyKey(e.target.value)}
                     className="h-7 max-w-[220px] rounded-md border border-border/60 bg-background px-2 text-[10px]"
                   >
-                    <option value="">Select strategy...</option>
+                    <option value="">{t('autoresearchView.selectStrategy')}</option>
                     {traderStrategies.map(key => (
                       <option key={key} value={key}>{key}</option>
                     ))}
@@ -587,7 +589,7 @@ export default function AutoresearchView({
                 )
               )}
               {arMode === 'code' && traderStrategies.length === 0 && (
-                <span className="text-[10px] text-amber-400">No strategies configured on this trader</span>
+                <span className="text-[10px] text-amber-400">{t('autoresearchView.noStrategiesConfigured')}</span>
               )}
 
               {/* Status + controls */}
@@ -612,16 +614,16 @@ export default function AutoresearchView({
                 </button>
                 {isModeStreaming ? (
                   <Button size="sm" variant="destructive" className="h-6 px-2 text-[10px]" onClick={handleStop}>
-                    <Square className="w-3 h-3 mr-1" /> Stop
+                    <Square className="w-3 h-3 mr-1" /> {t('autoresearchView.stop')}
                   </Button>
                 ) : (
                   <Button size="sm" className="h-6 px-2 text-[10px]" onClick={handleStart}
                     disabled={(arMode === 'code' && !selectedStrategyKey) || (isStreaming && streamingMode !== arMode)}>
-                    <Play className="w-3 h-3 mr-1" /> Start
+                    <Play className="w-3 h-3 mr-1" /> {t('autoresearchView.start')}
                   </Button>
                 )}
                 {isStreaming && streamingMode !== arMode && (
-                  <span className="text-[9px] text-amber-400">{streamingMode} running</span>
+                  <span className="text-[9px] text-amber-400">{t('autoresearchView.modeRunning', { mode: streamingMode })}</span>
                 )}
               </div>
             </div>
@@ -631,18 +633,18 @@ export default function AutoresearchView({
               <div className="shrink-0 border-b border-border/40 px-3 py-2 space-y-2">
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                   <div>
-                    <Label className="text-[10px] text-muted-foreground">Model Override</Label>
+                    <Label className="text-[10px] text-muted-foreground">{t('autoresearchView.modelOverride')}</Label>
                     <Input value={settings?.model ?? ''} onChange={(e) => settingsMutation.mutate({ model: e.target.value || null })}
-                      placeholder="app default" className="mt-0.5 h-7 text-xs font-mono" />
+                      placeholder={t('autoresearchView.appDefault')} className="mt-0.5 h-7 text-xs font-mono" />
                   </div>
                   <div>
-                    <Label className="text-[10px] text-muted-foreground">Max Iterations</Label>
+                    <Label className="text-[10px] text-muted-foreground">{t('autoresearchView.maxIterations')}</Label>
                     <Input type="number" min={1} max={500} value={settings?.max_iterations ?? 50}
                       onChange={(e) => settingsMutation.mutate({ max_iterations: parseInt(e.target.value) || 50 })}
                       className="mt-0.5 h-7 text-xs font-mono" />
                   </div>
                   <div>
-                    <Label className="text-[10px] text-muted-foreground">Temperature</Label>
+                    <Label className="text-[10px] text-muted-foreground">{t('autoresearchView.temperature')}</Label>
                     <Input type="number" min={0} max={2} step={0.1} value={settings?.temperature ?? 0.2}
                       onChange={(e) => settingsMutation.mutate({ temperature: parseFloat(e.target.value) || 0.2 })}
                       className="mt-0.5 h-7 text-xs font-mono" />
@@ -651,20 +653,20 @@ export default function AutoresearchView({
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <Switch checked={settings?.auto_apply ?? true}
                         onCheckedChange={(v) => settingsMutation.mutate({ auto_apply: v })} />
-                      <span className="text-[10px]">Auto-apply kept changes</span>
+                      <span className="text-[10px]">{t('autoresearchView.autoApplyKept')}</span>
                     </label>
                   </div>
                 </div>
                 {arMode === 'params' && (
                   <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                     <div>
-                      <Label className="text-[10px] text-muted-foreground">Walk-Forward Windows</Label>
+                      <Label className="text-[10px] text-muted-foreground">{t('autoresearchView.walkForwardWindows')}</Label>
                       <Input type="number" min={1} max={20} value={settings?.walk_forward_windows ?? 5}
                         onChange={(e) => settingsMutation.mutate({ walk_forward_windows: parseInt(e.target.value) || 5 })}
                         className="mt-0.5 h-7 text-xs font-mono" />
                     </div>
                     <div>
-                      <Label className="text-[10px] text-muted-foreground">Train Ratio</Label>
+                      <Label className="text-[10px] text-muted-foreground">{t('autoresearchView.trainRatio')}</Label>
                       <Input type="number" min={0.5} max={0.9} step={0.05} value={settings?.train_ratio ?? 0.7}
                         onChange={(e) => settingsMutation.mutate({ train_ratio: parseFloat(e.target.value) || 0.7 })}
                         className="mt-0.5 h-7 text-xs font-mono" />
@@ -672,10 +674,10 @@ export default function AutoresearchView({
                   </div>
                 )}
                 <div>
-                  <Label className="text-[10px] text-muted-foreground">Mandate / Constraints</Label>
+                  <Label className="text-[10px] text-muted-foreground">{t('autoresearchView.mandateConstraints')}</Label>
                   <textarea value={settings?.mandate ?? ''}
                     onChange={(e) => settingsMutation.mutate({ mandate: e.target.value || null })}
-                    placeholder="e.g. Keep max drawdown below 15%, focus on win rate..."
+                    placeholder={t('autoresearchView.mandatePlaceholder')}
                     className="mt-0.5 min-h-[40px] max-h-[64px] w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs leading-relaxed resize-y" />
                 </div>
               </div>
@@ -691,10 +693,10 @@ export default function AutoresearchView({
                   <div className="text-center space-y-1">
                     <FlaskConical className="w-8 h-8 mx-auto opacity-20" />
                     <p className="text-[10px]">
-                      {isModeStreaming ? 'Waiting for first iteration...' : (
+                      {isModeStreaming ? t('autoresearchView.waitingFirstIteration') : (
                         arMode === 'code'
-                          ? 'Select a strategy and click Start to begin code evolution.'
-                          : 'Click Start to begin parameter optimization.'
+                          ? t('autoresearchView.selectStrategyToStart')
+                          : t('autoresearchView.clickStartToOptimize')
                       )}
                     </p>
                   </div>
@@ -736,7 +738,7 @@ export default function AutoresearchView({
                                 {iter.score_delta > 0 ? '+' : ''}{iter.score_delta.toFixed(3)}
                               </span>
                               <span className="flex-1 text-[10px] text-muted-foreground truncate">
-                                {paramEntries.length > 0 ? paramEntries.map(([k]) => k).join(', ') : <span className="italic">no changes</span>}
+                                {paramEntries.length > 0 ? paramEntries.map(([k]) => k).join(', ') : <span className="italic">{t('autoresearchView.noChanges')}</span>}
                               </span>
                               <span className="text-[9px] font-mono text-muted-foreground shrink-0">{iter.duration_seconds.toFixed(0)}s</span>
                             </button>
@@ -747,7 +749,7 @@ export default function AutoresearchView({
                                 {/* Reasoning */}
                                 {iter.reasoning && (
                                   <div>
-                                    <p className="text-[9px] font-medium text-muted-foreground mb-0.5">LLM Reasoning</p>
+                                    <p className="text-[9px] font-medium text-muted-foreground mb-0.5">{t('autoresearchView.llmReasoning')}</p>
                                     <p className="text-[10px] leading-relaxed text-foreground/90 whitespace-pre-wrap">{iter.reasoning}</p>
                                   </div>
                                 )}
@@ -755,7 +757,7 @@ export default function AutoresearchView({
                                 {/* Parameter changes */}
                                 {paramEntries.length > 0 && (
                                   <div>
-                                    <p className="text-[9px] font-medium text-muted-foreground mb-0.5">Parameter Changes</p>
+                                    <p className="text-[9px] font-medium text-muted-foreground mb-0.5">{t('autoresearchView.parameterChanges')}</p>
                                     <div className="grid gap-1">
                                       {paramEntries.map(([key, val]) => (
                                         <div key={key} className="flex items-center gap-2 rounded bg-muted/30 px-2 py-1">
@@ -780,12 +782,12 @@ export default function AutoresearchView({
                         <thead className="sticky top-0 bg-background/90 backdrop-blur-sm">
                           <tr className="text-left text-muted-foreground">
                             <th className="px-1.5 py-1 font-medium w-8">#</th>
-                            <th className="px-1.5 py-1 font-medium w-16">Score</th>
+                            <th className="px-1.5 py-1 font-medium w-16">{t('autoresearchView.colScore')}</th>
                             <th className="px-1.5 py-1 font-medium w-14">&Delta;</th>
                             <th className="px-1.5 py-1 font-medium w-10"></th>
-                            <th className="px-1.5 py-1 font-medium w-10">Valid</th>
-                            <th className="px-1.5 py-1 font-medium">Changes</th>
-                            <th className="px-1.5 py-1 font-medium w-12">Time</th>
+                            <th className="px-1.5 py-1 font-medium w-10">{t('autoresearchView.colValid')}</th>
+                            <th className="px-1.5 py-1 font-medium">{t('autoresearchView.colChanges')}</th>
+                            <th className="px-1.5 py-1 font-medium w-12">{t('autoresearchView.colTime')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -815,14 +817,14 @@ export default function AutoresearchView({
                                   {iter.source_diff_lines ? (
                                     <button onClick={() => setExpandedIteration(expandedIteration === iter.iteration ? null : iter.iteration)}
                                       className="text-[10px] text-purple-400 hover:underline">
-                                      {iter.source_diff_lines} lines
+                                      {t('autoresearchView.linesCount', { n: iter.source_diff_lines })}
                                     </button>
                                   ) : hasDetails ? (
                                     <button onClick={() => setExpandedIteration(expandedIteration === iter.iteration ? null : iter.iteration)}
                                       className="text-[10px] text-purple-400 hover:underline">
-                                      details
+                                      {t('autoresearchView.details')}
                                     </button>
-                                  ) : <span className="italic">none</span>}
+                                  ) : <span className="italic">{t('autoresearchView.none')}</span>}
                                 </td>
                                 <td className="px-1.5 py-1 font-mono text-muted-foreground">{iter.duration_seconds.toFixed(0)}s</td>
                               </tr>
@@ -835,24 +837,24 @@ export default function AutoresearchView({
                       {expandedCodeIteration && (
                         <div className="rounded border border-purple-500/30 bg-background/90 p-2">
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-[9px] text-muted-foreground">Iteration {expandedCodeIteration.iteration} details</span>
-                            <button onClick={() => setExpandedIteration(null)} className="text-[9px] text-muted-foreground hover:text-foreground">close</button>
+                            <span className="text-[9px] text-muted-foreground">{t('autoresearchView.iterationDetails', { n: expandedCodeIteration.iteration })}</span>
+                            <button onClick={() => setExpandedIteration(null)} className="text-[9px] text-muted-foreground hover:text-foreground">{t('autoresearchView.close')}</button>
                           </div>
                           {expandedCodeIteration.reasoning && (
                             <div className="mb-2">
-                              <p className="mb-0.5 text-[9px] font-medium text-muted-foreground">Reasoning</p>
+                              <p className="mb-0.5 text-[9px] font-medium text-muted-foreground">{t('autoresearchView.reasoning')}</p>
                               <p className="whitespace-pre-wrap text-[10px] leading-relaxed text-foreground/90">{expandedCodeIteration.reasoning}</p>
                             </div>
                           )}
                           {expandedCodeIteration.validation_result && (
                             <div className="mb-2">
-                              <p className="mb-0.5 text-[9px] font-medium text-muted-foreground">Validation</p>
+                              <p className="mb-0.5 text-[9px] font-medium text-muted-foreground">{t('autoresearchView.validation')}</p>
                               <p className="text-[10px] text-foreground/90">
                                 {expandedCodeIteration.validation_passed === true
-                                  ? 'passed'
+                                  ? t('autoresearchView.passed')
                                   : expandedCodeIteration.validation_passed === false
-                                  ? 'failed'
-                                  : 'not run'}
+                                  ? t('autoresearchView.failed')
+                                  : t('autoresearchView.notRun')}
                               </p>
                               {expandedValidationErrors.length > 0 && (
                                 <pre className="mt-1 max-h-[80px] overflow-auto rounded bg-muted/30 p-1 text-[9px] leading-tight text-red-400">
@@ -880,7 +882,7 @@ export default function AutoresearchView({
                         <div className="flex items-center gap-2 rounded border border-purple-500/30 bg-purple-500/5 px-2 py-1.5">
                           <FlaskRound className="w-3.5 h-3.5 text-purple-400" />
                           <span className="text-[10px] text-muted-foreground flex-1">
-                            Best version v{String(doneData!.best_version)} improved by +{String(doneData!.improvement)}
+                            {t('autoresearchView.bestVersionImproved', { v: String(doneData!.best_version), improvement: String(doneData!.improvement) })}
                           </span>
                           <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" disabled={abCreating}
                             onClick={async () => {
@@ -889,7 +891,7 @@ export default function AutoresearchView({
                               setAbCreating(false)
                             }}>
                             {abCreating && <Loader2 className="w-3 h-3 mr-1 animate-spin" />}
-                            Create A/B Experiment
+                            {t('autoresearchView.createAbExperiment')}
                           </Button>
                         </div>
                       )}

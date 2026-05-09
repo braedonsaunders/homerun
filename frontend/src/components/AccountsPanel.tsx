@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Activity,
   ChevronRight,
@@ -44,25 +45,10 @@ type DeskView = 'overview' | 'positions' | 'activity'
 type LiveVenue = 'polymarket' | 'kalshi'
 const OPEN_SHADOW_ORDER_STATUSES = new Set(['submitted', 'executed', 'open'])
 
-const WORKSPACE_TAB_CONFIG: { id: AccountsWorkspaceTab; label: string; description: string; icon: React.ElementType }[] = [
-  {
-    id: 'overview',
-    label: 'Overview',
-    description: 'Cross-account balance sheet, exposure, and quick routing',
-    icon: LayoutDashboard,
-  },
-  {
-    id: 'sandbox',
-    label: 'Sandbox Desk',
-    description: 'Simulation account execution and performance workflows',
-    icon: Shield,
-  },
-  {
-    id: 'live',
-    label: 'Live Desk',
-    description: 'Live venue balances, holdings, and safety posture',
-    icon: Zap,
-  },
+const WORKSPACE_TAB_CONFIG: { id: AccountsWorkspaceTab; icon: React.ElementType }[] = [
+  { id: 'overview', icon: LayoutDashboard },
+  { id: 'sandbox', icon: Shield },
+  { id: 'live', icon: Zap },
 ]
 
 interface AccountsPanelProps {
@@ -144,6 +130,7 @@ function liveOrderStatusClass(statusRaw: string): string {
 }
 
 export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
+  const { t } = useTranslation()
   const [accountMode, setAccountMode] = useAtom(accountModeAtom)
   const [selectedAccountId, setSelectedAccountId] = useAtom(selectedAccountIdAtom)
   const [workspaceTab, setWorkspaceTab] = useState<AccountsWorkspaceTab>(accountMode === 'live' ? 'live' : 'overview')
@@ -318,7 +305,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
       connected: polymarketReady,
       accountLabel: tradingStatus?.wallet_address
         ? `${tradingStatus.wallet_address.slice(0, 8)}...${tradingStatus.wallet_address.slice(-6)}`
-        : 'No wallet',
+        : t('accounts.noWallet'),
       balance: polymarketReady ? toFiniteNumber(tradingBalance?.balance) : 0,
       available: polymarketReady ? toFiniteNumber(tradingBalance?.available) : 0,
       exposure,
@@ -347,7 +334,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
       id: 'kalshi',
       label: 'Kalshi',
       connected: kalshiConnected,
-      accountLabel: kalshiStatus?.email || (kalshiStatus?.member_id ? `Member ${kalshiStatus.member_id}` : 'No account'),
+      accountLabel: kalshiStatus?.email || (kalshiStatus?.member_id ? t('accounts.memberPrefix', { id: kalshiStatus.member_id }) : t('accounts.noAccount')),
       balance: kalshiConnected ? toFiniteNumber(kalshiBalance?.balance ?? kalshiStatus?.balance?.balance) : 0,
       available: kalshiConnected ? toFiniteNumber(kalshiBalance?.available ?? kalshiStatus?.balance?.available) : 0,
       exposure,
@@ -412,41 +399,41 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     if (selectedAccountId?.startsWith('live:')) {
       const venue = selectedAccountId === 'live:kalshi' ? kalshiSnapshot : polymarketSnapshot
       return {
-        modeLabel: 'Live',
+        modeLabel: t('accounts.modeLive'),
         accountLabel: venue.label,
-        status: venue.connected ? 'Connected' : 'Disconnected',
+        status: venue.connected ? t('accounts.connected') : t('accounts.disconnected'),
         tone: venue.connected ? 'green' : 'amber',
       }
     }
 
     if (activeSandboxAccount) {
       return {
-        modeLabel: 'Sandbox',
+        modeLabel: t('accounts.modeSandbox'),
         accountLabel: activeSandboxAccount.name,
-        status: `${activeSandboxAccount.total_trades} trades`,
+        status: t('accounts.tradesCount', { n: activeSandboxAccount.total_trades }),
         tone: 'blue',
       }
     }
 
     return {
-      modeLabel: accountMode === 'live' ? 'Live' : 'Sandbox',
-      accountLabel: 'No account selected',
-      status: 'Select account from header',
+      modeLabel: accountMode === 'live' ? t('accounts.modeLive') : t('accounts.modeSandbox'),
+      accountLabel: t('accounts.noAccountSelected'),
+      status: t('accounts.selectAccountFromHeader'),
       tone: 'neutral',
     }
-  }, [selectedAccountId, accountMode, activeSandboxAccount, kalshiSnapshot, polymarketSnapshot])
+  }, [selectedAccountId, accountMode, activeSandboxAccount, kalshiSnapshot, polymarketSnapshot, t])
 
   const allocationRows = useMemo(() => {
     const sandboxRows = sandboxAccounts.map((account) => ({
       id: account.id,
-      label: `Sandbox · ${account.name}`,
+      label: `${t('accounts.modeSandbox')} · ${account.name}`,
       value: account.current_capital || 0,
       tone: 'amber' as const,
     }))
 
     const liveRows = venueSnapshots.map((venue) => ({
       id: `live:${venue.id}`,
-      label: `Live · ${venue.label}`,
+      label: `${t('accounts.modeLive')} · ${venue.label}`,
       value: venue.balance + venue.exposure,
       tone: 'green' as const,
     }))
@@ -460,32 +447,32 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
         ...row,
         share: total > 0 ? (row.value / total) * 100 : 0,
       }))
-  }, [sandboxAccounts, venueSnapshots])
+  }, [sandboxAccounts, venueSnapshots, t])
 
   const riskSignals = useMemo(() => {
     return [
       {
-        label: sandboxMetrics.count === 0 ? 'No sandbox account provisioned' : `${sandboxMetrics.count} sandbox accounts online`,
+        label: sandboxMetrics.count === 0 ? t('accounts.riskNoSandbox') : t('accounts.riskSandboxOnline', { n: sandboxMetrics.count }),
         tone: sandboxMetrics.count === 0 ? 'amber' : 'green',
       },
       {
-        label: liveMetrics.connectedVenues === 2 ? 'Both live venues connected' : `${liveMetrics.connectedVenues}/2 live venues connected`,
+        label: liveMetrics.connectedVenues === 2 ? t('accounts.riskBothVenues') : t('accounts.riskVenuesConnected', { n: liveMetrics.connectedVenues }),
         tone: liveMetrics.connectedVenues === 2 ? 'green' : 'amber',
       },
       {
-        label: liveMetrics.totalUnrealizedPnl >= 0 ? 'Live book currently green' : 'Live book currently red',
+        label: liveMetrics.totalUnrealizedPnl >= 0 ? t('accounts.riskBookGreen') : t('accounts.riskBookRed'),
         tone: liveMetrics.totalUnrealizedPnl >= 0 ? 'green' : 'red',
       },
       {
         label: sandboxMetrics.totalOpenPositions + liveMetrics.totalOpenPositions > 40
-          ? 'High aggregate position count'
-          : 'Position count in normal range',
+          ? t('accounts.riskHighPositions')
+          : t('accounts.riskNormalPositions'),
         tone: sandboxMetrics.totalOpenPositions + liveMetrics.totalOpenPositions > 40 ? 'amber' : 'green',
       },
       {
         label: sandboxMetrics.autotraderOverlay.openPositions > 0
-          ? `Autotrader shadow active (${sandboxMetrics.autotraderOverlay.openPositions} positions)`
-          : 'No autotrader shadow overlay',
+          ? t('accounts.riskAutotraderActive', { n: sandboxMetrics.autotraderOverlay.openPositions })
+          : t('accounts.riskNoAutotrader'),
         tone: sandboxMetrics.autotraderOverlay.openPositions > 0 ? 'amber' : 'green',
       },
     ] as const
@@ -496,6 +483,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
     liveMetrics.connectedVenues,
     liveMetrics.totalOpenPositions,
     liveMetrics.totalUnrealizedPnl,
+    t,
   ])
 
   const sandboxPositionRows = useMemo(() => {
@@ -658,7 +646,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
         <CardContent className="p-0">
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/80 px-3 py-2.5">
             <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground/70">Account Command Center</p>
+              <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground/70">{t('accounts.commandCenter')}</p>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <p className="text-sm font-medium text-foreground">{activeContext.accountLabel}</p>
                 <Badge
@@ -684,69 +672,69 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 className="h-8 gap-1.5 bg-background/40 text-xs"
               >
                 <Settings className="h-3.5 w-3.5" />
-                Account Settings
+                {t('accounts.accountSettings')}
               </Button>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2 p-2.5 md:grid-cols-4 xl:grid-cols-8">
             <DenseMetric
-              label="Simulation Equity"
+              label={t('accounts.simEquity')}
               value={formatUsd(sandboxMetrics.deployableCapital)}
               hint={
                 sandboxMetrics.autotraderOverlay.exposureUsd > 0
-                  ? `Ledger ${formatUsd(sandboxMetrics.totalCapital)} • ${formatUsd(sandboxMetrics.autotraderOverlay.exposureUsd)} deployed`
-                  : `${sandboxMetrics.count} accounts`
+                  ? t('accounts.ledgerDeployedHint', { ledger: formatUsd(sandboxMetrics.totalCapital), deployed: formatUsd(sandboxMetrics.autotraderOverlay.exposureUsd) })
+                  : t('accounts.accountsCount', { n: sandboxMetrics.count })
               }
               icon={Wallet}
             />
             <DenseMetric
-              label="Simulation P&L"
+              label={t('accounts.simPnl')}
               value={formatSignedUsd(sandboxMetrics.totalPnl)}
-              hint={`${sandboxMetrics.totalTrades} trades`}
+              hint={t('accounts.tradesCount', { n: sandboxMetrics.totalTrades })}
               icon={sandboxMetrics.totalPnl >= 0 ? TrendingUp : TrendingDown}
               tone={sandboxMetrics.totalPnl >= 0 ? 'green' : 'red'}
             />
             <DenseMetric
-              label="Simulation ROI"
+              label={t('accounts.simRoi')}
               value={formatSignedPct(sandboxMetrics.roi)}
-              hint="Aggregate"
+              hint={t('accounts.aggregate')}
               icon={BarChart3}
               tone={sandboxMetrics.roi >= 0 ? 'green' : 'red'}
             />
             <DenseMetric
-              label="Simulation Positions"
+              label={t('accounts.simPositions')}
               value={sandboxMetrics.totalOpenPositions.toString()}
               hint={
                 sandboxMetrics.autotraderOverlay.openPositions > 0
-                  ? `Open (${sandboxMetrics.autotraderOverlay.openPositions} autotrader)`
-                  : 'Open'
+                  ? t('accounts.openWithAutotrader', { n: sandboxMetrics.autotraderOverlay.openPositions })
+                  : t('accounts.openLabel')
               }
               icon={Briefcase}
             />
             <DenseMetric
-              label="Live Free Cash"
+              label={t('accounts.liveFreeCash')}
               value={formatUsd(liveMetrics.totalAvailable)}
-              hint={`${liveMetrics.connectedVenues}/2 venues connected`}
+              hint={t('accounts.venuesConnected', { n: liveMetrics.connectedVenues })}
               icon={DollarSign}
             />
             <DenseMetric
-              label="Live Exposure"
+              label={t('accounts.liveExposure')}
               value={formatUsd(liveMetrics.totalExposure)}
-              hint={`${liveMetrics.totalOpenPositions} open positions`}
+              hint={t('accounts.openPositionsCount', { n: liveMetrics.totalOpenPositions })}
               icon={Activity}
             />
             <DenseMetric
-              label="Live Unrealized"
+              label={t('accounts.liveUnrealized')}
               value={formatSignedUsd(liveMetrics.totalUnrealizedPnl)}
-              hint="Cross-venue"
+              hint={t('accounts.crossVenue')}
               icon={liveMetrics.totalUnrealizedPnl >= 0 ? TrendingUp : TrendingDown}
               tone={liveMetrics.totalUnrealizedPnl >= 0 ? 'green' : 'red'}
             />
             <DenseMetric
-              label="Fleet Balance"
+              label={t('accounts.fleetBalance')}
               value={formatUsd(sandboxMetrics.totalCapital + liveMetrics.totalBalance)}
-              hint="Simulation + Live"
+              hint={t('accounts.simulationPlusLive')}
               icon={Wallet}
             />
           </div>
@@ -775,7 +763,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
               )}
             >
               <tab.icon className="h-3.5 w-3.5" />
-              {tab.label}
+              {tab.id === 'overview' ? t('accounts.tabOverview') : tab.id === 'sandbox' ? t('accounts.tabSandboxDesk') : t('accounts.tabLiveDesk')}
             </Button>
           ))}
         </div>
@@ -788,8 +776,8 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
               <CardContent className="flex h-full min-h-0 flex-col p-0">
                 <div className="flex shrink-0 items-center justify-between border-b border-border/70 px-3 py-2.5">
                   <div>
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Sandbox Fleet</p>
-                    <p className="text-xs text-muted-foreground">All sandbox accounts with real-time P&L context</p>
+                    <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">{t('accounts.sandboxFleet')}</p>
+                    <p className="text-xs text-muted-foreground">{t('accounts.sandboxFleetDesc')}</p>
                   </div>
                   <Button
                     variant="outline"
@@ -797,27 +785,27 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                     onClick={() => openSandboxDesk()}
                     className="h-6 text-[11px]"
                   >
-                    Open Sandbox Desk
+                    {t('accounts.openSandboxDesk')}
                   </Button>
                 </div>
 
                 {sandboxAccounts.length === 0 ? (
                   <div className="px-4 py-8 text-center">
                     <Shield className="mx-auto mb-2 h-6 w-6 text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">No sandbox accounts yet. Create one in Sandbox Desk.</p>
+                    <p className="text-sm text-muted-foreground">{t('accounts.noSandboxAccountsYet')}</p>
                   </div>
                 ) : (
                   <div className="min-h-0 flex-1 overflow-auto">
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="border-b border-border/70 text-muted-foreground">
-                          <th className="px-4 py-2 text-left">Account</th>
-                          <th className="px-3 py-2 text-right">Capital</th>
-                          <th className="px-3 py-2 text-right">P&L</th>
-                          <th className="px-3 py-2 text-right">ROI</th>
-                          <th className="px-3 py-2 text-right">Trades</th>
-                          <th className="px-3 py-2 text-right">Open</th>
-                          <th className="px-4 py-2 text-right">Desk</th>
+                          <th className="px-4 py-2 text-left">{t('accounts.colAccount')}</th>
+                          <th className="px-3 py-2 text-right">{t('accounts.colCapital')}</th>
+                          <th className="px-3 py-2 text-right">{t('accounts.colPnl')}</th>
+                          <th className="px-3 py-2 text-right">{t('accounts.colRoi')}</th>
+                          <th className="px-3 py-2 text-right">{t('accounts.colTrades')}</th>
+                          <th className="px-3 py-2 text-right">{t('accounts.colOpen')}</th>
+                          <th className="px-4 py-2 text-right">{t('accounts.colDesk')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -850,7 +838,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                                 >
                                   <p className="font-medium text-foreground">{account.name}</p>
                                   <p className="text-[11px] text-muted-foreground">
-                                    {account.win_rate.toFixed(1)}% win rate • {account.winning_trades}W/{account.losing_trades}L
+                                    {t('accounts.winRateLine', { rate: account.win_rate.toFixed(1), w: account.winning_trades, l: account.losing_trades })}
                                   </p>
                                 </button>
                               </td>
@@ -870,7 +858,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                                 <p>{totalOpenPositions}</p>
                                 {autotraderOpenPositions > 0 && (
                                   <p className="text-[10px] font-medium text-cyan-300">
-                                    +{autotraderOpenPositions} auto · {formatUsd(autotraderExposure)}
+                                    {t('accounts.autoExposureLine', { n: autotraderOpenPositions, value: formatUsd(autotraderExposure) })}
                                   </p>
                                 )}
                               </td>
@@ -881,7 +869,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                                   onClick={() => openSandboxDesk(account.id)}
                                   className="h-6 px-2 text-[11px]"
                                 >
-                                  Open
+                                  {t('accounts.open')}
                                 </Button>
                               </td>
                             </tr>
@@ -897,8 +885,8 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
             <Card className="xl:col-span-4 min-h-0 border-border bg-card/40 shadow-none">
               <CardContent className="h-full min-h-0 space-y-2.5 overflow-y-auto p-3">
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Live Venues</p>
-                  <p className="text-xs text-muted-foreground">Connection status, balances, and deployment footprint</p>
+                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">{t('accounts.liveVenues')}</p>
+                  <p className="text-xs text-muted-foreground">{t('accounts.liveVenuesDesc')}</p>
                 </div>
                 {venueSnapshots.map((venue) => (
                   <div key={venue.id} className="rounded-lg border border-border/70 bg-background/40 p-2.5">
@@ -917,28 +905,28 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                           venue.connected ? 'bg-green-500/20 text-green-300' : 'bg-amber-500/20 text-amber-300'
                         )}
                       >
-                        {venue.connected ? 'Connected' : 'Disconnected'}
+                        {venue.connected ? t('accounts.connected') : t('accounts.disconnected')}
                       </Badge>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-[11px]">
-                      <MetricPair label="Balance" value={formatUsd(venue.balance)} />
-                      <MetricPair label="Available" value={formatUsd(venue.available)} />
-                      <MetricPair label="Exposure" value={formatUsd(venue.exposure)} />
+                      <MetricPair label={t('accounts.balance')} value={formatUsd(venue.balance)} />
+                      <MetricPair label={t('accounts.available')} value={formatUsd(venue.available)} />
+                      <MetricPair label={t('accounts.exposure')} value={formatUsd(venue.exposure)} />
                       <MetricPair
-                        label="Unrealized"
+                        label={t('accounts.unrealized')}
                         value={formatSignedUsd(venue.unrealizedPnl)}
                         valueClass={venue.unrealizedPnl >= 0 ? 'text-green-300' : 'text-red-300'}
                       />
                     </div>
                     <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
-                      <span>{venue.openPositions} open positions</span>
+                      <span>{t('accounts.openPositionsCount', { n: venue.openPositions })}</span>
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => openLiveDesk(venue.id)}
                         className="h-6 px-2 text-[11px]"
                       >
-                        Focus Desk
+                        {t('accounts.focusDesk')}
                       </Button>
                     </div>
                   </div>
@@ -951,8 +939,8 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
             <CardContent className="h-full min-h-0 space-y-3 overflow-y-auto p-3">
               <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">Allocation & Risk Radar</p>
-                  <p className="text-xs text-muted-foreground">Capital concentration by account and high-level operating posture</p>
+                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">{t('accounts.allocationRiskRadar')}</p>
+                  <p className="text-xs text-muted-foreground">{t('accounts.allocationRiskRadarDesc')}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {riskSignals.map((signal) => (
@@ -974,7 +962,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
 
               <div className="grid grid-cols-1 gap-2 lg:grid-cols-4">
                 {allocationRows.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No account balances available yet.</p>
+                  <p className="text-xs text-muted-foreground">{t('accounts.noAccountBalances')}</p>
                 ) : (
                   allocationRows.map((row) => (
                     <div key={row.id} className="rounded-lg border border-border/60 bg-background/40 p-2">
@@ -1002,13 +990,13 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
         <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[250px_minmax(0,1fr)]">
           <div className="hidden xl:flex min-h-0 flex-col rounded-lg border border-border/70 bg-card overflow-hidden">
             <div className="shrink-0 border-b border-border/50 px-2.5 py-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sandbox Accounts</p>
-              <p className="text-[10px] text-muted-foreground">{sandboxAccounts.length} desks configured</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.sandboxAccounts')}</p>
+              <p className="text-[10px] text-muted-foreground">{t('accounts.desksConfigured', { n: sandboxAccounts.length })}</p>
             </div>
             <ScrollArea className="flex-1 min-h-0">
               <div className="space-y-1.5 p-1.5">
                 {sandboxAccounts.length === 0 ? (
-                  <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">No sandbox accounts configured.</p>
+                  <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">{t('accounts.noSandboxConfigured')}</p>
                 ) : (
                   sandboxAccounts.map((account) => {
                     const isActive = activeSandboxAccountId === account.id
@@ -1036,10 +1024,10 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                           </span>
                         </div>
                         <p className="mt-0.5 text-[9px] text-muted-foreground">
-                          {account.total_trades} trades · {(account.win_rate || 0).toFixed(1)}% WR
+                          {t('accounts.tradesWrLine', { n: account.total_trades, rate: (account.win_rate || 0).toFixed(1) })}
                         </p>
                         <p className="text-[9px] text-muted-foreground">
-                          {account.open_positions + autotraderPositions} open · {formatUsd(account.current_capital || 0)}
+                          {t('accounts.openCapitalLine', { n: account.open_positions + autotraderPositions, value: formatUsd(account.current_capital || 0) })}
                         </p>
                       </button>
                     )
@@ -1052,29 +1040,29 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
           <div className="min-h-0 flex flex-col gap-2">
             <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Active Desk</p>
-                <p className="truncate text-[12px] font-semibold">{activeSandboxAccount?.name || 'None'}</p>
-                <p className="text-[10px] text-muted-foreground">{activeSandboxAccountId ? activeSandboxAccountId : 'Select account'}</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.activeDesk')}</p>
+                <p className="truncate text-[12px] font-semibold">{activeSandboxAccount?.name || t('accounts.none')}</p>
+                <p className="text-[10px] text-muted-foreground">{activeSandboxAccountId ? activeSandboxAccountId : t('accounts.selectAccount')}</p>
               </div>
               <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Open Positions</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.openPositions')}</p>
                 <p className="text-[12px] font-mono">{selectedSandboxOpenPositions}</p>
                 <p className="text-[10px] text-muted-foreground">
-                  {selectedSandboxOverlayOpen > 0 ? `Includes ${selectedSandboxOverlayOpen} autotrader` : 'Manual + strategy fills'}
+                  {selectedSandboxOverlayOpen > 0 ? t('accounts.includesAutotrader', { n: selectedSandboxOverlayOpen }) : t('accounts.manualStrategyFills')}
                 </p>
               </div>
               <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Desk P&L</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.deskPnl')}</p>
                 <p className={cn('text-[12px] font-mono', selectedSandboxTotalPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
                   {formatSignedUsd(selectedSandboxTotalPnl)}
                 </p>
-                <p className="text-[10px] text-muted-foreground">ROI {formatSignedPct(activeSandboxAccount?.roi_percent || 0)}</p>
+                <p className="text-[10px] text-muted-foreground">{t('accounts.roiPrefix', { value: formatSignedPct(activeSandboxAccount?.roi_percent || 0) })}</p>
               </div>
               <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Deployable Cash</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.deployableCash')}</p>
                 <p className="text-[12px] font-mono">{formatUsd(Math.max(0, (activeSandboxAccount?.current_capital || 0) - selectedSandboxOverlayExposure))}</p>
                 <p className="text-[10px] text-muted-foreground">
-                  {selectedSandboxOverlayExposure > 0 ? `${formatUsd(selectedSandboxOverlayExposure)} auto reserved` : 'No auto reserve'}
+                  {selectedSandboxOverlayExposure > 0 ? t('accounts.autoReserved', { value: formatUsd(selectedSandboxOverlayExposure) }) : t('accounts.noAutoReserve')}
                 </p>
               </div>
             </div>
@@ -1092,7 +1080,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 )}
               >
                 <LayoutDashboard className="h-3.5 w-3.5" />
-                Overview
+                {t('accounts.viewOverview')}
               </Button>
               <Button
                 variant="outline"
@@ -1106,7 +1094,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 )}
               >
                 <Briefcase className="h-3.5 w-3.5" />
-                Positions
+                {t('accounts.viewPositions')}
               </Button>
               <Button
                 variant="outline"
@@ -1120,7 +1108,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 )}
               >
                 <Receipt className="h-3.5 w-3.5" />
-                Trade Log
+                {t('accounts.viewTradeLog')}
               </Button>
               <Button
                 variant="outline"
@@ -1129,7 +1117,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 className="ml-auto h-7 gap-1.5 text-[11px]"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
-                Refresh Desk
+                {t('accounts.refreshDesk')}
               </Button>
             </div>
 
@@ -1137,25 +1125,25 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
               <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
                 <div className="min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
                   <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Desk Snapshot</span>
-                    <span className="text-[10px] font-mono text-muted-foreground">{sandboxPositionRows.length} positions</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.deskSnapshot')}</span>
+                    <span className="text-[10px] font-mono text-muted-foreground">{t('accounts.positionsCount', { n: sandboxPositionRows.length })}</span>
                   </div>
                   <ScrollArea className="h-[260px] xl:h-full">
                     <table className="w-full text-[11px]">
                       <thead className="sticky top-0 z-10 bg-background/95">
                         <tr className="border-b border-border/70 text-muted-foreground">
-                          <th className="px-2 py-1.5 text-left">Market</th>
-                          <th className="px-2 py-1.5 text-right">Side</th>
-                          <th className="px-2 py-1.5 text-right">Qty</th>
-                          <th className="px-2 py-1.5 text-right">Entry</th>
-                          <th className="px-2 py-1.5 text-right">Mark</th>
-                          <th className="px-2 py-1.5 text-right">U-P&L</th>
+                          <th className="px-2 py-1.5 text-left">{t('accounts.colMarket')}</th>
+                          <th className="px-2 py-1.5 text-right">{t('accounts.colSide')}</th>
+                          <th className="px-2 py-1.5 text-right">{t('accounts.colQty')}</th>
+                          <th className="px-2 py-1.5 text-right">{t('accounts.colEntry')}</th>
+                          <th className="px-2 py-1.5 text-right">{t('accounts.colMark')}</th>
+                          <th className="px-2 py-1.5 text-right">{t('accounts.colUPnl')}</th>
                         </tr>
                       </thead>
                       <tbody>
                         {sandboxPositionRows.length === 0 ? (
                           <tr>
-                            <td colSpan={6} className="px-2 py-6 text-center text-muted-foreground">No open positions.</td>
+                            <td colSpan={6} className="px-2 py-6 text-center text-muted-foreground">{t('accounts.noOpenPositions')}</td>
                           </tr>
                         ) : (
                           sandboxPositionRows.map((position) => (
@@ -1182,12 +1170,12 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 <div className="min-h-0 flex flex-col gap-2">
                   <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
                     <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Strategy Mix</span>
-                      <span className="text-[10px] font-mono text-muted-foreground">{sandboxStrategyRows.length} rows</span>
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.strategyMix')}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{t('accounts.rowsCount', { n: sandboxStrategyRows.length })}</span>
                     </div>
                     <div className="space-y-1 p-2">
                       {sandboxStrategyRows.length === 0 ? (
-                        <p className="text-[11px] text-muted-foreground">No trade history available yet.</p>
+                        <p className="text-[11px] text-muted-foreground">{t('accounts.noTradeHistory')}</p>
                       ) : (
                         sandboxStrategyRows.slice(0, 8).map((row) => (
                           <div key={row.strategy} className="rounded border border-border/50 px-2 py-1">
@@ -1198,8 +1186,8 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                               </span>
                             </div>
                             <div className="mt-0.5 flex items-center justify-between text-[10px] text-muted-foreground">
-                              <span>{row.trades} trades</span>
-                              <span>Notional {formatUsd(row.notional)}</span>
+                              <span>{t('accounts.tradesCount', { n: row.trades })}</span>
+                              <span>{t('accounts.notionalLabel', { value: formatUsd(row.notional) })}</span>
                             </div>
                           </div>
                         ))
@@ -1209,12 +1197,12 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
 
                   <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
                     <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Lifecycle Mix</span>
-                      <span className="text-[10px] font-mono text-muted-foreground">{sandboxTradeRows.length} trades</span>
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.lifecycleMix')}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{t('accounts.tradesCount', { n: sandboxTradeRows.length })}</span>
                     </div>
                     <div className="space-y-1 p-2">
                       {sandboxTradeStatusRows.length === 0 ? (
-                        <p className="text-[11px] text-muted-foreground">No lifecycle data captured.</p>
+                        <p className="text-[11px] text-muted-foreground">{t('accounts.noLifecycleData')}</p>
                       ) : (
                         sandboxTradeStatusRows.map((row) => (
                           <div key={row.status} className="rounded border border-border/50 px-2 py-1">
@@ -1237,21 +1225,21 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                   <table className="w-full text-[11px]">
                     <thead className="sticky top-0 z-10 bg-background/95">
                       <tr className="border-b border-border/70 text-muted-foreground">
-                        <th className="px-2 py-1.5 text-left">Market</th>
-                        <th className="px-2 py-1.5 text-right">Side</th>
-                        <th className="px-2 py-1.5 text-right">Qty</th>
-                        <th className="px-2 py-1.5 text-right">Entry Px</th>
-                        <th className="px-2 py-1.5 text-right">Mark Px</th>
-                        <th className="px-2 py-1.5 text-right">Cost</th>
-                        <th className="px-2 py-1.5 text-right">Mkt Value</th>
-                        <th className="px-2 py-1.5 text-right">U-P&L</th>
-                        <th className="px-2 py-1.5 text-right">Status</th>
+                        <th className="px-2 py-1.5 text-left">{t('accounts.colMarket')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colSide')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colQty')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colEntryPx')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colMarkPx')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colCost')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colMktValue')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colUPnl')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colStatus')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {sandboxPositionRows.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">No positions for this sandbox desk.</td>
+                          <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">{t('accounts.noPositionsForDesk')}</td>
                         </tr>
                       ) : (
                         sandboxPositionRows.map((position) => (
@@ -1289,19 +1277,19 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                   <table className="w-full text-[11px]">
                     <thead className="sticky top-0 z-10 bg-background/95">
                       <tr className="border-b border-border/70 text-muted-foreground">
-                        <th className="px-2 py-1.5 text-left">Executed</th>
-                        <th className="px-2 py-1.5 text-left">Strategy</th>
-                        <th className="px-2 py-1.5 text-right">Notional</th>
-                        <th className="px-2 py-1.5 text-right">Expected</th>
-                        <th className="px-2 py-1.5 text-right">Actual P&L</th>
-                        <th className="px-2 py-1.5 text-right">Fees</th>
-                        <th className="px-2 py-1.5 text-right">Status</th>
+                        <th className="px-2 py-1.5 text-left">{t('accounts.colExecuted')}</th>
+                        <th className="px-2 py-1.5 text-left">{t('accounts.colStrategy')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colNotional')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colExpected')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colActualPnl')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colFees')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colStatus')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {sandboxTradeRows.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="px-2 py-8 text-center text-muted-foreground">No trades for this sandbox desk.</td>
+                          <td colSpan={7} className="px-2 py-8 text-center text-muted-foreground">{t('accounts.noTradesForDesk')}</td>
                         </tr>
                       ) : (
                         sandboxTradeRows.map((trade) => (
@@ -1339,8 +1327,8 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
         <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[250px_minmax(0,1fr)]">
           <div className="hidden xl:flex min-h-0 flex-col rounded-lg border border-border/70 bg-card overflow-hidden">
             <div className="shrink-0 border-b border-border/50 px-2.5 py-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Live Venues</p>
-              <p className="text-[10px] text-muted-foreground">{liveMetrics.connectedVenues}/2 connected</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.liveVenues')}</p>
+              <p className="text-[10px] text-muted-foreground">{t('accounts.venuesConnectedShort', { n: liveMetrics.connectedVenues })}</p>
             </div>
             <ScrollArea className="flex-1 min-h-0">
               <div className="space-y-1.5 p-1.5">
@@ -1367,7 +1355,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                       </div>
                       <p className="mt-0.5 text-[9px] text-muted-foreground">{venue.accountLabel}</p>
                       <p className="text-[9px] text-muted-foreground">
-                        {formatUsd(venue.balance)} cash · {venue.openPositions} positions
+                        {t('accounts.cashPositionsLine', { value: formatUsd(venue.balance), n: venue.openPositions })}
                       </p>
                       <p className={cn('text-[9px] font-mono', venue.unrealizedPnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
                         {formatSignedUsd(venue.unrealizedPnl)}
@@ -1382,26 +1370,26 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
           <div className="min-h-0 flex flex-col gap-2">
             <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Active Venue</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.activeVenue')}</p>
                 <p className="text-[12px] font-semibold">{activeLiveSnapshot.label}</p>
                 <p className={cn('text-[10px]', activeLiveSnapshot.connected ? 'text-emerald-400' : 'text-amber-400')}>
-                  {activeLiveSnapshot.connected ? 'Connected' : 'Disconnected'}
+                  {activeLiveSnapshot.connected ? t('accounts.connected') : t('accounts.disconnected')}
                 </p>
               </div>
               <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Free Cash</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.freeCash')}</p>
                 <p className="text-[12px] font-mono">{formatUsd(activeLiveSnapshot.available)}</p>
-                <p className="text-[10px] text-muted-foreground">Balance {formatUsd(activeLiveSnapshot.balance)}</p>
+                <p className="text-[10px] text-muted-foreground">{t('accounts.balanceLabel', { value: formatUsd(activeLiveSnapshot.balance) })}</p>
               </div>
               <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Open Risk</p>
-                <p className="text-[12px] font-mono">{activeLiveSnapshot.openPositions} positions</p>
-                <p className="text-[10px] text-muted-foreground">Exposure {formatUsd(activeLiveSnapshot.exposure)}</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.openRisk')}</p>
+                <p className="text-[12px] font-mono">{t('accounts.positionsCount', { n: activeLiveSnapshot.openPositions })}</p>
+                <p className="text-[10px] text-muted-foreground">{t('accounts.exposureLabel', { value: formatUsd(activeLiveSnapshot.exposure) })}</p>
               </div>
               <div className="rounded-md border border-border/60 bg-background/70 px-2.5 py-1.5">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Recent Orders</p>
-                <p className="text-[12px] font-mono">{liveOpenOrderCount} open</p>
-                <p className="text-[10px] text-muted-foreground">{liveOrderRows.length} total cached</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('accounts.recentOrders')}</p>
+                <p className="text-[12px] font-mono">{t('accounts.openCount', { n: liveOpenOrderCount })}</p>
+                <p className="text-[10px] text-muted-foreground">{t('accounts.totalCached', { n: liveOrderRows.length })}</p>
               </div>
             </div>
 
@@ -1418,7 +1406,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 )}
               >
                 <LayoutDashboard className="h-3.5 w-3.5" />
-                Overview
+                {t('accounts.viewOverview')}
               </Button>
               <Button
                 variant="outline"
@@ -1432,7 +1420,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 )}
               >
                 <Briefcase className="h-3.5 w-3.5" />
-                Positions
+                {t('accounts.viewPositions')}
               </Button>
               <Button
                 variant="outline"
@@ -1446,7 +1434,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 )}
               >
                 <ListChecks className="h-3.5 w-3.5" />
-                Orders
+                {t('accounts.viewOrders')}
               </Button>
               <Button
                 variant="outline"
@@ -1455,7 +1443,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 className="ml-auto h-7 gap-1.5 text-[11px]"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
-                Refresh Venue
+                {t('accounts.refreshVenue')}
               </Button>
             </div>
 
@@ -1463,18 +1451,18 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
               <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
                 <div className="min-h-0 rounded-lg border border-border/70 bg-card/80 overflow-hidden">
                   <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Venue Balance Sheet</span>
-                    <span className="text-[10px] font-mono text-muted-foreground">Fleet {formatUsd(liveMetrics.totalBalance)}</span>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.venueBalanceSheet')}</span>
+                    <span className="text-[10px] font-mono text-muted-foreground">{t('accounts.fleetLabel', { value: formatUsd(liveMetrics.totalBalance) })}</span>
                   </div>
                   <table className="w-full text-[11px]">
                     <thead>
                       <tr className="border-b border-border/60 text-muted-foreground">
-                        <th className="px-2 py-1.5 text-left">Venue</th>
-                        <th className="px-2 py-1.5 text-right">Balance</th>
-                        <th className="px-2 py-1.5 text-right">Available</th>
-                        <th className="px-2 py-1.5 text-right">Exposure</th>
-                        <th className="px-2 py-1.5 text-right">U-P&L</th>
-                        <th className="px-2 py-1.5 text-right">State</th>
+                        <th className="px-2 py-1.5 text-left">{t('accounts.colVenue')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.balance')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.available')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.exposure')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colUPnl')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colState')}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1492,7 +1480,7 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                           </td>
                           <td className="px-2 py-1.5 text-right">
                             <Badge variant="outline" className={cn('h-4 px-1 text-[9px]', venue.connected ? 'border-emerald-500/40 text-emerald-300' : 'border-amber-500/40 text-amber-300')}>
-                              {venue.connected ? 'Connected' : 'Offline'}
+                              {venue.connected ? t('accounts.connected') : t('accounts.offline')}
                             </Badge>
                           </td>
                         </tr>
@@ -1504,15 +1492,15 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                 <div className="min-h-0 flex flex-col gap-2">
                   <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
                     <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Polymarket Limits</span>
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.polymarketLimits')}</span>
                       <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
                     </div>
                     <div className="grid grid-cols-2 gap-1.5 p-2">
-                      <MetricPair label="Max Trade" value={formatUsd(toFiniteNumber(tradingStatus?.limits.max_trade_size_usd))} />
-                      <MetricPair label="Max Daily" value={formatUsd(toFiniteNumber(tradingStatus?.limits.max_daily_volume))} />
-                      <MetricPair label="Min Order" value={formatUsd(toFiniteNumber(tradingStatus?.limits.min_order_size_usd))} />
+                      <MetricPair label={t('accounts.maxTrade')} value={formatUsd(toFiniteNumber(tradingStatus?.limits.max_trade_size_usd))} />
+                      <MetricPair label={t('accounts.maxDaily')} value={formatUsd(toFiniteNumber(tradingStatus?.limits.max_daily_volume))} />
+                      <MetricPair label={t('accounts.minOrder')} value={formatUsd(toFiniteNumber(tradingStatus?.limits.min_order_size_usd))} />
                       <MetricPair
-                        label="Native Gas"
+                        label={t('accounts.nativeGas')}
                         value={tradingStatus?.native_gas ? formatNativeGas(toFiniteNumber(tradingStatus.native_gas.balance_native)) : '--'}
                         valueClass={
                           tradingStatus?.native_gas
@@ -1521,12 +1509,12 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                         }
                       />
                       <MetricPair
-                        label="Gas Needed"
+                        label={t('accounts.gasNeeded')}
                         value={tradingStatus?.native_gas ? formatNativeGas(toFiniteNumber(tradingStatus.native_gas.required_native_for_approval)) : '--'}
                       />
                       <MetricPair
-                        label="Gas Ready"
-                        value={tradingStatus?.native_gas ? (tradingStatus.native_gas.affordable_for_approval ? 'Yes' : 'No') : '--'}
+                        label={t('accounts.gasReady')}
+                        value={tradingStatus?.native_gas ? (tradingStatus.native_gas.affordable_for_approval ? t('accounts.yes') : t('accounts.no')) : '--'}
                         valueClass={
                           tradingStatus?.native_gas
                             ? (tradingStatus.native_gas.affordable_for_approval ? 'text-emerald-300' : 'text-red-300')
@@ -1534,10 +1522,10 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                         }
                       />
                       <MetricPair
-                        label="Order Path"
+                        label={t('accounts.orderPath')}
                         value={
                           tradingStatus?.execution_paths?.normal_trading === 'clob_only'
-                            ? 'CLOB only'
+                            ? t('accounts.clobOnly')
                             : '--'
                         }
                       />
@@ -1545,12 +1533,12 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                   </div>
                   <div className="rounded-lg border border-border/70 bg-card/80 overflow-hidden">
                     <div className="px-2.5 py-2 border-b border-border/50 flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Active Venue Book</span>
-                      <span className="text-[10px] font-mono text-muted-foreground">{activeLivePositions.length} positions</span>
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('accounts.activeVenueBook')}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{t('accounts.positionsCount', { n: activeLivePositions.length })}</span>
                     </div>
                     <div className="space-y-1 p-2">
                       {activeLivePositions.length === 0 ? (
-                        <p className="text-[11px] text-muted-foreground">No open positions on {activeLiveSnapshot.label}.</p>
+                        <p className="text-[11px] text-muted-foreground">{t('accounts.noOpenPositionsOn', { venue: activeLiveSnapshot.label })}</p>
                       ) : (
                         activeLivePositions.slice(0, 8).map((row) => (
                           <div key={row.id} className="rounded border border-border/50 px-2 py-1">
@@ -1576,21 +1564,21 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                   <table className="w-full text-[11px]">
                     <thead className="sticky top-0 z-10 bg-background/95">
                       <tr className="border-b border-border/70 text-muted-foreground">
-                        <th className="px-2 py-1.5 text-left">Market</th>
-                        <th className="px-2 py-1.5 text-right">Venue</th>
-                        <th className="px-2 py-1.5 text-right">Side</th>
-                        <th className="px-2 py-1.5 text-right">Size</th>
-                        <th className="px-2 py-1.5 text-right">Avg</th>
-                        <th className="px-2 py-1.5 text-right">Mark</th>
-                        <th className="px-2 py-1.5 text-right">Cost</th>
-                        <th className="px-2 py-1.5 text-right">Mkt Value</th>
-                        <th className="px-2 py-1.5 text-right">U-P&L</th>
+                        <th className="px-2 py-1.5 text-left">{t('accounts.colMarket')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colVenue')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colSide')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colSize')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colAvg')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colMark')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colCost')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colMktValue')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colUPnl')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {livePositionRows.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">No live positions across connected venues.</td>
+                          <td colSpan={9} className="px-2 py-8 text-center text-muted-foreground">{t('accounts.noLivePositions')}</td>
                         </tr>
                       ) : (
                         livePositionRows.map((row) => (
@@ -1628,20 +1616,20 @@ export default function AccountsPanel({ onOpenSettings }: AccountsPanelProps) {
                   <table className="w-full text-[11px]">
                     <thead className="sticky top-0 z-10 bg-background/95">
                       <tr className="border-b border-border/70 text-muted-foreground">
-                        <th className="px-2 py-1.5 text-left">Created</th>
-                        <th className="px-2 py-1.5 text-left">Market</th>
-                        <th className="px-2 py-1.5 text-right">Side</th>
-                        <th className="px-2 py-1.5 text-right">Type</th>
-                        <th className="px-2 py-1.5 text-right">Size</th>
-                        <th className="px-2 py-1.5 text-right">Price</th>
-                        <th className="px-2 py-1.5 text-right">Filled</th>
-                        <th className="px-2 py-1.5 text-right">Status</th>
+                        <th className="px-2 py-1.5 text-left">{t('accounts.colCreated')}</th>
+                        <th className="px-2 py-1.5 text-left">{t('accounts.colMarket')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colSide')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colType')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colSize')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colPrice')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colFilled')}</th>
+                        <th className="px-2 py-1.5 text-right">{t('accounts.colStatus')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {liveOrderRows.length === 0 ? (
                         <tr>
-                          <td colSpan={8} className="px-2 py-8 text-center text-muted-foreground">No live order history available.</td>
+                          <td colSpan={8} className="px-2 py-8 text-center text-muted-foreground">{t('accounts.noLiveOrders')}</td>
                         </tr>
                       ) : (
                         liveOrderRows.map((order) => (
