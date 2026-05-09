@@ -3116,15 +3116,21 @@ class TradeSignal(Base):
         # uses the longer index for any query the shorter one served.
         # Eliminates one B-tree write per non-HOT UPDATE.
         #
-        # The remaining (source, status, runtime_sequence) index is now
-        # PARTIAL (status IN active states only). Terminal-state rows
-        # (executed/skipped/expired/failed) are NOT indexed — they
-        # represent ~99% of the table but are never queried by hot-path
-        # code. UI/maintenance code that filters by terminal status
-        # uses created_at / updated_at indexes instead.
+        # The active-status index is PARTIAL (status IN active states
+        # only). Terminal rows (executed/skipped/expired/failed) are
+        # ~99% of the table but never queried by hot-path code.
+        #
+        # 2026-05-09 (#2): dropped runtime_sequence from the indexed
+        # column set so producer UPSERTs (which always set
+        # runtime_sequence) become HOT-eligible. ORDER BY
+        # runtime_sequence in list_unconsumed_trade_signals becomes a
+        # Sort node above the (source, status) scan -- sub-millisecond
+        # over the ~3,800 active rows. Renamed the index from
+        # ``..._sequence`` to ``..._active`` so the name reflects the
+        # actual columns.
         Index(
-            "idx_trade_signals_source_status_sequence",
-            "source", "status", "runtime_sequence",
+            "idx_trade_signals_source_status_active",
+            "source", "status",
             postgresql_where=text(
                 "status IN ('pending', 'selected', 'submitted')"
             ),
