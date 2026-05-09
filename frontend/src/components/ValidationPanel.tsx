@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -52,6 +53,7 @@ import { cn } from '../lib/utils'
 
 
 export default function ValidationPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   const configQuery = useQuery({
@@ -142,10 +144,9 @@ export default function ValidationPanel() {
       <div className="shrink-0 px-4 py-2.5 border-b border-border/40 flex items-center gap-3">
         <Shield className={cn('w-4 h-4 shrink-0', enabled ? 'text-emerald-400' : 'text-muted-foreground')} />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold leading-tight">Validation Guardrail</p>
+          <p className="text-sm font-semibold leading-tight">{t('validation.title')}</p>
           <p className="text-[10px] text-muted-foreground leading-tight">
-            Global rules that auto-demote underperforming strategies. Demoted strategies stay loaded
-            but their signals are blocked at the orchestrator's decision gate.
+            {t('validation.subtitle')}
           </p>
         </div>
         <Button
@@ -155,14 +156,14 @@ export default function ValidationPanel() {
           className="h-8 gap-1.5 px-3 text-xs"
           onClick={() => evaluateMutation.mutate()}
           disabled={evaluateMutation.isPending}
-          title="Re-run the auto-demotion engine right now (uses current thresholds)"
+          title={t('validation.evaluateNowTitle')}
         >
           {evaluateMutation.isPending ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
           ) : (
             <Play className="w-3.5 h-3.5" />
           )}
-          Evaluate now
+          {t('validation.evaluateNow')}
         </Button>
       </div>
 
@@ -171,7 +172,7 @@ export default function ValidationPanel() {
         <div className="rounded-lg border border-border/40 bg-card/30 p-3 space-y-3">
           <div className="flex items-center gap-2">
             <Gauge className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-xs font-semibold">Thresholds</span>
+            <span className="text-xs font-semibold">{t('validation.thresholds')}</span>
             {configQuery.isLoading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
           </div>
 
@@ -179,14 +180,12 @@ export default function ValidationPanel() {
             <>
               <div className="rounded border border-border/30 bg-background/40 px-3 py-2 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-medium">Auto-demotion engine</p>
+                  <p className="text-[11px] font-medium">{t('validation.autoDemotionEngine')}</p>
                   <p className="text-[10px] text-muted-foreground leading-snug">
-                    When enabled, the engine evaluates every strategy on its rolling
-                    window and flips status to <span className="text-amber-300">demoted</span> when
-                    the directional-accuracy or MAE thresholds break.{' '}
+                    {t('validation.autoDemotionEngineDesc')}{' '}
                     {draft.auto_promote
-                      ? 'Auto-promote is on — strategies that recover get restored automatically.'
-                      : 'Auto-promote is off — demoted strategies stay parked until you manually activate them.'}
+                      ? t('validation.autoPromoteOnDesc')
+                      : t('validation.autoPromoteOffDesc')}
                   </p>
                 </div>
                 <Switch
@@ -197,8 +196,8 @@ export default function ValidationPanel() {
 
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <NumberField
-                  label="Min sample size"
-                  hint="Minimum resolved opportunities required before the engine can demote."
+                  label={t('validation.minSampleSize')}
+                  hint={t('validation.minSampleSizeHint')}
                   value={draft.min_samples ?? 25}
                   step={1}
                   min={1}
@@ -206,8 +205,8 @@ export default function ValidationPanel() {
                   disabled={!enabled}
                 />
                 <NumberField
-                  label="Min directional accuracy"
-                  hint="Below this and the strategy is demoted. 0.5 = coin flip; 0.52 is a mild edge."
+                  label={t('validation.minDirectionalAccuracy')}
+                  hint={t('validation.minDirectionalAccuracyHint')}
                   value={(draft.min_directional_accuracy ?? 0.52)}
                   step={0.01}
                   min={0}
@@ -217,8 +216,8 @@ export default function ValidationPanel() {
                   disabled={!enabled}
                 />
                 <NumberField
-                  label="Max MAE (ROI)"
-                  hint="Mean absolute error in predicted ROI. Above this and the strategy is demoted."
+                  label={t('validation.maxMaeRoi')}
+                  hint={t('validation.maxMaeRoiHint')}
                   value={draft.max_mae_roi ?? 12}
                   step={0.5}
                   min={0}
@@ -226,8 +225,8 @@ export default function ValidationPanel() {
                   disabled={!enabled}
                 />
                 <NumberField
-                  label="Lookback (days)"
-                  hint="Rolling window over which accuracy / MAE are computed."
+                  label={t('validation.lookbackDays')}
+                  hint={t('validation.lookbackDaysHint')}
                   value={draft.lookback_days ?? 90}
                   step={1}
                   min={7}
@@ -239,10 +238,9 @@ export default function ValidationPanel() {
 
               <div className="rounded border border-border/30 bg-background/40 px-3 py-2 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-medium">Auto-promote on recovery</p>
+                  <p className="text-[11px] font-medium">{t('validation.autoPromoteOnRecovery')}</p>
                   <p className="text-[10px] text-muted-foreground">
-                    Restore strategies to active when their metrics return to compliance.
-                    Manual overrides are never auto-cleared.
+                    {t('validation.autoPromoteOnRecoveryDesc')}
                   </p>
                 </div>
                 <Switch
@@ -268,7 +266,7 @@ export default function ValidationPanel() {
                   disabled={!dirty || updateConfigMutation.isPending}
                 >
                   <RotateCcw className="w-3 h-3 mr-1" />
-                  Discard
+                  {t('validation.discard')}
                 </Button>
                 <Button
                   type="button"
@@ -282,13 +280,13 @@ export default function ValidationPanel() {
                   ) : (
                     <Save className="w-3 h-3 mr-1" />
                   )}
-                  Save thresholds
+                  {t('validation.saveThresholds')}
                 </Button>
               </div>
             </>
           ) : (
             <div className="text-[11px] text-muted-foreground py-4 text-center">
-              {configQuery.isError ? 'Failed to load guardrail config.' : 'Loading...'}
+              {configQuery.isError ? t('validation.loadConfigFailed') : t('validation.loadingEllipsis')}
             </div>
           )}
         </div>
@@ -297,30 +295,30 @@ export default function ValidationPanel() {
         <div className="rounded-lg border border-border/40 bg-card/30 overflow-hidden">
           <div className="px-3 py-2 border-b border-border/30 flex items-center gap-2">
             <ShieldCheck className="w-3.5 h-3.5 text-violet-400" />
-            <span className="text-xs font-semibold">Strategy Roster</span>
+            <span className="text-xs font-semibold">{t('validation.strategyRoster')}</span>
             <span className="ml-auto text-[10px] text-muted-foreground font-mono flex items-center gap-3">
-              <span className="text-emerald-300">{summary.active} active</span>
-              <span className="text-red-300">{summary.demoted} demoted</span>
-              <span>{summary.untracked} untracked</span>
-              <span className="text-cyan-300">{summary.manual} manual</span>
+              <span className="text-emerald-300">{t('validation.activeCount', { n: summary.active })}</span>
+              <span className="text-red-300">{t('validation.demotedCount', { n: summary.demoted })}</span>
+              <span>{t('validation.untrackedCount', { n: summary.untracked })}</span>
+              <span className="text-cyan-300">{t('validation.manualCount', { n: summary.manual })}</span>
             </span>
           </div>
 
           {healthRows.length === 0 ? (
             <div className="py-8 text-center text-[11px] text-muted-foreground">
-              {healthQuery.isLoading ? 'Loading strategy health...' : 'No strategy health rows yet.'}
+              {healthQuery.isLoading ? t('validation.loadingHealth') : t('validation.noHealthRows')}
             </div>
           ) : (
             <table className="w-full text-[11px]">
               <thead className="bg-card/95 sticky top-0">
                 <tr className="border-b border-border/30 text-muted-foreground text-[10px] uppercase tracking-wider">
-                  <th className="text-left py-1.5 px-3">Strategy</th>
-                  <th className="text-left py-1.5 px-2">Status</th>
-                  <th className="text-right py-1.5 px-2">Samples</th>
-                  <th className="text-right py-1.5 px-2">Accuracy</th>
-                  <th className="text-right py-1.5 px-2">MAE</th>
-                  <th className="text-left py-1.5 px-2">Last update</th>
-                  <th className="text-right py-1.5 px-3">Actions</th>
+                  <th className="text-left py-1.5 px-3">{t('validation.colStrategy')}</th>
+                  <th className="text-left py-1.5 px-2">{t('validation.colStatus')}</th>
+                  <th className="text-right py-1.5 px-2">{t('validation.colSamples')}</th>
+                  <th className="text-right py-1.5 px-2">{t('validation.colAccuracy')}</th>
+                  <th className="text-right py-1.5 px-2">{t('validation.colMae')}</th>
+                  <th className="text-left py-1.5 px-2">{t('validation.colLastUpdate')}</th>
+                  <th className="text-right py-1.5 px-3">{t('validation.colActions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -345,7 +343,7 @@ export default function ValidationPanel() {
                             isDemoted ? 'bg-red-400' : isActive ? 'bg-emerald-400' : 'bg-amber-400',
                           )} />
                           {row.status}
-                          {row.manual_override && <span className="opacity-60">· manual</span>}
+                          {row.manual_override && <span className="opacity-60">· {t('validation.manual')}</span>}
                         </span>
                       </td>
                       <td className="py-1.5 px-2 text-right font-mono">
@@ -376,7 +374,7 @@ export default function ValidationPanel() {
                             onClick={() => overrideMutation.mutate({ strategyType: row.strategy_type, status: 'active' })}
                           >
                             <CheckCircle2 className="w-3 h-3" />
-                            Activate
+                            {t('validation.activate')}
                           </Button>
                           <Button
                             type="button"
@@ -390,7 +388,7 @@ export default function ValidationPanel() {
                             onClick={() => overrideMutation.mutate({ strategyType: row.strategy_type, status: 'demoted' })}
                           >
                             <ShieldOff className="w-3 h-3" />
-                            Demote
+                            {t('validation.demote')}
                           </Button>
                           <Button
                             type="button"
@@ -400,11 +398,11 @@ export default function ValidationPanel() {
                             disabled={overrideBusy || !row.manual_override}
                             onClick={() => clearOverrideMutation.mutate(row.strategy_type)}
                             title={row.manual_override
-                              ? 'Drop the manual override and let the auto-demotion engine drive it again'
-                              : 'No manual override active'}
+                              ? t('validation.clearOverrideTitle')
+                              : t('validation.noOverrideActive')}
                           >
                             <X className="w-3 h-3" />
-                            Clear
+                            {t('validation.clear')}
                           </Button>
                         </div>
                       </td>
@@ -420,14 +418,14 @@ export default function ValidationPanel() {
         {evaluateMutation.data && (
           <div className="rounded border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-[11px] text-muted-foreground">
             <Clock className="inline w-3 h-3 mr-1 align-text-bottom text-cyan-400" />
-            Last evaluation:
+            {t('validation.lastEvaluation')}
             <span className="ml-2 font-mono">
-              {evaluateMutation.data.updated ?? 0} updates
+              {t('validation.updatesCount', { n: evaluateMutation.data.updated ?? 0 })}
               {evaluateMutation.data.demoted?.length
-                ? ` · demoted ${evaluateMutation.data.demoted.length}`
+                ? ` · ${t('validation.demotedSuffix', { n: evaluateMutation.data.demoted.length })}`
                 : ''}
               {evaluateMutation.data.restored?.length
-                ? ` · restored ${evaluateMutation.data.restored.length}`
+                ? ` · ${t('validation.restoredSuffix', { n: evaluateMutation.data.restored.length })}`
                 : ''}
             </span>
           </div>

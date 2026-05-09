@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -457,6 +458,7 @@ export default function UnifiedStrategiesManager({
     autoSend?: boolean
   }) => void
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   // UI toggles
@@ -610,30 +612,30 @@ export default function UnifiedStrategiesManager({
     () => [
       {
         key: DEFAULT_NEW_TEMPLATE_KEY,
-        label: 'Full Unified',
-        description: 'Detect + evaluate + exit scaffold with complete defaults.',
+        label: t('unifiedStrategies.tplFullUnified'),
+        description: t('unifiedStrategies.tplFullUnifiedDesc'),
         template: templateQuery.data?.template || FULL_TEMPLATE_FALLBACK,
       },
       {
         key: 'scanner_detect',
-        label: 'Detect Only',
-        description: 'Scanner-first template with detect() only.',
+        label: t('unifiedStrategies.tplDetectOnly'),
+        description: t('unifiedStrategies.tplDetectOnlyDesc'),
         template: DETECT_TEMPLATE,
       },
       {
         key: 'execution_gate',
-        label: 'Evaluate Only',
-        description: 'Execution-gating template with evaluate() only.',
+        label: t('unifiedStrategies.tplEvaluateOnly'),
+        description: t('unifiedStrategies.tplEvaluateOnlyDesc'),
         template: EVALUATE_TEMPLATE,
       },
       {
         key: 'unified_minimal',
-        label: 'Unified Minimal',
-        description: 'Lean detect + evaluate + should_exit base.',
+        label: t('unifiedStrategies.tplMinimal'),
+        description: t('unifiedStrategies.tplMinimalDesc'),
         template: UNIFIED_MINIMAL_TEMPLATE,
       },
     ],
-    [templateQuery.data?.template]
+    [templateQuery.data?.template, t]
   )
 
   const selectedNewTemplate = useMemo(() => {
@@ -1075,7 +1077,7 @@ export default function UnifiedStrategiesManager({
       refreshCatalog()
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Failed to save strategy'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errSave')))
     },
   })
 
@@ -1091,7 +1093,7 @@ export default function UnifiedStrategiesManager({
       setEditorError(null)
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Validation failed'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errValidate')))
     },
   })
 
@@ -1106,7 +1108,7 @@ export default function UnifiedStrategiesManager({
       refreshCatalog()
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Reload failed'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errReload')))
     },
   })
 
@@ -1127,7 +1129,7 @@ export default function UnifiedStrategiesManager({
       refreshCatalog()
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Failed to restore version'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errRestore')))
     },
   })
 
@@ -1154,7 +1156,7 @@ export default function UnifiedStrategiesManager({
       refreshCatalog()
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Clone failed'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errClone')))
     },
   })
 
@@ -1171,7 +1173,7 @@ export default function UnifiedStrategiesManager({
       refreshCatalog()
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Delete failed'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errDelete')))
     },
   })
 
@@ -1188,7 +1190,7 @@ export default function UnifiedStrategiesManager({
       queryClient.invalidateQueries({ queryKey: ['validation-overview'] })
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Failed to update strategy health override'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errOverride')))
     },
   })
 
@@ -1199,7 +1201,7 @@ export default function UnifiedStrategiesManager({
       queryClient.invalidateQueries({ queryKey: ['validation-overview'] })
     },
     onError: (error: unknown) => {
-      setEditorError(errorMessage(error, 'Failed to clear strategy health override'))
+      setEditorError(errorMessage(error, t('unifiedStrategies.errClearOverride')))
     },
   })
 
@@ -1223,7 +1225,7 @@ export default function UnifiedStrategiesManager({
       setNewStrategyError(null)
     },
     onError: (error: unknown) => {
-      setNewStrategyError(errorMessage(error, 'AI generation failed'))
+      setNewStrategyError(errorMessage(error, t('unifiedStrategies.errAiGenerate')))
     },
   })
 
@@ -1265,7 +1267,7 @@ export default function UnifiedStrategiesManager({
       setModifyStrategyAiError(null)
     },
     onError: (error: unknown) => {
-      setModifyStrategyAiError(errorMessage(error, 'AI modification failed'))
+      setModifyStrategyAiError(errorMessage(error, t('unifiedStrategies.errAiModify')))
     },
   })
 
@@ -1308,15 +1310,15 @@ export default function UnifiedStrategiesManager({
     const useAiDraft = Boolean(newStrategyUseAiDraft && newStrategyAiDraft)
 
     if (!trimmedName) {
-      setNewStrategyError('Strategy name is required.')
+      setNewStrategyError(t('unifiedStrategies.errNameRequired'))
       return
     }
     if (!normalizedSlug) {
-      setNewStrategyError('Strategy key is required.')
+      setNewStrategyError(t('unifiedStrategies.errSlugRequired'))
       return
     }
     if (!selectedTemplate) {
-      setNewStrategyError('Select a template before creating the draft.')
+      setNewStrategyError(t('unifiedStrategies.errTemplateRequired'))
       return
     }
 
@@ -1441,7 +1443,7 @@ export default function UnifiedStrategiesManager({
               disabled={busy}
             >
               <Plus className="w-3 h-3" />
-              New Strategy
+              {t('unifiedStrategies.newStrategy')}
             </Button>
             <Button
               type="button"
@@ -1450,7 +1452,7 @@ export default function UnifiedStrategiesManager({
               className="h-7 gap-1 px-2 text-[11px]"
               onClick={() => cloneMutation.mutate()}
               disabled={busy || !selectedStrategy}
-              title="Clone selected strategy"
+              title={t('unifiedStrategies.cloneTitle')}
             >
               <Copy className="w-3 h-3" />
             </Button>
@@ -1461,7 +1463,7 @@ export default function UnifiedStrategiesManager({
               className="h-7 px-2 text-[11px]"
               onClick={() => refreshCatalog()}
               disabled={busy}
-              title="Refresh catalog"
+              title={t('unifiedStrategies.refreshCatalog')}
             >
               <RefreshCw className={cn('w-3 h-3', strategiesQuery.isFetching && 'animate-spin')} />
             </Button>
@@ -1473,7 +1475,7 @@ export default function UnifiedStrategiesManager({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Sources ({catalog.length})</SelectItem>
+              <SelectItem value="all">{t('unifiedStrategies.allSources', { n: catalog.length })}</SelectItem>
               {sourceKeys.map((sk) => (
                 <SelectItem key={sk} value={sk}>
                   {SOURCE_LABELS[sk] || sk} ({catalog.filter((s) => normalizeStrategySourceFilter(s.source_key) === sk).length})
@@ -1488,7 +1490,7 @@ export default function UnifiedStrategiesManager({
             <Input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search strategies..."
+              placeholder={t('unifiedStrategies.searchPlaceholder')}
               className="h-7 pl-8 pr-7 text-xs"
             />
             {searchQuery && (
@@ -1504,11 +1506,11 @@ export default function UnifiedStrategiesManager({
 
           <div className="grid grid-cols-2 gap-1.5">
             <div className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5">
-              <p className="text-[9px] uppercase tracking-wide text-muted-foreground">Health Rows</p>
+              <p className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('unifiedStrategies.healthRows')}</p>
               <p className="mt-0.5 text-[11px] font-mono">{strategyHealthRows.length}</p>
             </div>
             <div className="rounded-md border border-border/60 bg-background/35 px-2 py-1.5">
-              <p className="text-[9px] uppercase tracking-wide text-muted-foreground">Demoted</p>
+              <p className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('unifiedStrategies.demoted')}</p>
               <p className={cn('mt-0.5 text-[11px] font-mono', strategyHealthDemotedCount > 0 ? 'text-red-300' : 'text-emerald-300')}>
                 {strategyHealthDemotedCount}
               </p>
@@ -1540,7 +1542,7 @@ export default function UnifiedStrategiesManager({
                 ))}
               </div>
             ) : flatFiltered.length === 0 ? (
-              <p className="px-3 py-6 text-xs text-muted-foreground text-center">No strategies found.</p>
+              <p className="px-3 py-6 text-xs text-muted-foreground text-center">{t('unifiedStrategies.noStrategies')}</p>
             ) : (
               Object.entries(grouped).map(([sourceKey, strategies]) => (
                 <div key={sourceKey}>
@@ -1609,7 +1611,7 @@ export default function UnifiedStrategiesManager({
                           </p>
                           <div className="flex items-center gap-1.5 shrink-0">
                             {!strategy.enabled && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" title="Disabled" />
+                              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" title={t('unifiedStrategies.disabledLabel')} />
                             )}
                             <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0 h-4 border', sColor)}>
                               {strategy.status}
@@ -1635,11 +1637,11 @@ export default function UnifiedStrategiesManager({
                           )}
                             title={
                               realizedPnlMode === 'live'
-                                ? 'Live trades only — submitted to Polymarket'
+                                ? t('unifiedStrategies.pnlLiveOnly')
                                 : realizedPnlMode === 'sim'
-                                  ? 'Simulated/shadow trades only — no live rows yet'
+                                  ? t('unifiedStrategies.pnlSimOnly')
                                   : realizedPnlMode === 'mixed'
-                                    ? 'Aggregate of live + simulated trades'
+                                    ? t('unifiedStrategies.pnlMixed')
                                     : undefined
                             }
                           >
@@ -1695,8 +1697,8 @@ export default function UnifiedStrategiesManager({
 
         {/* Footer stats */}
         <div className="shrink-0 px-3 py-2 border-t border-border/50 text-[10px] text-muted-foreground flex justify-between">
-          <span>{flatFiltered.length} strategies</span>
-          <span>{catalog.filter((s) => s.enabled).length} enabled</span>
+          <span>{t('unifiedStrategies.strategiesCount', { n: flatFiltered.length })}</span>
+          <span>{t('unifiedStrategies.enabledCount', { n: catalog.filter((s) => s.enabled).length })}</span>
         </div>
       </div>
 
@@ -1706,7 +1708,7 @@ export default function UnifiedStrategiesManager({
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center space-y-2">
               <Code2 className="w-8 h-8 mx-auto opacity-40" />
-              <p className="text-sm">Select a strategy or create a new one</p>
+              <p className="text-sm">{t('unifiedStrategies.selectOrCreate')}</p>
             </div>
           </div>
         ) : (
@@ -1723,7 +1725,7 @@ export default function UnifiedStrategiesManager({
               <div className="flex items-center gap-2 min-w-0">
                 <Code2 className="w-4 h-4 text-violet-400 shrink-0" />
                 <span className="text-sm font-medium truncate">
-                  {editorName || 'Untitled Strategy'}
+                  {editorName || t('unifiedStrategies.untitled')}
                 </span>
                 {/* Single compact meta pill — replaces the row of separate
                     badges. Click to manage version / enabled / system. */}
@@ -1745,10 +1747,10 @@ export default function UnifiedStrategiesManager({
                         )} />
                         v{selectedStrategy.version}
                         {latestVersionRow && latestVersionRow.version === selectedStrategy.version && (
-                          <span className="opacity-60">· latest</span>
+                          <span className="opacity-60">· {t('unifiedStrategies.latest')}</span>
                         )}
                         {selectedStrategy.is_system && (
-                          <span className="opacity-60">· system</span>
+                          <span className="opacity-60">· {t('unifiedStrategies.system')}</span>
                         )}
                         <span className="opacity-60">· {displayStatus}</span>
                         <ChevronDown className="w-3 h-3 opacity-60" />
@@ -1756,18 +1758,18 @@ export default function UnifiedStrategiesManager({
                     </PopoverTrigger>
                     <PopoverContent align="start" className="w-72 p-3 space-y-3">
                       <div>
-                        <Label className="text-[10px] text-muted-foreground">Status</Label>
+                        <Label className="text-[10px] text-muted-foreground">{t('unifiedStrategies.status')}</Label>
                         <div className="flex items-center gap-2 mt-1">
                           <Badge variant="outline" className={cn('text-[10px] border', statusColor)}>
                             {displayStatus}
                           </Badge>
                           {selectedStrategy.is_system && (
-                            <Badge variant="secondary" className="text-[10px]">System</Badge>
+                            <Badge variant="secondary" className="text-[10px]">{t('unifiedStrategies.systemBadge')}</Badge>
                           )}
                         </div>
                       </div>
                       <div>
-                        <Label className="text-[10px] text-muted-foreground">Enabled</Label>
+                        <Label className="text-[10px] text-muted-foreground">{t('unifiedStrategies.enabledLabel')}</Label>
                         <div className="flex items-center gap-2 mt-1">
                           <Switch
                             checked={editorEnabled}
@@ -1775,12 +1777,12 @@ export default function UnifiedStrategiesManager({
                             className="scale-75"
                           />
                           <span className="text-[11px] text-muted-foreground">
-                            {editorEnabled ? 'Strategy is active' : 'Disabled — will not run'}
+                            {editorEnabled ? t('unifiedStrategies.strategyActive') : t('unifiedStrategies.strategyDisabled')}
                           </span>
                         </div>
                       </div>
                       <div>
-                        <Label className="text-[10px] text-muted-foreground">Version</Label>
+                        <Label className="text-[10px] text-muted-foreground">{t('unifiedStrategies.version')}</Label>
                         <div className="flex items-center gap-1.5 mt-1">
                           <Select
                             value={selectedVersionForRestore || String(selectedStrategy.version || '')}
@@ -1788,15 +1790,15 @@ export default function UnifiedStrategiesManager({
                             disabled={busy || strategyVersions.length === 0}
                           >
                             <SelectTrigger className="h-7 flex-1 text-[10px] font-mono">
-                              <SelectValue placeholder="Select version" />
+                              <SelectValue placeholder={t('unifiedStrategies.selectVersion')} />
                             </SelectTrigger>
                             <SelectContent>
                               {strategyVersions.map((versionRow) => (
                                 <SelectItem key={versionRow.id} value={String(versionRow.version)} className="font-mono">
                                   {`v${versionRow.version}${
-                                    versionRow.is_latest ? ' • latest' : ''
+                                    versionRow.is_latest ? ` • ${t('unifiedStrategies.latest')}` : ''
                                   }${
-                                    Number(versionRow.version) === Number(selectedStrategy.version || 0) ? ' • current' : ''
+                                    Number(versionRow.version) === Number(selectedStrategy.version || 0) ? ` • ${t('unifiedStrategies.current')}` : ''
                                   }`}
                                 </SelectItem>
                               ))}
@@ -1815,13 +1817,13 @@ export default function UnifiedStrategiesManager({
                             ) : (
                               <RefreshCw className="w-3 h-3" />
                             )}
-                            Restore
+                            {t('unifiedStrategies.restore')}
                           </Button>
                         </div>
                       </div>
                       <div className="text-[10px] font-mono text-muted-foreground border-t border-border/30 pt-2">
-                        <div>ID: <span className="text-foreground/80">{selectedStrategy.id.slice(0, 12)}</span></div>
-                        <div>Slug: <span className="text-foreground/80">{selectedStrategy.slug}</span></div>
+                        <div>{t('unifiedStrategies.id')}: <span className="text-foreground/80">{selectedStrategy.id.slice(0, 12)}</span></div>
+                        <div>{t('unifiedStrategies.slug')}: <span className="text-foreground/80">{selectedStrategy.slug}</span></div>
                       </div>
                     </PopoverContent>
                   </Popover>
@@ -1843,7 +1845,7 @@ export default function UnifiedStrategiesManager({
                   ) : (
                     <Check className="w-3 h-3" />
                   )}
-                  Validate
+                  {t('unifiedStrategies.validate')}
                 </Button>
 
                 {/* Consolidated "More" dropdown — Backtest is intentionally
@@ -1859,7 +1861,7 @@ export default function UnifiedStrategiesManager({
                       disabled={!editorCode.trim() && !selectedStrategy}
                     >
                       <MoreHorizontal className="w-3 h-3" />
-                      More
+                      {t('unifiedStrategies.more')}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent align="end" className="w-56 p-1">
@@ -1877,8 +1879,8 @@ export default function UnifiedStrategiesManager({
                         disabled={!editorSlug}
                       >
                         <Sparkles className="w-3.5 h-3.5" />
-                        Open in Research
-                        <span className="ml-auto text-[10px] text-muted-foreground">backtest + code evo</span>
+                        {t('unifiedStrategies.openInResearch')}
+                        <span className="ml-auto text-[10px] text-muted-foreground">{t('unifiedStrategies.backtestCodeEvo')}</span>
                       </button>
                       <button
                         type="button"
@@ -1886,7 +1888,7 @@ export default function UnifiedStrategiesManager({
                         onClick={() => setShowApiDocs(true)}
                       >
                         <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
-                        API Docs
+                        {t('unifiedStrategies.apiDocs')}
                       </button>
                       <button
                         type="button"
@@ -1899,7 +1901,7 @@ export default function UnifiedStrategiesManager({
                         ) : (
                           <Zap className="w-3.5 h-3.5 text-amber-400" />
                         )}
-                        Reload
+                        {t('unifiedStrategies.reload')}
                       </button>
                     </div>
                   </PopoverContent>
@@ -1917,7 +1919,7 @@ export default function UnifiedStrategiesManager({
                   ) : (
                     <Wand2 className="w-3 h-3" />
                   )}
-                  AI Modify
+                  {t('unifiedStrategies.aiModify')}
                 </Button>
                 <Button
                   type="button"
@@ -1936,7 +1938,7 @@ export default function UnifiedStrategiesManager({
                   ) : (
                     <Save className="w-3 h-3" />
                   )}
-                  Save
+                  {t('unifiedStrategies.save')}
                 </Button>
                 {selectedStrategy && (
                   <Button
@@ -1946,12 +1948,12 @@ export default function UnifiedStrategiesManager({
                     className="h-7 px-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10"
                     onClick={() => {
                       const message = selectedStrategy.is_system
-                        ? `Delete system strategy "${selectedStrategy.name}"? It will be tombstoned and will NOT auto-reseed.`
-                        : `Delete "${selectedStrategy.name}"? This cannot be undone.`
+                        ? t('unifiedStrategies.confirmDeleteSystem', { name: selectedStrategy.name })
+                        : t('unifiedStrategies.confirmDelete', { name: selectedStrategy.name })
                       if (window.confirm(message)) deleteMutation.mutate()
                     }}
                     disabled={busy}
-                    title="Delete strategy"
+                    title={t('unifiedStrategies.deleteStrategy')}
                   >
                     <Trash2 className="w-3 h-3" />
                   </Button>
@@ -1976,7 +1978,7 @@ export default function UnifiedStrategiesManager({
                 )}
                 <div className="min-w-0">
                   <p className="font-medium">
-                    {validation.valid ? 'Validation passed' : 'Validation failed'}
+                    {validation.valid ? t('unifiedStrategies.validationPassed') : t('unifiedStrategies.validationFailed')}
                     {validation.class_name && (
                       <span className="font-mono ml-2 opacity-70">{validation.class_name}</span>
                     )}
@@ -2018,10 +2020,10 @@ export default function UnifiedStrategiesManager({
                   collapsible headers. Source Code is the default. */}
               <div className="shrink-0 flex items-center gap-0.5 border-b border-border/50 px-3 overflow-x-auto">
                 {([
-                  { key: 'code' as const, label: 'Source Code', icon: Code2, color: 'text-violet-400', sub: 'Python' },
-                  { key: 'settings' as const, label: 'Settings', icon: Settings2, color: 'text-cyan-400', sub: editorSlug || 'no-key' },
-                  { key: 'config' as const, label: 'Runtime Config', icon: Settings2, color: 'text-blue-400', sub: undefined },
-                  { key: 'health' as const, label: 'Health', icon: AlertTriangle, color: 'text-amber-400', sub: selectedStrategyHealth?.status || 'untracked' },
+                  { key: 'code' as const, label: t('unifiedStrategies.tabSourceCode'), icon: Code2, color: 'text-violet-400', sub: 'Python' },
+                  { key: 'settings' as const, label: t('unifiedStrategies.tabSettings'), icon: Settings2, color: 'text-cyan-400', sub: editorSlug || t('unifiedStrategies.noKey') },
+                  { key: 'config' as const, label: t('unifiedStrategies.tabRuntimeConfig'), icon: Settings2, color: 'text-blue-400', sub: undefined },
+                  { key: 'health' as const, label: t('unifiedStrategies.tabHealth'), icon: AlertTriangle, color: 'text-amber-400', sub: selectedStrategyHealth?.status || t('unifiedStrategies.untracked') },
                 ]).map((tab) => (
                   <button
                     key={tab.key}
@@ -2051,7 +2053,7 @@ export default function UnifiedStrategiesManager({
                   <div className="px-4 pb-3 space-y-3 animate-in fade-in duration-200">
                     <div className="grid gap-3 grid-cols-2 xl:grid-cols-4">
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Strategy Key</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.strategyKey')}</Label>
                         <Input
                           value={editorSlug}
                           onChange={(e) => setEditorSlug(normalizeSlug(e.target.value))}
@@ -2059,7 +2061,7 @@ export default function UnifiedStrategiesManager({
                         />
                       </div>
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Name</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.nameLabel')}</Label>
                         <Input
                           value={editorName}
                           onChange={(e) => setEditorName(e.target.value)}
@@ -2067,7 +2069,7 @@ export default function UnifiedStrategiesManager({
                         />
                       </div>
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Source</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.sourceLabel')}</Label>
                         <Select value={editorSourceKey} onValueChange={setEditorSourceKey}>
                           <SelectTrigger className="mt-1 h-8 text-xs">
                             <SelectValue />
@@ -2082,13 +2084,13 @@ export default function UnifiedStrategiesManager({
                         </Select>
                       </div>
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Class Name</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.className')}</Label>
                         <Input
                           value={
                             validation?.class_name ||
                             inferredClassName ||
                             selectedStrategy?.class_name ||
-                            'auto-detected'
+                            t('unifiedStrategies.autoDetected')
                           }
                           className="mt-1 h-8 text-xs font-mono"
                           disabled
@@ -2097,16 +2099,16 @@ export default function UnifiedStrategiesManager({
                     </div>
                     <div className="grid gap-3 grid-cols-1 xl:grid-cols-2">
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Description</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.descriptionLabel')}</Label>
                         <Input
                           value={editorDescription}
                           onChange={(e) => setEditorDescription(e.target.value)}
                           className="mt-1 h-8 text-xs"
-                          placeholder="Describe what this strategy does..."
+                          placeholder={t('unifiedStrategies.descriptionPlaceholder')}
                         />
                       </div>
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Aliases (comma separated)</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.aliasesLabel')}</Label>
                         <Input
                           value={editorAliasesCsv}
                           onChange={(e) => setEditorAliasesCsv(e.target.value)}
@@ -2133,17 +2135,10 @@ export default function UnifiedStrategiesManager({
                       <div className="flex items-center gap-1.5 mb-1">
                         <Settings2 className="w-3 h-3 text-cyan-400" />
                         <span className="text-foreground font-medium text-[11px]">
-                          Strategy-level defaults
+                          {t('unifiedStrategies.strategyLevelDefaults')}
                         </span>
                       </div>
-                      Edits here update <code className="text-cyan-300">Strategy.config</code> — the
-                      <span className="text-foreground"> defaults every bot inherits</span> when they run this
-                      strategy. The runtime cascade is{' '}
-                      <code className="text-foreground">source <code className="text-muted-foreground/80">default_config</code></code>{' '}→{' '}
-                      <code className="text-foreground">Runtime Config (here)</code>{' '}→{' '}
-                      <code className="text-foreground">Bot Tune <code className="text-muted-foreground/80">strategy_params</code></code>;
-                      each layer overrides the previous. Per-bot tweaks live in{' '}
-                      <span className="font-medium">Bots → Tune → Parameters</span>.
+                      {t('unifiedStrategies.runtimeConfigCascade')}
                     </div>
 
                     {/* Dynamic config form when schema has param_fields */}
@@ -2165,7 +2160,7 @@ export default function UnifiedStrategiesManager({
                           onClick={() => setShowRawJson(true)}
                           className="text-[10px] text-muted-foreground hover:text-foreground transition-colors font-mono"
                         >
-                          Show Raw JSON
+                          {t('unifiedStrategies.showRawJson')}
                         </button>
                       </>
                     )}
@@ -2175,7 +2170,7 @@ export default function UnifiedStrategiesManager({
                         <div className="grid gap-3 grid-cols-1 lg:grid-cols-2">
                           <div>
                             <div className="flex items-center gap-2 mb-2">
-                              <span className="text-[11px] font-medium text-muted-foreground">Config</span>
+                              <span className="text-[11px] font-medium text-muted-foreground">{t('unifiedStrategies.configLabel')}</span>
                               <span className="text-[10px] text-muted-foreground font-mono">JSON</span>
                             </div>
                             <CodeEditor
@@ -2188,7 +2183,7 @@ export default function UnifiedStrategiesManager({
                           </div>
                           <div>
                             <div className="flex items-center gap-2 mb-2">
-                              <span className="text-[11px] font-medium text-muted-foreground">Config Schema</span>
+                              <span className="text-[11px] font-medium text-muted-foreground">{t('unifiedStrategies.configSchemaLabel')}</span>
                               <span className="text-[10px] text-muted-foreground font-mono">JSON</span>
                             </div>
                             <CodeEditor
@@ -2206,7 +2201,7 @@ export default function UnifiedStrategiesManager({
                             onClick={() => setShowRawJson(false)}
                             className="text-[10px] text-muted-foreground hover:text-foreground transition-colors font-mono"
                           >
-                            Show Config Form
+                            {t('unifiedStrategies.showConfigForm')}
                           </button>
                         )}
                       </>
@@ -2248,7 +2243,7 @@ export default function UnifiedStrategiesManager({
                             </span>
                             {selectedStrategyHealth.manual_override && (
                               <Badge variant="outline" className="text-[10px] border-cyan-500/30 bg-cyan-500/10 text-cyan-300">
-                                Manual override
+                                {t('unifiedStrategies.manualOverride')}
                               </Badge>
                             )}
                             <span className="ml-auto text-[10px] text-muted-foreground font-mono">
@@ -2257,14 +2252,14 @@ export default function UnifiedStrategiesManager({
                           </div>
                           <p className="text-[11px] text-muted-foreground leading-snug">
                             {selectedStrategyHealth.status === 'active'
-                              ? 'Strategy is participating in trading. Signals are being acted on.'
+                              ? t('unifiedStrategies.healthActiveDesc')
                               : selectedStrategyHealth.status === 'demoted'
-                                ? 'Strategy is parked — signals are still recorded but not acted on. Investigate accuracy / MAE before reactivating.'
-                                : 'Strategy hasn\'t accumulated enough data yet to be promoted or demoted.'}
+                                ? t('unifiedStrategies.healthDemotedDesc')
+                                : t('unifiedStrategies.healthUntrackedDesc')}
                           </p>
                           {selectedStrategyHealth.last_reason && (
                             <p className="text-[10px] text-muted-foreground italic">
-                              <span className="text-muted-foreground/70">Last reason:</span>{' '}
+                              <span className="text-muted-foreground/70">{t('unifiedStrategies.lastReason')}</span>{' '}
                               {selectedStrategyHealth.last_reason}
                             </p>
                           )}
@@ -2274,33 +2269,33 @@ export default function UnifiedStrategiesManager({
                             actually evaluates against. */}
                         <div>
                           <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                            Guardrail signals
+                            {t('unifiedStrategies.guardrailSignals')}
                           </p>
                           <div className="grid grid-cols-3 gap-2">
                             <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
-                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Sample size</p>
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('unifiedStrategies.sampleSize')}</p>
                               <p className="text-base font-mono font-bold mt-0.5">
                                 {Number(selectedStrategyHealth.sample_size || 0).toLocaleString()}
                               </p>
-                              <p className="text-[10px] text-muted-foreground/70">opportunities tracked</p>
+                              <p className="text-[10px] text-muted-foreground/70">{t('unifiedStrategies.opportunitiesTracked')}</p>
                             </div>
                             <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
-                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Directional accuracy</p>
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('unifiedStrategies.directionalAccuracy')}</p>
                               <p className="text-base font-mono font-bold mt-0.5">
                                 {Number.isFinite(Number(selectedStrategyHealth.directional_accuracy))
                                   ? `${(Number(selectedStrategyHealth.directional_accuracy) * 100).toFixed(1)}%`
                                   : '—'}
                               </p>
-                              <p className="text-[10px] text-muted-foreground/70">predicted side correct</p>
+                              <p className="text-[10px] text-muted-foreground/70">{t('unifiedStrategies.predictedSideCorrect')}</p>
                             </div>
                             <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
-                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">MAE (ROI)</p>
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('unifiedStrategies.maeRoi')}</p>
                               <p className="text-base font-mono font-bold mt-0.5">
                                 {Number.isFinite(Number(selectedStrategyHealth.mae_roi))
                                   ? Number(selectedStrategyHealth.mae_roi).toFixed(2)
                                   : '—'}
                               </p>
-                              <p className="text-[10px] text-muted-foreground/70">mean abs ROI error</p>
+                              <p className="text-[10px] text-muted-foreground/70">{t('unifiedStrategies.meanAbsRoiError')}</p>
                             </div>
                           </div>
                         </div>
@@ -2318,25 +2313,25 @@ export default function UnifiedStrategiesManager({
                         {selectedStrategyAccuracy && (
                           <div>
                             <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                              Signal volume (lifetime)
+                              {t('unifiedStrategies.signalVolumeLifetime')}
                             </p>
                             <div className="grid grid-cols-2 gap-2">
                               <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
-                                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Detected</p>
+                                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('unifiedStrategies.detected')}</p>
                                 <p className="text-base font-mono font-bold mt-0.5">
                                   {Number(selectedStrategyAccuracy.total || 0).toLocaleString()}
                                 </p>
                                 <p className="text-[10px] text-muted-foreground/70">
-                                  opportunities the strategy emitted
+                                  {t('unifiedStrategies.detectedDesc')}
                                 </p>
                               </div>
                               <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
-                                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Resolved</p>
+                                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('unifiedStrategies.resolved')}</p>
                                 <p className="text-base font-mono font-bold mt-0.5">
                                   {Number(selectedStrategyAccuracy.resolved || 0).toLocaleString()}
                                 </p>
                                 <p className="text-[10px] text-muted-foreground/70">
-                                  markets settled with an outcome
+                                  {t('unifiedStrategies.resolvedDesc')}
                                 </p>
                               </div>
                             </div>
@@ -2392,11 +2387,11 @@ export default function UnifiedStrategiesManager({
                             <div>
                               <div className="flex items-center justify-between mb-1">
                                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                                  Trading outcome (30d, all bots)
+                                  {t('unifiedStrategies.tradingOutcome30d')}
                                 </p>
                                 {hasModeBreakdown && (
                                   <p className="text-[9px] text-muted-foreground/60">
-                                    Live = real venue · Simulated = paper / shadow
+                                    {t('unifiedStrategies.liveVsSimulatedNote')}
                                   </p>
                                 )}
                               </div>
@@ -2406,26 +2401,26 @@ export default function UnifiedStrategiesManager({
                                   const isShadow = bucket.kind === 'shadow'
                                   const isAggregate = bucket.kind === 'aggregate'
                                   const label = isLive
-                                    ? 'Live trades'
+                                    ? t('unifiedStrategies.liveTrades')
                                     : isShadow
-                                      ? 'Simulated trades'
+                                      ? t('unifiedStrategies.simulatedTrades')
                                       : isAggregate
-                                        ? 'All trades'
-                                        : 'Other trades'
+                                        ? t('unifiedStrategies.allTrades')
+                                        : t('unifiedStrategies.otherTrades')
                                   const sublabel = isLive
-                                    ? 'Submitted to Polymarket'
+                                    ? t('unifiedStrategies.submittedToPolymarket')
                                     : isShadow
-                                      ? 'Paper / shadow rows'
+                                      ? t('unifiedStrategies.paperShadowRows')
                                       : isAggregate
-                                        ? 'Live + simulated combined'
-                                        : 'Mode not classified'
+                                        ? t('unifiedStrategies.liveSimCombined')
+                                        : t('unifiedStrategies.modeNotClassified')
                                   const badgeText = isLive
-                                    ? 'Live'
+                                    ? t('unifiedStrategies.badgeLive')
                                     : isShadow
-                                      ? 'Simulated'
+                                      ? t('unifiedStrategies.badgeSimulated')
                                       : isAggregate
-                                        ? 'All'
-                                        : 'Other'
+                                        ? t('unifiedStrategies.badgeAll')
+                                        : t('unifiedStrategies.badgeOther')
                                   const badgeClasses = isLive
                                     ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
                                     : isShadow
@@ -2457,7 +2452,7 @@ export default function UnifiedStrategiesManager({
                                       <div className="grid grid-cols-2 gap-1.5">
                                         <div>
                                           <p className="text-[9px] uppercase tracking-wider text-muted-foreground/70">
-                                            Closed
+                                            {t('unifiedStrategies.closedLabel')}
                                           </p>
                                           <p className="text-sm font-mono font-bold">
                                             {bucket.terminalCount != null
@@ -2466,20 +2461,20 @@ export default function UnifiedStrategiesManager({
                                           </p>
                                           {bucket.total > 0 && (
                                             <p className="text-[9px] text-muted-foreground/60">
-                                              of {Number(bucket.total).toLocaleString()} total
+                                              {t('unifiedStrategies.ofTotal', { n: bucket.total })}
                                             </p>
                                           )}
                                         </div>
                                         <div>
                                           <p className="text-[9px] uppercase tracking-wider text-muted-foreground/70">
-                                            P&amp;L
+                                            {t('unifiedStrategies.pnlLabel')}
                                           </p>
                                           <p className={cn('text-sm font-mono font-bold', pnlClasses)}>
                                             {pnlValue != null
                                               ? `${pnlValue >= 0 ? '+' : ''}$${pnlValue.toFixed(2)}`
                                               : '—'}
                                           </p>
-                                          <p className="text-[9px] text-muted-foreground/60">net of fees</p>
+                                          <p className="text-[9px] text-muted-foreground/60">{t('unifiedStrategies.netOfFees')}</p>
                                         </div>
                                       </div>
                                     </div>
@@ -2496,15 +2491,13 @@ export default function UnifiedStrategiesManager({
                             telemetry or the chart is broken. */}
                         <div>
                           <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                            Calibration trend (90d)
+                            {t('unifiedStrategies.calibrationTrend90d')}
                           </p>
                           {selectedStrategyCalibrationTrend.length >= 2 ? (
                             <CalibrationSparkline trend={selectedStrategyCalibrationTrend} />
                           ) : (
                             <div className="rounded-md border border-border/30 bg-card/20 px-3 py-3 text-[10px] text-muted-foreground">
-                              No weekly calibration buckets are available for this strategy yet.
-                              The trend appears once the validation engine has accumulated
-                              at least two completed 7-day windows of resolved opportunities.
+                              {t('unifiedStrategies.calibrationEmpty')}
                             </div>
                           )}
                         </div>
@@ -2512,7 +2505,7 @@ export default function UnifiedStrategiesManager({
                         {/* Real action buttons — proper variants, icons, tooltips */}
                         <div className="rounded-md border border-border/40 bg-background/40 p-2 space-y-1.5">
                           <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                            Manual status override
+                            {t('unifiedStrategies.manualStatusOverride')}
                           </p>
                           <div className="flex flex-wrap items-center gap-1.5">
                             <Button
@@ -2532,14 +2525,14 @@ export default function UnifiedStrategiesManager({
                                   status: 'active',
                                 })
                               }
-                              title="Force this strategy to participate in trading regardless of telemetry"
+                              title={t('unifiedStrategies.forceActivateTitle')}
                             >
                               {overrideStrategyMutation.isPending ? (
                                 <Loader2 className="w-3 h-3 animate-spin" />
                               ) : (
                                 <CheckCircle2 className="w-3 h-3" />
                               )}
-                              Activate
+                              {t('unifiedStrategies.activate')}
                             </Button>
                             <Button
                               type="button"
@@ -2558,14 +2551,14 @@ export default function UnifiedStrategiesManager({
                                   status: 'demoted',
                                 })
                               }
-                              title="Park this strategy — signals still recorded, but not acted on"
+                              title={t('unifiedStrategies.parkStrategyTitle')}
                             >
                               {overrideStrategyMutation.isPending ? (
                                 <Loader2 className="w-3 h-3 animate-spin" />
                               ) : (
                                 <AlertTriangle className="w-3 h-3" />
                               )}
-                              Demote
+                              {t('unifiedStrategies.demoteAction')}
                             </Button>
                             <Button
                               type="button"
@@ -2575,20 +2568,19 @@ export default function UnifiedStrategiesManager({
                               disabled={healthBusy || !selectedStrategyHealth.manual_override}
                               onClick={() => clearOverrideMutation.mutate(selectedStrategyHealth.strategy_type)}
                               title={selectedStrategyHealth.manual_override
-                                ? 'Drop the manual override and let the auto-status engine drive it again'
-                                : 'No manual override active'}
+                                ? t('unifiedStrategies.dropManualOverride')
+                                : t('unifiedStrategies.noManualOverride')}
                             >
                               {clearOverrideMutation.isPending ? (
                                 <Loader2 className="w-3 h-3 animate-spin" />
                               ) : (
                                 <X className="w-3 h-3" />
                               )}
-                              Clear override
+                              {t('unifiedStrategies.clearOverride')}
                             </Button>
                           </div>
                           <p className="text-[10px] text-muted-foreground/70">
-                            Auto-status uses the metrics above plus configured guardrails. Manual overrides
-                            stick until you clear them.
+                            {t('unifiedStrategies.autoStatusNote')}
                           </p>
                         </div>
                       </div>
@@ -2596,13 +2588,11 @@ export default function UnifiedStrategiesManager({
                       <div className="rounded-lg border border-border/40 bg-card/30 p-6 text-center space-y-2">
                         <AlertTriangle className="w-6 h-6 mx-auto text-muted-foreground/40" />
                         <p className="text-[11px] text-muted-foreground">
-                          No health telemetry yet for{' '}
-                          <span className="font-mono text-foreground">{selectedStrategy?.slug || editorSlug || 'this strategy'}</span>.
+                          {t('unifiedStrategies.noHealthTelemetryFor')}{' '}
+                          <span className="font-mono text-foreground">{selectedStrategy?.slug || editorSlug || t('unifiedStrategies.thisStrategy')}</span>.
                         </p>
                         <p className="text-[10px] text-muted-foreground/70 max-w-md mx-auto">
-                          Telemetry accumulates as opportunities flow through detect → evaluate → exit. Run a
-                          backtest in <span className="font-medium">Research</span> or wait for live signals
-                          to populate the metrics.
+                          {t('unifiedStrategies.telemetryDesc')}
                         </p>
                       </div>
                     )}
@@ -2627,7 +2617,7 @@ export default function UnifiedStrategiesManager({
                       language="python"
                       className="h-full"
                       minHeight="100%"
-                      placeholder="Write your strategy source code here..."
+                      placeholder={t('unifiedStrategies.codeEditorPlaceholder')}
                     />
                   </div>
                 </div>
@@ -2659,7 +2649,7 @@ export default function UnifiedStrategiesManager({
               <motion.div
                 role="dialog"
                 aria-modal="true"
-                aria-label="Create strategy draft"
+                aria-label={t('unifiedStrategies.createDraftAria')}
                 className="relative z-10 w-full max-w-5xl rounded-2xl border border-border/70 bg-gradient-to-br from-background via-background to-violet-50/70 dark:border-violet-500/30 dark:from-card dark:via-card dark:to-violet-950/20 shadow-[0_40px_120px_rgba(0,0,0,0.35)] dark:shadow-[0_40px_120px_rgba(0,0,0,0.55)]"
                 initial={{ scale: 0.94, opacity: 0, y: 20 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
@@ -2669,9 +2659,9 @@ export default function UnifiedStrategiesManager({
                 <div className="border-b border-border/60 px-5 py-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold">Create Strategy</p>
+                      <p className="text-sm font-semibold">{t('unifiedStrategies.createStrategy')}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        Configure strategy metadata and choose a scaffold. Code editing starts after draft creation.
+                        {t('unifiedStrategies.createStrategyDesc')}
                       </p>
                     </div>
                     <Button
@@ -2693,10 +2683,10 @@ export default function UnifiedStrategiesManager({
                         <div>
                           <p className="text-xs font-semibold flex items-center gap-1.5">
                             <Sparkles className="w-3.5 h-3.5 text-violet-700 dark:text-violet-300" />
-                            Generate with AI
+                            {t('unifiedStrategies.generateWithAi')}
                           </p>
                           <p className="mt-0.5 text-[10px] text-muted-foreground">
-                            Describe the strategy behavior, markets, and risk controls.
+                            {t('unifiedStrategies.generateWithAiDesc')}
                           </p>
                         </div>
                         <Button
@@ -2711,7 +2701,7 @@ export default function UnifiedStrategiesManager({
                           ) : (
                             <Sparkles className="w-3 h-3" />
                           )}
-                          Generate
+                          {t('unifiedStrategies.generate')}
                         </Button>
                       </div>
                       <textarea
@@ -2722,13 +2712,13 @@ export default function UnifiedStrategiesManager({
                         }}
                         className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs leading-5 text-foreground outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         rows={3}
-                        placeholder="Build a momentum strategy on BTC/ETH event markets with volatility filters, configurable edge threshold, and strict stop-loss logic."
+                        placeholder={t('unifiedStrategies.aiPromptPlaceholder')}
                       />
                       {newStrategyAiDraft && (
                         <div className="rounded-md border border-violet-500/30 bg-violet-500/10 px-2.5 py-2 space-y-1.5">
                           <div className="flex items-center justify-between gap-2">
                             <p className="text-[10px] text-violet-700 dark:text-violet-200">
-                              Generated by {newStrategyAiDraft.model || 'AI'}{newStrategyAiDraft.used_repair_pass ? ' with repair pass' : ''}
+                              {t('unifiedStrategies.generatedBy', { model: newStrategyAiDraft.model || 'AI' })}{newStrategyAiDraft.used_repair_pass ? ` ${t('unifiedStrategies.withRepairPass')}` : ''}
                             </p>
                             <div className="flex items-center gap-1.5">
                               <Badge
@@ -2740,10 +2730,10 @@ export default function UnifiedStrategiesManager({
                                     : 'border-amber-500/35 text-amber-300 bg-amber-500/10'
                                 )}
                               >
-                                {newStrategyAiDraft.validation?.valid ? 'Validated' : 'Needs review'}
+                                {newStrategyAiDraft.validation?.valid ? t('unifiedStrategies.validated') : t('unifiedStrategies.needsReview')}
                               </Badge>
                               <div className="flex items-center gap-1">
-                                <span className="text-[10px] text-muted-foreground">Use AI Draft</span>
+                                <span className="text-[10px] text-muted-foreground">{t('unifiedStrategies.useAiDraft')}</span>
                                 <Switch checked={newStrategyUseAiDraft} onCheckedChange={setNewStrategyUseAiDraft} />
                               </div>
                             </div>
@@ -2764,7 +2754,7 @@ export default function UnifiedStrategiesManager({
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Name</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.nameLabel')}</Label>
                         <Input
                           value={newStrategyName}
                           onChange={(event) => {
@@ -2777,11 +2767,11 @@ export default function UnifiedStrategiesManager({
                             }
                           }}
                           className="mt-1 h-9 text-xs"
-                          placeholder="My Strategy"
+                          placeholder={t('unifiedStrategies.myStrategy')}
                         />
                       </div>
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Strategy Key</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.strategyKey')}</Label>
                         <Input
                           value={newStrategySlug}
                           onChange={(event) => {
@@ -2797,7 +2787,7 @@ export default function UnifiedStrategiesManager({
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Source</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.sourceLabel')}</Label>
                         <Select
                           value={newStrategySourceKey}
                           onValueChange={(value) => {
@@ -2818,13 +2808,13 @@ export default function UnifiedStrategiesManager({
                         </Select>
                       </div>
                       <div>
-                        <Label className="text-[11px] text-muted-foreground">Class Name (auto from key)</Label>
+                        <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.classNameAuto')}</Label>
                         <Input value={newStrategyClassName} className="mt-1 h-9 text-xs font-mono" disabled />
                       </div>
                     </div>
 
                     <div>
-                      <Label className="text-[11px] text-muted-foreground">Description</Label>
+                      <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.descriptionLabel')}</Label>
                       <textarea
                         value={newStrategyDescription}
                         onChange={(event) => {
@@ -2833,12 +2823,12 @@ export default function UnifiedStrategiesManager({
                         }}
                         className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-xs leading-5 text-foreground outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         rows={3}
-                        placeholder="Describe what this strategy does."
+                        placeholder={t('unifiedStrategies.describeStrategy')}
                       />
                     </div>
 
                     <div>
-                      <Label className="text-[11px] text-muted-foreground">Template</Label>
+                      <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.template')}</Label>
                       <div className="mt-2 grid gap-2 sm:grid-cols-2">
                         {newStrategyTemplates.map((template) => {
                           const active = template.key === (selectedNewTemplate?.key || '')
@@ -2868,8 +2858,8 @@ export default function UnifiedStrategiesManager({
 
                   <div className="min-h-0 rounded-xl border border-border/60 bg-muted/30 dark:bg-black/30">
                     <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Template Preview</span>
-                      <span className="text-[10px] font-mono text-muted-foreground">Read-only</span>
+                      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{t('unifiedStrategies.templatePreview')}</span>
+                      <span className="text-[10px] font-mono text-muted-foreground">{t('unifiedStrategies.readOnly')}</span>
                     </div>
                     <div className="max-h-[420px] overflow-auto px-3 py-2">
                       <pre className="whitespace-pre-wrap text-[11px] leading-5 text-muted-foreground font-mono">{newStrategyPreviewCode}</pre>
@@ -2885,7 +2875,7 @@ export default function UnifiedStrategiesManager({
 
                 <div className="flex items-center justify-end gap-2 border-t border-border/60 px-4 py-3">
                   <Button type="button" variant="outline" size="sm" onClick={() => setShowCreateModal(false)}>
-                    Cancel
+                    {t('unifiedStrategies.cancel')}
                   </Button>
                   <Button
                     type="button"
@@ -2894,7 +2884,7 @@ export default function UnifiedStrategiesManager({
                     onClick={createDraftFromModal}
                     disabled={busy || !newStrategyName.trim() || !normalizeSlug(newStrategySlug)}
                   >
-                    Continue to Editor
+                    {t('unifiedStrategies.continueToEditor')}
                   </Button>
                 </div>
               </motion.div>
@@ -2929,9 +2919,9 @@ export default function UnifiedStrategiesManager({
                       <Wand2 className="h-4 w-4" />
                     </span>
                     <div>
-                      <h3 className="text-sm font-semibold">Modify Strategy With AI</h3>
+                      <h3 className="text-sm font-semibold">{t('unifiedStrategies.modifyStrategyTitle')}</h3>
                       <p className="text-[11px] text-muted-foreground">
-                        Generate a revised source draft, review it, then apply it to the editor before saving.
+                        {t('unifiedStrategies.modifyStrategyDesc')}
                       </p>
                     </div>
                   </div>
@@ -2950,16 +2940,16 @@ export default function UnifiedStrategiesManager({
                   <div className="space-y-4">
                     <div className="rounded-xl border border-border/60 bg-muted/25 p-3">
                       <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                        Current Strategy
+                        {t('unifiedStrategies.currentStrategy')}
                       </p>
-                      <p className="mt-2 text-sm font-semibold">{editorName || selectedStrategy?.name || 'Draft strategy'}</p>
+                      <p className="mt-2 text-sm font-semibold">{editorName || selectedStrategy?.name || t('unifiedStrategies.draftStrategy')}</p>
                       <p className="mt-1 font-mono text-[11px] text-muted-foreground">
                         {normalizeSlug(editorSlug || selectedStrategy?.slug || 'strategy')} · {normalizeStrategySourceFilter(editorSourceKey)}
                       </p>
                     </div>
 
                     <div>
-                      <Label className="text-[11px] text-muted-foreground">Modification Instructions</Label>
+                      <Label className="text-[11px] text-muted-foreground">{t('unifiedStrategies.modificationInstructions')}</Label>
                       <textarea
                         value={modifyStrategyAiPrompt}
                         onChange={(event) => {
@@ -2967,7 +2957,7 @@ export default function UnifiedStrategiesManager({
                           setModifyStrategyAiError(null)
                         }}
                         className="mt-1 min-h-[170px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs leading-5 text-foreground outline-none ring-offset-background placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        placeholder="Example: tighten the exit logic, reduce risk after two losses, and only select positions when liquidity is above the configured threshold."
+                        placeholder={t('unifiedStrategies.modificationPlaceholder')}
                       />
                     </div>
 
@@ -2983,7 +2973,7 @@ export default function UnifiedStrategiesManager({
                       ) : (
                         <Sparkles className="h-3.5 w-3.5" />
                       )}
-                      Generate Modified Draft
+                      {t('unifiedStrategies.generateModifiedDraft')}
                     </Button>
 
                     {modifyStrategyAiError && (
@@ -2996,7 +2986,7 @@ export default function UnifiedStrategiesManager({
                       <div className="space-y-3 rounded-xl border border-border/60 bg-muted/25 p-3">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Draft Result
+                            {t('unifiedStrategies.draftResult')}
                           </span>
                           <Badge
                             variant="outline"
@@ -3007,11 +2997,11 @@ export default function UnifiedStrategiesManager({
                                 : 'border-red-500/30 bg-red-500/10 text-red-300'
                             )}
                           >
-                            {modifyStrategyAiDraft.validation.valid ? 'Valid' : 'Needs Fix'}
+                            {modifyStrategyAiDraft.validation.valid ? t('unifiedStrategies.valid') : t('unifiedStrategies.needsFix')}
                           </Badge>
                         </div>
                         <p className="text-xs leading-5 text-muted-foreground">
-                          {modifyStrategyAiDraft.change_summary || 'AI generated a modified source draft.'}
+                          {modifyStrategyAiDraft.change_summary || t('unifiedStrategies.aiGeneratedDraft')}
                         </p>
                         {modifyStrategyAiDraft.validation.errors.length > 0 && (
                           <div className="space-y-1 rounded-md border border-red-500/20 bg-red-500/10 px-2 py-2 text-[11px] text-red-300">
@@ -3034,10 +3024,10 @@ export default function UnifiedStrategiesManager({
                   <div className="min-h-0 rounded-xl border border-border/60 bg-muted/30 dark:bg-black/30">
                     <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
                       <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                        Modified Source Preview
+                        {t('unifiedStrategies.modifiedSourcePreview')}
                       </span>
                       <span className="text-[10px] font-mono text-muted-foreground">
-                        {modifyStrategyAiDraft ? 'Editable before apply' : 'Generate a draft to preview changes'}
+                        {modifyStrategyAiDraft ? t('unifiedStrategies.editableBeforeApply') : t('unifiedStrategies.generateToPreview')}
                       </span>
                     </div>
                     <div className="p-3">
@@ -3053,7 +3043,7 @@ export default function UnifiedStrategiesManager({
                         />
                       ) : (
                         <div className="flex min-h-[520px] items-center justify-center rounded-md border border-dashed border-border/70 bg-background/30 px-8 text-center text-xs text-muted-foreground">
-                          Describe the modification you want, then generate a revised strategy source draft.
+                          {t('unifiedStrategies.describeAndGenerate')}
                         </div>
                       )}
                     </div>
@@ -3062,7 +3052,7 @@ export default function UnifiedStrategiesManager({
 
                 <div className="flex items-center justify-end gap-2 border-t border-border/60 px-4 py-3">
                   <Button type="button" variant="outline" size="sm" onClick={() => setShowModifyModal(false)}>
-                    Cancel
+                    {t('unifiedStrategies.cancel')}
                   </Button>
                   <Button
                     type="button"
@@ -3071,7 +3061,7 @@ export default function UnifiedStrategiesManager({
                     onClick={applyModifyDraftToEditor}
                     disabled={!modifyStrategyAiDraft || !modifyStrategyAiDraft.source_code.trim()}
                   >
-                    Apply to Editor
+                    {t('unifiedStrategies.applyToEditor')}
                   </Button>
                 </div>
               </motion.div>

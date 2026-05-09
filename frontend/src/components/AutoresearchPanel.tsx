@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -61,6 +62,7 @@ type InnerTab = 'code' | 'studio' | 'data' | 'reverse'
 
 
 export default function AutoresearchPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   // ── Strategy picker (the only context the Research subview needs) ──
@@ -135,9 +137,9 @@ export default function AutoresearchPanel() {
         <div className="flex items-center gap-3 px-4 py-2">
           <Sparkles className="w-4 h-4 text-violet-400 shrink-0" />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold leading-tight">Strategy Research</p>
+            <p className="text-sm font-semibold leading-tight">{t('autoresearch.title')}</p>
             <p className="text-[10px] text-muted-foreground leading-tight">
-              Code evolution and L2-realistic backtesting with Cox PH fill model, ensemble PnL bands, and counterfactual queue replay.
+              {t('autoresearch.subtitle')}
             </p>
           </div>
           <div className="shrink-0 flex items-center gap-2">
@@ -147,7 +149,7 @@ export default function AutoresearchPanel() {
               onValueChange={(value) => setSelectedStrategyId(value)}
             >
               <SelectTrigger className="h-8 text-xs min-w-[220px]">
-                <SelectValue placeholder="Pick a strategy..." />
+                <SelectValue placeholder={t('autoresearch.pickStrategy')} />
               </SelectTrigger>
               <SelectContent>
                 {strategyCatalog.map((s: any) => (
@@ -171,7 +173,7 @@ export default function AutoresearchPanel() {
                 : 'border-transparent text-muted-foreground hover:text-foreground',
             )}
           >
-            <Code2 className="w-3 h-3" /> Code Experiments
+            <Code2 className="w-3 h-3" /> {t('autoresearch.tabCode')}
           </button>
           <button
             type="button"
@@ -183,7 +185,7 @@ export default function AutoresearchPanel() {
                 : 'border-transparent text-muted-foreground hover:text-foreground',
             )}
           >
-            <FlaskConical className="w-3 h-3" /> Backtest Studio
+            <FlaskConical className="w-3 h-3" /> {t('autoresearch.tabStudio')}
           </button>
           <button
             type="button"
@@ -195,7 +197,7 @@ export default function AutoresearchPanel() {
                 : 'border-transparent text-muted-foreground hover:text-foreground',
             )}
           >
-            <Database className="w-3 h-3" /> Data Lab
+            <Database className="w-3 h-3" /> {t('autoresearch.tabData')}
           </button>
           <button
             type="button"
@@ -206,9 +208,9 @@ export default function AutoresearchPanel() {
                 ? 'border-cyan-500 text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground',
             )}
-            title="Reverse-engineer a wallet's trading strategy via the LLM agent loop"
+            title={t('autoresearch.tabReverseTitle')}
           >
-            <Sparkles className="w-3 h-3" /> Reverse Engineer
+            <Sparkles className="w-3 h-3" /> {t('autoresearch.tabReverse')}
           </button>
         </div>
       </div>
@@ -226,7 +228,7 @@ export default function AutoresearchPanel() {
               queryClient={queryClient}
             />
           ) : (
-            <PanelEmpty message="Pick a strategy to start a code experiment." />
+            <PanelEmpty message={t('autoresearch.pickStrategyForCode')} />
           )
         ) : innerTab === 'data' ? (
           <DataLab />
@@ -268,8 +270,8 @@ export default function AutoresearchPanel() {
           />
         ) : (
           <PanelEmpty
-            title={selectedStrategyQuery.isLoading ? 'Loading strategy...' : 'Pick a strategy'}
-            message="Backtest Studio needs a strategy selected. Pick one from the dropdown above."
+            title={selectedStrategyQuery.isLoading ? t('autoresearch.loadingStrategy') : t('autoresearch.pickStrategyTitle')}
+            message={t('autoresearch.studioNeedsStrategy')}
           />
         )}
       </div>
@@ -301,6 +303,7 @@ function StrategyCodeExperiments({
   strategyLabel: string
   queryClient: ReturnType<typeof useQueryClient>
 }) {
+  const { t } = useTranslation()
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamIterations, setStreamIterations] = useState<StreamIteration[]>([])
   const [streamPhase, setStreamPhase] = useState<string>('')
@@ -396,7 +399,7 @@ function StrategyCodeExperiments({
               : it,
           ))
         } else if (type === 'error') {
-          setStreamError(String(data?.error || 'Unknown error'))
+          setStreamError(String(data?.error || t('autoresearch.unknownError')))
         }
       },
       () => {
@@ -432,9 +435,9 @@ function StrategyCodeExperiments({
       <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3 space-y-2 shrink-0">
         <div className="flex items-center gap-2">
           <Code2 className="w-4 h-4 text-purple-400" />
-          <h3 className="text-sm font-semibold">Code Evolution Loop</h3>
+          <h3 className="text-sm font-semibold">{t('autoresearch.codeEvolutionLoop')}</h3>
           <span className="text-[10px] text-muted-foreground">
-            for <span className="font-mono text-foreground">{strategyLabel}</span>
+            {t('autoresearch.forLabel')} <span className="font-mono text-foreground">{strategyLabel}</span>
           </span>
           <div className="ml-auto flex items-center gap-2">
             <Button
@@ -445,7 +448,7 @@ function StrategyCodeExperiments({
               onClick={() => setShowSettings(!showSettings)}
               disabled={isStreaming}
             >
-              Settings
+              {t('autoresearch.settings')}
             </Button>
             {isStreaming ? (
               <Button
@@ -456,7 +459,7 @@ function StrategyCodeExperiments({
                 disabled={stopMutation.isPending}
               >
                 <Square className="w-3 h-3 mr-1" />
-                Stop
+                {t('autoresearch.stop')}
               </Button>
             ) : (
               <Button
@@ -467,23 +470,22 @@ function StrategyCodeExperiments({
                 disabled={!strategyId}
               >
                 <Play className="w-3 h-3 mr-1" />
-                Start
+                {t('autoresearch.start')}
               </Button>
             )}
           </div>
         </div>
         <p className="text-[11px] text-muted-foreground leading-relaxed">
-          The LLM proposes a code change → AST validates → backtest runs → if score improves
-          we keep and bump a new strategy version, otherwise revert. Loops up to{' '}
+          {t('autoresearch.loopDescStart')}{' '}
           <span className="font-mono text-foreground">{(settings as any)?.max_iterations ?? 50}</span>{' '}
-          iterations or until you stop it.
+          {t('autoresearch.loopDescEnd')}
         </p>
 
         {/* Score header */}
         <div className="grid grid-cols-4 gap-2 text-[11px]">
-          <ScoreCard label="Status" value={isStreaming ? streamPhase || 'running' : (status?.status ?? 'idle')} tone={isStreaming ? 'good' : 'neutral'} />
-          <ScoreCard label="Baseline" value={baseline.toFixed(3)} tone="neutral" />
-          <ScoreCard label="Best" value={best.toFixed(3)} tone={delta > 0 ? 'good' : 'neutral'} />
+          <ScoreCard label={t('autoresearch.scoreStatus')} value={isStreaming ? streamPhase || t('autoresearch.running') : (status?.status ?? t('autoresearch.idle'))} tone={isStreaming ? 'good' : 'neutral'} />
+          <ScoreCard label={t('autoresearch.scoreBaseline')} value={baseline.toFixed(3)} tone="neutral" />
+          <ScoreCard label={t('autoresearch.scoreBest')} value={best.toFixed(3)} tone={delta > 0 ? 'good' : 'neutral'} />
           <ScoreCard label="Δ" value={(delta >= 0 ? '+' : '') + delta.toFixed(3)} tone={delta > 0 ? 'good' : delta < 0 ? 'bad' : 'neutral'} />
         </div>
 
@@ -506,30 +508,30 @@ function StrategyCodeExperiments({
       {/* Iteration log */}
       <div className="flex-1 min-h-0 rounded-lg border border-border/40 bg-card/30 overflow-hidden flex flex-col">
         <div className="shrink-0 px-3 py-1.5 border-b border-border/30 flex items-center gap-2 text-[11px]">
-          <span className="font-medium">Iterations</span>
+          <span className="font-medium">{t('autoresearch.iterations')}</span>
           <span className="text-muted-foreground">
-            {allIterations.length} {isStreaming ? '· streaming' : ''}
+            {allIterations.length} {isStreaming ? `· ${t('autoresearch.streaming')}` : ''}
           </span>
           {status?.kept_count !== undefined && (
             <span className="ml-auto text-[10px] text-muted-foreground font-mono">
-              kept {status.kept_count} · reverted {status.reverted_count}
+              {t('autoresearch.keptLabel')} {status.kept_count} · {t('autoresearch.revertedLabel')} {status.reverted_count}
             </span>
           )}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
           {allIterations.length === 0 ? (
             <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">
-              No iterations yet. Start an experiment to begin.
+              {t('autoresearch.noIterationsYet')}
             </div>
           ) : (
             <table className="w-full text-[10px] font-mono">
               <thead className="sticky top-0 bg-card/95">
                 <tr className="border-b border-border/30 text-muted-foreground">
                   <th className="text-left py-1 px-2 w-12">#</th>
-                  <th className="text-left py-1 px-2 w-20">Decision</th>
-                  <th className="text-right py-1 px-2 w-20">Score</th>
+                  <th className="text-left py-1 px-2 w-20">{t('autoresearch.colDecision')}</th>
+                  <th className="text-right py-1 px-2 w-20">{t('autoresearch.colScore')}</th>
                   <th className="text-right py-1 px-2 w-20">Δ</th>
-                  <th className="text-left py-1 px-2">Reasoning</th>
+                  <th className="text-left py-1 px-2">{t('autoresearch.colReasoning')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -592,6 +594,7 @@ function SettingsEditor({
   onSave: (s: Partial<AutoresearchSettings>) => void
   isSaving: boolean
 }) {
+  const { t } = useTranslation()
   const [draft, setDraft] = useState({
     model: String((settings as any).model || ''),
     max_iterations: String((settings as any).max_iterations ?? 50),
@@ -625,7 +628,7 @@ function SettingsEditor({
     <div className="rounded border border-border/40 bg-background/40 p-2 space-y-2">
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <Label className="text-[10px] text-muted-foreground">Model</Label>
+          <Label className="text-[10px] text-muted-foreground">{t('autoresearch.model')}</Label>
           <Select
             value={draft.model || undefined}
             onValueChange={(value) => setDraft({ ...draft, model: value })}
@@ -634,16 +637,16 @@ function SettingsEditor({
             <SelectTrigger className="mt-1 h-7 text-[11px]">
               <SelectValue placeholder={
                 llmModelsQuery.isLoading
-                  ? 'Loading models...'
+                  ? t('autoresearch.loadingModels')
                   : hasModelOptions
-                    ? 'Pick a model...'
-                    : 'No providers configured'
+                    ? t('autoresearch.pickModel')
+                    : t('autoresearch.noProviders')
               } />
             </SelectTrigger>
             <SelectContent>
               {draftModelMissing && (
                 <SelectItem value={draft.model} className="text-xs italic text-muted-foreground">
-                  {draft.model} <span className="opacity-60">(not in catalog)</span>
+                  {draft.model} <span className="opacity-60">{t('autoresearch.notInCatalog')}</span>
                 </SelectItem>
               )}
               {Object.entries(groupedModels).map(([provider, opts]) => (
@@ -662,12 +665,12 @@ function SettingsEditor({
           </Select>
           {!hasModelOptions && !llmModelsQuery.isLoading && (
             <p className="mt-1 text-[9px] text-muted-foreground">
-              Configure a provider in Settings → LLM to populate this list.
+              {t('autoresearch.configureProviderHint')}
             </p>
           )}
         </div>
         <div>
-          <Label className="text-[10px] text-muted-foreground">Max iterations</Label>
+          <Label className="text-[10px] text-muted-foreground">{t('autoresearch.maxIterations')}</Label>
           <Input
             value={draft.max_iterations}
             onChange={(e) => setDraft({ ...draft, max_iterations: e.target.value })}
@@ -677,12 +680,12 @@ function SettingsEditor({
         </div>
       </div>
       <div>
-        <Label className="text-[10px] text-muted-foreground">Mandate (LLM instructions)</Label>
+        <Label className="text-[10px] text-muted-foreground">{t('autoresearch.mandate')}</Label>
         <Input
           value={draft.mandate}
           onChange={(e) => setDraft({ ...draft, mandate: e.target.value })}
           className="mt-1 h-7 text-[11px]"
-          placeholder="e.g. Improve win rate without increasing max drawdown"
+          placeholder={t('autoresearch.mandatePlaceholder')}
         />
       </div>
       <div className="flex justify-end">
@@ -697,7 +700,7 @@ function SettingsEditor({
           } as any)}
           disabled={isSaving}
         >
-          {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Save settings'}
+          {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : t('autoresearch.saveSettings')}
         </Button>
       </div>
     </div>
