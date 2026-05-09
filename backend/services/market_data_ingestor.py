@@ -706,19 +706,44 @@ class LiveMarketDataIngestor:
         if not rows:
             return
         t0 = time.perf_counter()
-        async with AsyncSessionLocal() as session:
-            try:
+        # Shield the session work so a watchdog-driven cancel cannot
+        # interrupt mid-asyncpg-protocol — that path leaves the
+        # connection wedged ("cannot switch to state 12; another
+        # operation (N) is in progress") and poisons later flushes.
+        # The async-with itself handles rollback/invalidate on error;
+        # do not call session.rollback() here, it races the close()
+        # machinery (see trader_hot_state._audit_run_group_inner).
+        async def _do_write() -> None:
+            async with AsyncSessionLocal() as session:
                 session.add_all(rows)
                 await asyncio.wait_for(session.commit(), timeout=_FLUSH_COMMIT_TIMEOUT_SECONDS)
-            except Exception as exc:
-                with suppress(Exception):
-                    await session.rollback()
-                logger.warning(
-                    f"LiveMarketDataIngestor failed to persist {kind} batch",
-                    exc_info=exc,
-                    rows=len(rows),
-                )
-                return
+
+        try:
+            await asyncio.shield(_do_write())
+        except BaseException as exc:
+            requeued = 0
+            dropped = 0
+            for row in rows:
+                try:
+                    queue.put_nowait(row)
+                    requeued += 1
+                except asyncio.QueueFull:
+                    dropped += 1
+            if dropped:
+                if kind == "snapshot":
+                    self._snapshot_dropped += dropped
+                elif kind == "delta":
+                    self._delta_dropped += dropped
+            logger.warning(
+                f"LiveMarketDataIngestor failed to persist {kind} batch",
+                exc_info=exc,
+                rows=len(rows),
+                requeued=requeued,
+                dropped=dropped,
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return
         latency_ms = (time.perf_counter() - t0) * 1000.0
         # Bounded sliding window of last 100 latencies for p50/p95 stats.
         self._flush_latency_samples.append(latency_ms)

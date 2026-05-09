@@ -83,6 +83,16 @@ _RPC_ENDPOINT_COOLDOWN_BASE_SECONDS = 30.0  # First 429 → 30s skip
 _RPC_ENDPOINT_COOLDOWN_MAX_SECONDS = 600.0  # Cap at 10 minutes
 _RPC_429_RETRY_AFTER_FALLBACK_SECONDS = 60.0  # If Retry-After header missing
 
+# 2026-05-07: eviction TTL for transient failures. Without this, a fallback
+# endpoint that times out 5 times in a row (consecutive-failure threshold)
+# stays evicted for the lifetime of the process — observed in scanner soak
+# logs as the "endpoints=['publicnode']" single-element error after fallbacks
+# silently dropped during a brief network blip. Re-include evicted endpoints
+# after this window to give them a chance to recover. Permanent evictions
+# (auth required / method-not-supported / 400 Bad Request on eth_getLogs)
+# pass ``permanent=True`` and stay out forever.
+_RPC_EVICTION_RETRY_AFTER_SECONDS = 1800.0  # 30 min
+
 
 # ==================== DATA MODEL ====================
 
@@ -223,6 +233,35 @@ def _rpc_error_indicates_unsupported_logs_query(error: object) -> bool:
 
 def _rpc_error_indicates_logs_block_not_ready(error: object) -> bool:
     return "invalid block range params" in _rpc_error_text(error)
+
+
+def _mask_rpc_url(raw_url: object) -> str:
+    """Mask URL-path API keys for log output.
+
+    Many Polygon RPC providers (Ankr, Alchemy, QuickNode tier-2) embed
+    the API key directly in the URL path:
+    ``https://rpc.ankr.com/polygon/<32-hex-key>``. Logging the URL
+    verbatim would leak the key into operator output. Replace any path
+    segment longer than 16 chars (typical key length) with ``***``.
+    """
+    text = str(raw_url or "").strip()
+    if not text:
+        return ""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(text)
+        if not parts.path:
+            return text
+        masked_segments = []
+        for segment in parts.path.split("/"):
+            if len(segment) >= 16 and segment.replace("-", "").replace("_", "").isalnum():
+                masked_segments.append("***")
+            else:
+                masked_segments.append(segment)
+        return urlunsplit((parts.scheme, parts.netloc, "/".join(masked_segments), parts.query, parts.fragment))
+    except Exception:
+        # Fall back to a host-only mask on any parse error.
+        return text.split("?", 1)[0]
 
 
 def _normalize_rpc_http_url(raw_url: object) -> str:
@@ -413,10 +452,15 @@ class WalletWebSocketMonitor:
         self._callbacks: list[Callable] = []
         self._ws_url: str = DEFAULT_WS_URL
         self._http_rpc_url: str = _normalize_rpc_http_url(DEFAULT_HTTP_RPC_URL) or DEFAULT_PUBLIC_HTTP_RPC_URL
+        # Permanent eviction set (auth/method/400 errors — never auto-revive).
         self._evicted_rpc_urls: set[str] = set()
+        # Transient eviction map: URL → monotonic deadline when eviction expires.
+        # Used for consecutive-failure evictions; cleared on
+        # ``_active_evicted_urls`` access if past the deadline.
+        self._evicted_rpc_urls_until: dict[str, float] = {}
         self._rpc_urls: list[str] = _build_rpc_candidates(
             self._http_rpc_url,
-            excluded_urls=self._evicted_rpc_urls,
+            excluded_urls=self._active_evicted_urls(),
         )
         self._reconnect_delay: int = 5
         self._max_reconnect_delay: int = 60
@@ -478,17 +522,37 @@ class WalletWebSocketMonitor:
             "last_fallback_poll_at": "",
         }
 
+    def _active_evicted_urls(self) -> set[str]:
+        """Return currently-active eviction set, expiring stale transient entries.
+
+        Permanent evictions (auth / method-not-supported / 400) stay forever.
+        Transient ones (consecutive-failure threshold) expire after
+        ``_RPC_EVICTION_RETRY_AFTER_SECONDS`` so the endpoint gets re-tried.
+        """
+        now = time.monotonic()
+        if self._evicted_rpc_urls_until:
+            expired = [url for url, deadline in self._evicted_rpc_urls_until.items() if deadline <= now]
+            for url in expired:
+                self._evicted_rpc_urls_until.pop(url, None)
+        return set(self._evicted_rpc_urls) | set(self._evicted_rpc_urls_until)
+
     def _refresh_rpc_candidates(self) -> None:
         self._rpc_urls = _build_rpc_candidates(
             self._http_rpc_url,
-            excluded_urls=self._evicted_rpc_urls,
+            excluded_urls=self._active_evicted_urls(),
         )
 
-    def _evict_rpc_endpoint(self, endpoint: str) -> None:
+    def _evict_rpc_endpoint(self, endpoint: str, *, permanent: bool = True) -> None:
         normalized = _normalize_rpc_http_url(endpoint)
         if not normalized:
             return
-        self._evicted_rpc_urls.add(normalized)
+        if permanent:
+            self._evicted_rpc_urls.add(normalized)
+            self._evicted_rpc_urls_until.pop(normalized, None)
+        else:
+            self._evicted_rpc_urls_until[normalized] = (
+                time.monotonic() + _RPC_EVICTION_RETRY_AFTER_SECONDS
+            )
         self._rpc_urls = [url for url in self._rpc_urls if url != normalized]
         self._rpc_endpoint_consecutive_failures.pop(normalized, None)
         if self._http_rpc_url == normalized:
@@ -516,8 +580,11 @@ class WalletWebSocketMonitor:
                 endpoint=normalized,
                 consecutive_failures=count,
                 threshold=self._rpc_endpoint_evict_threshold,
+                retry_after_seconds=_RPC_EVICTION_RETRY_AFTER_SECONDS,
             )
-            self._evict_rpc_endpoint(normalized)
+            # Transient: failure-threshold evictions get retried after TTL —
+            # network blips shouldn't take a fallback out of rotation forever.
+            self._evict_rpc_endpoint(normalized, permanent=False)
             return True
         return False
 
@@ -717,6 +784,51 @@ class WalletWebSocketMonitor:
 
     # ==================== LIFECYCLE ====================
 
+    async def _load_endpoints_from_db(self) -> None:
+        """Override env-var defaults with DB-stored Polygon RPC URLs.
+
+        AppSettings.polygon_rpc_url / polygon_ws_url are encrypted via
+        ``set_encrypted_secret`` from the SettingsPanel UI and override
+        the POLYGON_RPC_URL / POLYGON_WS_URL env vars at runtime. Empty
+        / NULL DB values leave the env-var defaults in place. Read
+        failures are non-fatal — the monitor still starts on env-var
+        defaults plus the public fallback list.
+        """
+        try:
+            from sqlalchemy import select
+            from models.database import AsyncSessionLocal, AppSettings
+            from utils.secrets import decrypt_secret
+
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(AppSettings).where(AppSettings.id == "default")
+                )
+                row = result.scalar_one_or_none()
+                if row is None:
+                    return
+                stored_rpc = decrypt_secret(getattr(row, "polygon_rpc_url", None)) or ""
+                stored_ws = decrypt_secret(getattr(row, "polygon_ws_url", None)) or ""
+        except Exception as exc:
+            logger.warning(
+                "Wallet WS monitor: failed to read Polygon RPC overrides from AppSettings; "
+                "falling back to env-var defaults",
+                exc_info=exc,
+            )
+            return
+
+        rpc_normalized = _normalize_rpc_http_url(stored_rpc)
+        if rpc_normalized:
+            self._http_rpc_url = rpc_normalized
+            # Recompute the failover list so the new primary lands at
+            # position 0 (with the public fallbacks still available
+            # behind it for resilience if the paid endpoint hiccups).
+            self._refresh_rpc_candidates()
+
+        if stored_ws:
+            ws_text = str(stored_ws).strip().rstrip("/")
+            if ws_text and ws_text != self._ws_url:
+                self._ws_url = ws_text
+
     async def start(self):
         """Start WebSocket monitoring.
 
@@ -737,14 +849,42 @@ class WalletWebSocketMonitor:
             logger.error("websockets library not installed. Install with: pip install websockets")
             return
 
+        # Pick up DB-stored RPC/WS URLs (set via SettingsPanel UI) before
+        # spawning loops so the very first request goes to the configured
+        # provider, not the env-var default.
+        await self._load_endpoints_from_db()
+
         self._running = True
         self._ws_task = asyncio.create_task(self._ws_loop())
         await self._start_rtds_fast_path()
+        # Surface the configured primary RPC + the active failover
+        # order at startup so the operator can verify which provider
+        # is being used. URLs are masked to hide path-embedded API
+        # keys (Ankr / Alchemy / QuickNode pattern). The configured
+        # primary should be FIRST in the list — if it's a public
+        # endpoint (publicnode / llamarpc / etc.) the operator hasn't
+        # set POLYGON_RPC_URL and is running on free-tier endpoints
+        # that rate-limit aggressively.
+        primary_is_public = any(
+            self._http_rpc_url == fallback
+            for fallback in (DEFAULT_PUBLIC_HTTP_RPC_URL, *FALLBACK_HTTP_RPC_URLS)
+        )
         logger.info(
             "Started wallet WS monitor",
             ws_url=self._ws_url,
+            primary_rpc_url=_mask_rpc_url(self._http_rpc_url),
+            primary_is_authenticated=not primary_is_public,
+            rpc_failover_order=[_mask_rpc_url(u) for u in self._rpc_urls],
             tracked_wallets=len(self._tracked_sources),
         )
+        if primary_is_public:
+            logger.warning(
+                "Wallet WS monitor: POLYGON_RPC_URL is unset or pointing at a public "
+                "endpoint — eth_getLogs will rate-limit under sustained load. Set "
+                "POLYGON_RPC_URL to an authenticated provider (Ankr / Alchemy / QuickNode) "
+                "to eliminate the wallet-monitor failure cascade observed in soak.",
+                primary_rpc_url=_mask_rpc_url(self._http_rpc_url),
+            )
 
     async def _start_rtds_fast_path(self) -> None:
         """Start the Polymarket RTDS activity fast-path feed."""
@@ -1340,11 +1480,18 @@ class WalletWebSocketMonitor:
             now = time.monotonic()
             if (now - self._rpc_last_total_failure_log_at) >= self._rpc_total_failure_log_interval_seconds:
                 self._rpc_last_total_failure_log_at = now
+                # Surface evicted endpoints alongside the active list so the
+                # operator can tell single-endpoint exhaustion ("everything is
+                # evicted, only publicnode remains") from genuine all-endpoint
+                # outage. Without this, the log line ``endpoints=['publicnode']``
+                # is ambiguous and looks like a config bug.
                 logger.error(
                     "Wallet monitor RPC failed across all endpoints",
                     method=method,
                     block=block_hex or None,
                     endpoints=self._rpc_urls,
+                    evicted_permanent=sorted(self._evicted_rpc_urls),
+                    evicted_transient=sorted(self._evicted_rpc_urls_until),
                     failure_streak=self._rpc_failure_streak,
                     cooldown_seconds=round(cooldown_seconds, 2),
                     error_type=type(last_error).__name__,

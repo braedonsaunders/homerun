@@ -61,6 +61,7 @@ type SettingsSection =
   | 'notifications'
   | 'security'
   | 'vpn'
+  | 'rpc'
   | 'network'
   | 'discovery'
   | 'providers'
@@ -274,6 +275,11 @@ export default function SettingsPanel({
     require_vpn: true
   })
 
+  const [rpcForm, setRpcForm] = useState({
+    rpc_url: '',
+    ws_url: '',
+  })
+
   const [uiLockForm, setUiLockForm] = useState({
     enabled: DEFAULT_UI_LOCK_SETTINGS.enabled,
     idle_timeout_minutes: DEFAULT_UI_LOCK_SETTINGS.idle_timeout_minutes,
@@ -445,6 +451,11 @@ export default function SettingsPanel({
           require_vpn: settings.trading_proxy?.require_vpn ?? true
         })
       }
+
+      // RPC URLs come back masked from the server; don't pre-fill the
+      // input or the user would overwrite their stored secret with a
+      // masked preview on save.
+      setRpcForm({ rpc_url: '', ws_url: '' })
 
       setUiLockForm({
         enabled: settings.ui_lock?.enabled ?? DEFAULT_UI_LOCK_SETTINGS.enabled,
@@ -766,6 +777,20 @@ export default function SettingsPanel({
           (updates.trading_proxy as any).proxy_url = vpnForm.proxy_url
         }
         break
+      case 'rpc':
+        // Only include the RPC fields the user actually changed —
+        // empty input means "leave unchanged" (server keeps stored
+        // value). To clear a stored URL the user must explicitly type
+        // a single space and save (the server treats empty/whitespace
+        // as a clear signal via the trim+empty check).
+        updates.blockchain_rpc = {} as any
+        if (rpcForm.rpc_url) {
+          (updates.blockchain_rpc as any).rpc_url = rpcForm.rpc_url
+        }
+        if (rpcForm.ws_url) {
+          (updates.blockchain_rpc as any).ws_url = rpcForm.ws_url
+        }
+        break
       case 'maintenance':
         updates.maintenance = maintenanceForm
         break
@@ -842,6 +867,8 @@ export default function SettingsPanel({
           : 'Disabled'
       case 'vpn':
         return vpnForm.enabled ? 'Active' : 'Disabled'
+      case 'rpc':
+        return settings?.blockchain_rpc?.rpc_url ? 'Configured' : 'Public-tier (rate-limited)'
       case 'network':
         return networkForm.allow_network_access ? 'LAN Enabled' : 'Localhost Only'
       case 'providers': {
@@ -875,6 +902,10 @@ export default function SettingsPanel({
           : 'text-muted-foreground bg-muted'
       case 'vpn':
         return vpnForm.enabled ? 'text-indigo-400 bg-indigo-500/10' : 'text-muted-foreground bg-muted'
+      case 'rpc':
+        return settings?.blockchain_rpc?.rpc_url
+          ? 'text-emerald-400 bg-emerald-500/10'
+          : 'text-yellow-400 bg-yellow-500/10'
       case 'network':
         return networkForm.allow_network_access ? 'text-sky-400 bg-sky-500/10' : 'text-muted-foreground bg-muted'
       case 'providers':
@@ -896,6 +927,7 @@ export default function SettingsPanel({
     { id: 'notifications', icon: Bell, label: 'Notifications', description: 'Telegram alerts' },
     { id: 'security', icon: Lock, label: 'UI Lock', description: 'Local screen lock and inactivity timeout' },
     { id: 'vpn', icon: Shield, label: 'Trading VPN/Proxy', description: 'Route trades through VPN' },
+    { id: 'rpc', icon: Database, label: 'Blockchain RPC', description: 'Polygon RPC for wallet monitor (Ankr/Alchemy/QuickNode)' },
     { id: 'network', icon: Wifi, label: 'Network Access', description: 'Allow LAN devices to reach the dashboard' },
     { id: 'discovery', icon: Database, label: 'Discovery', description: 'Wallet discovery growth and maintenance' },
     { id: 'providers', icon: Database, label: 'Data Providers', description: 'Polybacktest API key and reverse-engineer defaults' },
@@ -1752,6 +1784,50 @@ export default function SettingsPanel({
                           </Badge>
                         )}
                       </div>
+                    </div>
+                  )}
+
+                  {/* Polygon Blockchain RPC Settings */}
+                  {section.id === 'rpc' && (
+                    <div className="space-y-4">
+                      <Card className="bg-muted border-sky-500/30">
+                        <CardContent className="p-3 space-y-1">
+                          <p className="font-medium text-sm">Polygon RPC for wallet monitor</p>
+                          <p className="text-xs text-muted-foreground">
+                            The wallet monitor polls Polygon every block for OrderFilled events.
+                            On free public endpoints (publicnode, llamarpc, 1rpc) you'll see
+                            <code className="mx-1 px-1 bg-background rounded text-[10px]">RPC failed across all endpoints</code>
+                            errors and copy-trade detection drops sub-blocks under load.
+                            Configure an authenticated provider (Ankr / Alchemy / QuickNode) here
+                            to eliminate the wallet-monitor failure cascade.
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            URLs are stored encrypted (Ankr-style URL-path API keys are supported).
+                            Empty input leaves the stored value unchanged. Workers pick up new
+                            URLs on next restart.
+                          </p>
+                        </CardContent>
+                      </Card>
+
+                      <SecretInput
+                        label="Polygon HTTPS RPC URL"
+                        value={rpcForm.rpc_url}
+                        placeholder={settings?.blockchain_rpc?.rpc_url || 'https://rpc.ankr.com/polygon/<your-api-key>'}
+                        onChange={(v) => setRpcForm(p => ({ ...p, rpc_url: v }))}
+                        showSecret={showSecrets['polygon_rpc_url']}
+                        onToggle={() => toggleSecret('polygon_rpc_url')}
+                        description="Used for eth_getLogs polling. Ankr / Alchemy / QuickNode all work."
+                      />
+
+                      <SecretInput
+                        label="Polygon WebSocket RPC URL (optional)"
+                        value={rpcForm.ws_url}
+                        placeholder={settings?.blockchain_rpc?.ws_url || 'wss://rpc.ankr.com/polygon/ws/<your-api-key>'}
+                        onChange={(v) => setRpcForm(p => ({ ...p, ws_url: v }))}
+                        showSecret={showSecrets['polygon_ws_url']}
+                        onToggle={() => toggleSecret('polygon_ws_url')}
+                        description="Optional. Used to subscribe to new block headers. Falls back to a public WS endpoint if unset."
+                      />
                     </div>
                   )}
 

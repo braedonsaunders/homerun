@@ -151,6 +151,14 @@ export interface TradingProxySettings {
   require_vpn: boolean
 }
 
+export interface BlockchainRpcSettings {
+  // Both URLs are masked previews on GET; on PUT, send the full URL or
+  // empty string to clear. ``null``/undefined leaves the field
+  // unchanged on the server.
+  rpc_url: string | null
+  ws_url: string | null
+}
+
 export interface UILockSettings {
   enabled: boolean
   idle_timeout_minutes: number
@@ -229,6 +237,7 @@ export interface AllSettings {
   maintenance: MaintenanceSettings
   discovery: DiscoverySettings
   trading_proxy: TradingProxySettings
+  blockchain_rpc: BlockchainRpcSettings
   ui_lock: UILockSettings
   network: NetworkSettings
   events: EventsSettings
@@ -247,6 +256,7 @@ export interface UpdateSettingsRequest {
   maintenance?: Partial<MaintenanceSettings>
   discovery?: Partial<DiscoverySettings>
   trading_proxy?: Partial<TradingProxySettings>
+  blockchain_rpc?: Partial<BlockchainRpcSettings>
   ui_lock?: Partial<UILockSettings>
   network?: Partial<NetworkSettings>
   events?: Partial<EventsSettings>

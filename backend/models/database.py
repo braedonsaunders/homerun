@@ -26,6 +26,7 @@ import asyncio
 import os as _os
 import time as _time
 import warnings as _warnings
+import weakref
 from config import settings
 from models.types import PreciseFloat as Float
 
@@ -1516,6 +1517,16 @@ class AppSettings(Base):
     trading_proxy_verify_ssl = Column(Boolean, default=True)
     trading_proxy_timeout = Column(Float, default=30.0)
     trading_proxy_require_vpn = Column(Boolean, default=True)  # Block trades if VPN unreachable
+
+    # Polygon RPC endpoints used by services.wallet_ws_monitor for
+    # eth_getLogs polling (when WS connection is unavailable) and the
+    # canonical on-chain wallet trade detection.  Stored encrypted
+    # because Ankr/Alchemy/QuickNode embed the API key in the URL path
+    # (https://rpc.ankr.com/polygon/<32-hex-key>).  When unset, falls
+    # back to the POLYGON_RPC_URL / POLYGON_WS_URL env vars and finally
+    # to the hardcoded public-tier list in wallet_ws_monitor.py.
+    polygon_rpc_url = Column(String, nullable=True)  # encrypted via set_encrypted_secret
+    polygon_ws_url = Column(String, nullable=True)   # encrypted via set_encrypted_secret
 
     # Local UI lock settings
     ui_lock_enabled = Column(Boolean, default=False)
@@ -4786,6 +4797,18 @@ def _on_checkout(dbapi_connection, connection_record, connection_proxy):
     connection_record.info["checkout_time"] = _time.monotonic()
     connection_record.info["checkout_task_name"] = task_name
     connection_record.info["checkout_task_coro"] = coro_name
+    # Weakref to the owning task so the reaper can cancel it (not just
+    # invalidate the underlying connection) when checkout exceeds the
+    # hard limit. Without this, the reaper closes the socket and moves
+    # on, but the owning task is still scheduled — it will surface a
+    # confusing InterfaceError on its next await of the (now-dead)
+    # connection. Cancelling the task surfaces the error at its real
+    # source. weakref so we don't pin the task in memory.
+    try:
+        task = asyncio.current_task()
+        connection_record.info["checkout_task_ref"] = weakref.ref(task) if task is not None else None
+    except RuntimeError:
+        connection_record.info["checkout_task_ref"] = None
     try:
         cursor = dbapi_connection.cursor()
         try:
@@ -5198,6 +5221,37 @@ async def _reap_stale_checkouts() -> None:
                 reaped += 1
         except Exception as e:
             _db_logger.warning("REAPER: Failed to invalidate connection: %s", e)
+
+        # NOTE 2026-05-09: previously we ALSO called owning_task.cancel()
+        # here. Removed because it was the proximate cause of the
+        # "cannot switch to state 11/15; another operation (2) is in
+        # progress" cascade observed in the 2026-05-09 soak (13:30:26+):
+        # cancellation propagated mid-asyncpg-protocol, and the task's
+        # cleanup path (rollback / finally) issued a NEW op on a
+        # connection whose protocol state was still in-flight, wedging
+        # multiple downstream tasks (market_cache.delete_market,
+        # trader_orchestrator, trader_hot_state.flush_audit_buffer,
+        # tracked_traders pool_recompute, market_data_ingestor).
+        #
+        # The codebase already handles InterfaceError surfacing on the
+        # task's next await via RetryableSession + retry classifier
+        # (see backend/utils/retry.py). Letting that path run produces
+        # a clean rollback/retry instead of poisoning the protocol.
+        # Keep the weakref + logged identity for diagnostics.
+        task_ref = info.get("checkout_task_ref")
+        owning_task = None
+        if callable(task_ref):
+            try:
+                owning_task = task_ref()
+            except Exception:
+                owning_task = None
+        if owning_task is not None and not owning_task.done():
+            _db_logger.warning(
+                "REAPER: Owning task=%s coro=%s still running after connection invalidation; "
+                "letting RetryableSession surface InterfaceError on its next await",
+                task_name,
+                coro_name,
+            )
 
     return reaped
 

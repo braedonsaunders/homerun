@@ -70,6 +70,14 @@ _pending_targeted_condition_ids_lock = Lock()
 _scanner_projection_lock = Lock()
 _scanner_projection_task: asyncio.Task | None = None
 _scanner_projection_pending: dict[str, Any] | None = None
+# Cumulative drop counters. The pending slot is intentionally
+# latest-wins, so a timed-out projection cannot be requeued — the
+# next scan cycle re-projects the world. These counters give ops a
+# way to quantify the cumulative skip surface (1,235+ rows dropped
+# across 9 batches in the 2026-05-07 soak window were invisible to
+# anything but a grep of the warning log).
+_scanner_projection_dropped_batches: int = 0
+_scanner_projection_dropped_rows: int = 0
 _SCANNER_STATE_PROJECTION_TIMEOUT_SECONDS = 10.0  # was 15s; cycle 8 of the
 # perf-harness loop hit a 181s zombie-backend incident on
 # opportunity_state UPDATE.  SET LOCAL statement_timeout (8s) should
@@ -201,19 +209,45 @@ async def _project_scanner_state(
             await _commit_with_retry(session)
             return event_messages
 
+    global _scanner_projection_dropped_batches
+    global _scanner_projection_dropped_rows
     try:
         event_messages = await asyncio.wait_for(
             _run_projection(),
             timeout=_SCANNER_STATE_PROJECTION_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        logger.warning("Scanner opportunity-state projection timed out; dropped batch count=%s", len(payload))
+        _scanner_projection_dropped_batches += 1
+        _scanner_projection_dropped_rows += len(payload)
+        logger.warning(
+            "Scanner opportunity-state projection timed out; dropped batch count=%s "
+            "cumulative_dropped_batches=%s cumulative_dropped_rows=%s",
+            len(payload),
+            _scanner_projection_dropped_batches,
+            _scanner_projection_dropped_rows,
+        )
         return
     except Exception:
-        logger.exception("Scanner opportunity-state projection failed")
+        _scanner_projection_dropped_batches += 1
+        _scanner_projection_dropped_rows += len(payload)
+        logger.exception(
+            "Scanner opportunity-state projection failed; dropped batch count=%s "
+            "cumulative_dropped_batches=%s cumulative_dropped_rows=%s",
+            len(payload),
+            _scanner_projection_dropped_batches,
+            _scanner_projection_dropped_rows,
+        )
         return
 
     await _publish_opportunity_runtime_events(event_messages)
+
+
+def get_scanner_projection_drop_stats() -> dict[str, int]:
+    """Expose cumulative drop counters for operator dashboards / SLO worker."""
+    return {
+        "dropped_batches": _scanner_projection_dropped_batches,
+        "dropped_rows": _scanner_projection_dropped_rows,
+    }
 
 
 async def _run_scanner_state_projection_loop() -> None:
