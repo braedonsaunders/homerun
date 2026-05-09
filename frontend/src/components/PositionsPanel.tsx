@@ -1,5 +1,6 @@
 import { type ReactNode, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAtomValue } from 'jotai'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -367,6 +368,7 @@ function readHistoryPoint(point: unknown): { time: number; yes: number | null; n
 }
 
 export default function PositionsPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const globalSelectedAccountId = useAtomValue(selectedAccountIdAtom)
 
@@ -1252,7 +1254,7 @@ export default function PositionsPanel() {
           <div className="flex items-center gap-3">
             <h2 className="text-base font-semibold flex items-center gap-2">
               <Briefcase className="w-4 h-4 text-blue-400" />
-              Positions
+              {t('positions.title')}
             </h2>
             <Badge className="rounded-md border-transparent bg-muted text-muted-foreground text-xs">
               {sortedRows.length} / {baseRows.length}
@@ -1272,19 +1274,19 @@ export default function PositionsPanel() {
         <div className="flex flex-wrap items-center gap-2">
           <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as ViewMode)}>
             <TabsList className="h-8">
-              <TabsTrigger value="all" className="text-xs h-7 px-3">All</TabsTrigger>
-              <TabsTrigger value="sandbox" className="text-xs h-7 px-3">Sandbox</TabsTrigger>
-              <TabsTrigger value="live" className="text-xs h-7 px-3">Live</TabsTrigger>
+              <TabsTrigger value="all" className="text-xs h-7 px-3">{t('positions.tabAll')}</TabsTrigger>
+              <TabsTrigger value="sandbox" className="text-xs h-7 px-3">{t('positions.tabSandbox')}</TabsTrigger>
+              <TabsTrigger value="live" className="text-xs h-7 px-3">{t('positions.tabLive')}</TabsTrigger>
             </TabsList>
           </Tabs>
 
           {shouldShowSandbox && (
             <Select value={selectedSandboxAccount ?? 'all'} onValueChange={(value) => setSelectedSandboxAccount(value === 'all' ? null : value)}>
               <SelectTrigger className="h-8 w-[180px] bg-background/60 text-xs">
-                <SelectValue placeholder="Sandbox Account" />
+                <SelectValue placeholder={t('positions.sandboxAccountPlaceholder')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Sandbox</SelectItem>
+                <SelectItem value="all">{t('positions.allSandbox')}</SelectItem>
                 {accounts.map((account) => (
                   <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>
                 ))}
@@ -1295,12 +1297,12 @@ export default function PositionsPanel() {
           {shouldShowLive && (
             <Select value={liveVenueFilter} onValueChange={(value) => setLiveVenueFilter(value as LiveVenueFilter)}>
               <SelectTrigger className="h-8 w-[160px] bg-background/60 text-xs">
-                <SelectValue placeholder="Live Venue" />
+                <SelectValue placeholder={t('positions.liveVenuePlaceholder')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Live</SelectItem>
-                <SelectItem value="polymarket">Polymarket</SelectItem>
-                <SelectItem value="kalshi">Kalshi</SelectItem>
+                <SelectItem value="all">{t('positions.allLive')}</SelectItem>
+                <SelectItem value="polymarket">{t('positions.polymarket')}</SelectItem>
+                <SelectItem value="kalshi">{t('positions.kalshi')}</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -1313,7 +1315,7 @@ export default function PositionsPanel() {
             <Input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search..."
+              placeholder={t('positions.searchPlaceholder')}
               className="h-7 w-[180px] bg-background/60 pl-7 text-xs"
             />
           </div>
@@ -1323,10 +1325,10 @@ export default function PositionsPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Sides</SelectItem>
-              <SelectItem value="yes">YES</SelectItem>
-              <SelectItem value="no">NO</SelectItem>
-              <SelectItem value="other">Other</SelectItem>
+              <SelectItem value="all">{t('positions.allSides')}</SelectItem>
+              <SelectItem value="yes">{t('positions.sideYes')}</SelectItem>
+              <SelectItem value="no">{t('positions.sideNo')}</SelectItem>
+              <SelectItem value="other">{t('positions.sideOther')}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -1335,9 +1337,9 @@ export default function PositionsPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Marks</SelectItem>
-              <SelectItem value="live">Live</SelectItem>
-              <SelectItem value="entry_estimate">Estimated</SelectItem>
+              <SelectItem value="all">{t('positions.allMarks')}</SelectItem>
+              <SelectItem value="live">{t('positions.markLive')}</SelectItem>
+              <SelectItem value="entry_estimate">{t('positions.markEstimated')}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -1346,7 +1348,7 @@ export default function PositionsPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Desks</SelectItem>
+              <SelectItem value="all">{t('positions.allDesks')}</SelectItem>
               {accountOptions.map((account) => (
                 <SelectItem key={account} value={account}>{account}</SelectItem>
               ))}
@@ -1358,11 +1360,11 @@ export default function PositionsPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Any Size</SelectItem>
-              <SelectItem value="100">$100+</SelectItem>
-              <SelectItem value="500">$500+</SelectItem>
-              <SelectItem value="1000">$1K+</SelectItem>
-              <SelectItem value="5000">$5K+</SelectItem>
+              <SelectItem value="all">{t('positions.anySize')}</SelectItem>
+              <SelectItem value="100">{t('positions.size100')}</SelectItem>
+              <SelectItem value="500">{t('positions.size500')}</SelectItem>
+              <SelectItem value="1000">{t('positions.size1000')}</SelectItem>
+              <SelectItem value="5000">{t('positions.size5000')}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -1372,12 +1374,12 @@ export default function PositionsPanel() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="exposure">Exposure</SelectItem>
-                <SelectItem value="unrealized">Unrealized</SelectItem>
-                <SelectItem value="pnl_percent">P&L %</SelectItem>
-                <SelectItem value="cost_basis">Cost Basis</SelectItem>
-                <SelectItem value="updated">Updated</SelectItem>
-                <SelectItem value="market">Market</SelectItem>
+                <SelectItem value="exposure">{t('positions.sortExposure')}</SelectItem>
+                <SelectItem value="unrealized">{t('positions.sortUnrealized')}</SelectItem>
+                <SelectItem value="pnl_percent">{t('positions.sortPnlPercent')}</SelectItem>
+                <SelectItem value="cost_basis">{t('positions.sortCostBasis')}</SelectItem>
+                <SelectItem value="updated">{t('positions.sortUpdated')}</SelectItem>
+                <SelectItem value="market">{t('positions.sortMarket')}</SelectItem>
               </SelectContent>
             </Select>
             <Button
@@ -1396,37 +1398,37 @@ export default function PositionsPanel() {
         <PositionsMetricSkeleton />
       ) : !isLoading && sortedRows.length > 0 ? (
         <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
-          <MetricChip icon={<Layers className="w-3.5 h-3.5 text-blue-300" />} label="Risk" value={sortedRows.length.toString()} />
-          <MetricChip icon={<CircleDollarSign className="w-3.5 h-3.5 text-blue-300" />} label="Exposure" value={formatCompactUsd(metrics.totalMarketValue)} detail={formatUsd(metrics.totalMarketValue)} />
-          <MetricChip icon={<Shield className="w-3.5 h-3.5 text-amber-300" />} label="Cost" value={formatCompactUsd(metrics.totalCostBasis)} detail={formatUsd(metrics.totalCostBasis)} />
+          <MetricChip icon={<Layers className="w-3.5 h-3.5 text-blue-300" />} label={t('positions.chipRisk')} value={sortedRows.length.toString()} />
+          <MetricChip icon={<CircleDollarSign className="w-3.5 h-3.5 text-blue-300" />} label={t('positions.chipExposure')} value={formatCompactUsd(metrics.totalMarketValue)} detail={formatUsd(metrics.totalMarketValue)} />
+          <MetricChip icon={<Shield className="w-3.5 h-3.5 text-amber-300" />} label={t('positions.chipCost')} value={formatCompactUsd(metrics.totalCostBasis)} detail={formatUsd(metrics.totalCostBasis)} />
           <MetricChip
             icon={metrics.totalUnrealizedPnl >= 0 ? <TrendingUp className="w-3.5 h-3.5 text-emerald-300" /> : <TrendingDown className="w-3.5 h-3.5 text-red-300" />}
-            label="Unrealized"
+            label={t('positions.chipUnrealized')}
             value={formatSignedUsd(metrics.totalUnrealizedPnl)}
             detail={formatSignedPct(metrics.pnlPercent)}
             valueClassName={metrics.totalUnrealizedPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
           />
           <MetricChip
             icon={<Sigma className="w-3.5 h-3.5 text-cyan-300" />}
-            label="Net"
+            label={t('positions.chipNet')}
             value={formatSignedUsd(metrics.directionalNet)}
             valueClassName={metrics.directionalNet >= 0 ? 'text-emerald-300' : 'text-red-300'}
           />
           <MetricChip
             icon={<Gauge className="w-3.5 h-3.5 text-purple-300" />}
-            label="HHI"
+            label={t('positions.chipHhi')}
             value={`${(metrics.concentrationHhi * 100).toFixed(1)}%`}
             valueClassName={metrics.concentrationHhi >= 0.24 ? 'text-red-300' : metrics.concentrationHhi >= 0.14 ? 'text-amber-300' : 'text-emerald-300'}
           />
           <MetricChip
             icon={<CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />}
-            label="Mark"
+            label={t('positions.chipMark')}
             value={`${metrics.markCoverage.toFixed(0)}%`}
             valueClassName={metrics.markCoverage >= 80 ? 'text-emerald-300' : metrics.markCoverage >= 45 ? 'text-amber-300' : 'text-red-300'}
           />
           <MetricChip
             icon={<Target className="w-3.5 h-3.5 text-orange-300" />}
-            label="Largest"
+            label={t('positions.chipLargest')}
             value={metrics.largestPosition ? formatCompactUsd(metrics.largestPosition.marketValue) : '$0'}
             detail={metrics.largestPosition?.marketQuestion}
           />
@@ -1440,8 +1442,8 @@ export default function PositionsPanel() {
         ) : sortedRows.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center">
             <Briefcase className="w-10 h-10 text-muted-foreground/50 mb-3" />
-            <p className="text-sm text-muted-foreground">No positions match the current filters.</p>
-            <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>Clear filters</Button>
+            <p className="text-sm text-muted-foreground">{t('positions.noPositionsMatch')}</p>
+            <Button variant="outline" size="sm" className="mt-3" onClick={clearFilters}>{t('positions.clearFilters')}</Button>
           </div>
         ) : (
           <div className="h-full grid gap-2 xl:grid-cols-[minmax(0,1fr)_280px]">
@@ -1449,7 +1451,7 @@ export default function PositionsPanel() {
             <div className="flex min-h-0 flex-col gap-1.5">
               <div className="shrink-0 flex items-center justify-between px-1">
                 <span className="text-[10px] font-mono text-muted-foreground">
-                  {sortedRows.length} rows • {POSITIONS_TABLE_PAGE_SIZE}/page
+                  {t('positions.rowsPerPage', { rows: sortedRows.length, pageSize: POSITIONS_TABLE_PAGE_SIZE })}
                 </span>
                 <div className="flex items-center gap-1">
                   <Button
@@ -1459,7 +1461,7 @@ export default function PositionsPanel() {
                     onClick={() => setPositionsPage((page) => Math.max(1, page - 1))}
                     disabled={positionsPage <= 1}
                   >
-                    Prev
+                    {t('positions.prev')}
                   </Button>
                   <span className="min-w-[64px] text-center text-[10px] font-mono text-muted-foreground">
                     {positionsPage}/{positionsPageCount}
@@ -1471,7 +1473,7 @@ export default function PositionsPanel() {
                     onClick={() => setPositionsPage((page) => Math.min(positionsPageCount, page + 1))}
                     disabled={positionsPage >= positionsPageCount}
                   >
-                    Next
+                    {t('positions.next')}
                   </Button>
                 </div>
               </div>
@@ -1480,19 +1482,19 @@ export default function PositionsPanel() {
                   <Table className="min-w-[1320px]">
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="text-[11px]">Market</TableHead>
-                        <TableHead className="text-[11px]">L</TableHead>
-                        <TableHead className="text-[11px]">Dir</TableHead>
-                        <TableHead className="text-[11px] text-right">Exposure</TableHead>
-                        <TableHead className="text-[11px] text-right">Avg Px</TableHead>
-                        <TableHead className="text-[11px] text-right">Mark</TableHead>
-                        <TableHead className="text-[11px] text-right">U-P&amp;L</TableHead>
-                        <TableHead className="text-[11px] text-right">Edge</TableHead>
-                        <TableHead className="text-[11px] text-right">Conf</TableHead>
-                        <TableHead className="text-[11px] text-right">Orders</TableHead>
-                        <TableHead className="text-[11px] text-right">Mode</TableHead>
-                        <TableHead className="text-[11px]">Bot</TableHead>
-                        <TableHead className="text-[11px]">Updated</TableHead>
+                        <TableHead className="text-[11px]">{t('positions.colMarket')}</TableHead>
+                        <TableHead className="text-[11px]">{t('positions.colLink')}</TableHead>
+                        <TableHead className="text-[11px]">{t('positions.colDir')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colExposure')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colAvgPx')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colMark')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colUPnl')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colEdge')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colConf')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colOrders')}</TableHead>
+                        <TableHead className="text-[11px] text-right">{t('positions.colMode')}</TableHead>
+                        <TableHead className="text-[11px]">{t('positions.colBot')}</TableHead>
+                        <TableHead className="text-[11px]">{t('positions.colUpdated')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1521,7 +1523,7 @@ export default function PositionsPanel() {
                                     rel="noopener noreferrer"
                                     onClick={(event) => event.stopPropagation()}
                                     className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                    title="Open market"
+                                    title={t('positions.openMarket')}
                                   >
                                     <ExternalLink className="h-3 w-3" />
                                   </a>
@@ -1533,7 +1535,7 @@ export default function PositionsPanel() {
                                       setModalMarket(cryptoMarketsMap.get(row.marketId)!)
                                     }}
                                     className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                    title="View live market"
+                                    title={t('positions.viewLiveMarket')}
                                   >
                                     <Maximize2 className="h-3 w-3" />
                                   </button>
@@ -1580,7 +1582,7 @@ export default function PositionsPanel() {
                                   className="h-5 max-w-[180px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-cyan-300"
                                   title={row.managedOrderId ? `${row.managedByBot} • order ${row.managedOrderId}` : row.managedByBot}
                                 >
-                                  Managed: {row.managedByBot}
+                                  {t('positions.managedPrefix', { bot: row.managedByBot })}
                                 </Badge>
                               ) : (
                                 row.venue === 'polymarket-live' ? (
@@ -1593,7 +1595,7 @@ export default function PositionsPanel() {
                                       openRowModal(row)
                                     }}
                                   >
-                                    Assign
+                                    {t('positions.assign')}
                                   </Button>
                                 ) : (
                                   <span className="text-muted-foreground">—</span>
@@ -1619,9 +1621,9 @@ export default function PositionsPanel() {
                   {/* Book Contribution */}
                   <div>
                     <div className="flex items-center justify-between gap-2 mb-2">
-                      <p className="text-xs font-semibold">Book Contribution</p>
+                      <p className="text-xs font-semibold">{t('positions.bookContribution')}</p>
                       <Badge className="rounded-md border-transparent bg-muted text-muted-foreground text-[10px]">
-                        {sourceBreakdown.filter((row) => row.rows > 0).length} active
+                        {t('positions.activeCount', { n: sourceBreakdown.filter((row) => row.rows > 0).length })}
                       </Badge>
                     </div>
                     <div className="space-y-2">
@@ -1642,7 +1644,7 @@ export default function PositionsPanel() {
                   {/* Directional Pressure */}
                   <div className="border-t border-border/50 pt-3">
                     <div className="flex items-center justify-between gap-2 mb-2">
-                      <p className="text-xs font-semibold">Directional Pressure</p>
+                      <p className="text-xs font-semibold">{t('positions.directionalPressure')}</p>
                       <ArrowDownUp className="w-3.5 h-3.5 text-muted-foreground" />
                     </div>
                     <div className="space-y-2">
@@ -1651,7 +1653,7 @@ export default function PositionsPanel() {
                       <PressureLane label="OTHER" value={metrics.otherExposure} total={totalExposure} tone="neutral" />
                     </div>
                     <div className="mt-3 rounded-lg border border-border/60 bg-muted/25 p-2">
-                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Net Bias</p>
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('positions.netBias')}</p>
                       <p className={cn('mt-0.5 text-sm font-semibold font-mono', metrics.directionalNet >= 0 ? 'text-emerald-300' : 'text-red-300')}>
                         {formatSignedUsd(metrics.directionalNet)}
                       </p>
@@ -1668,7 +1670,7 @@ export default function PositionsPanel() {
       {simulationPayload.failedAccounts.length > 0 && (
         <div className="shrink-0 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-          Failed: {simulationPayload.failedAccounts.join(', ')}
+          {t('positions.failedPrefix', { accounts: simulationPayload.failedAccounts.join(', ') })}
         </div>
       )}
 
@@ -1717,7 +1719,7 @@ export default function PositionsPanel() {
                           className="h-5 max-w-[220px] truncate border-border/80 bg-muted/60 px-1.5 text-[10px] text-cyan-300"
                           title={modalRow.managedOrderId ? `${modalRow.managedByBot} • order ${modalRow.managedOrderId}` : modalRow.managedByBot}
                         >
-                          Managed by {modalRow.managedByBot}
+                          {t('positions.managedByPrefix', { bot: modalRow.managedByBot })}
                         </Badge>
                       ) : null}
                     </div>
@@ -1729,7 +1731,7 @@ export default function PositionsPanel() {
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
-                        title="Open market"
+                        title={t('positions.openMarket')}
                       >
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
@@ -1743,42 +1745,42 @@ export default function PositionsPanel() {
                         onClick={() => setModalMarket(cryptoMarketsMap.get(modalRow.marketId)!)}
                       >
                         <Maximize2 className="mr-1 h-3 w-3" />
-                        Market
+                        {t('positions.marketBtn')}
                       </Button>
                     ) : null}
                     <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={closeRowModal}>
-                      Close
+                      {t('positions.close')}
                     </Button>
                   </div>
                 </div>
 
                 <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Exposure</p>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('positions.tileExposure')}</p>
                     <p className="text-sm font-mono">{formatUsd(modalRow.marketValue)}</p>
-                    <p className="text-[10px] text-muted-foreground">Cost: {formatUsd(modalRow.costBasis)}</p>
+                    <p className="text-[10px] text-muted-foreground">{t('positions.tileCost', { value: formatUsd(modalRow.costBasis) })}</p>
                   </div>
                   <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Entry / Mark</p>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('positions.tileEntryMark')}</p>
                     <p className="text-sm font-mono">
                       {formatOptionalPrice(modalRow.entryPrice)}
                       <span className="mx-1 text-muted-foreground">→</span>
                       {formatOptionalPrice(modalRow.currentPrice)}
                     </p>
-                    <p className="text-[10px] text-muted-foreground">{modalRow.markMode === 'live' ? 'Live mark' : 'Entry estimate'}</p>
+                    <p className="text-[10px] text-muted-foreground">{modalRow.markMode === 'live' ? t('positions.liveMark') : t('positions.entryEstimate')}</p>
                   </div>
                   <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Unrealized</p>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('positions.tileUnrealized')}</p>
                     <p className={cn('text-sm font-mono', (modalRow.unrealizedPnl || 0) > 0 ? 'text-emerald-500' : (modalRow.unrealizedPnl || 0) < 0 ? 'text-red-500' : '')}>
                       {modalRow.unrealizedPnl !== null ? formatSignedUsd(modalRow.unrealizedPnl) : '—'}
                     </p>
                     <p className="text-[10px] text-muted-foreground">{modalRow.pnlPercent !== null ? formatSignedPct(modalRow.pnlPercent) : '—'}</p>
                   </div>
                   <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Timing</p>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('positions.tileTiming')}</p>
                     <p className="text-sm font-mono">{formatRelativeTime(modalRow.markUpdatedAt || modalRow.openedAt)}</p>
                     <p className="truncate text-[10px] text-muted-foreground" title={modalRow.tokenId || undefined}>
-                      Token: {modalRow.tokenId || 'n/a'}
+                      {t('positions.token', { id: modalRow.tokenId || t('positions.tokenNone') })}
                     </p>
                   </div>
                 </div>
@@ -1807,37 +1809,37 @@ export default function PositionsPanel() {
                       lerpSpeed={0.1}
                       padding={{ top: 8, right: 80, bottom: 24, left: 14 }}
                       formatValue={(value) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`}
-                      referenceLine={modalRow.entryPrice !== null ? { value: modalRow.entryPrice, label: 'Entry' } : undefined}
+                      referenceLine={modalRow.entryPrice !== null ? { value: modalRow.entryPrice, label: t('positions.entryRef') } : undefined}
                       style={{ height: 260 }}
                     />
                   ) : showModalHistorySkeleton ? (
                     <ModalHistorySkeleton />
                   ) : (
                     <div className="h-[260px] flex items-center justify-center text-xs text-muted-foreground">
-                      No market history available yet.
+                      {t('positions.noMarketHistory')}
                     </div>
                   )}
                 </div>
 
                 {modalRow.venue === 'polymarket-live' && !modalRow.managedByBot && (
                   <div className="mt-3 rounded-md border border-border/60 bg-card/80 p-3">
-                    <p className="text-[11px] font-semibold">Assign To Live Bot</p>
+                    <p className="text-[11px] font-semibold">{t('positions.assignToLiveBot')}</p>
                     <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      Attach this live wallet position to a bot so lifecycle logic can continue managing it.
+                      {t('positions.assignDesc')}
                     </p>
                     {sortedLiveTraders.length === 0 ? (
                       <div className="mt-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-300">
-                        No live bots available. Create or enable a LIVE bot first.
+                        {t('positions.noLiveBots')}
                       </div>
                     ) : !modalRow.tokenId ? (
                       <div className="mt-2 rounded-md border border-amber-500/35 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-300">
-                        This row does not include a token id, so it cannot be assigned.
+                        {t('positions.noTokenId')}
                       </div>
                     ) : (
                       <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
                         <Select value={assignLiveTraderId} onValueChange={setAssignLiveTraderId}>
                           <SelectTrigger className="h-8 w-full sm:w-[240px] bg-background/70 text-xs">
-                            <SelectValue placeholder="Select live bot" />
+                            <SelectValue placeholder={t('positions.selectLiveBot')} />
                           </SelectTrigger>
                           <SelectContent>
                             {sortedLiveTraders.map((trader) => (
@@ -1855,7 +1857,7 @@ export default function PositionsPanel() {
                           })}
                         >
                           {assignLivePositionMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                          Assign Position
+                          {t('positions.assignPosition')}
                         </Button>
                       </div>
                     )}
