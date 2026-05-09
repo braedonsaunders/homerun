@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ChangeEvent } from 'react'
+import { useState, useEffect, useRef, type ChangeEvent, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import LanguageSwitcher from './LanguageSwitcher'
@@ -956,57 +956,56 @@ export default function SettingsPanel({
         </div>
       )}
 
-      {/* Two-column grid of collapsible sections */}
+      {/* Two-column grid of collapsible sections.
+          Headers stay in their original column; expanded panels render full-width below the row. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {sections.map(section => {
-          const isExpanded = expandedSections.has(section.id)
-          const Icon = section.icon
-          const status = getSectionStatus(section.id)
-          const statusColor = getStatusColor(section.id)
-
-          return (
-            <div
-              key={section.id}
-              className={cn(
-                "bg-card/60 border border-border/40 rounded-xl overflow-hidden transition-all duration-200 self-start",
-                isExpanded && "border-primary/40 shadow-[0_-2px_0_0_hsl(var(--primary)/0.35)] ring-1 ring-primary/15 relative z-10"
-              )}
-            >
-              {/* Section Header - clickable (folder tab when expanded) */}
-              <button
-                type="button"
-                onClick={() => toggleSection(section.id)}
-                className={cn(
-                  "w-full flex items-center gap-3 p-3 transition-colors cursor-pointer",
-                  isExpanded
-                    ? "bg-muted/50 border-b border-primary/30"
-                    : "hover:bg-muted/40"
-                )}
-              >
-                <div className="shrink-0">
-                  <Icon className="w-4 h-4 text-muted-foreground" />
-                </div>
-                <div className="flex-1 text-left min-w-0">
-                  <div className="text-sm font-medium leading-tight">{t(section.labelKey)}</div>
-                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground truncate">{t(section.descriptionKey)}</div>
-                </div>
-                <Badge variant="outline" className={cn("text-[10px] px-2 py-0.5 border-0 shrink-0", statusColor)}>
-                  {status}
-                </Badge>
-                <ChevronDown className={cn(
-                  "w-4 h-4 text-muted-foreground shrink-0 transition-transform duration-200",
-                  isExpanded && "rotate-180"
-                )} />
-              </button>
-
-              {/* Section Content - animated */}
+        {(() => {
+          const renderHeader = (section: (typeof sections)[number]) => {
+            const isExpanded = expandedSections.has(section.id)
+            const Icon = section.icon
+            const status = getSectionStatus(section.id)
+            const statusColor = getStatusColor(section.id)
+            return (
               <div
+                key={`header-${section.id}`}
                 className={cn(
-                  "overflow-hidden transition-all duration-300 ease-in-out",
-                  isExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
+                  "bg-card/60 border border-border/40 rounded-xl overflow-hidden transition-colors duration-200 self-start",
+                  isExpanded && "border-primary/40 ring-1 ring-primary/15 relative z-10"
                 )}
               >
-                <div className="p-4 pt-1 border-t border-border/30">
+                <button
+                  type="button"
+                  onClick={() => toggleSection(section.id)}
+                  className={cn(
+                    "w-full flex items-center gap-3 p-3 transition-colors cursor-pointer",
+                    isExpanded ? "bg-muted/50" : "hover:bg-muted/40"
+                  )}
+                >
+                  <div className="shrink-0">
+                    <Icon className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 text-left min-w-0">
+                    <div className="text-sm font-medium leading-tight">{t(section.labelKey)}</div>
+                    <div className="text-[10px] uppercase tracking-widest text-muted-foreground truncate">{t(section.descriptionKey)}</div>
+                  </div>
+                  <Badge variant="outline" className={cn("text-[10px] px-2 py-0.5 border-0 shrink-0", statusColor)}>
+                    {status}
+                  </Badge>
+                  <ChevronDown className={cn(
+                    "w-4 h-4 text-muted-foreground shrink-0 transition-transform duration-200",
+                    isExpanded && "rotate-180"
+                  )} />
+                </button>
+              </div>
+            )
+          }
+
+          const renderPanel = (section: (typeof sections)[number]) => (
+            <div
+              key={`panel-${section.id}`}
+              className="col-span-full bg-card/60 border border-primary/40 rounded-xl ring-1 ring-primary/15 overflow-hidden animate-in fade-in-0 slide-in-from-top-2 duration-200"
+            >
+              <div className="p-4">
 
                   {/* Search Settings */}
                   {section.id === 'search' && (
@@ -2547,11 +2546,23 @@ export default function SettingsPanel({
                     </div>
                   )}
 
-                </div>
               </div>
             </div>
           )
-        })}
+
+          const nodes: ReactNode[] = []
+          for (let i = 0; i < sections.length; i += 2) {
+            const left = sections[i]
+            const right = sections[i + 1]
+            nodes.push(renderHeader(left))
+            if (right) nodes.push(renderHeader(right))
+            const leftExpanded = expandedSections.has(left.id)
+            const rightExpanded = right ? expandedSections.has(right.id) : false
+            if (leftExpanded) nodes.push(renderPanel(left))
+            if (rightExpanded && right) nodes.push(renderPanel(right))
+          }
+          return nodes
+        })()}
       </div>
     </div>
   )
