@@ -252,6 +252,20 @@ def _near_market_boundary() -> bool:
     return False
 
 
+def _crypto_lane_is_active(control: dict[str, Any]) -> bool:
+    """Return True when the crypto fast-binary lane should run.
+
+    Both ``is_enabled = false`` (operator wants the lane permanently
+    off) and ``is_paused = true`` (operator wants it temporarily
+    paused — this is what ``POST /api/workers/crypto/pause`` sets) map
+    to "lane off" for the purposes of cache management and the
+    reactive payload rebuild.
+    """
+    enabled = bool(control.get("is_enabled", True))
+    paused = bool(control.get("is_paused", False))
+    return enabled and not paused
+
+
 def _loaded_crypto_strategy_instances() -> list[tuple[str, Any]]:
     try:
         from services.strategy_loader import strategy_loader
@@ -459,6 +473,16 @@ class MarketRuntime:
         self._dispatch_last_signals_published: int = 0
         self._dispatch_last_error: str | None = None
         self._dispatch_filter_diagnostics: dict[str, Any] = {}
+        # Crypto-lane toggle plumbing — operator-driven on/off via the
+        # `worker_control(name='crypto')` row. The reactive-tick path
+        # reads the control on every Binance update, so a TTL cache is
+        # used to keep the DB out of the hot loop. The transition flag
+        # lets `_run_loop_iteration` clear/refresh the cache exactly
+        # once on edge changes.
+        self._crypto_control_cache: dict[str, Any] | None = None
+        self._crypto_control_cache_at: float = 0.0
+        self._crypto_lane_was_enabled: bool | None = None
+        self._crypto_lane_pending_refresh: bool = False
 
     def _retain_abandoned_task(self, task: asyncio.Task[Any]) -> None:
         self._abandoned_tasks.add(task)
@@ -578,7 +602,19 @@ class MarketRuntime:
             self._feed_manager.cache.add_on_update_callback(self._on_ws_price_update)
             self._schedule_event_catalog_refresh(force=True)
             await self._backfill_oracle_history_from_binance()
-            await self._refresh_crypto_markets(trigger="startup", full_source_sweep=True)
+            startup_control = await self._read_crypto_control()
+            startup_active = _crypto_lane_is_active(startup_control)
+            if startup_active:
+                await self._refresh_crypto_markets(trigger="startup", full_source_sweep=True)
+            else:
+                logger.info(
+                    "Crypto fast-binary lane disabled by worker_control; skipping startup refresh"
+                )
+                self._crypto_markets = []
+                self._crypto_markets_by_lookup = {}
+                self._crypto_token_to_market_ids = {}
+                self._crypto_asset_to_market_ids = {}
+            self._crypto_lane_was_enabled = startup_active
             self._started = True
             self._main_task = asyncio.create_task(self._run_loop(), name="market-runtime")
 
@@ -964,12 +1000,36 @@ class MarketRuntime:
         control = await self._read_crypto_control()
         enabled = bool(control.get("is_enabled", True))
         paused = bool(control.get("is_paused", False))
+        active = enabled and not paused
         interval_seconds = max(_FULL_REFRESH_FLOOR_SECONDS, float(control.get("interval_seconds") or 1.0))
-        if enabled and not paused:
+        # Lane on/off transition handling — clear cache on disable so
+        # `get_crypto_markets()` returns [] immediately, and request a
+        # one-shot refresh on re-enable so the cache repopulates on
+        # this same iteration. The active state collapses both
+        # ``is_enabled = false`` and ``is_paused = true`` into a single
+        # condition so the toggle works regardless of which the
+        # operator flipped.
+        was_active = self._crypto_lane_was_enabled
+        if was_active is True and not active:
+            logger.info("Crypto fast-binary lane disabled; clearing cache")
+            self._crypto_markets = []
+            self._crypto_markets_by_lookup = {}
+            self._crypto_token_to_market_ids = {}
+            self._crypto_asset_to_market_ids = {}
+            self._crypto_lane_pending_refresh = False
+        elif was_active is False and active:
+            logger.info("Crypto fast-binary lane re-enabled; scheduling refresh")
+            self._crypto_lane_pending_refresh = True
+        self._crypto_lane_was_enabled = active
+        if active:
+            trigger = "periodic_scan"
+            if self._crypto_lane_pending_refresh:
+                trigger = "lane_re_enabled"
+                self._crypto_lane_pending_refresh = False
             await self._refresh_crypto_markets(
-                trigger="periodic_scan",
+                trigger=trigger,
                 full_source_sweep=True,
-                force_refresh=_near_market_boundary(),
+                force_refresh=_near_market_boundary() or trigger == "lane_re_enabled",
             )
             self._current_activity = "Live"
         else:
@@ -983,14 +1043,32 @@ class MarketRuntime:
     async def _read_crypto_control(self) -> dict[str, Any]:
         try:
             async with AsyncSessionLocal() as session:
-                return await read_worker_control(session, "crypto", default_interval=1)
+                control = await read_worker_control(session, "crypto", default_interval=1)
         except Exception:
-            return {
+            control = {
                 "is_enabled": True,
                 "is_paused": False,
                 "interval_seconds": 1,
                 "requested_run_at": None,
             }
+        self._crypto_control_cache = control
+        self._crypto_control_cache_at = time.monotonic()
+        return control
+
+    async def _read_crypto_control_cached(self, *, ttl_seconds: float = 5.0) -> dict[str, Any]:
+        # Reactive-tick path reads this on every Binance update, so a
+        # short TTL keeps the DB out of the hot loop. The 5 s default
+        # matches the operator's expectation for an interactive
+        # toggle (lag of at most one TTL between save and effect).
+        cache = self._crypto_control_cache
+        if cache is not None and (time.monotonic() - self._crypto_control_cache_at) < ttl_seconds:
+            return cache
+        control = await self._read_crypto_control()
+        # Always update the cache, even when ``_read_crypto_control`` is
+        # patched in tests and bypasses the cache write inside it.
+        self._crypto_control_cache = control
+        self._crypto_control_cache_at = time.monotonic()
+        return control
 
     async def _refresh_event_catalog(self, *, force: bool = False) -> None:
         if not force and (time.monotonic() - self._last_catalog_refresh_mono) < _CATALOG_REFRESH_SECONDS:
@@ -1699,6 +1777,17 @@ class MarketRuntime:
         # the sub-second path actually needs.
         if _WS_REACTIVE_DEBOUNCE_SECONDS > 0.0:
             await asyncio.sleep(_WS_REACTIVE_DEBOUNCE_SECONDS)
+        # Crypto-lane toggle: when the operator has disabled or paused
+        # the lane, drop accumulated tick coalescing buckets and skip
+        # the per-market payload rebuild entirely. The Binance WS feeds
+        # keep flowing into ``_pending_tokens`` / ``_pending_assets``;
+        # we just discard them.
+        control = await self._read_crypto_control_cached()
+        if not _crypto_lane_is_active(control):
+            async with self._pending_reactive_lock:
+                self._pending_tokens.clear()
+                self._pending_assets.clear()
+            return
         async with self._pending_reactive_lock:
             tokens = set(self._pending_tokens)
             self._pending_tokens.clear()

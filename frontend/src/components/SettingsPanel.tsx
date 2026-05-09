@@ -39,6 +39,8 @@ import {
   runVacuumAnalyze,
   runReindexTables,
   runWorkerOnce,
+  pauseWorker,
+  startWorker,
   type DatabaseFlushTarget,
 } from '../services/apiTraders'
 import {
@@ -255,7 +257,10 @@ export default function SettingsPanel({
     skipped_signal_reactivation_cooldown_seconds: 180,
     strict_ws_max_age_ms: 30000,
     market_filter_tags: [] as string[],
+    crypto_lane_enabled: true,
   })
+  const [cryptoLaneToggling, setCryptoLaneToggling] = useState(false)
+  const [cryptoLaneError, setCryptoLaneError] = useState<string | null>(null)
 
   const [maintenanceForm, setMaintenanceForm] = useState({
     auto_cleanup_enabled: false,
@@ -428,6 +433,7 @@ export default function SettingsPanel({
         market_filter_tags: Array.isArray(settings.scanner?.market_filter_tags)
           ? (settings.scanner?.market_filter_tags ?? [])
           : [],
+        crypto_lane_enabled: settings.scanner?.crypto_lane_enabled ?? true,
       })
 
       setMaintenanceForm({
@@ -696,6 +702,25 @@ export default function SettingsPanel({
       bundle: importBundle as unknown as Record<string, unknown>,
       categories: selectedTransferCategories,
     })
+  }
+
+  const handleCryptoLaneToggle = async (next: boolean) => {
+    setCryptoLaneError(null)
+    setCryptoLaneToggling(true)
+    setScannerForm((p) => ({ ...p, crypto_lane_enabled: next }))
+    try {
+      if (next) {
+        await startWorker('crypto')
+      } else {
+        await pauseWorker('crypto')
+      }
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    } catch (err: any) {
+      setCryptoLaneError(err?.response?.data?.detail || err?.message || 'Failed to toggle crypto lane')
+      setScannerForm((p) => ({ ...p, crypto_lane_enabled: !next }))
+    } finally {
+      setCryptoLaneToggling(false)
+    }
   }
 
   const handleSaveSection = (section: SettingsSection) => {
@@ -1263,6 +1288,42 @@ export default function SettingsPanel({
                             <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.wsAgeDesc')}</p>
                           </div>
                         </div>
+                      </div>
+                      <div className="rounded-md border border-border/60 bg-muted/15 p-3 space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                              Crypto fast-binary lane
+                            </p>
+                            <p className="text-[11px] text-muted-foreground/80 leading-snug">
+                              Disable the crypto fast-binary scanner if you only trade
+                              Polymarket general markets. The 4 Binance feeds remain
+                              connected; only the per-market payload rebuild stops.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 pt-0.5">
+                            <span
+                              className={cn(
+                                'text-[11px] font-medium tabular-nums',
+                                scannerForm.crypto_lane_enabled
+                                  ? 'text-emerald-500'
+                                  : 'text-muted-foreground'
+                              )}
+                            >
+                              {scannerForm.crypto_lane_enabled ? 'On' : 'Off'}
+                            </span>
+                            <Switch
+                              checked={scannerForm.crypto_lane_enabled}
+                              disabled={cryptoLaneToggling}
+                              onCheckedChange={(checked) => {
+                                void handleCryptoLaneToggle(Boolean(checked))
+                              }}
+                            />
+                          </div>
+                        </div>
+                        {cryptoLaneError && (
+                          <p className="text-[11px] text-destructive">{cryptoLaneError}</p>
+                        )}
                       </div>
                       <MarketTagFilterSection
                         selectedTags={scannerForm.market_filter_tags}

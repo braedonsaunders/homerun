@@ -29,6 +29,7 @@ from models.database import (
     TraderPosition,
 )
 from services.strategy_versioning import normalize_strategy_version
+from services.worker_state import read_worker_control
 from utils.logger import get_logger
 from utils.utcnow import utcnow
 from utils.secrets import decrypt_secret
@@ -233,6 +234,17 @@ class ScannerSettingsModel(BaseModel):
             "any market whose (market.tags ∪ event.tags) intersection with "
             "this list is empty (OR-logic, case-insensitive). Empty list = "
             "no filter applied."
+        ),
+    )
+    crypto_lane_enabled: bool = Field(
+        default=True,
+        description=(
+            "READ-ONLY: reflects worker_control(name='crypto').is_enabled. "
+            "True = crypto fast-binary lane runs (Binance-tick-driven "
+            "per-market payload rebuild). False = lane is silenced, "
+            "Binance feeds keep flowing but are discarded. Writes go "
+            "through POST /api/workers/crypto/{pause|start}; updates "
+            "to this field on PUT /settings/scanner are ignored."
         ),
     )
 
@@ -2410,6 +2422,28 @@ async def get_or_create_settings() -> AppSettings:
 # ==================== ENDPOINTS ====================
 
 
+async def _read_crypto_lane_enabled() -> bool:
+    """Live read of the crypto fast-binary lane's effective on/off state.
+
+    Returns ``True`` when the lane is actively running. Both
+    ``is_enabled = false`` and ``is_paused = true`` collapse to "off",
+    matching ``services.market_runtime._crypto_lane_is_active``.
+    Writes go through ``POST /api/workers/crypto/{pause|start}``, which
+    flips ``is_paused``; this read is purely so the operator sees the
+    current lane state in ``Settings → Scanner``.
+    Defaults to True on any DB error so the UI doesn't render the
+    toggle as off when the read transiently fails.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            control = await read_worker_control(session, "crypto", default_interval=1)
+        enabled = bool(control.get("is_enabled", True))
+        paused = bool(control.get("is_paused", False))
+        return enabled and not paused
+    except Exception:
+        return True
+
+
 @router.get("", response_model=AllSettings)
 async def get_settings():
     """
@@ -2419,6 +2453,7 @@ async def get_settings():
     """
     try:
         settings = await get_or_create_settings()
+        crypto_lane_enabled = await _read_crypto_lane_enabled()
 
         return AllSettings(
             polymarket=PolymarketSettings(**polymarket_payload(settings)),
@@ -2426,7 +2461,9 @@ async def get_settings():
             oracle=OracleSettings(**oracle_payload(settings)),
             llm=LLMSettings(**llm_payload(settings)),
             notifications=NotificationSettings(**notifications_payload(settings)),
-            scanner=ScannerSettingsModel(**scanner_payload(settings)),
+            scanner=ScannerSettingsModel(
+                **scanner_payload(settings, crypto_lane_enabled=crypto_lane_enabled)
+            ),
             live_execution=LiveExecutionSettings(**live_execution_payload(settings)),
             redeemer=RedeemerSettings(**redeemer_payload(settings)),
             maintenance=MaintenanceSettings(**maintenance_payload(settings)),
@@ -2629,7 +2666,10 @@ async def update_notification_settings(request: NotificationSettings):
 async def get_scanner_settings():
     """Get scanner settings only"""
     settings = await get_or_create_settings()
-    return ScannerSettingsModel(**scanner_payload(settings))
+    crypto_lane_enabled = await _read_crypto_lane_enabled()
+    return ScannerSettingsModel(
+        **scanner_payload(settings, crypto_lane_enabled=crypto_lane_enabled)
+    )
 
 
 @router.put("/scanner")

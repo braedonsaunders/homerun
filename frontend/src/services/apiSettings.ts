@@ -73,6 +73,7 @@ export interface ScannerSettings {
   skipped_signal_reactivation_cooldown_seconds: number
   strict_ws_max_age_ms: number
   market_filter_tags: string[]
+  crypto_lane_enabled: boolean
 }
 
 export interface MarketFilterAvailableTag {

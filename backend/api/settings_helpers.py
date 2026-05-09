@@ -326,7 +326,11 @@ def notifications_payload(settings: AppSettings) -> dict[str, Any]:
     }
 
 
-def scanner_payload(settings: AppSettings) -> dict[str, Any]:
+def scanner_payload(
+    settings: AppSettings,
+    *,
+    crypto_lane_enabled: bool = True,
+) -> dict[str, Any]:
     return {
         "scan_interval_seconds": settings.scan_interval_seconds,
         "min_profit_threshold": settings.min_profit_threshold,
@@ -349,6 +353,7 @@ def scanner_payload(settings: AppSettings) -> dict[str, Any]:
             30000,
         ),
         "market_filter_tags": list(getattr(settings, "market_filter_tags", None) or []),
+        "crypto_lane_enabled": bool(crypto_lane_enabled),
     }
 
 
