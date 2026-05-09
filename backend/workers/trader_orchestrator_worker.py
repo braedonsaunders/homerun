@@ -4505,18 +4505,31 @@ async def _run_trader_once_inner(
 
     _mnt_session_open_started = time.monotonic()
     async with AsyncSessionLocal() as session:
-        # R12-A: the per-cycle ``SET LOCAL statement_timeout`` used to
-        # cost 0.5-1.3s per cycle (R11-D measurements:
-        # ``mnt_session_stmt_timeout = 531/704/1281 ms``) — a full DB
-        # round trip on a busy event loop that queued behind other
-        # tasks.  The pool already configures ``statement_timeout`` as
-        # an asyncpg ``server_settings`` entry (see database.py, 30s
-        # default) so every checked-out connection already has a
-        # server-side cap.  ``asyncio.wait_for`` wraps the cycle at the
-        # asyncio layer, so the belt-and-suspenders per-cycle SET LOCAL
-        # was buying us almost nothing in return for ~1s of steady-state
-        # overhead.  Drop it entirely.  ``mnt_session_checkout`` stays
-        # as instrumentation to prove the checkout itself is free.
+        # R12-A: the per-cycle ``SET LOCAL statement_timeout`` was
+        # dropped because it cost 0.5-1.3s per cycle. The pool's
+        # server-side ``statement_timeout`` (30s) and ``asyncio.wait_for``
+        # at the cycle layer made it redundant.
+        #
+        # 2026-05-09: re-add a tighter SET LOCAL ``lock_timeout``
+        # (NOT statement_timeout — that decision stands). The post-Ankr
+        # soak shows ``ps_db_commit`` consistently 3-7s with
+        # ``ps_db_commit_dirty_rows=3-4`` and ``ps_db_commit_retries=0``
+        # — meaning the commit is *successfully* acquiring contended
+        # row locks, but waiting nearly the full 5s pool default for
+        # producer UPSERTs to release. A 1.5s cap forces fast-fail under
+        # contention; ``_commit_with_retry`` handles LockNotAvailable
+        # with exponential backoff, so contended UPDATEs retry once
+        # (2s delay) instead of holding the cycle for 5-7s.
+        # Cost: ~1 round-trip on session checkout (~50ms typical, free
+        # under healthy DB; orders of magnitude smaller than the 4-6s
+        # we save on every contended commit).
+        try:
+            await session.execute(text("SET LOCAL lock_timeout = '1500ms'"))
+        except Exception:
+            # Defensive: a SET LOCAL failure must NOT abort the cycle.
+            # Worst-case the connection retains its session-level
+            # lock_timeout (5s) — same as pre-fix behaviour.
+            pass
         _accumulate("mnt_session_checkout", _mnt_session_open_started)
         _accumulate("mnt_session_open", _mnt_session_open_started)
         trader_id = str(trader["id"])
