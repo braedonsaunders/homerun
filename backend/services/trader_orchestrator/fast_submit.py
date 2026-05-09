@@ -158,13 +158,36 @@ def _extract_single_position(signal: Any) -> tuple[dict[str, Any] | None, str | 
 
 
 def _leg_from_position(position: dict[str, Any], signal: Any) -> dict[str, Any]:
-    """Build the ``leg`` dict that ``submit_execution_leg`` expects."""
+    """Build the ``leg`` dict that ``submit_execution_leg`` expects.
+
+    Round 4: ``price_policy`` / ``time_in_force`` / ``post_only`` are now
+    driven by the strategy's position payload, falling back to fast-tier
+    defaults (taker_limit / FAK / not post-only) only when the strategy
+    didn't specify.  Pre-Round-4 these were hardcoded — which forced
+    every fast-lane trader onto aggressive cross-the-book behaviour even
+    when the strategy wanted to rest a post-only limit or hold a GTC.
+    Letting the strategy override unlocks the fast lane for a wider
+    class of strategies without giving up the single-leg / no-session-
+    tables / no-45s-ack wins.
+    """
     action = str(position.get("action") or position.get("side") or "").strip()
     side = normalize_position_side(action)
     outcome = str(position.get("outcome") or "").strip().upper()
     market_id = str(position.get("market_id") or "").strip() or str(getattr(signal, "market_id", "") or "").strip()
     price = safe_float(position.get("price"), None)
     token_id = str(position.get("token_id") or "").strip() or None
+
+    # Strategy-driven execution policy with fast-tier fallbacks.  If the
+    # strategy supplied an empty string we still fall through to the
+    # default (the or-chain is intentional).
+    price_policy = str(position.get("price_policy") or "").strip().lower() or "taker_limit"
+    time_in_force = str(position.get("time_in_force") or "").strip().upper() or "FAK"
+    post_only_raw = position.get("post_only")
+    if post_only_raw is None:
+        post_only = False
+    else:
+        post_only = bool(post_only_raw)
+
     return {
         "leg_id": f"fast-{getattr(signal, 'id', 'unknown')}-0",
         "leg_index": 0,
@@ -174,11 +197,9 @@ def _leg_from_position(position: dict[str, Any], signal: Any) -> dict[str, Any]:
         "side": side,
         "token_id": token_id,
         "price": price,
-        # Fast-tier defaults: aggressive taker-limit crossing the book for an
-        # immediate fill or nothing.  No post-only, no chase, no reprice.
-        "price_policy": "taker_limit",
-        "time_in_force": "FAK",
-        "post_only": False,
+        "price_policy": price_policy,
+        "time_in_force": time_in_force,
+        "post_only": post_only,
         "metadata": {"fast_tier": True},
     }
 

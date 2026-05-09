@@ -30,7 +30,17 @@ logger = logging.getLogger(__name__)
 
 _MIN_EXECUTION_PRICE = 0.001
 _MIN_LIVE_SHARES = 5.0
-_LEG_SUBMIT_TIMEOUT_SECONDS = 35.0
+# Round 4: tightened from 35s -> 10s.  Under degraded CLOB health the
+# previous 35s ceiling let a single stuck leg hold the session engine
+# (and, by extension, the orchestrator cycle that's awaiting it)
+# hostage for the full 35 seconds.  The fast lane proves 5s is
+# survivable: on timeout we mark the leg failed, the pre-submit /
+# execution_session row unwinds the cap, and the orphan-reconcile
+# sweep reconciles any order that actually reached the venue against
+# the venue snapshot on its next pass (~60s).  10s is the conservative
+# middle ground for multi-leg slow-lane orders (which gather
+# concurrently, so a wave of 2 legs races at 10s each, not 20s).
+_LEG_SUBMIT_TIMEOUT_SECONDS = 10.0
 _NUMERIC_TOKEN_ID_RE = re.compile(r"^\d{18,}$")
 _HEX_TOKEN_ID_RE = re.compile(r"^(?:0x)?[0-9a-f]{40,}$")
 _CONDITION_ID_RE = re.compile(r"^0x[0-9a-f]{64}$")
