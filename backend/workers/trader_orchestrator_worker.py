@@ -8,6 +8,7 @@ import copy
 import json
 import os
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -715,6 +716,22 @@ def _json_safe_runtime_signal_value(value: Any) -> Any:
     return value
 
 
+# Round 9-A: in-process LRU of signal_ids we've already attempted to
+# persist in *this* worker process.  The actual INSERT is
+# ``on_conflict_do_nothing``, so on the second+ sighting of a signal_id
+# it is a guaranteed no-op on Postgres — but the no-op still costs us
+# the full asyncpg round-trip through the pool, and pool contention is
+# the current stall driver (ps_sp_execute = 0.6-4.7s/cycle in the
+# post-R8 soak, with ps_sp_prep ~0ms).  Skipping the repeat INSERT in
+# Python shaves that entire bucket.
+#
+# Safety: worst case on orchestrator restart is we re-issue the same
+# idempotent INSERT once per signal the first time we see it after
+# boot — exactly the pre-R9 behavior.  No data loss, no divergence.
+_RUNTIME_SIGNAL_PERSIST_LRU_CAP = 4096
+_runtime_signal_persist_lru: "OrderedDict[str, None]" = OrderedDict()
+
+
 async def _ensure_runtime_signal_persisted(
     session,
     signal: Any,
@@ -730,11 +747,27 @@ async def _ensure_runtime_signal_persisted(
     there was zero sub-breakdown, so we couldn't tell whether the time
     was in Python-side payload serialization or Postgres round-trip
     latency.  Now we can.
+
+    Round 9-A: short-circuit when this ``signal_id`` has already been
+    persisted by this process.  The INSERT is on_conflict_do_nothing so
+    the repeat is a Postgres-side no-op — but under the current pool
+    pressure the round-trip alone was owning multi-second stalls.
     """
     signal_id = str(getattr(signal, "id", "") or "").strip()
     if not signal_id:
         return
     _prep_started = time.monotonic() if accumulate is not None else 0.0
+    # Round 9-A fast path: already persisted in this process.  Account
+    # for both buckets with a zero duration so the per-signal
+    # ps_signal_persist total still reconciles with its sub-buckets
+    # (ps_unaccounted stays honest).
+    if signal_id in _runtime_signal_persist_lru:
+        # Refresh LRU order — this id is hot.
+        _runtime_signal_persist_lru.move_to_end(signal_id)
+        if accumulate is not None:
+            accumulate("ps_sp_prep", _prep_started)
+            accumulate("ps_sp_execute", time.monotonic())
+        return
     row_values = dict(
         id=signal_id,
         source=str(getattr(signal, "source", "") or "").strip(),
@@ -771,6 +804,11 @@ async def _ensure_runtime_signal_persisted(
     )
     if accumulate is not None:
         accumulate("ps_sp_execute", _exec_started)
+    # Round 9-A: remember this signal_id so the next sighting is a
+    # pure in-process no-op.  Bounded eviction — FIFO via OrderedDict.
+    _runtime_signal_persist_lru[signal_id] = None
+    if len(_runtime_signal_persist_lru) > _RUNTIME_SIGNAL_PERSIST_LRU_CAP:
+        _runtime_signal_persist_lru.popitem(last=False)
 
 
 async def get_open_position_count_for_trader(session, trader_id, mode=None, position_cap_scope=None):
@@ -7222,6 +7260,22 @@ async def _run_trader_once_inner(
                         checks=checks_payload,
                     )
                     _accumulate("ps_dw_checks", _ps_dw_checks_mono)
+                    # Round 9-B: route freshness trader_event through the
+                    # hot_state audit buffer instead of create_trader_event.
+                    # Post-R8 soak showed ps_decision_writes = 2-10s/cycle
+                    # with EVERY ps_dw_* sub-bucket at 0 — the only
+                    # unaccounted-for call inside the decision_writes
+                    # window was this `create_trader_event`, and its
+                    # per-signal row.add() path sits inside the same
+                    # per-signal transaction that everything else is
+                    # fighting.  buffer_trader_event appends under the
+                    # in-memory `_audit_lock` and the bulk flush runs on
+                    # the background audit task — same pattern that
+                    # dissolved ps_dw_checks in Round 8-A.  The
+                    # `ps_dw_freshness_event` bucket lets us confirm
+                    # the gap closes (or surfaces whatever else is
+                    # hiding in the window if it doesn't).
+                    _ps_dw_freshness_event_mono = time.monotonic()
                     if freshness_status in {"passed", "blocked"} and freshness_source in {"scanner", "crypto"}:
                         freshness_age_ms = safe_float(freshness_payload.get("age_ms"), None)
                         freshness_max_age_ms = safe_float(freshness_payload.get("max_age_ms"), None)
@@ -7231,8 +7285,7 @@ async def _run_trader_once_inner(
                             f"age_ms={freshness_age_ms if freshness_age_ms is not None else 'unknown'} "
                             f"max={freshness_max_age_ms if freshness_max_age_ms is not None else 'unknown'}"
                         )
-                        await create_trader_event(
-                            session,
+                        await hot_state.buffer_trader_event(
                             trader_id=trader_id,
                             event_type="market_data_freshness_source",
                             severity=freshness_severity,
@@ -7252,8 +7305,8 @@ async def _run_trader_once_inner(
                                 "final_decision": final_decision,
                                 "final_reason": final_reason,
                             },
-                            commit=False,
                         )
+                    _accumulate("ps_dw_freshness_event", _ps_dw_freshness_event_mono)
 
                     if final_decision == "selected":
                         if run_mode == "live":

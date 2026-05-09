@@ -125,6 +125,28 @@ _INFLIGHT_TASK_BUDGET = 256
 _inflight_emission_tasks: int = 0
 _dropped_emission_tasks: int = 0
 
+# Round 9-C: single-consumer queue + pump for firehose emissions.
+#
+# Pre-R9 behaviour: every ``_*_nowait`` call landed in ``_fire_and_forget``
+# which spawned a Task via ``loop.create_task(_tracked_emission(coro))``.
+# Under load each emit coroutine awaits ``buffer_trader_event`` which
+# takes the hot_state ``_audit_lock``.  Watchdog dumps from the post-R8
+# soak showed ``_firehose.py:_tracked_emission:390 x29`` in multiple
+# stall windows — 29 concurrent emission tasks all parked on the same
+# lock, contending with the audit flusher.  The old in-flight budget
+# (256) was orders of magnitude too loose to catch this.
+#
+# This replaces the per-emit Task with a bounded asyncio.Queue and ONE
+# long-running pump task that drains it sequentially.  Only one task
+# ever contends for ``_audit_lock``; callers still return synchronously
+# because ``Queue.put_nowait`` is sync.  Queue-full drops give us the
+# same backpressure the old budget provided, but with a much tighter
+# cap on the blast radius.
+_EMISSION_QUEUE_MAX = 1024
+_emission_queue: "asyncio.Queue[Any] | None" = None
+_emission_pump_task: "asyncio.Task[None] | None" = None
+_dropped_queue_full_total: int = 0
+
 
 async def _refresh_binding_cache() -> None:
     """Pull orchestrator state + strategy→trader binding map from DB."""
@@ -342,36 +364,64 @@ def _market_summary(market: dict[str, Any] | Any) -> dict[str, Any]:
     }
 
 
+def _ensure_emission_pump(
+    loop: asyncio.AbstractEventLoop,
+) -> "asyncio.Queue[Any]":
+    """Lazy-init the emission queue + pump task for this loop.
+
+    Sync-safe: all state mutation happens between awaits.  If the pump
+    task died (unhandled exception), a new one is spawned on the next
+    caller.
+    """
+    global _emission_queue, _emission_pump_task
+    if _emission_queue is None:
+        _emission_queue = asyncio.Queue(maxsize=_EMISSION_QUEUE_MAX)
+    if _emission_pump_task is None or _emission_pump_task.done():
+        _emission_pump_task = loop.create_task(
+            _emission_pump(), name="firehose-emission-pump"
+        )
+        _emission_pump_task.add_done_callback(lambda _t: None)
+    return _emission_queue
+
+
+async def _emission_pump() -> None:
+    """Drain the emission queue sequentially — one awaiter at a time.
+
+    This is the ONLY task that ever awaits ``buffer_trader_event`` from
+    the firehose path, so there is no lock contention on
+    ``hot_state._audit_lock`` from concurrent emissions.  Exceptions in
+    individual emits are logged and swallowed — one bad payload must
+    never kill the pump.
+    """
+    queue = _emission_queue
+    assert queue is not None
+    while True:
+        coro = await queue.get()
+        try:
+            await coro
+        except Exception as exc:  # noqa: BLE001 — firehose must never break strategies
+            logger.debug("firehose pump emission failed", exc_info=exc)
+        finally:
+            queue.task_done()
+
+
 def _fire_and_forget(coro) -> None:
-    """Schedule an emission without blocking the caller.
+    """Enqueue an emission without blocking the caller.
 
     Strategies run inside the market_runtime dispatch loop; we don't
     want gate emissions to add latency to the hot path.  If no event
     loop is available (sync test path), drop the event silently.
 
-    Fix OO — drop emissions when the in-flight budget is saturated.
-    Firehose events are debug observability and must never queue
-    enough tasks to saturate the event loop or stall the orchestrator.
+    Round 9-C: replaced the per-emit ``loop.create_task`` pattern with
+    a bounded single-consumer queue.  Under the old model a burst of
+    emissions spawned N tasks that all parked on ``_audit_lock`` —
+    the watchdog caught 29 concurrent ``_tracked_emission`` frames per
+    stall window post-R8.  With the pump, at most one emission is ever
+    in flight and callers stay fully non-blocking (``put_nowait`` is
+    sync).  Queue full → drop, same observability-is-not-load-bearing
+    rationale as the old in-flight budget.
     """
-    global _inflight_emission_tasks, _dropped_emission_tasks
-    if _inflight_emission_tasks >= _INFLIGHT_TASK_BUDGET:
-        try:
-            coro.close()
-        except Exception:
-            pass
-        _dropped_emission_tasks += 1
-        # Log every 1000th drop so the situation is visible without
-        # spamming the log itself when the firehose is over-budget.
-        if _dropped_emission_tasks % 1000 == 1:
-            logger.warning(
-                "firehose dropping emissions (in-flight budget exhausted)",
-                extra={
-                    "inflight": _inflight_emission_tasks,
-                    "budget": _INFLIGHT_TASK_BUDGET,
-                    "total_dropped": _dropped_emission_tasks,
-                },
-            )
-        return
+    global _dropped_queue_full_total
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -380,27 +430,47 @@ def _fire_and_forget(coro) -> None:
         except Exception:
             pass
         return
-    _inflight_emission_tasks += 1
-    task = loop.create_task(_tracked_emission(coro))
-    # Avoid 'Task was destroyed but it is pending' warnings if the
-    # loop tears down before the task runs.
-    task.add_done_callback(lambda _t: None)
-
-
-async def _tracked_emission(coro) -> None:
-    global _inflight_emission_tasks
+    queue = _ensure_emission_pump(loop)
     try:
-        await coro
-    finally:
-        _inflight_emission_tasks -= 1
+        queue.put_nowait(coro)
+    except asyncio.QueueFull:
+        try:
+            coro.close()
+        except Exception:
+            pass
+        _dropped_queue_full_total += 1
+        # Log every 1000th drop so the situation is visible without
+        # spamming when the firehose is back-pressured.
+        if _dropped_queue_full_total % 1000 == 1:
+            logger.warning(
+                "firehose dropping emissions (queue full)",
+                extra={
+                    "queue_max": _EMISSION_QUEUE_MAX,
+                    "total_dropped": _dropped_queue_full_total,
+                },
+            )
 
 
 def get_firehose_stats() -> dict[str, int]:
     """Expose in-flight / dropped counters for observability."""
+    queue_depth = 0
+    if _emission_queue is not None:
+        try:
+            queue_depth = _emission_queue.qsize()
+        except Exception:
+            queue_depth = 0
     return {
+        # Legacy budget counters — retained for dashboard/back-compat.
         "inflight_emission_tasks": _inflight_emission_tasks,
         "dropped_emission_tasks_total": _dropped_emission_tasks,
         "inflight_budget": _INFLIGHT_TASK_BUDGET,
+        # Round 9-C queue+pump counters.
+        "emission_queue_depth": queue_depth,
+        "emission_queue_max": _EMISSION_QUEUE_MAX,
+        "dropped_queue_full_total": _dropped_queue_full_total,
+        "pump_running": bool(
+            _emission_pump_task is not None and not _emission_pump_task.done()
+        ),
     }
 
 
