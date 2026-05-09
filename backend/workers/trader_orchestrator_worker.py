@@ -2661,6 +2661,7 @@ async def _ensure_prefetched_source_runtime_state(
     source_configs: dict[str, dict[str, Any]],
     source_keys: set[str],
     source_runtime_state: dict[str, dict[str, Any]],
+    accumulate: Callable[[str, float], None] | None = None,
 ) -> None:
     for source_key in sorted({normalize_source_key(source) for source in source_keys if normalize_source_key(source)}):
         if source_key in source_runtime_state:
@@ -2677,11 +2678,14 @@ async def _ensure_prefetched_source_runtime_state(
             requested_strategy_version = normalize_strategy_version(source_config.get("strategy_version"))
         except ValueError as exc:
             requested_strategy_version_error = str(exc)
+        _prs_get_experiment_started = time.monotonic()
         experiment_row = await get_active_strategy_experiment(
             session,
             source_key=source_key,
             strategy_key=strategy_key,
         )
+        if accumulate is not None:
+            accumulate("prs_get_experiment", _prs_get_experiment_started)
 
         version_requests: list[int | None] = []
         if requested_strategy_version_error is None:
@@ -2697,6 +2701,7 @@ async def _ensure_prefetched_source_runtime_state(
         version_resolutions: dict[int | None, Any] = {}
         version_errors: dict[int | None, str] = {}
         seen_requests: set[int | None] = set()
+        _prs_resolve_version_started = time.monotonic()
         for version_request in version_requests:
             if version_request in seen_requests:
                 continue
@@ -2709,6 +2714,8 @@ async def _ensure_prefetched_source_runtime_state(
                 )
             except ValueError as exc:
                 version_errors[version_request] = str(exc)
+        if accumulate is not None:
+            accumulate("prs_resolve_version", _prs_resolve_version_started)
 
         edge_calibration_profile: dict[str, Any] | None = None
         if source_key == "crypto":
@@ -2732,6 +2739,7 @@ async def _ensure_prefetched_source_runtime_state(
                     ),
                 ),
             )
+            _prs_edge_calibration_started = time.monotonic()
             try:
                 edge_calibration_profile = await _build_edge_calibration_profile(
                     session,
@@ -2755,6 +2763,8 @@ async def _ensure_prefetched_source_runtime_state(
                     "size_multiplier": 1.0,
                     "bucket_size_multipliers": {},
                 }
+            if accumulate is not None:
+                accumulate("prs_edge_calibration", _prs_edge_calibration_started)
 
         source_runtime_state[source_key] = {
             "experiment_row": experiment_row,
@@ -4419,6 +4429,7 @@ async def _run_trader_once_inner(
         # transition re-logs immediately rather than waiting 30s.
         _trader_wallet_stale_log_state.pop(str(trader.get("id") or ""), None)
 
+    _mnt_session_open_started = time.monotonic()
     async with AsyncSessionLocal() as session:
         # Bound DB statements inside this cycle without leaking the timeout
         # onto pooled connections used by unrelated tasks.
@@ -4428,6 +4439,7 @@ async def _run_trader_once_inner(
                 await session.execute(text(f"SET LOCAL statement_timeout = '{_stmt_timeout_ms}'"))
             except Exception:
                 pass
+        _accumulate("mnt_session_open", _mnt_session_open_started)
         trader_id = str(trader["id"])
         source_configs = _normalize_source_configs(trader)
         effective_process_signals = bool(process_signals)
@@ -4479,6 +4491,7 @@ async def _run_trader_once_inner(
         prefetched_signals: list[Any] | None = None
         stream_trigger_mode = bool(trigger_signal_ids_by_source)
         if effective_process_signals:
+            _mnt_cursor_fetch_started = time.monotonic()
             cursor_runtime_sequence = await get_trader_signal_sequence_cursor(
                 session,
                 trader_id=trader_id,
@@ -4487,7 +4500,9 @@ async def _run_trader_once_inner(
                 session,
                 trader_id=trader_id,
             )
+            _accumulate("mnt_cursor_fetch", _mnt_cursor_fetch_started)
             if sources:
+                _mnt_prefetch_signals_started = time.monotonic()
                 if stream_trigger_mode:
                     prefetched_signals = await _build_triggered_trade_signals(
                         session,
@@ -4520,7 +4535,9 @@ async def _run_trader_once_inner(
                     )
                     if pending_preview:
                         prefetched_signals = pending_preview
+                _accumulate("mnt_prefetch_signals", _mnt_prefetch_signals_started)
 
+                _mnt_idle_path_started = time.monotonic()
                 if not prefetched_signals:
                     now = utcnow()
                     idle_maintenance_interval_seconds = int(
@@ -4601,6 +4618,7 @@ async def _run_trader_once_inner(
                             trigger="runtime_signal_overflow",
                             reason="trader_orchestrator_trigger_batch_overflow",
                         )
+                _accumulate("mnt_idle_path", _mnt_idle_path_started)
         open_positions = 0
         occupied_market_ids: set[str] = set()
         reentry_cooldown_market_ids: set[str] = set()
@@ -4627,6 +4645,7 @@ async def _run_trader_once_inner(
         elif effective_process_signals and prefetched_signals:
             run_trader_maintenance = False
         if run_trader_maintenance:
+            _mnt_open_order_count_started = time.monotonic()
             pre_maintenance_open_order_count = int(
                 await get_open_order_count_for_trader(
                     session,
@@ -4635,9 +4654,11 @@ async def _run_trader_once_inner(
                 )
                 or 0
             )
+            _accumulate("mnt_open_order_count", _mnt_open_order_count_started)
 
         if run_trader_maintenance:
             if run_mode == "shadow":
+                _mnt_shadow_backfill_started = time.monotonic()
                 shadow_account_id = _resolve_shadow_account_id(control, trader)
                 backfill_result = await _backfill_simulation_ledger_for_active_shadow_orders(
                     session,
@@ -4654,6 +4675,8 @@ async def _run_trader_once_inner(
                         message="Shadow ledger backfill encountered one or more errors.",
                         payload=backfill_result,
                     )
+                _accumulate("mnt_shadow_backfill", _mnt_shadow_backfill_started)
+                _mnt_shadow_reconcile_started = time.monotonic()
                 force_flatten = resume_policy == "flatten_then_start"
                 lifecycle_result = await reconcile_shadow_positions(
                     session,
@@ -4680,20 +4703,24 @@ async def _run_trader_once_inner(
                             "by_status": lifecycle_result.get("by_status"),
                         },
                     )
+                _accumulate("mnt_shadow_reconcile", _mnt_shadow_reconcile_started)
             elif run_mode == "live":
                 # Live order/position reconciliation is handled by
                 # workers.trader_reconciliation_worker so this loop stays focused
                 # on strategy selection and execution.
                 pass
             if run_mode != "live":
+                _mnt_inventory_sync_started = time.monotonic()
                 await sync_trader_position_inventory(
                     session,
                     trader_id=trader_id,
                     mode=run_mode,
                 )
+                _accumulate("mnt_inventory_sync", _mnt_inventory_sync_started)
         session_engine = ExecutionSessionEngine(session)
         run_execution_maintenance = bool(run_trader_maintenance and hasattr(session, "execute"))
         if run_execution_maintenance:
+            _mnt_session_reconcile_started = time.monotonic()
             try:
                 reconcile_result = await asyncio.wait_for(
                     session_engine.reconcile_active_sessions(
@@ -4722,7 +4749,9 @@ async def _run_trader_once_inner(
                     message=f"Expired {int(reconcile_result['expired'])} execution session(s)",
                     payload=reconcile_result,
                 )
+            _accumulate("mnt_session_reconcile", _mnt_session_reconcile_started)
         if run_execution_maintenance and pre_maintenance_open_order_count > 0:
+            _mnt_enforce_timeouts_started = time.monotonic()
             try:
                 timeout_cleanup = await asyncio.wait_for(
                     _enforce_source_open_order_timeouts(
@@ -4758,9 +4787,11 @@ async def _run_trader_once_inner(
                     run_mode,
                     _TRADER_MAINTENANCE_STEP_TIMEOUT_SECONDS,
                 )
+            _accumulate("mnt_enforce_timeouts", _mnt_enforce_timeouts_started)
         if run_trader_maintenance:
             _trader_maintenance_last_run[trader_id] = maintenance_now
         _checkpoint("maintenance")
+        _setup_maint_events_started = time.monotonic()
         provider_reconcile_payload = timeout_cleanup.get("provider_reconcile")
         provider_reconcile_payload = (
             dict(provider_reconcile_payload) if isinstance(provider_reconcile_payload, dict) else {}
@@ -4830,6 +4861,7 @@ async def _run_trader_once_inner(
                 },
                 commit=False,
             )
+        _accumulate("setup_maint_events", _setup_maint_events_started)
 
         if not effective_process_signals:
             await _persist_trader_cycle_heartbeat(
@@ -4901,12 +4933,14 @@ async def _run_trader_once_inner(
                 ),
             )
         )
+        _setup_ctx_acquire_started = time.monotonic()
         trader_ctx = await trader_cycle_context.acquire(
             trader_id=trader_id,
             mode=run_mode,
             terminal_statuses=pending_live_exit_terminal_statuses,
             provider_window_seconds=_ctx_provider_window_seconds,
         )
+        _accumulate("setup_ctx_acquire", _setup_ctx_acquire_started)
         open_positions = trader_ctx.open_position_count
         open_order_count = trader_ctx.open_order_count
         demoted_strategy_types = set(trader_ctx.global_snapshot.demoted_strategy_types)
@@ -5061,6 +5095,7 @@ async def _run_trader_once_inner(
                     }
 
         if block_entries_reason is not None and effective_process_signals:
+            _setup_block_entries_emit_started = time.monotonic()
             effective_process_signals = False
             should_emit_block_event = True
             if block_entries_event_type == "live_provider_health_block":
@@ -5075,6 +5110,7 @@ async def _run_trader_once_inner(
                     message=block_entries_reason,
                     payload=block_entries_payload,
                 )
+            _accumulate("setup_block_entries_emit", _setup_block_entries_emit_started)
 
         max_signals_cap = (
             _HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE if is_high_frequency_trader else _STANDARD_MAX_SIGNALS_PER_CYCLE
@@ -5180,6 +5216,7 @@ async def _run_trader_once_inner(
                 effective_risk_limits["max_daily_loss_usd"] = fallback_daily_loss
         live_risk_clamp_changes: dict[str, dict[str, Any]] = {}
         if run_mode == "live":
+            _setup_risk_clamps_started = time.monotonic()
             live_risk_clamp_settings = dict(global_runtime_settings.get("live_risk_clamps") or {})
             live_risk_clamp_changes = _apply_live_risk_clamps(
                 effective_risk_limits,
@@ -5200,6 +5237,7 @@ async def _run_trader_once_inner(
                     message="Applied live risk safety clamps for directional execution stability.",
                     payload={"changes": live_risk_clamp_changes},
                 )
+            _accumulate("setup_risk_clamps", _setup_risk_clamps_started)
         allow_averaging = bool(effective_risk_limits.get("allow_averaging", False))
         # PnL + loss-streak come from the pre-fetched cycle context.
         # Global values resolve via ``trader_ctx.global_snapshot`` which
@@ -5239,6 +5277,7 @@ async def _run_trader_once_inner(
         halt_on_losses = bool(effective_risk_limits.get("halt_on_consecutive_losses", False))
         max_consecutive_losses_limit = max(1, safe_int(effective_risk_limits.get("max_consecutive_losses"), 4))
         if halt_on_losses and trader_loss_streak >= max_consecutive_losses_limit:
+            _setup_circuit_breaker_started = time.monotonic()
             await set_trader_paused(session, trader_id, True)
             await create_trader_event(
                 session,
@@ -5319,17 +5358,20 @@ async def _run_trader_once_inner(
                         exc_info=exc,
                     )
 
+            _accumulate("setup_circuit_breaker", _setup_circuit_breaker_started)
             await _persist_trader_cycle_heartbeat(session, trader_id)
             return 0, 0, processed_signals
 
         traders_scope_context: dict[str, Any] | None = None
         traders_source_config = source_configs.get("traders")
         if traders_source_config is not None:
+            _setup_traders_scope_started = time.monotonic()
             traders_params = dict(traders_source_config.get("strategy_params") or {})
             traders_scope_context = await _build_traders_scope_context(
                 session,
                 traders_params.get("traders_scope"),
             )
+            _accumulate("setup_traders_scope", _setup_traders_scope_started)
         edge_calibration_cache: dict[str, dict[str, Any]] = {}
         source_runtime_state_cache: dict[str, dict[str, Any]] = {}
         copy_inventory_context: dict[str, Any] = {}
@@ -5556,6 +5598,7 @@ async def _run_trader_once_inner(
                     if source_configs.get(normalize_source_key(getattr(signal, "source", ""))) is not None
                 },
                 source_runtime_state=source_runtime_state_cache,
+                accumulate=_accumulate,
             )
             _accumulate("sl_prefetched_runtime_state", _sl_runtime_state_started)
 
@@ -8091,6 +8134,7 @@ async def _run_trader_once_inner(
                         )
             _sl_post_loop_started = time.monotonic()
             if stream_trigger_mode and prefetched_signals:
+                _slp_deferred_republish_started = time.monotonic()
                 deferred_signal_ids_by_source: dict[str, list[str]] = {}
                 deferred_seen_ids_by_source: dict[str, set[str]] = {}
                 for deferred_signal in prefetched_signals:
@@ -8113,7 +8157,10 @@ async def _run_trader_once_inner(
                         reason="trader_orchestrator_runtime_trigger_batch_deferred",
                     )
                 prefetched_signals = None
+                _accumulate("slp_deferred_republish", _slp_deferred_republish_started)
+            _slp_heartbeat_started = time.monotonic()
             await _persist_trader_cycle_heartbeat(session, trader_id)
+            _accumulate("slp_heartbeat", _slp_heartbeat_started)
             _accumulate("sl_post_loop", _sl_post_loop_started)
             if defer_signal_processing or stream_trigger_mode:
                 break
