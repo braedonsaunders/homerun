@@ -48,6 +48,7 @@ from api.settings_helpers import (
     search_filters_payload,
     live_execution_payload,
     trading_proxy_payload,
+    blockchain_rpc_payload,
     ui_lock_payload,
     events_payload,
     set_encrypted_secret,
@@ -670,6 +671,34 @@ class TradingProxySettings(BaseModel):
     require_vpn: bool = Field(default=True, description="Block trades if VPN proxy is unreachable")
 
 
+class BlockchainRpcSettings(BaseModel):
+    """Polygon blockchain RPC endpoints used by the wallet monitor.
+
+    Stored encrypted because Ankr / Alchemy / QuickNode embed the
+    API key directly in the URL path (https://rpc.ankr.com/polygon/<key>).
+    Empty string clears the stored value; ``None`` leaves it unchanged.
+    GET responses return a masked preview only.
+    """
+
+    rpc_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Polygon HTTPS RPC URL for eth_getLogs. Authenticated providers "
+            "(Ankr / Alchemy / QuickNode) eliminate the wallet-monitor failure "
+            "cascade observed on free public endpoints. Path-embedded API "
+            "keys are supported and stored encrypted."
+        ),
+    )
+    ws_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Polygon WebSocket RPC URL for new-block subscriptions. "
+            "Optional — when unset, falls back to the POLYGON_WS_URL env "
+            "var or a public endpoint."
+        ),
+    )
+
+
 class UILockSettings(BaseModel):
     """Local UI lock settings."""
 
@@ -855,6 +884,7 @@ class AllSettings(BaseModel):
     maintenance: MaintenanceSettings
     discovery: DiscoverySettings
     trading_proxy: TradingProxySettings
+    blockchain_rpc: BlockchainRpcSettings
     ui_lock: UILockSettings
     network: NetworkSettings
     events: EventsSettings
@@ -876,6 +906,7 @@ class UpdateSettingsRequest(BaseModel):
     maintenance: Optional[MaintenanceSettings] = None
     discovery: Optional[DiscoverySettings] = None
     trading_proxy: Optional[TradingProxySettings] = None
+    blockchain_rpc: Optional[BlockchainRpcSettings] = None
     ui_lock: Optional[UILockSettings] = None
     network: Optional[NetworkSettings] = None
     events: Optional[EventsSettings] = None
@@ -2469,6 +2500,7 @@ async def get_settings():
             maintenance=MaintenanceSettings(**maintenance_payload(settings)),
             discovery=DiscoverySettings(**discovery_payload(settings)),
             trading_proxy=TradingProxySettings(**trading_proxy_payload(settings)),
+            blockchain_rpc=BlockchainRpcSettings(**blockchain_rpc_payload(settings)),
             ui_lock=UILockSettings(**ui_lock_payload(settings)),
             network=NetworkSettings(**network_payload(settings)),
             events=EventsSettings(**events_payload(settings)),
@@ -2789,6 +2821,24 @@ async def get_trading_proxy_settings():
 async def update_trading_proxy_settings(request: TradingProxySettings):
     """Update trading VPN/proxy settings only"""
     return await update_settings(UpdateSettingsRequest(trading_proxy=request))
+
+
+@router.get("/blockchain-rpc")
+async def get_blockchain_rpc_settings():
+    """Get Polygon blockchain RPC settings (URLs masked)."""
+    settings = await get_or_create_settings()
+    return BlockchainRpcSettings(**blockchain_rpc_payload(settings))
+
+
+@router.put("/blockchain-rpc")
+async def update_blockchain_rpc_settings(request: BlockchainRpcSettings):
+    """Update Polygon blockchain RPC settings.
+
+    Pass an empty string to clear a stored URL (reverts to env-var
+    fallback). Pass ``None`` (or omit the field) to leave it unchanged.
+    The wallet monitor picks up the new URL on next worker restart.
+    """
+    return await update_settings(UpdateSettingsRequest(blockchain_rpc=request))
 
 
 @router.get("/ui-lock")

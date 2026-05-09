@@ -2386,14 +2386,51 @@ class ArbitrageScanner:
             return
 
         async def _run_queue() -> None:
+            consecutive_db_errors = 0
             while self._market_history_backfill_queue:
                 batch = self._market_history_backfill_queue
                 self._market_history_backfill_queue = []
                 try:
                     await self._backfill_market_history_for_opportunities(batch, datetime.now(timezone.utc))
                     await self._persist_market_history_for_opportunities(batch)
+                    consecutive_db_errors = 0
                 except Exception as e:
-                    logger.warning(f"  Async sparkline backfill queue error: {e}", exc_info=e)
+                    # Classify poisoned-connection / pool-pressure errors: these
+                    # are transient (connection has been invalidated by the
+                    # reaper, or DB is briefly unavailable). Drop them silently
+                    # — the next scan cycle re-emits the opportunities and the
+                    # backfill picks them up. Persisting a partial batch under
+                    # asyncpg's "cannot switch to state" mid-protocol error
+                    # would just chain another failure.
+                    err_text = str(e).lower()
+                    err_type = type(e).__name__
+                    is_poisoned_connection = (
+                        "cannot switch to state" in err_text
+                        or "connection is closed" in err_text
+                        or "another operation" in err_text
+                        or "connection was closed" in err_text
+                        or "connectiondoesnotexisterror" in err_type.lower()
+                        or "interfaceerror" in err_type.lower()
+                    )
+                    if is_poisoned_connection:
+                        consecutive_db_errors += 1
+                        logger.info(
+                            "Sparkline backfill skipping batch under DB pressure",
+                            extra={
+                                "batch_size": len(batch),
+                                "consecutive_errors": consecutive_db_errors,
+                                "error_type": err_type,
+                            },
+                        )
+                        # Back off so we don't spin on the queue while the
+                        # pool is still recovering. After 3+ consecutive
+                        # failures wait a full second.
+                        if consecutive_db_errors >= 3:
+                            await asyncio.sleep(1.0)
+                        else:
+                            await asyncio.sleep(0.1)
+                    else:
+                        logger.warning(f"  Async sparkline backfill queue error: {e}", exc_info=e)
 
         backfill_task = asyncio.create_task(_run_queue(), name="scanner_market_history_backfill")
         self._market_history_backfill_task = backfill_task

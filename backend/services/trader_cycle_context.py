@@ -58,6 +58,7 @@ from sqlalchemy.exc import OperationalError
 from models.database import AsyncSessionLocal
 from services.event_bus import event_bus
 from services import trader_hot_state as hot_state
+from services.live_pressure import is_db_pressure_active
 from services.trader_orchestrator_state import (
     DEFAULT_LIVE_PROVIDER_HEALTH,
     DEFAULT_PENDING_LIVE_EXIT_GUARD,
@@ -510,6 +511,24 @@ class _TraderCycleContextManager:
         # Projection-backed values (event-driven cache + 30 s TTL).
         pending_live_exit_summary: Mapping[str, Any]
         live_provider_failure_snapshot: Mapping[str, Any]
+        # 2026-05-09: under DB pressure (worker_snapshot timeouts, lock
+        # contention on trade_signals, etc.), the inline-refresh path on
+        # cache miss has been observed taking 1-12 s — well past
+        # PROJECTION_QUERY_TIMEOUT_SECONDS — because the wait_for cancel
+        # is not bounded by the pool-checkout wait that precedes the
+        # SELECT, and the cleanup path waits on the same pool to return
+        # the connection. Soak 2026-05-09 13:29:21 logged
+        # setup_ca_provider_failure=11422ms / setup_ctx_acquire=12078ms,
+        # which then cascaded into runtime heartbeat staleness and a
+        # forced runtime restart at 13:31:21.
+        #
+        # Forcing prefetch_db=False under DB pressure makes both
+        # projections serve last-known-good cache (or the documented
+        # empty sentinel if no cache yet), preserving the trader cycle's
+        # latency budget. The 30 s reconciler still refreshes the cache
+        # in the background once pressure clears.
+        if prefetch_db and is_db_pressure_active():
+            prefetch_db = False
         if normalized_mode == "live":
             # R12-B: R11-A data showed these two projection awaits together
             # ate the entire ``setup_ctx_acquire`` budget (1-4 s) while every

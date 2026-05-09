@@ -586,11 +586,35 @@ class WorkerHost:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning(
-                    "Recording session loop cycle failed",
-                    plane=self._plane_name,
-                    exc_info=exc,
+                # Classify transient DB-pressure errors so they don't
+                # masquerade as a real worker failure in the soak log
+                # — observed during the 2026-05-09 13:30:34 / 13:31:04
+                # cascade where the trading-plane pool was momentarily
+                # exhausted. Recording-session ticks are non-critical;
+                # the next tick (5 s away) sees a recovered pool.
+                err_text = str(exc).lower()
+                err_type = type(exc).__name__.lower()
+                is_transient_db = (
+                    isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    or "cannot switch to state" in err_text
+                    or "connection is closed" in err_text
+                    or "another operation" in err_text
+                    or "connectiondoesnotexisterror" in err_type
+                    or "interfaceerror" in err_type
+                    or "queryCanceled" in err_type.lower()
                 )
+                if is_transient_db:
+                    logger.info(
+                        "Recording session loop tick skipped under DB pressure",
+                        plane=self._plane_name,
+                        error_type=type(exc).__name__,
+                    )
+                else:
+                    logger.warning(
+                        "Recording session loop cycle failed",
+                        plane=self._plane_name,
+                        exc_info=exc,
+                    )
             try:
                 await asyncio.sleep(5.0)
             except asyncio.CancelledError:

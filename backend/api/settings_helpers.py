@@ -435,6 +435,21 @@ def trading_proxy_payload(settings: AppSettings) -> dict[str, Any]:
     }
 
 
+def blockchain_rpc_payload(settings: AppSettings) -> dict[str, Any]:
+    """GET payload for Polygon RPC settings — URLs masked for display.
+
+    The DB column may contain the full URL with a path-embedded API
+    key; ``mask_stored_secret`` truncates to a short preview so an
+    operator can recognise which provider is configured without the
+    secret leaving the server. Set a new value via the PUT route to
+    overwrite (empty string clears).
+    """
+    return {
+        "rpc_url": mask_stored_secret(getattr(settings, "polygon_rpc_url", None), show_chars=24),
+        "ws_url": mask_stored_secret(getattr(settings, "polygon_ws_url", None), show_chars=24),
+    }
+
+
 def ui_lock_payload(settings: AppSettings) -> dict[str, Any]:
     return {
         "enabled": bool(getattr(settings, "ui_lock_enabled", False)),
@@ -703,6 +718,7 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
     discovery = getattr(request, "discovery", None)
     search_filters = getattr(request, "search_filters", None)
     trading_proxy = getattr(request, "trading_proxy", None)
+    blockchain_rpc = getattr(request, "blockchain_rpc", None)
     events = getattr(request, "events", None)
     ui_lock = getattr(request, "ui_lock", None)
 
@@ -992,6 +1008,22 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.trading_proxy_verify_ssl = proxy.verify_ssl
         settings.trading_proxy_timeout = proxy.timeout
         settings.trading_proxy_require_vpn = proxy.require_vpn
+
+    if blockchain_rpc is not None:
+        # ``rpc_url=None`` means "leave as-is"; ``rpc_url=""`` means
+        # "clear the stored value" (revert to env-var / public fallback).
+        if blockchain_rpc.rpc_url is not None:
+            value = blockchain_rpc.rpc_url.strip()
+            if value:
+                set_encrypted_secret(settings, "polygon_rpc_url", value)
+            else:
+                settings.polygon_rpc_url = None
+        if blockchain_rpc.ws_url is not None:
+            value = blockchain_rpc.ws_url.strip()
+            if value:
+                set_encrypted_secret(settings, "polygon_ws_url", value)
+            else:
+                settings.polygon_ws_url = None
 
     if ui_lock is not None:
         enabled = bool(getattr(ui_lock, "enabled", False))

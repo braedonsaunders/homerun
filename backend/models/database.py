@@ -1549,6 +1549,16 @@ class AppSettings(Base):
     trading_proxy_timeout = Column(Float, default=30.0)
     trading_proxy_require_vpn = Column(Boolean, default=True)  # Block trades if VPN unreachable
 
+    # Polygon RPC endpoints used by services.wallet_ws_monitor for
+    # eth_getLogs polling (when WS connection is unavailable) and the
+    # canonical on-chain wallet trade detection.  Stored encrypted
+    # because Ankr/Alchemy/QuickNode embed the API key in the URL path
+    # (https://rpc.ankr.com/polygon/<32-hex-key>).  When unset, falls
+    # back to the POLYGON_RPC_URL / POLYGON_WS_URL env vars and finally
+    # to the hardcoded public-tier list in wallet_ws_monitor.py.
+    polygon_rpc_url = Column(String, nullable=True)  # encrypted via set_encrypted_secret
+    polygon_ws_url = Column(String, nullable=True)   # encrypted via set_encrypted_secret
+
     # Local UI lock settings
     ui_lock_enabled = Column(Boolean, default=False)
     ui_lock_password_hash = Column(String, nullable=True)
@@ -5243,12 +5253,22 @@ async def _reap_stale_checkouts() -> None:
         except Exception as e:
             _db_logger.warning("REAPER: Failed to invalidate connection: %s", e)
 
-        # Cancel the owning task as well — without this, the task is
-        # still scheduled and surfaces a confusing InterfaceError on
-        # its next await of the (now-dead) connection. Cancelling
-        # propagates an asyncio.CancelledError at the actual await
-        # point, which the task's structured try/finally can handle
-        # cleanly. weakref so a GC'd task doesn't pin memory.
+        # NOTE 2026-05-09: previously we ALSO called owning_task.cancel()
+        # here. Removed because it was the proximate cause of the
+        # "cannot switch to state 11/15; another operation (2) is in
+        # progress" cascade observed in the 2026-05-09 soak (13:30:26+):
+        # cancellation propagated mid-asyncpg-protocol, and the task's
+        # cleanup path (rollback / finally) issued a NEW op on a
+        # connection whose protocol state was still in-flight, wedging
+        # multiple downstream tasks (market_cache.delete_market,
+        # trader_orchestrator, trader_hot_state.flush_audit_buffer,
+        # tracked_traders pool_recompute, market_data_ingestor).
+        #
+        # The codebase already handles InterfaceError surfacing on the
+        # task's next await via RetryableSession + retry classifier
+        # (see backend/utils/retry.py). Letting that path run produces
+        # a clean rollback/retry instead of poisoning the protocol.
+        # Keep the weakref + logged identity for diagnostics.
         task_ref = info.get("checkout_task_ref")
         owning_task = None
         if callable(task_ref):
@@ -5257,19 +5277,12 @@ async def _reap_stale_checkouts() -> None:
             except Exception:
                 owning_task = None
         if owning_task is not None and not owning_task.done():
-            try:
-                owning_task.cancel()
-                _db_logger.warning(
-                    "REAPER: Cancelled owning task=%s coro=%s after invalidating its connection",
-                    task_name,
-                    coro_name,
-                )
-            except Exception as cancel_exc:
-                _db_logger.warning(
-                    "REAPER: Failed to cancel owning task=%s: %s",
-                    task_name,
-                    cancel_exc,
-                )
+            _db_logger.warning(
+                "REAPER: Owning task=%s coro=%s still running after connection invalidation; "
+                "letting RetryableSession surface InterfaceError on its next await",
+                task_name,
+                coro_name,
+            )
 
     return reaped
 

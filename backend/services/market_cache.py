@@ -254,11 +254,34 @@ class MarketCacheService:
                 await session.commit()
                 return bool(result.rowcount)
         except Exception as e:
-            logger.error(
-                "Failed to delete market cache entry",
-                condition_id=key,
-                error=str(e),
+            # Classify poisoned-connection / pool-pressure transients —
+            # observed during the 2026-05-09 13:31:46 cascade as
+            # "cannot switch to state 11; another operation (2) is in
+            # progress". The in-memory cache pop has already happened,
+            # so the operator-visible behavior (next set/get re-populates)
+            # is unchanged. Don't ERROR-log a transient that has nothing
+            # to do with this method.
+            err_text = str(e).lower()
+            err_type = type(e).__name__.lower()
+            is_transient_db = (
+                "cannot switch to state" in err_text
+                or "connection is closed" in err_text
+                or "another operation" in err_text
+                or "connectiondoesnotexisterror" in err_type
+                or "interfaceerror" in err_type
             )
+            if is_transient_db:
+                logger.info(
+                    "Market cache DB delete skipped under DB pressure",
+                    condition_id=key,
+                    error_type=type(e).__name__,
+                )
+            else:
+                logger.error(
+                    "Failed to delete market cache entry",
+                    condition_id=key,
+                    error=str(e),
+                )
             return False
 
     async def set_market(self, condition_id: str, data: dict):
