@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import {
   RefreshCw,
@@ -68,6 +69,7 @@ function MetricTile({ label, value, icon, tone }: { label: string; value: string
 // ── Usage Overview (merged from AISystemView) ──
 
 function UsageOverview() {
+  const { t } = useTranslation()
   const { data: status, isLoading: statusLoading, error: statusError } = useQuery({
     queryKey: ['ai-status'],
     queryFn: async () => {
@@ -102,7 +104,7 @@ function UsageOverview() {
         <CardContent className="p-4">
           <div className="flex items-center gap-3 text-muted-foreground">
             <AlertCircle className="w-4 h-4" />
-            <span className="text-sm">Unable to fetch usage stats.</span>
+            <span className="text-sm">{t('ai.activityView.unableToFetch')}</span>
           </div>
         </CardContent>
       </Card>
@@ -121,7 +123,7 @@ function UsageOverview() {
         <CardTitle className="flex items-center justify-between gap-3 text-base font-semibold">
           <span className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-emerald-400" />
-            Usage Overview
+            {t('ai.activityView.usageOverview')}
           </span>
           {usage.active_model && (
             <Badge variant="outline" className="text-xs font-mono border-purple-500/25 bg-purple-500/10 text-purple-300">
@@ -132,14 +134,14 @@ function UsageOverview() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 card-stagger">
-          <MetricTile label="Requests" value={String(usage.total_requests ?? 0)} icon={<Zap className="h-3.5 w-3.5" />} tone="info" />
-          <MetricTile label="Input Tokens" value={formatNumber(usage.total_input_tokens ?? 0)} icon={<FileText className="h-3.5 w-3.5" />} tone="info" />
-          <MetricTile label="Output Tokens" value={formatNumber(usage.total_output_tokens ?? 0)} icon={<FileText className="h-3.5 w-3.5" />} tone="info" />
-          <MetricTile label="Est. Cost" value={`$${cost.toFixed(4)}`} icon={<DollarSign className="h-3.5 w-3.5" />} tone={cost > 5 ? 'warn' : 'neutral'} />
-          <MetricTile label="Avg Latency" value={`${(usage.avg_latency_ms ?? 0).toFixed(0)}ms`} icon={<Clock className="h-3.5 w-3.5" />} tone={(usage.avg_latency_ms ?? 0) > 5000 ? 'warn' : 'good'} />
-          <MetricTile label="Total Tokens" value={formatNumber(usage.total_tokens ?? 0)} icon={<Activity className="h-3.5 w-3.5" />} tone="neutral" />
-          <MetricTile label="Successful" value={String(usage.successful_requests ?? usage.total_requests ?? 0)} icon={<CheckCircle className="h-3.5 w-3.5" />} tone="good" />
-          <MetricTile label="Failed" value={String(failedReq)} icon={<AlertCircle className="h-3.5 w-3.5" />} tone={failedReq > 0 ? 'bad' : 'good'} />
+          <MetricTile label={t('ai.activityView.metricRequests')} value={String(usage.total_requests ?? 0)} icon={<Zap className="h-3.5 w-3.5" />} tone="info" />
+          <MetricTile label={t('ai.activityView.metricInputTokens')} value={formatNumber(usage.total_input_tokens ?? 0)} icon={<FileText className="h-3.5 w-3.5" />} tone="info" />
+          <MetricTile label={t('ai.activityView.metricOutputTokens')} value={formatNumber(usage.total_output_tokens ?? 0)} icon={<FileText className="h-3.5 w-3.5" />} tone="info" />
+          <MetricTile label={t('ai.activityView.metricCost')} value={`$${cost.toFixed(4)}`} icon={<DollarSign className="h-3.5 w-3.5" />} tone={cost > 5 ? 'warn' : 'neutral'} />
+          <MetricTile label={t('ai.activityView.metricLatency')} value={`${(usage.avg_latency_ms ?? 0).toFixed(0)}ms`} icon={<Clock className="h-3.5 w-3.5" />} tone={(usage.avg_latency_ms ?? 0) > 5000 ? 'warn' : 'good'} />
+          <MetricTile label={t('ai.activityView.metricTotalTokens')} value={formatNumber(usage.total_tokens ?? 0)} icon={<Activity className="h-3.5 w-3.5" />} tone="neutral" />
+          <MetricTile label={t('ai.activityView.metricSuccessful')} value={String(usage.successful_requests ?? usage.total_requests ?? 0)} icon={<CheckCircle className="h-3.5 w-3.5" />} tone="good" />
+          <MetricTile label={t('ai.activityView.metricFailed')} value={String(failedReq)} icon={<AlertCircle className="h-3.5 w-3.5" />} tone={failedReq > 0 ? 'bad' : 'good'} />
         </div>
 
         {usage.spend_limit_usd != null && (
@@ -147,7 +149,7 @@ function UsageOverview() {
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <Shield className="w-3.5 h-3.5 text-blue-400" />
-                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Monthly Spend Limit</span>
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('ai.activityView.spendLimit')}</span>
               </div>
               <span className="text-xs font-semibold font-data">
                 ${cost.toFixed(2)} / ${usage.spend_limit_usd.toFixed(2)}
@@ -168,10 +170,10 @@ function UsageOverview() {
             </div>
             <div className="flex items-center justify-between mt-1.5">
               <span className="text-[10px] text-muted-foreground font-data">
-                ${(usage.spend_remaining_usd ?? 0).toFixed(2)} remaining
+                {t('ai.activityView.remaining', { amount: `$${(usage.spend_remaining_usd ?? 0).toFixed(2)}` })}
               </span>
               <span className="text-[10px] text-muted-foreground">
-                {usage.month_start ? `Since ${new Date(usage.month_start).toLocaleDateString()}` : ''}
+                {usage.month_start ? t('ai.activityView.since', { date: new Date(usage.month_start).toLocaleDateString() }) : ''}
               </span>
             </div>
           </div>
@@ -179,7 +181,7 @@ function UsageOverview() {
 
         {usage.by_model && typeof usage.by_model === 'object' && Object.keys(usage.by_model).length > 0 && (
           <div>
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">By Model</p>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">{t('ai.activityView.byModel')}</p>
             <div className="space-y-1.5">
               {Object.entries(usage.by_model).map(([model, stats]: [string, any]) => {
                 const isActive = usage.active_model && model === usage.active_model
@@ -197,13 +199,13 @@ function UsageOverview() {
                       <p className="text-xs font-medium font-mono">{model}</p>
                       {isActive && (
                         <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-purple-500/20 bg-purple-500/10 text-purple-400">
-                          active
+                          {t('ai.activityView.active')}
                         </Badge>
                       )}
                     </div>
                     <div className="flex items-center gap-3 text-[11px] text-muted-foreground font-data">
-                      <span>{stats.requests ?? 0} req</span>
-                      <span>{formatNumber(stats.tokens ?? 0)} tok</span>
+                      <span>{stats.requests ?? 0} {t('ai.activityView.reqSuffix')}</span>
+                      <span>{formatNumber(stats.tokens ?? 0)} {t('ai.activityView.tokSuffix')}</span>
                       <span className="font-medium text-foreground/80">${(stats.cost ?? 0).toFixed(4)}</span>
                     </div>
                   </div>
@@ -244,6 +246,7 @@ function formatLatency(ms: number | null) {
 }
 
 function CallLogSection() {
+  const { t } = useTranslation()
   const [purposeFilter, setPurposeFilter] = useState<string>('__all__')
   const [providerFilter, setProviderFilter] = useState<string>('__all__')
   const [successFilter, setSuccessFilter] = useState<string>('__all__')
@@ -283,43 +286,43 @@ function CallLogSection() {
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-1.5">
               <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Filters</span>
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('ai.activityView.filters')}</span>
             </div>
 
             <Select value={purposeFilter} onValueChange={(v) => { setPurposeFilter(v); resetOffset() }}>
               <SelectTrigger className="h-7 w-[140px] text-xs bg-muted/60 border-border">
-                <SelectValue placeholder="Purpose" />
+                <SelectValue placeholder={t('ai.activityView.purpose')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all__">All Purposes</SelectItem>
+                <SelectItem value="__all__">{t('ai.activityView.allPurposes')}</SelectItem>
                 {purposes.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
               </SelectContent>
             </Select>
 
             <Select value={providerFilter} onValueChange={(v) => { setProviderFilter(v); resetOffset() }}>
               <SelectTrigger className="h-7 w-[140px] text-xs bg-muted/60 border-border">
-                <SelectValue placeholder="Provider" />
+                <SelectValue placeholder={t('ai.activityView.provider')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all__">All Providers</SelectItem>
+                <SelectItem value="__all__">{t('ai.activityView.allProviders')}</SelectItem>
                 {providers.map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
               </SelectContent>
             </Select>
 
             <Select value={successFilter} onValueChange={(v) => { setSuccessFilter(v); resetOffset() }}>
               <SelectTrigger className="h-7 w-[120px] text-xs bg-muted/60 border-border">
-                <SelectValue placeholder="Status" />
+                <SelectValue placeholder={t('ai.activityView.statusLbl')} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__all__">All Status</SelectItem>
-                <SelectItem value="true">Success</SelectItem>
-                <SelectItem value="false">Error</SelectItem>
+                <SelectItem value="__all__">{t('ai.activityView.allStatus')}</SelectItem>
+                <SelectItem value="true">{t('ai.activityView.success')}</SelectItem>
+                <SelectItem value="false">{t('ai.activityView.error')}</SelectItem>
               </SelectContent>
             </Select>
 
             <Button variant="outline" size="sm" onClick={() => refetch()} className="h-7 gap-1.5 text-xs ml-auto">
               <RefreshCw className="h-3 w-3" />
-              Refresh
+              {t('ai.activityView.refresh')}
             </Button>
           </div>
         </CardContent>
@@ -331,8 +334,8 @@ function CallLogSection() {
         <CardHeader className="pb-2">
           <CardTitle className="flex items-center gap-2 text-base font-semibold">
             <Clock className="h-4 w-4 text-blue-400" />
-            LLM Call Log
-            <Badge variant="outline" className="text-[10px] ml-2">{total} total</Badge>
+            {t('ai.activityView.callLog')}
+            <Badge variant="outline" className="text-[10px] ml-2">{t('ai.activityView.totalCount', { count: total })}</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -343,20 +346,20 @@ function CallLogSection() {
           ) : entries.length === 0 ? (
             <div className="text-center py-8">
               <Bot className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-              <p className="text-xs text-muted-foreground">No LLM calls recorded yet.</p>
+              <p className="text-xs text-muted-foreground">{t('ai.activityView.noCalls')}</p>
             </div>
           ) : (
             <ScrollArea className="h-[420px]">
               {/* Header */}
               <div className="sticky top-0 z-10 grid grid-cols-[100px_90px_80px_1fr_90px_70px_70px_60px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wide text-muted-foreground bg-card border-b border-border/40">
-                <span>Time</span>
-                <span>Purpose</span>
-                <span>Provider</span>
-                <span>Model</span>
-                <span>Tokens</span>
-                <span>Cost</span>
-                <span>Latency</span>
-                <span className="text-center">Status</span>
+                <span>{t('ai.activityView.colTime')}</span>
+                <span>{t('ai.activityView.purpose')}</span>
+                <span>{t('ai.activityView.colProvider')}</span>
+                <span>{t('ai.activityView.colModel')}</span>
+                <span>{t('ai.activityView.colTokens')}</span>
+                <span>{t('ai.activityView.colCost')}</span>
+                <span>{t('ai.activityView.colLatency')}</span>
+                <span className="text-center">{t('ai.activityView.colStatus')}</span>
               </div>
 
               {/* Rows */}
@@ -405,25 +408,25 @@ function CallLogSection() {
                         )}>
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                             <div>
-                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">ID</p>
+                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{t('ai.activityView.detailId')}</p>
                               <p className="font-data text-foreground/80 break-all">{entry.id}</p>
                             </div>
                             <div>
-                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Session</p>
+                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{t('ai.activityView.detailSession')}</p>
                               <p className="font-data text-foreground/80 break-all">{entry.session_id ?? '-'}</p>
                             </div>
                             <div>
-                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Input Tokens</p>
+                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{t('ai.activityView.detailInputTokens')}</p>
                               <p className="font-data">{entry.input_tokens.toLocaleString()}</p>
                             </div>
                             <div>
-                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Output Tokens</p>
+                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{t('ai.activityView.detailOutputTokens')}</p>
                               <p className="font-data">{entry.output_tokens.toLocaleString()}</p>
                             </div>
                           </div>
                           {isError && entry.error && (
                             <div className="mt-3 p-2.5 rounded-lg bg-red-500/10 border border-red-500/20">
-                              <p className="text-[10px] uppercase tracking-wide text-red-400 mb-1">Error</p>
+                              <p className="text-[10px] uppercase tracking-wide text-red-400 mb-1">{t('ai.activityView.detailError')}</p>
                               <p className="text-red-300 font-mono text-[11px] whitespace-pre-wrap">{entry.error}</p>
                             </div>
                           )}
@@ -440,14 +443,14 @@ function CallLogSection() {
           {total > PAGE_SIZE && (
             <div className="flex items-center justify-between px-4 py-3 border-t border-border/40">
               <p className="text-xs text-muted-foreground">
-                Showing {offset + 1}-{Math.min(offset + PAGE_SIZE, total)} of {total}
+                {t('ai.activityView.pagination', { from: offset + 1, to: Math.min(offset + PAGE_SIZE, total), total })}
               </p>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" disabled={!hasPrev} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} className="h-7 text-xs">
-                  Previous
+                  {t('ai.activityView.previous')}
                 </Button>
                 <Button variant="outline" size="sm" disabled={!hasNext} onClick={() => setOffset(offset + PAGE_SIZE)} className="h-7 text-xs">
-                  Next
+                  {t('ai.activityView.next')}
                 </Button>
               </div>
             </div>

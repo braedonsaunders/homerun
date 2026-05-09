@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -49,8 +50,8 @@ const EMPTY_FORM: AgentFormState = {
   max_iterations: 5,
 }
 
-const MODEL_OPTIONS = [
-  { value: '', label: 'Default' },
+const MODEL_OPTIONS: Array<{ value: string; label: string; labelKey?: string }> = [
+  { value: '', label: 'Default', labelKey: 'ai.agentsView.modelDefault' },
   { value: 'gpt-4o', label: 'GPT-4o' },
   { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
@@ -71,6 +72,7 @@ function agentToForm(agent: UserAgent): AgentFormState {
 }
 
 export default function AIAgentsView() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
@@ -194,14 +196,14 @@ export default function AIAgentsView() {
       {/* Agent List */}
       <div className="w-72 max-w-72 shrink-0 flex flex-col overflow-hidden">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-foreground">Agents</h3>
+          <h3 className="text-sm font-semibold text-foreground">{t('ai.agentsView.title')}</h3>
           <Button
             size="sm"
             onClick={handleCreate}
             className="h-7 gap-1.5 text-xs bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/30"
           >
             <Plus className="w-3 h-3" />
-            Create
+            {t('ai.agentsView.create')}
           </Button>
         </div>
 
@@ -212,7 +214,7 @@ export default function AIAgentsView() {
         ) : agents.length === 0 ? (
           <div className="text-center py-8">
             <Bot className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-            <p className="text-xs text-muted-foreground/50">No agents configured</p>
+            <p className="text-xs text-muted-foreground/50">{t('ai.agentsView.noneConfigured')}</p>
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -240,7 +242,7 @@ export default function AIAgentsView() {
                     </div>
                     <div className="flex-1 min-w-0 overflow-hidden">
                       <p className="text-xs font-medium truncate">{agent.name}</p>
-                      <p className="text-[10px] text-muted-foreground truncate">{agent.description || 'No description'}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{agent.description || t('ai.agentsView.noDescription')}</p>
                     </div>
                     <ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
                   </div>
@@ -251,11 +253,11 @@ export default function AIAgentsView() {
                       </Badge>
                     )}
                     <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-border/40 bg-muted/30">
-                      {agent.tools.length} tools
+                      {t('ai.agentsView.toolsCount', { count: agent.tools.length })}
                     </Badge>
                     {agent.is_builtin && (
                       <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-amber-500/20 bg-amber-500/10 text-amber-400">
-                        built-in
+                        {t('ai.agentsView.builtin')}
                       </Badge>
                     )}
                   </div>
@@ -274,38 +276,38 @@ export default function AIAgentsView() {
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base font-semibold">
                 <Bot className="h-4 w-4 text-cyan-400" />
-                {isCreating ? 'Create Agent' : `Edit: ${selectedAgent?.name ?? ''}`}
+                {isCreating ? t('ai.agentsView.createAgent') : t('ai.agentsView.editAgent', { name: selectedAgent?.name ?? '' })}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">Name *</label>
+                  <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">{t('ai.agentsView.nameRequired')}</label>
                   <Input
                     value={form.name}
                     onChange={e => setForm(prev => ({ ...prev, name: e.target.value }))}
-                    placeholder="My Agent"
+                    placeholder={t('ai.agentsView.namePlaceholder')}
                     className="bg-muted/60 rounded-lg focus-visible:ring-cyan-500"
                     disabled={selectedAgent?.is_builtin}
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">Description</label>
+                  <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">{t('ai.agentsView.description')}</label>
                   <Input
                     value={form.description}
                     onChange={e => setForm(prev => ({ ...prev, description: e.target.value }))}
-                    placeholder="What this agent does..."
+                    placeholder={t('ai.agentsView.descriptionPlaceholder')}
                     className="bg-muted/60 rounded-lg focus-visible:ring-cyan-500"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">System Prompt</label>
+                <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">{t('ai.agentsView.systemPrompt')}</label>
                 <textarea
                   value={form.system_prompt}
                   onChange={e => setForm(prev => ({ ...prev, system_prompt: e.target.value }))}
-                  placeholder="You are a specialized AI agent that..."
+                  placeholder={t('ai.agentsView.systemPromptPlaceholder')}
                   rows={6}
                   className="w-full bg-muted/60 border border-border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-cyan-500 resize-y"
                 />
@@ -315,7 +317,7 @@ export default function AIAgentsView() {
                 <div>
                   <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">
                     <Cpu className="w-3 h-3 inline mr-1" />
-                    Model
+                    {t('ai.agentsView.model')}
                   </label>
                   <select
                     value={form.model || ''}
@@ -323,14 +325,14 @@ export default function AIAgentsView() {
                     className="w-full bg-muted/60 border border-border rounded-lg px-3 py-2 text-sm h-9"
                   >
                     {MODEL_OPTIONS.map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      <option key={opt.value} value={opt.value}>{opt.labelKey ? t(opt.labelKey) : opt.label}</option>
                     ))}
                   </select>
                 </div>
                 <div>
                   <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">
                     <Sliders className="w-3 h-3 inline mr-1" />
-                    Temperature: {form.temperature.toFixed(1)}
+                    {t('ai.agentsView.temperature', { value: form.temperature.toFixed(1) })}
                   </label>
                   <input
                     type="range"
@@ -343,7 +345,7 @@ export default function AIAgentsView() {
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">Max Iterations</label>
+                  <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5">{t('ai.agentsView.maxIterations')}</label>
                   <Input
                     type="number"
                     min={1}
@@ -359,7 +361,7 @@ export default function AIAgentsView() {
               <div>
                 <label className="block text-[10px] uppercase tracking-wide text-muted-foreground mb-2">
                   <Wrench className="w-3 h-3 inline mr-1" />
-                  Tools ({form.tools.length} selected)
+                  {t('ai.agentsView.toolsLabel', { count: form.tools.length })}
                 </label>
                 <div className="max-h-64 overflow-y-auto rounded-lg border border-border/40 p-2 space-y-2">
                   {(() => {
@@ -396,7 +398,7 @@ export default function AIAgentsView() {
                     ))
                   })()}
                   {availableTools.length === 0 && (
-                    <p className="text-xs text-muted-foreground col-span-full py-2 text-center">No tools available</p>
+                    <p className="text-xs text-muted-foreground col-span-full py-2 text-center">{t('ai.agentsView.noToolsAvailable')}</p>
                   )}
                 </div>
               </div>
@@ -414,7 +416,7 @@ export default function AIAgentsView() {
                   )}
                 >
                   {saveMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                  {isCreating ? 'Create Agent' : 'Save Changes'}
+                  {isCreating ? t('ai.agentsView.createAgent') : t('ai.agentsView.saveChanges')}
                 </Button>
                 {selectedAgentId && !selectedAgent?.is_builtin && (
                   <Button
@@ -424,7 +426,7 @@ export default function AIAgentsView() {
                     className="h-9 gap-1.5 text-sm text-red-400 border-red-500/30 hover:bg-red-500/10"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
-                    Delete
+                    {t('ai.agentsView.delete')}
                   </Button>
                 )}
                 {saveMutation.error && (
@@ -440,7 +442,7 @@ export default function AIAgentsView() {
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base font-semibold">
                 <Play className="h-4 w-4 text-emerald-400" />
-                Test Agent
+                {t('ai.agentsView.testAgent')}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -449,7 +451,7 @@ export default function AIAgentsView() {
                   value={testQuery}
                   onChange={e => setTestQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !testRunning) handleTest() }}
-                  placeholder="Type a test query..."
+                  placeholder={t('ai.agentsView.testPlaceholder')}
                   className="bg-muted/60 rounded-lg focus-visible:ring-emerald-500"
                 />
                 {testRunning ? (
@@ -459,7 +461,7 @@ export default function AIAgentsView() {
                     className="h-9 gap-1.5 text-sm text-red-400 border-red-500/30 hover:bg-red-500/10 shrink-0"
                   >
                     <X className="w-3.5 h-3.5" />
-                    Stop
+                    {t('ai.agentsView.stop')}
                   </Button>
                 ) : (
                   <Button
@@ -473,14 +475,14 @@ export default function AIAgentsView() {
                     )}
                   >
                     <Play className="w-3.5 h-3.5" />
-                    Run
+                    {t('ai.agentsView.run')}
                   </Button>
                 )}
               </div>
 
               {testResult && (
                 <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4">
-                  <p className="text-[10px] uppercase tracking-wide text-emerald-400 mb-2">Response</p>
+                  <p className="text-[10px] uppercase tracking-wide text-emerald-400 mb-2">{t('ai.agentsView.response')}</p>
                   <div className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">
                     {testResult}
                   </div>
@@ -496,7 +498,7 @@ export default function AIAgentsView() {
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
             <Shield className="w-12 h-12 text-muted-foreground/20 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">Select an agent to edit, or create a new one</p>
+            <p className="text-sm text-muted-foreground">{t('ai.agentsView.selectOrCreate')}</p>
           </div>
         </div>
       )}

@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
 import {
@@ -49,8 +50,10 @@ import {
 } from '../../services/api'
 import { activeChatSessionIdAtom } from '../../store/atoms'
 
-function groupSessionsByDate(sessions: AIChatSession[]): Record<string, AIChatSession[]> {
-  const groups: Record<string, AIChatSession[]> = {}
+type SessionGroupKey = 'today' | 'yesterday' | 'thisWeek' | 'older'
+
+function groupSessionsByDate(sessions: AIChatSession[]): Record<SessionGroupKey, AIChatSession[]> {
+  const groups: Record<SessionGroupKey, AIChatSession[]> = { today: [], yesterday: [], thisWeek: [], older: [] }
   const now = new Date()
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const yesterday = new Date(today.getTime() - 86400000)
@@ -58,19 +61,18 @@ function groupSessionsByDate(sessions: AIChatSession[]): Record<string, AIChatSe
 
   for (const session of sessions) {
     const date = session.updated_at ? new Date(session.updated_at) : session.created_at ? new Date(session.created_at) : null
-    let group: string
+    let group: SessionGroupKey
     if (!date) {
-      group = 'Older'
+      group = 'older'
     } else if (date >= today) {
-      group = 'Today'
+      group = 'today'
     } else if (date >= yesterday) {
-      group = 'Yesterday'
+      group = 'yesterday'
     } else if (date >= weekAgo) {
-      group = 'This Week'
+      group = 'thisWeek'
     } else {
-      group = 'Older'
+      group = 'older'
     }
-    if (!groups[group]) groups[group] = []
     groups[group].push(session)
   }
 
@@ -135,11 +137,17 @@ function SessionSidebar({
   collapsed: boolean
   onToggleCollapse: () => void
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const grouped = useMemo(() => groupSessionsByDate(sessions), [sessions])
-  const groupOrder = ['Today', 'Yesterday', 'This Week', 'Older']
+  const groupOrder: Array<{ key: SessionGroupKey; label: string }> = [
+    { key: 'today', label: t('ai.chatView.groupToday') },
+    { key: 'yesterday', label: t('ai.chatView.groupYesterday') },
+    { key: 'thisWeek', label: t('ai.chatView.groupThisWeek') },
+    { key: 'older', label: t('ai.chatView.groupOlder') },
+  ]
 
   const handleArchive = async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -200,7 +208,7 @@ function SessionSidebar({
           className="h-8 gap-1.5 text-xs bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-500/30 hover:bg-purple-500/30"
         >
           <Plus className="w-3.5 h-3.5" />
-          New Chat
+          {t('ai.chatView.newChat')}
         </Button>
         <button
           onClick={onToggleCollapse}
@@ -211,12 +219,12 @@ function SessionSidebar({
       </div>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="p-2 space-y-3">
-          {groupOrder.map((group) => {
-            const items = grouped[group]
+          {groupOrder.map(({ key, label }) => {
+            const items = grouped[key]
             if (!items?.length) return null
             return (
-              <div key={group}>
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground/60 px-2 mb-1.5">{group}</p>
+              <div key={key}>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground/60 px-2 mb-1.5">{label}</p>
                 <div className="space-y-0.5">
                   {items.map((session) => (
                     <div
@@ -253,7 +261,7 @@ function SessionSidebar({
                       ) : (
                         <>
                           <span className="flex-1 text-xs truncate">
-                            {session.title || `Chat ${session.session_id.slice(0, 8)}`}
+                            {session.title || t('ai.chatView.chatNumber', { id: session.session_id.slice(0, 8) })}
                           </span>
                           <div className="hidden group-hover:flex items-center gap-0.5">
                             <button
@@ -280,7 +288,7 @@ function SessionSidebar({
           {sessions.length === 0 && (
             <div className="text-center py-8">
               <MessageSquare className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground/50">No conversations yet</p>
+              <p className="text-xs text-muted-foreground/50">{t('ai.chatView.noConversations')}</p>
             </div>
           )}
         </div>
@@ -290,13 +298,14 @@ function SessionSidebar({
 }
 
 function UserMessage() {
+  const { t } = useTranslation()
   return (
     <MessagePrimitive.Root className="flex gap-3 py-4 px-4 border-b border-border/20">
       <div className="w-7 h-7 rounded-full bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0 mt-0.5">
         <User className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] uppercase tracking-wider text-blue-600 dark:text-blue-400/70 mb-1">You</p>
+        <p className="text-[10px] uppercase tracking-wider text-blue-600 dark:text-blue-400/70 mb-1">{t('ai.chatView.you')}</p>
         <MessagePrimitive.Parts
           components={{
             Text: () => (
@@ -332,13 +341,14 @@ function AssistantTextContent() {
 }
 
 function AssistantMessage() {
+  const { t } = useTranslation()
   return (
     <MessagePrimitive.Root className="flex gap-3 py-4 px-4 bg-muted/20 border-b border-border/20">
       <div className="w-7 h-7 rounded-full bg-purple-500/20 border border-purple-500/30 flex items-center justify-center shrink-0 mt-0.5">
         <Bot className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] uppercase tracking-wider text-purple-600 dark:text-purple-400/70 mb-1">Homerun AI</p>
+        <p className="text-[10px] uppercase tracking-wider text-purple-600 dark:text-purple-400/70 mb-1">{t('ai.chatView.homerunAi')}</p>
         <MessagePrimitive.Parts
           components={{
             Text: AssistantTextContent,
@@ -350,6 +360,7 @@ function AssistantMessage() {
 }
 
 function ChatThread({ autoFocus }: { autoFocus: boolean }) {
+  const { t } = useTranslation()
   return (
     <ThreadPrimitive.Root className="flex flex-col h-full border-l border-border/20">
       <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto border-b border-border/20">
@@ -374,7 +385,7 @@ function ChatThread({ autoFocus }: { autoFocus: boolean }) {
       <div className="border-t border-border/40 p-4 bg-background/50">
         <ComposerPrimitive.Root className="flex items-end gap-2 rounded-xl border border-border/40 bg-muted/30 p-2 focus-within:border-purple-500/40 transition-colors">
           <ComposerPrimitive.Input
-            placeholder="Ask about markets, strategies, opportunities..."
+            placeholder={t('ai.chatView.askPlaceholder')}
             className="flex-1 bg-transparent text-sm text-foreground resize-none outline-none min-h-[36px] max-h-[120px] px-2 py-1.5 placeholder:text-muted-foreground/50"
             autoFocus={autoFocus}
           />
@@ -388,7 +399,7 @@ function ChatThread({ autoFocus }: { autoFocus: boolean }) {
           </ComposerPrimitive.Send>
         </ComposerPrimitive.Root>
         <p className="text-[10px] text-muted-foreground/40 text-center mt-2">
-          AI responses are not financial advice. Always verify before trading.
+          {t('ai.chatView.disclaimer')}
         </p>
       </div>
     </ThreadPrimitive.Root>
@@ -404,11 +415,12 @@ function LoadingChatPane() {
 }
 
 function WelcomeScreen() {
+  const { t } = useTranslation()
   const suggestions = [
-    'Analyze top opportunities',
-    'Explain resolution risks',
-    'Compare market spreads',
-    'Review portfolio exposure',
+    t('ai.chatView.suggestAnalyzeOpps'),
+    t('ai.chatView.suggestExplainRisks'),
+    t('ai.chatView.suggestCompareSpreads'),
+    t('ai.chatView.suggestReviewPortfolio'),
   ]
 
   return (
@@ -416,9 +428,9 @@ function WelcomeScreen() {
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 border border-purple-500/20 flex items-center justify-center mb-6">
         <Sparkles className="w-8 h-8 text-purple-600 dark:text-purple-400" />
       </div>
-      <h2 className="text-xl font-semibold text-foreground mb-2">Homerun AI</h2>
+      <h2 className="text-xl font-semibold text-foreground mb-2">{t('ai.chatView.homerunAi')}</h2>
       <p className="text-sm text-muted-foreground text-center max-w-md mb-8">
-        Your prediction market copilot. Ask about opportunities, analyze markets, get strategy recommendations, or explore resolution criteria.
+        {t('ai.chatView.welcomeSubtitle')}
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
         {suggestions.map((suggestion) => (

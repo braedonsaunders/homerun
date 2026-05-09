@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Eye,
@@ -164,6 +165,7 @@ function ModelCombobox({
   disabled?: boolean
   placeholder?: string
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const selected = models.find(m => m.id === value)
 
@@ -185,9 +187,9 @@ function ModelCombobox({
       </PopoverTrigger>
       <PopoverContent className="w-[350px] p-0" align="start">
         <Command>
-          <CommandInput placeholder="Search models..." className="h-9" />
+          <CommandInput placeholder={t('ai.providersView.searchModels')} className="h-9" />
           <CommandList>
-            <CommandEmpty>No models found.</CommandEmpty>
+            <CommandEmpty>{t('ai.providersView.noModels')}</CommandEmpty>
             <CommandGroup className="max-h-[300px] overflow-auto">
               {models.map(m => (
                 <CommandItem
@@ -247,6 +249,7 @@ function ProviderRow({
   onSave: () => void
   isSaving: boolean
 }) {
+  const { t } = useTranslation()
   const Icon = provider.icon
 
   return (
@@ -268,12 +271,12 @@ function ProviderRow({
             <span className="text-sm font-medium">{provider.name}</span>
             {isPrimary && (
               <Badge variant="outline" className="text-[9px] py-0 bg-purple-500/10 text-purple-400 border-purple-500/30">
-                Primary
+                {t('ai.providersView.primary')}
               </Badge>
             )}
             {provider.isLocal && (
               <Badge variant="outline" className="text-[9px] py-0 text-muted-foreground border-border/50">
-                Local
+                {t('ai.providersView.local')}
               </Badge>
             )}
           </div>
@@ -289,7 +292,7 @@ function ProviderRow({
           {/* Base URL */}
           {provider.hasBaseUrl && provider.baseUrlField && (
             <div>
-              <Label className="text-xs text-muted-foreground">Base URL</Label>
+              <Label className="text-xs text-muted-foreground">{t('ai.providersView.baseUrl')}</Label>
               <Input
                 type="text"
                 value={baseUrl}
@@ -303,7 +306,7 @@ function ProviderRow({
           {/* API Key */}
           <div>
             <Label className="text-xs text-muted-foreground">
-              {provider.isLocal ? 'API Key (Optional)' : 'API Key'}
+              {provider.isLocal ? t('ai.providersView.apiKeyOptional') : t('ai.providersView.apiKey')}
             </Label>
             <div className="relative mt-1">
               <Input
@@ -344,10 +347,10 @@ function ProviderRow({
               ) : (
                 <Zap className="w-3 h-3 mr-1.5" />
               )}
-              Test
+              {t('ai.providersView.test')}
             </Button>
             <Button size="sm" onClick={onSave} disabled={isSaving} className="text-xs h-7">
-              Save
+              {t('ai.providersView.save')}
             </Button>
           </div>
         </div>
@@ -357,6 +360,7 @@ function ProviderRow({
 }
 
 function StatusDot({ status }: { status: 'connected' | 'not_configured' | 'error' }) {
+  const { t } = useTranslation()
   return (
     <div
       className={cn(
@@ -365,7 +369,7 @@ function StatusDot({ status }: { status: 'connected' | 'not_configured' | 'error
         status === 'error' && 'bg-red-400',
         status === 'not_configured' && 'bg-muted-foreground/30',
       )}
-      title={status === 'connected' ? 'Connected' : status === 'error' ? 'Error' : 'Not configured'}
+      title={status === 'connected' ? t('ai.providersView.connected') : status === 'error' ? t('ai.providersView.errorLabel') : t('ai.providersView.notConfigured')}
     />
   )
 }
@@ -375,6 +379,7 @@ function StatusDot({ status }: { status: 'connected' | 'not_configured' | 'error
 // ---------------------------------------------------------------------------
 
 export default function AIProvidersView() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   const { data: settings } = useQuery({
@@ -459,11 +464,11 @@ export default function AIProvidersView() {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
       queryClient.invalidateQueries({ queryKey: ['ai-status'] })
       queryClient.invalidateQueries({ queryKey: ['ai-usage'] })
-      setSaveMessage({ type: 'success', text: 'Settings saved' })
+      setSaveMessage({ type: 'success', text: t('ai.providersView.settingsSaved') })
       setTimeout(() => setSaveMessage(null), 3000)
     },
     onError: (error: any) => {
-      setSaveMessage({ type: 'error', text: error.message || 'Failed to save' })
+      setSaveMessage({ type: 'error', text: error.message || t('ai.providersView.saveFailed') })
       setTimeout(() => setSaveMessage(null), 5000)
     },
   })
@@ -491,7 +496,7 @@ export default function AIProvidersView() {
     } catch (err: any) {
       setTestStatuses(p => ({
         ...p,
-        [providerId]: { status: 'error', message: err.message || 'Connection failed' },
+        [providerId]: { status: 'error', message: err.message || t('ai.providersView.connectionFailed') },
       }))
     }
   }
@@ -507,7 +512,7 @@ export default function AIProvidersView() {
       llmUpdate[provider.baseUrlField] = baseUrls[provider.baseUrlField] || null
     }
     if (Object.keys(llmUpdate).length === 0) {
-      setSaveMessage({ type: 'error', text: 'No changes to save' })
+      setSaveMessage({ type: 'error', text: t('ai.providersView.noChanges') })
       setTimeout(() => setSaveMessage(null), 3000)
       return
     }
@@ -540,9 +545,9 @@ export default function AIProvidersView() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-base font-semibold tracking-tight">Providers</h3>
+          <h3 className="text-base font-semibold tracking-tight">{t('ai.providersView.title')}</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Configure LLM providers and select your primary model.
+            {t('ai.providersView.subtitle')}
           </p>
         </div>
         {saveMessage && (
@@ -566,7 +571,7 @@ export default function AIProvidersView() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {/* Provider selector with search */}
             <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Primary Provider</Label>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">{t('ai.providersView.primaryProvider')}</Label>
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
@@ -575,23 +580,23 @@ export default function AIProvidersView() {
                     className="w-full justify-between bg-muted/60 border-border text-sm h-9 font-normal"
                   >
                     {primaryProvider === 'none'
-                      ? 'None (Disabled)'
+                      ? t('ai.providersView.noneDisabled')
                       : PROVIDERS.find(p => p.id === primaryProvider)?.name || primaryProvider}
                     <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[250px] p-0" align="start">
                   <Command>
-                    <CommandInput placeholder="Search providers..." className="h-9" />
+                    <CommandInput placeholder={t('ai.providersView.searchProviders')} className="h-9" />
                     <CommandList>
-                      <CommandEmpty>No provider found.</CommandEmpty>
+                      <CommandEmpty>{t('ai.providersView.noProvider')}</CommandEmpty>
                       <CommandGroup>
                         <CommandItem
                           value="None Disabled"
                           onSelect={() => { setPrimaryProvider('none'); setPrimaryModel('') }}
                         >
                           <Check className={cn('mr-2 h-3.5 w-3.5', primaryProvider === 'none' ? 'opacity-100' : 'opacity-0')} />
-                          None (Disabled)
+                          {t('ai.providersView.noneDisabled')}
                         </CommandItem>
                         {PROVIDERS.map(p => (
                           <CommandItem
@@ -613,7 +618,7 @@ export default function AIProvidersView() {
 
             {/* Model selector with search */}
             <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Model</Label>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">{t('ai.providersView.model')}</Label>
               <div className="flex gap-1.5">
                 <div className="flex-1">
                   <ModelCombobox
@@ -623,10 +628,10 @@ export default function AIProvidersView() {
                     disabled={primaryProvider === 'none'}
                     placeholder={
                       primaryProvider === 'none'
-                        ? 'Select provider first'
+                        ? t('ai.providersView.selectProvider')
                         : modelsForProvider.length === 0
-                          ? 'Click refresh to fetch'
-                          : 'Search models...'
+                          ? t('ai.providersView.clickRefresh')
+                          : t('ai.providersView.searchModels')
                     }
                   />
                 </div>
@@ -635,20 +640,20 @@ export default function AIProvidersView() {
                   size="icon"
                   onClick={handleRefreshModels}
                   disabled={isRefreshingModels || primaryProvider === 'none'}
-                  title="Refresh models"
+                  title={t('ai.providersView.refreshModels')}
                   className="h-9 w-9"
                 >
                   <RefreshCw className={cn('w-3.5 h-3.5', isRefreshingModels && 'animate-spin')} />
                 </Button>
               </div>
               <p className="text-[11px] text-muted-foreground/70 mt-1">
-                {modelsForProvider.length > 0 ? `${modelsForProvider.length} models` : ''}
+                {modelsForProvider.length > 0 ? t('ai.providersView.modelsCount', { count: modelsForProvider.length }) : ''}
               </p>
             </div>
 
             {/* Spend limit */}
             <div>
-              <Label className="text-xs text-muted-foreground mb-1.5 block">Monthly Spend Limit</Label>
+              <Label className="text-xs text-muted-foreground mb-1.5 block">{t('ai.providersView.spendLimit')}</Label>
               <div className="flex items-center gap-2">
                 <DollarSign className="w-4 h-4 text-muted-foreground shrink-0" />
                 <Input
@@ -660,13 +665,13 @@ export default function AIProvidersView() {
                   className="text-sm h-9"
                 />
               </div>
-              <p className="text-[11px] text-muted-foreground/70 mt-1">0 = unlimited</p>
+              <p className="text-[11px] text-muted-foreground/70 mt-1">{t('ai.providersView.unlimitedHint')}</p>
             </div>
           </div>
 
           <div className="flex justify-end">
             <Button size="sm" onClick={handleSaveGlobal} disabled={saveMutation.isPending} className="h-8">
-              Save Primary Settings
+              {t('ai.providersView.savePrimary')}
             </Button>
           </div>
         </CardContent>

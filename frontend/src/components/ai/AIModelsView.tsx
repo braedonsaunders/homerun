@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Save, Cpu, CheckCircle, Check, ChevronsUpDown } from 'lucide-react'
 import { cn } from '../../lib/utils'
@@ -26,24 +27,19 @@ import {
 
 interface PurposeConfig {
   key: string
-  label: string
-  description: string
+  labelKey: string
+  descKey: string
 }
 
 const PURPOSES: PurposeConfig[] = [
-  { key: 'chat', label: 'Chat', description: 'Used for AI chat conversations' },
-  { key: 'news_analysis', label: 'News Analysis', description: 'Used for news sentiment analysis' },
-  { key: 'resolution_analysis', label: 'Resolution Analysis', description: 'Used for market resolution analysis' },
-  { key: 'opportunity_judgment', label: 'Opportunity Judgment', description: 'Used for AI judgment of opportunities' },
-  { key: 'market_analysis', label: 'Market Analysis', description: 'Used for general market analysis' },
-  { key: 'agent_execution', label: 'Agent Execution', description: 'Used when running AI agents' },
-  { key: 'strategy_intelligence', label: 'Strategy Intelligence', description: 'Used for custom strategy LLM calls' },
-  {
-    key: 'strategy_reverse_engineer',
-    label: 'Strategy Reverse-Engineer',
-    description:
-      'Used by the wallet strategy reverse-engineer agent (Strategies → Research → Reverse Engineer)',
-  },
+  { key: 'chat', labelKey: 'ai.modelsView.purpose.chat', descKey: 'ai.modelsView.purpose.chatDesc' },
+  { key: 'news_analysis', labelKey: 'ai.modelsView.purpose.newsAnalysis', descKey: 'ai.modelsView.purpose.newsAnalysisDesc' },
+  { key: 'resolution_analysis', labelKey: 'ai.modelsView.purpose.resolutionAnalysis', descKey: 'ai.modelsView.purpose.resolutionAnalysisDesc' },
+  { key: 'opportunity_judgment', labelKey: 'ai.modelsView.purpose.opportunityJudgment', descKey: 'ai.modelsView.purpose.opportunityJudgmentDesc' },
+  { key: 'market_analysis', labelKey: 'ai.modelsView.purpose.marketAnalysis', descKey: 'ai.modelsView.purpose.marketAnalysisDesc' },
+  { key: 'agent_execution', labelKey: 'ai.modelsView.purpose.agentExecution', descKey: 'ai.modelsView.purpose.agentExecutionDesc' },
+  { key: 'strategy_intelligence', labelKey: 'ai.modelsView.purpose.strategyIntelligence', descKey: 'ai.modelsView.purpose.strategyIntelligenceDesc' },
+  { key: 'strategy_reverse_engineer', labelKey: 'ai.modelsView.purpose.strategyReverseEngineer', descKey: 'ai.modelsView.purpose.strategyReverseEngineerDesc' },
 ]
 
 function ModelCombobox({
@@ -55,6 +51,7 @@ function ModelCombobox({
   value: string
   onChange: (v: string) => void
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const selected = value === '__default__' ? null : models.find(m => m.id === value)
 
@@ -68,23 +65,23 @@ function ModelCombobox({
           className="w-full justify-between bg-muted/60 border-border text-xs h-8 font-normal"
         >
           <span className="truncate text-left">
-            {selected ? selected.name : value === '__default__' ? 'Default' : value || 'Default'}
+            {selected ? selected.name : value === '__default__' ? t('ai.modelsView.modelDefault') : value || t('ai.modelsView.modelDefault')}
           </span>
           <ChevronsUpDown className="ml-2 h-3 w-3 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[300px] p-0" align="start">
         <Command>
-          <CommandInput placeholder="Search models..." className="h-8 text-xs" />
+          <CommandInput placeholder={t('ai.providersView.searchModels')} className="h-8 text-xs" />
           <CommandList>
-            <CommandEmpty>No models found.</CommandEmpty>
+            <CommandEmpty>{t('ai.providersView.noModels')}</CommandEmpty>
             <CommandGroup className="max-h-[250px] overflow-auto">
               <CommandItem
                 value="Default primary model"
                 onSelect={() => { onChange('__default__'); setOpen(false) }}
               >
                 <Check className={cn('mr-2 h-3 w-3', value === '__default__' ? 'opacity-100' : 'opacity-0')} />
-                <span className="text-muted-foreground">Default</span>
+                <span className="text-muted-foreground">{t('ai.modelsView.modelDefault')}</span>
               </CommandItem>
               {models.map(m => (
                 <CommandItem
@@ -105,6 +102,7 @@ function ModelCombobox({
 }
 
 export default function AIModelsView() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   const [modelAssignments, setModelAssignments] = useState<Record<string, string>>({})
@@ -194,7 +192,7 @@ export default function AIModelsView() {
           <div className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2 text-base font-semibold">
               <Cpu className="h-4 w-4 text-violet-400" />
-              Model Assignments
+              {t('ai.modelsView.title')}
             </CardTitle>
             <div className="flex items-center gap-2">
               <Button
@@ -205,12 +203,12 @@ export default function AIModelsView() {
                 className="h-7 gap-1.5 text-xs"
               >
                 <RefreshCw className={cn('h-3 w-3', refreshMutation.isPending && 'animate-spin')} />
-                Refresh Models
+                {t('ai.modelsView.refresh')}
               </Button>
             </div>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            Assign specific models to each AI feature. Unassigned features use the primary model from provider settings.
+            {t('ai.modelsView.description')}
           </p>
         </CardHeader>
         <CardContent>
@@ -222,9 +220,9 @@ export default function AIModelsView() {
             <div className="space-y-1">
               {/* Header */}
               <div className="grid grid-cols-[1fr_200px_60px] gap-3 px-3 py-2 text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border/40">
-                <span>Feature</span>
-                <span>Model</span>
-                <span className="text-center">Enabled</span>
+                <span>{t('ai.modelsView.colFeature')}</span>
+                <span>{t('ai.modelsView.colModel')}</span>
+                <span className="text-center">{t('ai.modelsView.colEnabled')}</span>
               </div>
 
               {/* Rows */}
@@ -244,8 +242,8 @@ export default function AIModelsView() {
                   >
                     {/* Label + description */}
                     <div>
-                      <p className="text-sm font-medium">{purpose.label}</p>
-                      <p className="text-[11px] text-muted-foreground">{purpose.description}</p>
+                      <p className="text-sm font-medium">{t(purpose.labelKey)}</p>
+                      <p className="text-[11px] text-muted-foreground">{t(purpose.descKey)}</p>
                     </div>
 
                     {/* Model dropdown with search */}
@@ -271,13 +269,13 @@ export default function AIModelsView() {
           {/* Active assignments summary */}
           {Object.keys(modelAssignments).length > 0 && (
             <div className="mt-4 pt-3 border-t border-border/40">
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Active Overrides</p>
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">{t('ai.modelsView.activeOverrides')}</p>
               <div className="flex flex-wrap gap-1.5">
                 {Object.entries(modelAssignments).map(([key, model]) => {
                   const purpose = PURPOSES.find(p => p.key === key)
                   return (
                     <Badge key={key} variant="outline" className="text-[10px] bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/20">
-                      {purpose?.label ?? key}: {model}
+                      {purpose ? t(purpose.labelKey) : key}: {model}
                     </Badge>
                   )
                 })}
@@ -302,12 +300,12 @@ export default function AIModelsView() {
               ) : (
                 <Save className="w-4 h-4" />
               )}
-              Save Assignments
+              {t('ai.modelsView.saveAssignments')}
             </Button>
             {saveMutation.isSuccess && (
               <span className="flex items-center gap-1.5 text-xs text-emerald-400">
                 <CheckCircle className="w-3.5 h-3.5" />
-                Saved
+                {t('ai.modelsView.saved')}
               </span>
             )}
             {saveMutation.isError && (
