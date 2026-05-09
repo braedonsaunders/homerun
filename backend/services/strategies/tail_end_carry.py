@@ -8,6 +8,7 @@ liquidity/spread quality and non-trivial expected repricing room.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import asdict, dataclass
 from collections import deque
 from datetime import datetime, timezone
@@ -208,6 +209,48 @@ class TailEndCarryStrategy(BaseStrategy):
         "trailing_stop_pct": 12.0,
         "sports_inversion_stop_enabled": False,
         "sports_trailing_stop_pct": 30.0,
+        # ----------------------------------------------------------------
+        # Time-weighted exit shaping (#1, #2, #3)
+        # ----------------------------------------------------------------
+        # Tightens trailing-stop pct + raises inversion floor as TTR shrinks.
+        # Each row: [minutes_left_at_or_below, trailing_stop_pct, inversion_floor].
+        # The first row whose minutes_left_at_or_below >= remaining_minutes wins.
+        # Trailing list is independent from sports; sports gets a looser variant.
+        "time_weighted_stop_enabled": True,
+        "time_weighted_stop_schedule": [
+            [30,    2.0,  0.85],
+            [120,   5.0,  0.72],
+            [360,  10.0,  0.60],
+            [1440, 18.0,  0.50],
+            [99999, 30.0, 0.40],
+        ],
+        "sports_time_weighted_stop_schedule": [
+            [30,    5.0,  0.70],
+            [120,  10.0,  0.55],
+            [360,  20.0,  0.45],
+            [1440, 35.0,  0.35],
+            [99999, 50.0, 0.30],
+        ],
+        # Resolution-window scale-out ladder. Each tier evaluated in order;
+        # first matching unhit tier fires. ``tighten_trailing_floor_pct`` is
+        # a synthetic ratchet so the live lifecycle (which currently no-ops
+        # ``reduce``) still locks in profit on the next tick.
+        "scale_out_enabled": True,
+        "scale_out_tiers": [
+            {"minutes_left_max": 120, "min_price": 0.95, "exit_fraction": 0.25, "tighten_trailing_floor_pct": 4.0},
+            {"minutes_left_max": 30,  "min_price": 0.97, "exit_fraction": 0.50, "tighten_trailing_floor_pct": 2.0},
+            {"minutes_left_max": 5,   "min_price": 0.0,  "exit_fraction": 1.0,  "tighten_trailing_floor_pct": 0.0},
+        ],
+        # Velocity stop: when within ``velocity_active_minutes_left`` of
+        # resolution, exit immediately if price drops at least
+        # ``velocity_drop_threshold_pct`` over a rolling
+        # ``velocity_window_seconds`` window. Catches the cliff-drops that
+        # absolute-drawdown stops miss because they happen too fast.
+        "velocity_stop_enabled": True,
+        "velocity_window_seconds": 300.0,
+        "velocity_drop_threshold_pct": 3.0,
+        "velocity_active_minutes_left": 60.0,
+        "velocity_min_samples": 3,
         "sports_sizing_multiplier": 0.45,
         "skip_live_games": True,
         "live_game_buffer_minutes": 15.0,
@@ -1168,6 +1211,212 @@ class TailEndCarryStrategy(BaseStrategy):
         )
 
     # ------------------------------------------------------------------
+    # Time-weighted exit helpers (Round 13: tail-leak fixes #1/#2/#3)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_tw_schedule(raw: Any, fallback: list[list[float]]) -> list[tuple[float, float, float]]:
+        """Coerce a TW schedule into ``[(minutes_le, trailing_pct, inversion_floor), ...]``
+        sorted ascending by minutes_le. Bad rows are dropped, not rescued.
+        """
+        rows: list[tuple[float, float, float]] = []
+        candidates = raw if isinstance(raw, list) else fallback
+        for row in candidates:
+            if not isinstance(row, (list, tuple)) or len(row) < 3:
+                continue
+            try:
+                mins = float(row[0])
+                trail = float(row[1])
+                inv = float(row[2])
+            except (TypeError, ValueError):
+                continue
+            if mins <= 0 or trail <= 0:
+                continue
+            rows.append((mins, max(0.5, trail), clamp(inv, 0.05, 0.95)))
+        if not rows:
+            for row in fallback:
+                rows.append((float(row[0]), float(row[1]), float(row[2])))
+        rows.sort(key=lambda r: r[0])
+        return rows
+
+    @classmethod
+    def _time_weighted_stop_params(
+        cls,
+        seconds_left: float | None,
+        is_sports: bool,
+        config: dict[str, Any],
+    ) -> tuple[float | None, float | None]:
+        """Return ``(trailing_stop_pct, inversion_floor)`` for the current TTR.
+
+        Returns ``(None, None)`` when ``seconds_left`` is unknown so callers
+        fall back to legacy static thresholds.
+        """
+        if seconds_left is None or seconds_left < 0:
+            return None, None
+        schedule_key = "sports_time_weighted_stop_schedule" if is_sports else "time_weighted_stop_schedule"
+        fallback = (
+            cls.default_config.get(schedule_key)
+            or cls.default_config["time_weighted_stop_schedule"]
+        )
+        rows = cls._normalize_tw_schedule(config.get(schedule_key), fallback)
+        minutes_left = seconds_left / 60.0
+        for mins_le, trail_pct, inv_floor in rows:
+            if minutes_left <= mins_le:
+                return trail_pct, inv_floor
+        # Past the largest bucket: use the loosest one.
+        last = rows[-1]
+        return last[1], last[2]
+
+    def _velocity_history(self, token_id: str | None) -> deque:
+        """Per-token rolling (timestamp, price) deque for velocity detection."""
+        bucket = self.state.setdefault("tail_carry_position_velocity", {})
+        key = str(token_id or "_unknown")
+        history = bucket.get(key)
+        if not isinstance(history, deque):
+            history = deque(maxlen=64)
+            bucket[key] = history
+        return history
+
+    def _velocity_check(
+        self,
+        token_id: str | None,
+        current_price: float,
+        seconds_left: float | None,
+        config: dict[str, Any],
+    ) -> ExitDecision | None:
+        """Return a close decision when price drops too fast in the final window.
+
+        We sample (now, price) into a per-token deque each call. Once we are
+        within ``velocity_active_minutes_left`` of resolution, compare the
+        oldest sample inside ``velocity_window_seconds`` against the latest.
+        A drop of ``velocity_drop_threshold_pct`` or more triggers an exit
+        regardless of trailing-stop math — cliff-drops are too fast for it.
+        """
+        if not _is_bool_true(config.get("velocity_stop_enabled", True)):
+            return None
+        if current_price <= 0.0:
+            return None
+
+        now_ts = time.time()
+        history = self._velocity_history(token_id)
+        history.append((now_ts, float(current_price)))
+
+        active_minutes = max(0.0, safe_float(config.get("velocity_active_minutes_left"), 60.0))
+        if seconds_left is None or (seconds_left / 60.0) > active_minutes:
+            return None
+
+        window_seconds = max(30.0, safe_float(config.get("velocity_window_seconds"), 300.0))
+        threshold_pct = clamp(safe_float(config.get("velocity_drop_threshold_pct"), 3.0), 0.5, 50.0)
+        min_samples = max(2, int(safe_float(config.get("velocity_min_samples"), 3)))
+
+        cutoff = now_ts - window_seconds
+        in_window = [(ts, px) for ts, px in history if ts >= cutoff]
+        if len(in_window) < min_samples:
+            return None
+
+        anchor_ts, anchor_price = in_window[0]
+        if anchor_price <= 0.0:
+            return None
+        drop_pct = ((anchor_price - current_price) / anchor_price) * 100.0
+        if drop_pct < threshold_pct:
+            return None
+
+        return ExitDecision(
+            "close",
+            (
+                f"Velocity stop: {drop_pct:.2f}% drop over "
+                f"{int(now_ts - anchor_ts)}s (threshold={threshold_pct:.1f}%, "
+                f"minutes_left={(seconds_left or 0)/60.0:.1f})"
+            ),
+            close_price=current_price,
+        )
+
+    def _evaluate_scale_out(
+        self,
+        position: Any,
+        current_price: float,
+        seconds_left: float | None,
+        config: dict[str, Any],
+        strategy_context: dict | None,
+    ) -> ExitDecision | None:
+        """Resolution-window scale-out ladder (#2).
+
+        Tiers fire once each as the position approaches resolution AND price
+        is at or above the tier's ``min_price``. Each fire:
+          * emits ``ExitDecision(action="reduce", reduce_fraction=...)`` so
+            the backtester does the real partial close, and
+          * ratchets ``_scale_out_trailing_floor`` in strategy_context so
+            live lifecycle (which currently no-ops "reduce") locks in profit
+            via a tight synthetic stop on the next tick.
+
+        The final tier (price-agnostic, T-5m) returns ``close`` for the
+        residual to ensure we never sit through the cliff.
+        """
+        if not _is_bool_true(config.get("scale_out_enabled", True)):
+            return None
+        if seconds_left is None or seconds_left < 0:
+            return None
+
+        tiers_raw = config.get("scale_out_tiers")
+        if not isinstance(tiers_raw, list) or not tiers_raw:
+            tiers_raw = self.default_config["scale_out_tiers"]
+
+        ctx = strategy_context if isinstance(strategy_context, dict) else {}
+        hit: list[int] = list(ctx.get("_scale_out_targets_hit") or [])
+        minutes_left = seconds_left / 60.0
+
+        for idx, tier in enumerate(tiers_raw):
+            if idx in hit:
+                continue
+            if not isinstance(tier, dict):
+                continue
+            try:
+                mins_max = float(tier.get("minutes_left_max", 0))
+                min_price = float(tier.get("min_price", 0.0))
+                fraction = clamp(float(tier.get("exit_fraction", 0.0)), 0.0, 1.0)
+            except (TypeError, ValueError):
+                continue
+
+            if minutes_left > mins_max:
+                continue
+            if current_price < min_price:
+                continue
+
+            hit.append(idx)
+            if isinstance(strategy_context, dict):
+                strategy_context["_scale_out_targets_hit"] = hit
+            else:
+                # Best-effort: stash on the position if context is mutable.
+                try:
+                    setattr(position, "strategy_context", {"_scale_out_targets_hit": hit})
+                except Exception:
+                    pass
+
+            tighten_pct_raw = tier.get("tighten_trailing_floor_pct")
+            tighten_pct = safe_float(tighten_pct_raw, 0.0) if tighten_pct_raw is not None else 0.0
+            if tighten_pct > 0.0 and isinstance(strategy_context, dict):
+                new_floor = current_price * (1.0 - (tighten_pct / 100.0))
+                prev_floor = safe_float(strategy_context.get("_scale_out_trailing_floor"), 0.0) or 0.0
+                if new_floor > prev_floor:
+                    strategy_context["_scale_out_trailing_floor"] = new_floor
+
+            reason = (
+                f"Scale-out tier {idx + 1}: minutes_left={minutes_left:.1f}<="
+                f"{mins_max:.0f}, price={current_price:.4f}>={min_price:.3f}"
+            )
+
+            if fraction >= 0.999:
+                return ExitDecision("close", reason, close_price=current_price)
+            return ExitDecision(
+                "reduce",
+                reason,
+                close_price=current_price,
+                reduce_fraction=fraction,
+                payload={"scale_out_tier": idx, "tighten_pct": tighten_pct},
+            )
+        return None
+
+    # ------------------------------------------------------------------
     # Exit logic (Fix #1, #2, #7)
     # ------------------------------------------------------------------
 
@@ -1191,11 +1440,73 @@ class TailEndCarryStrategy(BaseStrategy):
             return ExitDecision("hold", "No current price available for exit evaluation")
 
         strategy_context = getattr(position, "strategy_context", None)
+        if strategy_context is None and hasattr(position, "strategy_context"):
+            try:
+                position.strategy_context = {}
+                strategy_context = position.strategy_context
+            except Exception:
+                strategy_context = {}
 
         # Fix #1: determine market category
         category = self._classify_from_exit_config(config, strategy_context)
 
         is_sports = category in (CATEGORY_SPORTS, CATEGORY_ESPORTS)
+
+        token_id = market_state.get("token_id") if isinstance(market_state, dict) else None
+        time_weighted_enabled = _is_bool_true(config.get("time_weighted_stop_enabled", True))
+        tw_trailing_pct, tw_inversion_floor = (
+            self._time_weighted_stop_params(seconds_left, is_sports, config)
+            if time_weighted_enabled
+            else (None, None)
+        )
+
+        # -- #3: Velocity stop (cliff-drop catcher) --
+        # Run BEFORE resolution-hold so it can break the hold when the price
+        # is collapsing in the final minutes.
+        velocity_decision = self._velocity_check(token_id, current_price, seconds_left, config)
+        if velocity_decision is not None:
+            return velocity_decision
+
+        # -- #2: Scale-out tier evaluation --
+        # Run BEFORE the resolution-proximity hold so high-price tiers (≥0.95
+        # at T-2h, ≥0.97 at T-30m) can actually fire — the hold would
+        # otherwise return early whenever the position is above entry.
+        scale_out_decision = self._evaluate_scale_out(
+            position, current_price, seconds_left, config, strategy_context
+        )
+        if scale_out_decision is not None and scale_out_decision.action == "close":
+            return scale_out_decision
+        # If a tier emitted "reduce", we keep the decision and continue: a
+        # tier hit may have ratcheted the synthetic floor; we want the
+        # subsequent floor-breach check to enforce it on this same tick if
+        # the price has already slipped past it.
+
+        # -- #2 (cont): Scale-out floor breach (runs before hold) --
+        # Once a tier has ratcheted ``_scale_out_trailing_floor``, treat any
+        # breach as an immediate close — even during the resolution hold,
+        # since holding through a known floor breach is what we just locked
+        # in profit to avoid.
+        scale_out_floor = None
+        if isinstance(strategy_context, dict):
+            scale_out_floor = safe_float(strategy_context.get("_scale_out_trailing_floor"), None)
+            if scale_out_floor is not None and scale_out_floor <= 0.0:
+                scale_out_floor = None
+        if scale_out_floor is not None and current_price <= scale_out_floor:
+            return ExitDecision(
+                "close",
+                (
+                    f"Scale-out floor breach: {current_price:.4f} <= {scale_out_floor:.4f} "
+                    f"(category={category}, minutes_left={(seconds_left or 0)/60.0:.1f})"
+                ),
+                close_price=current_price,
+            )
+
+        # If a scale-out tier emitted "reduce" and the floor isn't breached
+        # this tick, surface it now — before the resolution-proximity hold,
+        # which would otherwise swallow it (high-price tiers fire when the
+        # position is above entry, exactly when the hold returns "hold").
+        if scale_out_decision is not None and scale_out_decision.action == "reduce":
+            return scale_out_decision
 
         # -- Resolution proximity hold --
         # If resolution is imminent, hold regardless of price (the thesis is
@@ -1240,43 +1551,59 @@ class TailEndCarryStrategy(BaseStrategy):
                         payload={"skip_default_exit": True},
                     )
 
-        # -- Fix #1: category-specific inversion stop --
+        # -- #1: Inversion stop with time-weighted floor --
+        # Static floor (legacy) is the lower bound; the TW schedule can
+        # raise it as resolution approaches. We never lower the legacy floor.
         if is_sports:
             inversion_stop_enabled = _is_bool_true(config.get("sports_inversion_stop_enabled", False))
         else:
             inversion_stop_enabled = _is_bool_true(config.get("inversion_stop_enabled", True))
-        inversion_price_threshold = clamp(safe_float(config.get("inversion_price_threshold"), 0.50), 0.05, 0.95)
+        legacy_inv_floor = clamp(safe_float(config.get("inversion_price_threshold"), 0.50), 0.05, 0.95)
+        effective_inv_floor = legacy_inv_floor
+        inv_floor_source = "legacy"
+        if tw_inversion_floor is not None and tw_inversion_floor > effective_inv_floor:
+            effective_inv_floor = tw_inversion_floor
+            inv_floor_source = "time_weighted"
 
         if inversion_stop_enabled and entry_price > 0.0 and current_price > 0.0:
-            if current_price <= inversion_price_threshold:
+            if current_price <= effective_inv_floor:
                 return ExitDecision(
                     "close",
                     (
-                        f"Inversion stop triggered ({current_price:.4f} <= {inversion_price_threshold:.4f}; "
-                        f"entry={entry_price:.4f}, category={category})"
+                        f"Inversion stop ({inv_floor_source}): {current_price:.4f} <= "
+                        f"{effective_inv_floor:.4f} (entry={entry_price:.4f}, "
+                        f"category={category}, minutes_left="
+                        f"{(seconds_left or 0)/60.0:.1f})"
                     ),
                     close_price=current_price,
                 )
 
-        # -- Fix #2: trailing stop from high water mark --
+        # -- #1: Trailing stop with time-weighted pct --
         trailing_stop_enabled = _is_bool_true(config.get("trailing_stop_enabled", True))
         if is_sports:
-            trailing_stop_pct = clamp(safe_float(config.get("sports_trailing_stop_pct"), 45.0), 5.0, 80.0)
+            legacy_trail_pct = clamp(safe_float(config.get("sports_trailing_stop_pct"), 45.0), 0.5, 80.0)
         else:
-            trailing_stop_pct = clamp(safe_float(config.get("trailing_stop_pct"), 25.0), 5.0, 80.0)
+            legacy_trail_pct = clamp(safe_float(config.get("trailing_stop_pct"), 25.0), 0.5, 80.0)
+        effective_trail_pct = legacy_trail_pct
+        trail_source = "legacy"
+        if tw_trailing_pct is not None and tw_trailing_pct < effective_trail_pct:
+            effective_trail_pct = tw_trailing_pct
+            trail_source = "time_weighted"
 
         if trailing_stop_enabled and highest_price is not None and highest_price > 0.0 and current_price > 0.0:
             drop_from_high_pct = ((highest_price - current_price) / highest_price) * 100.0
-            if drop_from_high_pct >= trailing_stop_pct:
+            if drop_from_high_pct >= effective_trail_pct:
                 return ExitDecision(
                     "close",
                     (
-                        f"Trailing stop triggered ({drop_from_high_pct:.1f}% drop from high "
-                        f"{highest_price:.4f}; threshold={trailing_stop_pct:.0f}%, "
-                        f"current={current_price:.4f}, category={category})"
+                        f"Trailing stop ({trail_source}): {drop_from_high_pct:.1f}% drop "
+                        f"from high {highest_price:.4f}; threshold={effective_trail_pct:.1f}%, "
+                        f"current={current_price:.4f}, category={category}, minutes_left="
+                        f"{(seconds_left or 0)/60.0:.1f}"
                     ),
                     close_price=current_price,
                 )
+
 
         # -- Smart take profit (unchanged) --
         smart_enabled_raw = config.get("smart_take_profit_enabled")
