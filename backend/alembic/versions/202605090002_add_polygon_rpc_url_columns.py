@@ -8,8 +8,8 @@ path (``https://rpc.ankr.com/polygon/<key>``) — same secrecy class
 as ``trading_proxy_url``. ``polygon_ws_url`` follows the same
 pattern for the WebSocket subscription endpoint.
 
-Revision ID: 202605090001
-Revises: 202605070002
+Revision ID: 202605090002
+Revises: 202605090001
 Create Date: 2026-05-09
 """
 
@@ -17,8 +17,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "202605090001"
-down_revision = "202605070002"
+revision = "202605090002"
+down_revision = "202605090001"
 branch_labels = None
 depends_on = None
 
