@@ -843,6 +843,270 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+# ----------------------------------------------------------------------------
+# StrategySDK: partial-exit (action="reduce") consumer plumbing
+# ----------------------------------------------------------------------------
+# ``ExitDecision(action="reduce", reduce_fraction=X)`` is part of the public
+# strategy SDK contract — it lets a strategy ask for a partial close (e.g. a
+# scale-out ladder). Historically the live + shadow lifecycle sites treated
+# ``reduce`` as a no-op hold, which made the contract live only in the
+# backtester. The helpers below give both sites a generic, strategy-agnostic
+# way to honor a reduce decision: submit a partial sell sized by the
+# fraction, persist a ``partial_exit_history`` audit entry, and leave the
+# row's status as-is so subsequent ticks continue to manage the remainder.
+
+
+def _coerce_reduce_fraction(decision: Any) -> Optional[float]:
+    """Validate ``reduce_fraction`` from an ExitDecision.
+
+    Returns the clamped fraction in (0, 1) when the decision is a reduce
+    with a usable fraction. Returns ``None`` when the decision is not a
+    reduce, the fraction is missing, malformed, or outside (0, 1) — the
+    caller treats that as "fall back to a full close" so a misconfigured
+    strategy can never silently no-op.
+    """
+    if decision is None or getattr(decision, "action", None) != "reduce":
+        return None
+    raw = getattr(decision, "reduce_fraction", None)
+    try:
+        frac = float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+    if frac is None or not (0.0 < frac < 1.0):
+        return None
+    return frac
+
+
+def _record_partial_exit(
+    payload: dict[str, Any],
+    *,
+    reason: str,
+    reduce_fraction: float,
+    exit_size: float,
+    close_price: Optional[float],
+    price_source: Optional[str],
+    now: datetime,
+    extra: Optional[dict[str, Any]] = None,
+) -> None:
+    """Append a partial-exit audit entry. Bounded history (last 16 entries)."""
+    history = payload.get("partial_exit_history")
+    if not isinstance(history, list):
+        history = []
+    entry: dict[str, Any] = {
+        "submitted_at": _iso_utc(now),
+        "reason": reason,
+        "reduce_fraction": float(reduce_fraction),
+        "exit_size": float(exit_size),
+        "close_price": float(close_price) if close_price is not None else None,
+        "price_source": price_source,
+    }
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if key not in entry:
+                entry[key] = value
+    history.append(entry)
+    payload["partial_exit_history"] = history[-16:]
+
+
+async def _submit_live_partial_exit(
+    *,
+    session: AsyncSession,
+    row: TraderOrder,
+    payload: dict[str, Any],
+    decision: Any,
+    close_price: Optional[float],
+    price_source: Optional[str],
+    filled_size: float,
+    notional_usd: float,
+    entry_price: float,
+    params: dict[str, Any],
+    now: datetime,
+) -> tuple[bool, Optional[str]]:
+    """Submit a partial sell sized by ``decision.reduce_fraction``.
+
+    Returns ``(submitted, error_message)``. The caller is responsible for
+    NOT flipping ``row.status`` — the position remains open and the next
+    provider reconciliation cycle picks up the smaller residual size.
+
+    Generic across strategies: this consumer doesn't know about scale-out
+    tiers; it just honors the SDK's reduce primitive.
+    """
+    fraction = _coerce_reduce_fraction(decision)
+    if fraction is None:
+        return False, "invalid_reduce_fraction"
+
+    token_id = _extract_live_token_id(payload)
+    if not token_id:
+        return False, "missing_token_id"
+
+    base_size = filled_size if filled_size > 0.0 else (
+        notional_usd / entry_price if entry_price > 0 else 0.0
+    )
+    exit_size = base_size * fraction
+    if exit_size <= _WALLET_SIZE_EPSILON:
+        return False, "partial_size_below_epsilon"
+
+    base_min_order_size_usd = _resolve_position_min_order_size_usd(
+        trader_params=params,
+        payload=payload,
+        mode="live",
+    )
+    min_order_size_usd = _effective_exit_min_order_size_usd(
+        base_min_order_size_usd,
+        "strategy_partial_exit",
+    )
+    exit_notional_estimate = exit_size * float(max(close_price or 0.0, 0.0))
+    if exit_notional_estimate + 1e-9 < min_order_size_usd:
+        # Don't over-fragment: if this slice can't clear the venue floor,
+        # bail and let the strategy escalate to a full close on a later tick.
+        return False, "partial_below_min_notional"
+
+    reason = str(getattr(decision, "reason", "") or "strategy_reduce")
+    try:
+        from services.live_execution_adapter import execute_live_order
+
+        async with release_conn(session):
+            await _prepare_sell_allowance_bounded(token_id)
+            exec_result = await asyncio.wait_for(
+                execute_live_order(
+                    token_id=token_id,
+                    side="SELL",
+                    size=float(exit_size),
+                    fallback_price=close_price,
+                    min_order_size_usd=min_order_size_usd,
+                    time_in_force="IOC",
+                    resolve_live_price=True,
+                    enforce_fallback_bound=False,
+                ),
+                timeout=_LIVE_EXIT_ORDER_TIMEOUT_SECONDS,
+            )
+    except Exception as exc:
+        _record_partial_exit(
+            payload,
+            reason=reason,
+            reduce_fraction=fraction,
+            exit_size=exit_size,
+            close_price=close_price,
+            price_source=price_source,
+            now=now,
+            extra={"status": "exception", "error": _format_exit_error(exc)},
+        )
+        logger.warning(
+            "Partial exit exception for order=%s reason=%s: %s: %s",
+            row.id,
+            reason,
+            type(exc).__name__,
+            str(exc) or "<no message>",
+            exc_info=exc,
+        )
+        return False, _format_exit_error(exc)
+
+    submitted = exec_result.status in {"executed", "open", "submitted"}
+    extra: dict[str, Any] = {
+        "status": "submitted" if submitted else "failed",
+        "exec_status": str(exec_result.status or ""),
+    }
+    if submitted:
+        extra["exit_order_id"] = exec_result.order_id
+        clob_id = ""
+        if isinstance(exec_result.payload, dict):
+            clob_id = str(exec_result.payload.get("clob_order_id") or "")
+        if clob_id:
+            extra["provider_clob_order_id"] = clob_id
+    else:
+        extra["error"] = exec_result.error_message or ""
+    _record_partial_exit(
+        payload,
+        reason=reason,
+        reduce_fraction=fraction,
+        exit_size=exit_size,
+        close_price=close_price,
+        price_source=price_source,
+        now=now,
+        extra=extra,
+    )
+    if submitted:
+        logger.info(
+            "Partial exit submitted for order=%s fraction=%.3f size=%.4f reason=%s",
+            row.id,
+            fraction,
+            exit_size,
+            reason,
+        )
+    else:
+        logger.warning(
+            "Partial exit failed for order=%s fraction=%.3f error=%s",
+            row.id,
+            fraction,
+            exec_result.error_message,
+        )
+    return submitted, None if submitted else (exec_result.error_message or "exec_failed")
+
+
+async def _submit_shadow_partial_exit(
+    *,
+    payload: dict[str, Any],
+    decision: Any,
+    close_price: Optional[float],
+    price_source: Optional[str],
+    notional_usd: float,
+    entry_price: float,
+    now: datetime,
+) -> bool:
+    """Record a partial-exit ledger entry for shadow mode positions.
+
+    Shadow positions don't go through the live venue, so we just adjust
+    the in-payload notional/cost-basis accounting and audit the slice.
+    Returns True when a partial exit was recorded.
+    """
+    fraction = _coerce_reduce_fraction(decision)
+    if fraction is None:
+        return False
+    if entry_price <= 0.0 or notional_usd <= 0.0:
+        return False
+    if close_price is None or close_price <= 0.0:
+        return False
+
+    sliced_notional = notional_usd * fraction
+    realized_quantity = sliced_notional / entry_price
+    realized_proceeds = realized_quantity * float(close_price)
+    realized_pnl = realized_proceeds - sliced_notional
+
+    # Mutate the position state so the residual notional shrinks for the
+    # next tick. We deliberately don't rewrite ``entry_price`` — the cost
+    # basis per share is unchanged on the residual.
+    payload["effective_notional_usd"] = max(0.0, notional_usd - sliced_notional)
+    realized_history = payload.get("partial_realized_pnl_history")
+    if not isinstance(realized_history, list):
+        realized_history = []
+    realized_history.append(
+        {
+            "at": _iso_utc(now),
+            "realized_pnl": realized_pnl,
+            "sliced_notional_usd": sliced_notional,
+            "fraction": fraction,
+            "close_price": float(close_price),
+        }
+    )
+    payload["partial_realized_pnl_history"] = realized_history[-16:]
+
+    _record_partial_exit(
+        payload,
+        reason=str(getattr(decision, "reason", "") or "strategy_reduce"),
+        reduce_fraction=fraction,
+        exit_size=realized_quantity,
+        close_price=close_price,
+        price_source=price_source,
+        now=now,
+        extra={
+            "mode": "shadow",
+            "realized_pnl": realized_pnl,
+            "sliced_notional_usd": sliced_notional,
+        },
+    )
+    return True
+
+
 def _strategy_hold_blocks_default_exit(exit_decision: Any) -> bool:
     if exit_decision is None:
         return False
@@ -4410,7 +4674,18 @@ async def reconcile_shadow_positions(
                         )
 
                 if strategy_exit is not None and getattr(strategy_exit, "action", None) == "reduce":
+                    # SDK contract: ``reduce`` means realize a partial slice
+                    # of the shadow position now and keep the residual open.
                     if not dry_run:
+                        await _submit_shadow_partial_exit(
+                            payload=payload,
+                            decision=strategy_exit,
+                            close_price=current_price,
+                            price_source=current_price_source,
+                            notional_usd=notional,
+                            entry_price=entry_price,
+                            now=now,
+                        )
                         payload["position_state"] = next_state
                         row.payload_json = payload
                         row.updated_at = now
@@ -9216,7 +9491,25 @@ async def reconcile_live_positions(
                             )
 
                     if strategy_exit is not None and getattr(strategy_exit, "action", None) == "reduce":
+                        # SDK contract: ``reduce`` means submit a partial sell
+                        # sized by reduce_fraction and keep the position open.
+                        # An invalid/missing fraction silently no-ops (we
+                        # treat the synthetic floor / next-tick guards as
+                        # the safety net).
                         if not dry_run:
+                            await _submit_live_partial_exit(
+                                session=session,
+                                row=row,
+                                payload=payload,
+                                decision=strategy_exit,
+                                close_price=exit_eval_price,
+                                price_source=exit_eval_price_source,
+                                filled_size=filled_size,
+                                notional_usd=notional,
+                                entry_price=entry_price,
+                                params=params,
+                                now=now,
+                            )
                             payload["position_state"] = next_state
                             row.payload_json = payload
                             row.updated_at = now
