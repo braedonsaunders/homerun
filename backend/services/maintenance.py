@@ -1057,6 +1057,18 @@ RETURNING target.id
         "opportunity_states",
         "trade_signals",
         "trade_signal_emissions",
+        # 2026-05-09: added trader_events. Post-fillfactor SLOW COMMIT
+        # DIAGNOSTIC showed trader_events.autovacuum_age_s = 22000
+        # (6+ hours) on a 4.9M-row table. The aggressive autovacuum
+        # tuning in migration 202605090003 will catch up over time,
+        # but a one-shot VACUUM FULL via this API clears the backlog.
+        "trader_events",
+        # 2026-05-09: added trader_decisions + trader_decision_checks
+        # so the orchestrator's audit table family is included in the
+        # periodic sweep. trader_decisions had analyze_age_s = 18,500s
+        # (5+ hours) -- planner stats go stale.
+        "trader_decisions",
+        "trader_decision_checks",
         "wallet_activity_rollups",
         "wallet_trades",
         "cached_markets",
@@ -1064,7 +1076,11 @@ RETURNING target.id
         "data_source_records",
     ]
 
-    async def vacuum_analyze(self, full: bool = False) -> dict:
+    async def vacuum_analyze(
+        self,
+        full: bool = False,
+        tables: Optional[list[str]] = None,
+    ) -> dict:
         """Run VACUUM (ANALYZE) on high-churn tables to reclaim dead tuples.
 
         VACUUM cannot run inside a transaction, so we acquire a raw
@@ -1074,6 +1090,11 @@ RETURNING target.id
             full: If True, run VACUUM FULL (rewrites table, reclaims disk,
                   but takes an exclusive lock). Default False uses regular
                   VACUUM which is non-blocking.
+            tables: Optional list of specific table names. If provided,
+                  only those tables (intersected with public-schema
+                  existence) are vacuumed. Useful for targeted ops on
+                  large tables (e.g. trader_events) where the default
+                  full-list run would block on smaller-table failures.
 
         Returns:
             Dict with per-table timing and overall summary.
@@ -1096,7 +1117,11 @@ RETURNING target.id
             )
             existing_tables = {r[0] for r in rows}
 
-        tables_to_vacuum = [t for t in self._HIGH_CHURN_TABLES if t in existing_tables]
+        if tables:
+            requested = [str(t).strip() for t in tables if str(t).strip()]
+            tables_to_vacuum = [t for t in requested if t in existing_tables]
+        else:
+            tables_to_vacuum = [t for t in self._HIGH_CHURN_TABLES if t in existing_tables]
         if not tables_to_vacuum:
             return {"status": "skipped", "reason": "no_matching_tables"}
 
@@ -1105,6 +1130,16 @@ RETURNING target.id
         # VACUUM cannot run inside a transaction. Use AUTOCOMMIT isolation.
         async with async_engine.connect() as conn:
             autocommit_conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            # 2026-05-09: lift the per-statement timeout for the
+            # duration of VACUUM operations. The pool default (30s)
+            # caused VACUUM FULL on wallet_activity_rollups and
+            # data_source_records to error with QueryCanceledError.
+            # 30 minutes is a generous cap that still bounds runaway
+            # vacuum runs without truncating legitimate work.
+            try:
+                await autocommit_conn.execute(text("SET statement_timeout = '1800000'"))
+            except Exception as exc:
+                logger.warning("VACUUM: failed to raise statement_timeout: %s", exc)
             for table_name in tables_to_vacuum:
                 t0 = time.monotonic()
                 try:

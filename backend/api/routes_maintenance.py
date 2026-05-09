@@ -720,6 +720,15 @@ async def vacuum_analyze(
         default=False,
         description="Run VACUUM FULL (rewrites tables, reclaims disk, takes exclusive lock). Default is regular VACUUM.",
     ),
+    tables: Optional[list[str]] = Query(
+        default=None,
+        description=(
+            "Optional list of specific table names to vacuum. When omitted, "
+            "the built-in high-churn list is used. Useful for targeted ops "
+            "on a single large table (e.g. ?tables=trader_events) without "
+            "locking the whole sweep on one slow operation."
+        ),
+    ),
 ):
     """
     Run VACUUM ANALYZE on high-churn tables.
@@ -729,7 +738,7 @@ async def vacuum_analyze(
     but takes an exclusive lock — avoid during active trading.
     """
     try:
-        result = await maintenance_service.vacuum_analyze(full=full)
+        result = await maintenance_service.vacuum_analyze(full=full, tables=tables)
         return {
             "status": "success",
             "timestamp": utcnow().isoformat(),
@@ -738,6 +747,99 @@ async def vacuum_analyze(
     except Exception as e:
         logger.error("VACUUM ANALYZE failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/table-stats")
+async def table_stats(
+    tables: Optional[list[str]] = Query(
+        default=None,
+        description=(
+            "Optional list of table names. When omitted, returns stats for "
+            "the orchestrator commit-path hot tables (trade_signals + family)."
+        ),
+    ),
+):
+    """Return pg_stat_user_tables snapshot for the requested tables.
+
+    Surfaces the same data as the SLOW COMMIT DIAGNOSTIC log line
+    (live/dead tuples, dead %, vacuum/analyze ages, WAL counters,
+    HOT update %) for ad-hoc verification — e.g. "did the VACUUM
+    FULL I just ran actually take effect?" without having to grep
+    worker logs for the next slow-commit event.
+    """
+    default_tables = [
+        "trade_signals",
+        "trade_signal_emissions",
+        "trader_decisions",
+        "trader_decision_checks",
+        "trader_events",
+    ]
+    targets = [str(t).strip() for t in (tables or default_tables) if str(t).strip()]
+    if not targets:
+        return {"status": "skipped", "reason": "no_tables_requested"}
+
+    try:
+        import asyncpg
+        from config import settings as _settings
+
+        dsn = str(_settings.DATABASE_URL).replace("+asyncpg", "")
+        conn = await asyncpg.connect(dsn=dsn, timeout=5)
+    except Exception as exc:
+        logger.error("table-stats: probe connect failed", error=str(exc))
+        raise HTTPException(status_code=503, detail=f"db connect failed: {exc}")
+
+    try:
+        table_rows = await conn.fetch(
+            """
+            SELECT relname,
+                   n_live_tup,
+                   n_dead_tup,
+                   n_mod_since_analyze,
+                   EXTRACT(EPOCH FROM now() - last_vacuum)::int AS last_vacuum_age_s,
+                   EXTRACT(EPOCH FROM now() - last_autovacuum)::int AS last_autovacuum_age_s,
+                   EXTRACT(EPOCH FROM now() - last_analyze)::int AS last_analyze_age_s,
+                   EXTRACT(EPOCH FROM now() - last_autoanalyze)::int AS last_autoanalyze_age_s,
+                   n_tup_ins,
+                   n_tup_upd,
+                   n_tup_del,
+                   n_tup_hot_upd
+            FROM pg_stat_user_tables
+            WHERE relname = ANY($1::text[])
+            """,
+            targets,
+        )
+    finally:
+        try:
+            await conn.close()
+        except Exception:
+            pass
+
+    payload: dict[str, dict] = {}
+    for r in table_rows:
+        live = int(r["n_live_tup"] or 0)
+        dead = int(r["n_dead_tup"] or 0)
+        upd = int(r["n_tup_upd"] or 0)
+        hot_upd = int(r["n_tup_hot_upd"] or 0)
+        payload[r["relname"]] = {
+            "live": live,
+            "dead": dead,
+            "dead_pct": round(100.0 * dead / max(1, live + dead), 2),
+            "mod_since_analyze": int(r["n_mod_since_analyze"] or 0),
+            "vacuum_age_s": int(r["last_vacuum_age_s"] or 0),
+            "autovacuum_age_s": int(r["last_autovacuum_age_s"] or 0),
+            "analyze_age_s": int(r["last_analyze_age_s"] or 0),
+            "autoanalyze_age_s": int(r["last_autoanalyze_age_s"] or 0),
+            "ins": int(r["n_tup_ins"] or 0),
+            "upd": upd,
+            "del": int(r["n_tup_del"] or 0),
+            "hot_upd": hot_upd,
+            "hot_pct": round(100.0 * hot_upd / max(1, upd), 2),
+        }
+    return {
+        "status": "ok",
+        "timestamp": utcnow().isoformat(),
+        "tables": payload,
+    }
 
 
 @router.post("/reindex")
