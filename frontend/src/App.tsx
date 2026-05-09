@@ -189,18 +189,18 @@ const WORKER_HEALTH_ORDER = [
 
 const WORKER_HEALTH_ORDER_SET = new Set<string>(WORKER_HEALTH_ORDER)
 
-const WORKER_HEALTH_LABELS: Record<string, string> = {
-  scanner: 'Scanner',
-  scanner_slo: 'Scanner SLO',
-  discovery: 'Discovery',
-  weather: 'Weather',
-  news: 'News',
-  crypto: 'Crypto',
-  tracked_traders: 'Tracked Traders',
-  trader_orchestrator: 'Orchestrator',
-  trader_reconciliation: 'Reconciliation',
-  redeemer: 'Redeemer',
-  events: 'Events',
+const WORKER_HEALTH_LABEL_KEYS: Record<string, string> = {
+  scanner: 'workers.scanner',
+  scanner_slo: 'workers.scannerSlo',
+  discovery: 'workers.discovery',
+  weather: 'workers.weather',
+  news: 'workers.news',
+  crypto: 'workers.crypto',
+  tracked_traders: 'workers.trackedTraders',
+  trader_orchestrator: 'workers.orchestrator',
+  trader_reconciliation: 'workers.reconciliation',
+  redeemer: 'workers.redeemer',
+  events: 'workers.events',
 }
 
 const STRATEGY_SUBTYPE_LABELS: Record<string, Record<string, string>> = {
@@ -270,7 +270,7 @@ function formatStrategySubtypeLabel(strategyType: string, subtypeKey: string): s
 // ---------------------------------------------------------------------------
 
 interface OpportunityTabConfig {
-  label: string
+  labelKey: string
   // Tailwind color token used for active state. Must match active/count classNames below.
   color: 'green' | 'orange' | 'amber' | 'cyan' | 'blue' | 'emerald'
   icon: React.ElementType
@@ -285,37 +285,37 @@ type AnalyzeTargets = {
 
 const OPPORTUNITY_TAB_CONFIG: Record<string, OpportunityTabConfig> = {
   scanner: {
-    label: 'Markets',
+    labelKey: 'opportunitiesTab.markets',
     color: 'green',
     icon: Zap,
     hasViewModeSwitcher: true,
   },
   traders: {
-    label: 'Traders',
+    labelKey: 'opportunitiesTab.traders',
     color: 'orange',
     icon: Activity,
     hasViewModeSwitcher: true,
   },
   news: {
-    label: 'News',
+    labelKey: 'opportunitiesTab.news',
     color: 'amber',
     icon: Newspaper,
     hasViewModeSwitcher: false,
   },
   weather: {
-    label: 'Weather',
+    labelKey: 'opportunitiesTab.weather',
     color: 'cyan',
     icon: CloudRain,
     hasViewModeSwitcher: true,
   },
   crypto: {
-    label: 'Crypto',
+    labelKey: 'opportunitiesTab.crypto',
     color: 'orange',
     icon: ArrowUpDown,
     hasViewModeSwitcher: false,
   },
   sports: {
-    label: 'Sports',
+    labelKey: 'opportunitiesTab.sports',
     color: 'emerald',
     icon: Trophy,
     hasViewModeSwitcher: true,
@@ -1004,7 +1004,7 @@ function App() {
       const tone: WorkerHealthTone = orchestratorPaused ? 'green' : resolved.tone
       return {
         workerName,
-        label: WORKER_HEALTH_LABELS[workerName] || workerName,
+        label: WORKER_HEALTH_LABEL_KEYS[workerName] ? t(WORKER_HEALTH_LABEL_KEYS[workerName]) : workerName,
         ...resolved,
         tone,
       }
@@ -1429,17 +1429,25 @@ function App() {
       .filter((key) => !knownKeySet.has(key) && !HIDDEN_SOURCE_KEYS.has(key))
       .sort((a, b) => a.localeCompare(b))
     const allKeys = [...knownKeys, ...dynamicKeys]
-    return allKeys.map((key) => ({
-      key,
-      config: OPPORTUNITY_TAB_CONFIG[key] ?? {
-        label: key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+    return allKeys.map((key) => {
+      const known = OPPORTUNITY_TAB_CONFIG[key]
+      const label = known
+        ? t(known.labelKey)
+        : key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      const config = known ?? {
+        labelKey: '',
         color: 'blue' as const,
         icon: Globe,
         hasViewModeSwitcher: true,
-      },
-      count: tabCounts[key] ?? null,
-    }))
-  }, [strategies, tabCounts])
+      }
+      return {
+        key,
+        config,
+        label,
+        count: tabCounts[key] ?? null,
+      }
+    })
+  }, [strategies, tabCounts, t])
   const activeOpportunityTab = useMemo(
     () => opportunityTabs.find((tab) => tab.key === opportunitiesView) || null,
     [opportunityTabs, opportunitiesView],
@@ -1748,16 +1756,16 @@ function App() {
 
   // Keyboard shortcuts
   const shortcuts: Shortcut[] = useMemo(() => [
-    { key: '1', description: 'Go to Opportunities', category: 'Navigation', action: () => setActiveTab('opportunities') },
-    { key: '2', description: 'Go to Bots', category: 'Navigation', action: () => setActiveTab('trading') },
-    { key: '6', description: 'Go to Positions', category: 'Navigation', action: () => setActiveTab('positions') },
-    { key: '7', description: 'Go to Performance', category: 'Navigation', action: () => setActiveTab('performance') },
-    { key: '4', description: 'Go to Accounts', category: 'Navigation', action: () => setActiveTab('accounts') },
-    { key: '3', description: 'Go to Strategies', category: 'Navigation', action: () => setActiveTab('strategies') },
-    { key: '5', description: 'Go to Traders', category: 'Navigation', action: () => setActiveTab('traders') },
-    { key: 'd', description: 'Go to Data', category: 'Navigation', action: () => setActiveTab('data') },
-    { key: '8', description: 'Go to AI', category: 'Navigation', action: () => setActiveTab('ai') },
-    { key: '9', description: 'Go to Settings', category: 'Navigation', action: () => setActiveTab('settings') },
+    { key: '1', description: t('shortcuts.goToOpportunities'), category: t('shortcuts.navigation'), action: () => setActiveTab('opportunities') },
+    { key: '2', description: t('shortcuts.goToBots'), category: t('shortcuts.navigation'), action: () => setActiveTab('trading') },
+    { key: '6', description: t('shortcuts.goToPositions'), category: t('shortcuts.navigation'), action: () => setActiveTab('positions') },
+    { key: '7', description: t('shortcuts.goToPerformance'), category: t('shortcuts.navigation'), action: () => setActiveTab('performance') },
+    { key: '4', description: t('shortcuts.goToAccounts'), category: t('shortcuts.navigation'), action: () => setActiveTab('accounts') },
+    { key: '3', description: t('shortcuts.goToStrategies'), category: t('shortcuts.navigation'), action: () => setActiveTab('strategies') },
+    { key: '5', description: t('shortcuts.goToTraders'), category: t('shortcuts.navigation'), action: () => setActiveTab('traders') },
+    { key: 'd', description: t('shortcuts.goToData'), category: t('shortcuts.navigation'), action: () => setActiveTab('data') },
+    { key: '8', description: t('shortcuts.goToAI'), category: t('shortcuts.navigation'), action: () => setActiveTab('ai') },
+    { key: '9', description: t('shortcuts.goToSettings'), category: t('shortcuts.navigation'), action: () => setActiveTab('settings') },
     { key: 'k', ctrl: true, description: 'Open AI Command Bar', category: 'Actions', action: () => setCommandBarOpen(v => !v) },
     { key: 'r', ctrl: true, description: 'Trigger Manual Scan', category: 'Actions', action: () => {
       if (!globallyPaused) {
@@ -1778,7 +1786,7 @@ function App() {
       setSearchFiltersOpen(false)
       setNewsSettingsOpen(false)
     }},
-  ], [globallyPaused, scanMutation, setShortcutsHelpOpen])
+  ], [globallyPaused, scanMutation, setShortcutsHelpOpen, t])
 
   useKeyboardShortcuts(shortcuts, !uiLockOverlayVisible)
 
@@ -1992,7 +2000,7 @@ function App() {
                     className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs hover:bg-muted/60 transition-colors text-left"
                   >
                     <Users className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                    <span className="text-foreground">Browse traders</span>
+                    <span className="text-foreground">{t('commandBar.browseTraders')}</span>
                   </button>
                 </div>
               </div>
@@ -2014,7 +2022,7 @@ function App() {
               <TooltipContent side="bottom" align="end" className="w-[280px] p-2.5">
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                    <span>Worker health</span>
+                    <span>{t('workers.workerHealth')}</span>
                     <span className="font-data">
                       {workerHealth.counts.green}/{workerHealth.counts.total} green
                     </span>
@@ -2024,7 +2032,7 @@ function App() {
                       <div className="flex items-center justify-between text-[11px]">
                         <span className="flex items-center gap-1.5">
                           <span className={cn("h-1.5 w-1.5 rounded-full", WORKER_TONE_CLASS[tradingVpnHealth.tone])} />
-                          <span>Trading VPN</span>
+                          <span>{t('workers.tradingVpn')}</span>
                         </span>
                         <span className="font-data text-muted-foreground">{tradingVpnHealth.state}</span>
                       </div>
@@ -2155,7 +2163,7 @@ function App() {
                   {/* View Toggle + View Mode */}
                   <div className="flex items-center gap-2 mb-4">
                     {/* Dynamic tab buttons derived from registered strategy source_keys */}
-                    {opportunityTabs.map(({ key, config, count }) => {
+                    {opportunityTabs.map(({ key, config, count, label }) => {
                       const Icon = config.icon
                       const isActive = opportunitiesView === key
                       return (
@@ -2175,7 +2183,7 @@ function App() {
                           )}
                         >
                           <Icon className="w-3.5 h-3.5" />
-                          {config.label}
+                          {label}
                           {count != null && (
                             <span className={cn("ml-0.5 inline-flex items-center justify-center rounded-full text-[10px] font-data font-semibold min-w-[20px] h-4 px-1.5", TAB_COUNT_CLASSES[config.color])}>
                               <AnimatedNumber value={count} decimals={0} className="" />
@@ -2308,7 +2316,7 @@ function App() {
                                       : "text-muted-foreground hover:text-foreground hover:bg-muted/70"
                                   )}
                                 >
-                                  <span>Analyze Visible</span>
+                                  <span>{t('opportunities.analyzeVisible')}</span>
                                   <span className="font-data text-[10px]">{analyzeVisibleCount}</span>
                                 </button>
                                 <button
@@ -2324,7 +2332,7 @@ function App() {
                                       : "text-muted-foreground hover:text-foreground hover:bg-muted/70"
                                   )}
                                 >
-                                  <span>Analyze All</span>
+                                  <span>{t('opportunities.analyzeAll')}</span>
                                   <span className="font-data text-[10px]">{analyzeAllCount}</span>
                                 </button>
                               </div>
@@ -2361,7 +2369,7 @@ function App() {
 
                             <Separator orientation="vertical" className="h-4 mx-1" />
 
-                            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Sort by</span>
+                            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('common.sortBy')}</span>
                             {([
                               ['trending', 'Trending'],
                               ['liquidity', 'Liquidity'],
@@ -2423,13 +2431,13 @@ function App() {
                           <div className="mb-4 rounded-xl border border-border/40 bg-card/40 p-3">
                             <div className="flex gap-3">
                               <div className="flex-1 max-w-xs">
-                                <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Category</label>
+                                <label className="block text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">{t('common.category')}</label>
                                 <Select value={selectedCategory || '_all'} onValueChange={(v) => setSelectedCategory(v === '_all' ? '' : v)}>
                                   <SelectTrigger className="w-full bg-card border-border h-8 text-sm">
                                     <SelectValue placeholder="All Categories" />
                                   </SelectTrigger>
                                   <SelectContent>
-                                    <SelectItem value="_all">All Categories</SelectItem>
+                                    <SelectItem value="_all">{t('opportunities.allCategories')}</SelectItem>
                                     {[
                                       { value: 'politics', label: 'Politics' },
                                       { value: 'sports', label: 'Sports' },
@@ -2557,7 +2565,7 @@ function App() {
                       <div className="mb-4 rounded-xl border border-border/40 bg-card/40 p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs text-muted-foreground">
-                            {activeOpportunityTab?.config.label || 'Opportunities'} feed
+                            {activeOpportunityTab?.label || t('nav.opportunities')} feed
                           </span>
                           <span className="inline-flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-medium min-w-[20px] h-4 px-1.5">
                             {displayOpportunities.length}
@@ -2650,7 +2658,7 @@ function App() {
                               <SelectValue placeholder="Strategy" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="_all">All Detectors</SelectItem>
+                              <SelectItem value="_all">{t('opportunities.allDetectors')}</SelectItem>
                               {groupedStrategies.map((group) => (
                                 <SelectGroup key={group.key}>
                                   <SelectLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium px-2 py-1">{group.label}</SelectLabel>
@@ -2690,7 +2698,7 @@ function App() {
                                 <SelectValue placeholder="Subfilter" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="_all">All Subfilters</SelectItem>
+                                <SelectItem value="_all">{t('opportunities.allSubfilters')}</SelectItem>
                                 {strategySubtypeOptions.map((option) => (
                                   <SelectItem
                                     key={option.value}
@@ -2713,7 +2721,7 @@ function App() {
                               <SelectValue placeholder="Category" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="_all">All Categories</SelectItem>
+                              <SelectItem value="_all">{t('opportunities.allCategories')}</SelectItem>
                               {[
                                 { value: 'politics', label: 'Politics' },
                                 { value: 'sports', label: 'Sports' },
@@ -2751,7 +2759,7 @@ function App() {
 
                           <div className="w-[120px] shrink-0">
                             <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                              <span>Risk</span>
+                              <span>{t('opportunities.risk')}</span>
                               <span>{maxRisk.toFixed(1)}</span>
                             </div>
                             <input
@@ -2777,10 +2785,10 @@ function App() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="roi">ROI</SelectItem>
-                              <SelectItem value="ai_score">AI Score</SelectItem>
-                              <SelectItem value="profit">Profit</SelectItem>
+                              <SelectItem value="ai_score">{t('opportunities.aiScore')}</SelectItem>
+                              <SelectItem value="profit">{t('opportunities.profit')}</SelectItem>
                               <SelectItem value="liquidity">Liquidity</SelectItem>
-                              <SelectItem value="risk">Risk</SelectItem>
+                              <SelectItem value="risk">{t('opportunities.risk')}</SelectItem>
                             </SelectContent>
                           </Select>
 
