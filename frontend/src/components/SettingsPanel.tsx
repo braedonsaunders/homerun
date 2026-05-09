@@ -968,15 +968,20 @@ export default function SettingsPanel({
             <div
               key={section.id}
               className={cn(
-                "bg-card/60 border border-border/40 rounded-xl overflow-hidden transition-all duration-200",
-                isExpanded && "lg:col-span-2"
+                "bg-card/60 border border-border/40 rounded-xl overflow-hidden transition-all duration-200 self-start",
+                isExpanded && "border-primary/40 shadow-[0_-2px_0_0_hsl(var(--primary)/0.35)] ring-1 ring-primary/15 relative z-10"
               )}
             >
-              {/* Section Header - clickable */}
+              {/* Section Header - clickable (folder tab when expanded) */}
               <button
                 type="button"
                 onClick={() => toggleSection(section.id)}
-                className="w-full flex items-center gap-3 p-3 hover:bg-muted/40 transition-colors cursor-pointer"
+                className={cn(
+                  "w-full flex items-center gap-3 p-3 transition-colors cursor-pointer",
+                  isExpanded
+                    ? "bg-muted/50 border-b border-primary/30"
+                    : "hover:bg-muted/40"
+                )}
               >
                 <div className="shrink-0">
                   <Icon className="w-4 h-4 text-muted-foreground" />
