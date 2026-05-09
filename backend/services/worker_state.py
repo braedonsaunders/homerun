@@ -29,9 +29,9 @@ from services.live_pressure import is_db_pressure_active, maybe_mark_db_pressure
 from utils.converters import to_iso
 from utils.logger import get_logger
 from utils.retry import db_retry_delay as _shared_db_retry_delay
+from utils.retry import is_retryable_db_error as _shared_is_retryable_db_error
 
 logger = get_logger("worker_state")
-from utils.retry import is_retryable_db_error as _shared_is_retryable_db_error
 
 
 _COMMIT_RETRYABLE_MARKERS = (
