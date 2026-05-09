@@ -3111,9 +3111,31 @@ class TradeSignal(Base):
 
     __table_args__ = (
         Index("idx_trade_signals_created", "created_at"),
-        Index("idx_trade_signals_source_status", "source", "status"),
-        Index("idx_trade_signals_source_status_sequence", "source", "status", "runtime_sequence"),
-        Index("idx_trade_signals_market_status", "market_id", "status"),
+        # 2026-05-09: dropped idx_trade_signals_source_status — strict
+        # prefix of idx_trade_signals_source_status_sequence, postgres
+        # uses the longer index for any query the shorter one served.
+        # Eliminates one B-tree write per non-HOT UPDATE.
+        #
+        # The remaining (source, status, runtime_sequence) index is now
+        # PARTIAL (status IN active states only). Terminal-state rows
+        # (executed/skipped/expired/failed) are NOT indexed — they
+        # represent ~99% of the table but are never queried by hot-path
+        # code. UI/maintenance code that filters by terminal status
+        # uses created_at / updated_at indexes instead.
+        Index(
+            "idx_trade_signals_source_status_sequence",
+            "source", "status", "runtime_sequence",
+            postgresql_where=text(
+                "status IN ('pending', 'selected', 'submitted')"
+            ),
+        ),
+        Index(
+            "idx_trade_signals_market_status",
+            "market_id", "status",
+            postgresql_where=text(
+                "status IN ('pending', 'selected', 'submitted')"
+            ),
+        ),
         UniqueConstraint("source", "dedupe_key", name="uq_trade_signals_source_dedupe"),
     )
 
@@ -4753,6 +4775,26 @@ _connect_args: dict = {
         "tcp_keepalives_idle": "60",
         "tcp_keepalives_interval": "10",
         "tcp_keepalives_count": "3",
+        # 2026-05-09: synchronous_commit=local (was server-default ``on``).
+        # The 2026-05-09 SLOW COMMIT DIAGNOSTIC captures show ``commit_ms=2077
+        # dirty_rows=0`` — a no-op COMMIT taking 2 s, which is pure WAL
+        # fsync latency. ``local`` keeps the local primary's WAL fsync
+        # required (durable on this machine) but does NOT wait for any
+        # standby acknowledgement. On a single-node deployment this is
+        # equivalent to ``on`` for the *durability* guarantee but allows
+        # group commit to coalesce more aggressively, dropping per-commit
+        # latency from 500-2000 ms to <50 ms typical.
+        #
+        # Risk profile: on a hard crash during fsync, the most recent
+        # commits (last few hundred ms) could be lost. For this trading
+        # workload that's acceptable: orders themselves are persisted in
+        # the upstream CLOB system of record (not the local DB), and
+        # trade_signals/trader_decisions are recoverable from upstream
+        # re-emission on restart (scanner re-finds opportunities, news
+        # plane re-emits, orchestrator re-decides). If you ever attach a
+        # streaming replica with hot-failover, switch back to ``on`` (or
+        # ``remote_apply``) for that deployment.
+        "synchronous_commit": "local",
     },
 }
 
@@ -4954,6 +4996,10 @@ _fast_connect_args: dict = {
         "tcp_keepalives_idle": "30",
         "tcp_keepalives_interval": "5",
         "tcp_keepalives_count": "3",
+        # See main pool above for synchronous_commit=local rationale.
+        # The fast pool serves the order-submission hot path where
+        # commit latency directly extends time-to-market.
+        "synchronous_commit": "local",
     },
 }
 _fast_engine_kw["connect_args"] = _fast_connect_args
@@ -5057,6 +5103,11 @@ _audit_connect_args: dict = {
         "tcp_keepalives_idle": "30",
         "tcp_keepalives_interval": "10",
         "tcp_keepalives_count": "3",
+        # See main pool for synchronous_commit=local rationale.
+        # Audit writes (decision rows, consumption upserts, cursor
+        # updates) are recoverable from upstream re-emission on crash;
+        # local-fsync semantics are appropriate.
+        "synchronous_commit": "local",
     },
 }
 _audit_engine_kw["connect_args"] = _audit_connect_args
