@@ -42,6 +42,92 @@ _MAX_TASKS_DUMPED = 20
 _WARN_COOLDOWN_SECONDS = 5.0
 
 
+# Cap on cr_await traversal depth — guards against cycles or pathological
+# deep coroutine chains.  Real firehose chains are rarely > 6 deep.
+_MAX_CORO_DEPTH = 32
+
+
+def _short_frame_key(frame: object) -> str | None:
+    """Render ``filename:func:lineno`` for a Python frame object."""
+    try:
+        code = frame.f_code  # type: ignore[attr-defined]
+        fname = code.co_filename
+        short_fname = fname.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        return f"{short_fname}:{code.co_name}:{frame.f_lineno}"  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+def _innermost_coro_frame_key(task: asyncio.Task) -> str | None:
+    """Walk the cr_await chain to the deepest coroutine still suspended.
+
+    Returns the ``filename:func:lineno`` for the frame where that inner
+    coroutine is actually parked — i.e. the true blocking await point.
+    Falls back to the outer ``task.get_stack(limit=1)`` frame if
+    traversal isn't possible (e.g. C-extension coro, non-coroutine awaitable).
+    """
+    # Start from the Task's coroutine.  In CPython this is ``_coro``.
+    coro = getattr(task, "_coro", None)
+    if coro is None:
+        # Fallback: use the regular stack.
+        try:
+            stack = task.get_stack(limit=1)
+            if not stack:
+                return None
+            return _short_frame_key(stack[-1])
+        except Exception:
+            return None
+
+    # Walk cr_await as far as it points to another coroutine.  ``cr_frame``
+    # may be None if the coroutine hasn't started yet; in that case we
+    # emit the coroutine's own code object (qualname) as the key.
+    last_frame = None
+    current = coro
+    for _ in range(_MAX_CORO_DEPTH):
+        if current is None:
+            break
+        # Prefer cr_* (coroutine), then gi_* (generator-based coroutine),
+        # then ag_* (async generator).
+        frame = (
+            getattr(current, "cr_frame", None)
+            or getattr(current, "gi_frame", None)
+            or getattr(current, "ag_frame", None)
+        )
+        if frame is not None:
+            last_frame = frame
+        next_awaited = (
+            getattr(current, "cr_await", None)
+            or getattr(current, "gi_yieldfrom", None)
+            or getattr(current, "ag_await", None)
+        )
+        # If the next awaited object isn't another coroutine/generator,
+        # stop — we've reached the "leaf" that's actually suspended on
+        # a Future or socket.
+        if next_awaited is None:
+            break
+        if not (
+            hasattr(next_awaited, "cr_frame")
+            or hasattr(next_awaited, "gi_frame")
+            or hasattr(next_awaited, "ag_frame")
+        ):
+            break
+        current = next_awaited
+
+    if last_frame is not None:
+        key = _short_frame_key(last_frame)
+        if key is not None:
+            return key
+
+    # Fallback: use the Task's regular stack.
+    try:
+        stack = task.get_stack(limit=1)
+        if not stack:
+            return None
+        return _short_frame_key(stack[-1])
+    except Exception:
+        return None
+
+
 class _Watchdog:
     def __init__(self) -> None:
         self._task: Optional[asyncio.Task] = None
@@ -123,21 +209,28 @@ class _Watchdog:
         watchdog_self = self._task
         tasks = [t for t in tasks if t is not watchdog_self and not t.done()]
 
-        # Group by topmost frame: short "filename:func" key.
+        # Group by innermost frame of the task's coroutine chain.
+        #
+        # ``task.get_stack()`` only returns frames of the OUTER coroutine,
+        # not coroutines that outer is awaiting.  When a task does
+        # ``await inner_coro()`` and inner_coro suspends on I/O, the
+        # Python stack says the outer task is parked at the ``await``
+        # statement, which is useless for root-causing — we see "x30 at
+        # _tracked_emission:393" (the wrapper) instead of the actual
+        # blocking call inside buffer_trader_event or wherever.
+        #
+        # To drill through, we walk the ``cr_await`` chain from the
+        # outer coroutine down to whatever coroutine is ACTUALLY
+        # suspended on a non-coroutine awaitable (Future, asyncio.sleep,
+        # socket read, etc.).  That gives us the real stall location.
         groups: dict[str, dict] = {}
         unknown_count = 0
         for task in tasks:
             try:
-                stack = task.get_stack(limit=1)
-                if not stack:
+                key = _innermost_coro_frame_key(task)
+                if key is None:
                     unknown_count += 1
                     continue
-                top = stack[-1]
-                # filename:basename only (drop path) so the key is concise.
-                fname = top.f_code.co_filename
-                # Last path component for readability.
-                short_fname = fname.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-                key = f"{short_fname}:{top.f_code.co_name}:{top.f_lineno}"
                 bucket = groups.setdefault(
                     key,
                     {"count": 0, "first_task_name": task.get_name() or "<unnamed>"},

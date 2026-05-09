@@ -264,6 +264,66 @@ _AUDIT_KIND_PRIORITY = {
 
 _AUDIT_OVERFLOW_LOGGED_AT: float = 0.0
 
+# Round 6: Redis publish fan-out for trader events is fire-and-forget.
+#
+# Pre-fix: ``buffer_trader_event`` did ``await client.publish(...)`` inline
+# inside every caller.  Under firehose load (N~30 concurrent emissions per
+# tick), each emission task parked on the shared Redis connection pool
+# waiting for its PUBLISH round-trip to complete.  When Redis was even
+# slightly slow (network hiccup, or pool saturation), callers piled up
+# holding event-loop time — post-Round-5 stall dumps showed x30 tasks
+# parked at ``_tracked_emission:393`` which is ``await coro`` delegating
+# to ``emit_gate`` → ``buffer_trader_event`` → ``await client.publish``.
+#
+# The fix: detach the publish from the caller.  ``buffer_trader_event``
+# now returns immediately after the local in-memory buffer append; the
+# PUBLISH runs on a background task with a bounded in-flight budget.
+# DB persistence still happens (via the audit flush loop) and the UI
+# still gets its <5ms fan-out as long as the publisher keeps up.  When
+# the budget is saturated (Redis wedged) we drop the publish rather
+# than let it queue and stall the caller.
+_TRADER_EVENT_PUBLISH_BUDGET = 512
+_trader_event_publish_inflight: int = 0
+_trader_event_publish_dropped: int = 0
+
+
+async def _publish_trader_event_safely(client: Any, channel: str, payload: str) -> None:
+    """Fire-and-forget Redis publish.  Never raises; accounts for in-flight budget."""
+    global _trader_event_publish_inflight
+    try:
+        await client.publish(channel, payload)
+    except Exception:
+        # Publish failures are observability-only; DB persistence still
+        # lands via the audit flush loop.
+        pass
+    finally:
+        _trader_event_publish_inflight -= 1
+
+
+def _schedule_trader_event_publish(client: Any, channel: str, payload: str) -> None:
+    """Schedule a Redis publish as a background task, subject to a bounded budget."""
+    global _trader_event_publish_inflight, _trader_event_publish_dropped
+    if _trader_event_publish_inflight >= _TRADER_EVENT_PUBLISH_BUDGET:
+        _trader_event_publish_dropped += 1
+        # Log every 1000th drop so a wedged Redis is visible without
+        # spamming the log.
+        if _trader_event_publish_dropped % 1000 == 1:
+            logger.warning(
+                "trader_event Redis publish dropped (in-flight budget exhausted)",
+                inflight=_trader_event_publish_inflight,
+                budget=_TRADER_EVENT_PUBLISH_BUDGET,
+                total_dropped=_trader_event_publish_dropped,
+            )
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _trader_event_publish_inflight += 1
+    task = loop.create_task(_publish_trader_event_safely(client, channel, payload))
+    # Prevent "Task was destroyed but it is pending" warnings at shutdown.
+    task.add_done_callback(lambda _t: None)
+
 
 def _audit_buffer_append(entry: _AuditEntry) -> None:
     """Append *entry* to audit buffer.  Caller must hold ``_audit_lock``.
@@ -1309,6 +1369,11 @@ async def buffer_trader_event(
     # this event to UI clients in <5ms instead of waiting for the next
     # audit flush (which can lag by 10+ seconds).  Soft fail on Redis
     # outage — DB persistence still runs via the audit buffer.
+    #
+    # Round 6: the publish is fire-and-forget — we schedule a background
+    # task and return immediately.  Under firehose load (dozens of
+    # concurrent emissions), inline-awaiting the PUBLISH round-trip was
+    # the dominant event-loop stall after Round 5.
     try:
         from services import redis_client  # local import to avoid cycles
         import json as _json
@@ -1328,7 +1393,8 @@ async def buffer_trader_event(
                 "payload": payload_json,
                 "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
             }
-            await client.publish(
+            _schedule_trader_event_publish(
+                client,
                 redis_client.namespaced("trader_events"),
                 _json.dumps(serialized, default=str),
             )
