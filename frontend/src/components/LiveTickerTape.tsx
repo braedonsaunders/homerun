@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useTranslation } from 'react-i18next'
 import { cn } from '../lib/utils'
 import {
   AlertTriangle,
@@ -155,20 +156,22 @@ function truncate(str: string, len: number): string {
   return str.slice(0, len - 1) + '\u2026'
 }
 
-function formatTimeSince(iso: string): string {
+type TickerTFn = (key: string, opts?: Record<string, unknown>) => string
+
+function formatTimeSince(iso: string, t: TickerTFn): string {
   const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-  if (secs < 5) return 'just now'
-  if (secs < 60) return `${secs}s ago`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-  return `${Math.floor(secs / 3600)}h ago`
+  if (secs < 5) return t('ticker.justNow')
+  if (secs < 60) return t('ticker.secondsAgo', { n: secs })
+  if (secs < 3600) return t('ticker.minutesAgo', { n: Math.floor(secs / 60) })
+  return t('ticker.hoursAgo', { n: Math.floor(secs / 3600) })
 }
 
-function formatSinceTimestamp(epochMs: number): string {
+function formatSinceTimestamp(epochMs: number, t: TickerTFn): string {
   const secs = Math.max(0, Math.floor((Date.now() - epochMs) / 1000))
-  if (secs < 5) return 'just now'
-  if (secs < 60) return `${secs}s ago`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-  return `${Math.floor(secs / 3600)}h ago`
+  if (secs < 5) return t('ticker.justNow')
+  if (secs < 60) return t('ticker.secondsAgo', { n: secs })
+  if (secs < 3600) return t('ticker.minutesAgo', { n: Math.floor(secs / 60) })
+  return t('ticker.hoursAgo', { n: Math.floor(secs / 3600) })
 }
 
 function coerceRecord(value: unknown): Record<string, unknown> {
@@ -235,19 +238,19 @@ function summarizeBuckets(
   return out
 }
 
-function eventLabel(type: string): string | null {
-  if (type === 'scanner_status') return 'Scanner status'
-  if (type === 'opportunities_update') return 'Opportunity snapshot'
-  if (type === 'opportunity_events') return 'Opportunity delta'
-  if (type === 'worker_status_update') return 'Worker heartbeat'
-  if (type === 'signals_update') return 'Signal snapshot'
-  if (type === 'trader_orchestrator_status') return 'Orchestrator snapshot'
-  if (type === 'trader_decision') return 'Trader decision'
-  if (type === 'trader_order') return 'Trader order'
-  if (type === 'trader_event') return 'Trader event'
-  if (type === 'weather_update' || type === 'weather_status') return 'Weather update'
-  if (type === 'news_workflow_update' || type === 'news_workflow_status' || type === 'news_update') return 'News update'
-  if (type === 'crypto_markets_update') return 'Crypto update'
+function eventLabelKey(type: string): string | null {
+  if (type === 'scanner_status') return 'ticker.scannerStatus'
+  if (type === 'opportunities_update') return 'ticker.opportunitySnapshot'
+  if (type === 'opportunity_events') return 'ticker.opportunityDelta'
+  if (type === 'worker_status_update') return 'ticker.workerHeartbeat'
+  if (type === 'signals_update') return 'ticker.signalSnapshot'
+  if (type === 'trader_orchestrator_status') return 'ticker.orchestratorSnapshot'
+  if (type === 'trader_decision') return 'ticker.traderDecision'
+  if (type === 'trader_order') return 'ticker.traderOrder'
+  if (type === 'trader_event') return 'ticker.traderEvent'
+  if (type === 'weather_update' || type === 'weather_status') return 'ticker.weatherUpdate'
+  if (type === 'news_workflow_update' || type === 'news_workflow_status' || type === 'news_update') return 'ticker.newsUpdate'
+  if (type === 'crypto_markets_update') return 'ticker.cryptoUpdate'
   return null
 }
 
@@ -347,10 +350,11 @@ export default function LiveTickerTape({
   activeStrategies,
   className,
 }: TickerTapeProps) {
+  const { t } = useTranslation()
   const [tick, setTick] = useState(0)
   const [orchestratorSnapshot, setOrchestratorSnapshot] = useState<OrchestratorSnapshot | null>(null)
   const rollupBucketsRef = useRef<Map<number, EventRollup>>(new Map())
-  const lastEventRef = useRef<{ label: string; at: number } | null>(null)
+  const lastEventRef = useRef<{ labelKey: string; at: number } | null>(null)
   const scannerLastSeenRef = useRef<string | null>(lastScan || null)
   const orchestratorSigRef = useRef<string>('')
 
@@ -387,7 +391,7 @@ export default function LiveTickerTape({
           setOrchestratorSnapshot(initSnapshot)
         }
       }
-      lastEventRef.current = { label: 'Session init', at: now }
+      lastEventRef.current = { labelKey: 'ticker.sessionInit', at: now }
       return
     }
 
@@ -407,9 +411,9 @@ export default function LiveTickerTape({
     mergeRollup(rollupBucketsRef.current, now, patch)
     pruneBuckets(rollupBucketsRef.current, now)
 
-    const label = eventLabel(type)
-    if (label) {
-      lastEventRef.current = { label, at: now }
+    const labelKey = eventLabelKey(type)
+    if (labelKey) {
+      lastEventRef.current = { labelKey, at: now }
     }
   }, [lastMessage])
 
@@ -439,28 +443,28 @@ export default function LiveTickerTape({
 
     items.push({
       id: 'system',
-      label: 'SYSTEM',
-      value: isConnected ? 'LIVE' : 'OFFLINE',
+      label: t('ticker.system'),
+      value: isConnected ? t('ticker.live') : t('ticker.offline'),
       icon: 'activity',
       change: isConnected && !globallyPaused ? 1 : -1,
-      badge: globallyPaused ? 'PAUSED' : undefined,
+      badge: globallyPaused ? t('ticker.paused') : undefined,
       badgeColor: globallyPaused ? 'text-yellow-400 bg-yellow-400/10' : undefined,
     })
 
     if (lastScan && !isNaN(new Date(lastScan).getTime())) {
       items.push({
         id: 'scan',
-        label: 'SCAN',
-        value: formatTimeSince(lastScan),
+        label: t('ticker.scan'),
+        value: formatTimeSince(lastScan, t),
         icon: 'clock',
       })
     }
 
     const workerBadge = workers.red > 0
-      ? `${workers.red} ERR`
+      ? `${workers.red} ${t('ticker.errSuffix')}`
       : workers.amber > 0
-        ? `${workers.amber} WARN`
-        : 'HEALTHY'
+        ? `${workers.amber} ${t('ticker.warnSuffix')}`
+        : t('ticker.healthy')
     const workerBadgeColor = workers.red > 0
       ? 'text-red-400 bg-red-400/10'
       : workers.amber > 0
@@ -469,7 +473,7 @@ export default function LiveTickerTape({
 
     items.push({
       id: 'workers',
-      label: 'WORKERS',
+      label: t('ticker.workers'),
       value: `${workers.green}/${workers.total}`,
       icon: 'shield',
       badge: workerBadge,
@@ -478,38 +482,38 @@ export default function LiveTickerTape({
 
     items.push({
       id: 'source-scanner',
-      label: 'MARKETS',
+      label: t('ticker.markets'),
       value: compactCount(sourceCounts.scanner),
       icon: 'zap',
     })
     items.push({
       id: 'source-traders',
-      label: 'TRADERS',
+      label: t('ticker.traders'),
       value: compactCount(sourceCounts.traders),
       icon: 'target',
     })
     items.push({
       id: 'source-news',
-      label: 'NEWS',
+      label: t('ticker.news'),
       value: compactCount(sourceCounts.news),
       icon: 'activity',
     })
     items.push({
       id: 'source-weather',
-      label: 'WEATHER',
+      label: t('ticker.weather'),
       value: compactCount(sourceCounts.weather),
       icon: 'activity',
     })
     items.push({
       id: 'source-crypto',
-      label: 'CRYPTO',
+      label: t('ticker.crypto'),
       value: compactCount(sourceCounts.crypto),
       icon: 'chart',
     })
 
     items.push({
       id: 'signals',
-      label: 'SIGNALS',
+      label: t('ticker.signals'),
       value: `P:${compactCount(signalPending)} S:${compactCount(signalSelected)} X:${compactCount(signalExecuted)}`,
       icon: 'activity',
       badge: `F:${compactCount(signalFailed)}`,
@@ -519,7 +523,7 @@ export default function LiveTickerTape({
     if (activeStrategies !== undefined) {
       items.push({
         id: 'strategies',
-        label: 'STRATEGIES',
+        label: t('ticker.strategies'),
         value: compactCount(activeStrategies),
         icon: 'activity',
       })
@@ -527,7 +531,7 @@ export default function LiveTickerTape({
 
     items.push({
       id: 'orchestrator-funnel',
-      label: 'FUNNEL',
+      label: t('ticker.funnel'),
       value: `${compactCount(orchestratorDecisions)}\u2192${compactCount(orchestratorOrders)}`,
       secondaryValue: `${orchestratorConversion.toFixed(1)}%`,
       icon: 'target',
@@ -535,7 +539,7 @@ export default function LiveTickerTape({
 
     items.push({
       id: 'orchestrator-pnl',
-      label: 'DAY PNL',
+      label: t('ticker.dayPnl'),
       value: formatUsd(orchestratorDailyPnl),
       icon: orchestratorDailyPnl >= 0 ? 'up' : 'down',
       change: orchestratorDailyPnl,
@@ -543,54 +547,54 @@ export default function LiveTickerTape({
 
     items.push({
       id: 'orchestrator-exposure',
-      label: 'EXPOSURE',
+      label: t('ticker.exposure'),
       value: formatUsd(orchestratorExposure),
       icon: 'dollar',
     })
 
     items.push({
       id: 'orchestrator-open-orders',
-      label: 'OPEN ORD',
+      label: t('ticker.openOrd'),
       value: compactCount(orchestratorOpenOrders),
       icon: 'chart',
     })
 
     items.push({
       id: 'events-total',
-      label: 'EVENTS 1M',
+      label: t('ticker.events1m'),
       value: compactCount(rollup1m.total),
       icon: 'activity',
     })
 
     items.push({
       id: 'events-flow',
-      label: 'FLOW 1M',
+      label: t('ticker.flow1m'),
       value: `D:${compactCount(rollup1m.decisions)} O:${compactCount(rollup1m.orders)} S:${compactCount(rollup1m.signals)}`,
       icon: 'chart',
     })
 
     items.push({
       id: 'events-scans',
-      label: 'SCANS 1M',
+      label: t('ticker.scans1m'),
       value: compactCount(rollup1m.scans),
       icon: 'clock',
     })
 
     items.push({
       id: 'events-alerts',
-      label: 'ALERTS 1M',
+      label: t('ticker.alerts1m'),
       value: compactCount(rollup1m.alerts),
       icon: rollup1m.alerts > 0 ? 'alert' : 'shield',
       change: rollup1m.alerts > 0 ? -rollup1m.alerts : 0,
-      badge: rollup1m.alerts > 0 ? 'ATTN' : undefined,
+      badge: rollup1m.alerts > 0 ? t('ticker.attn') : undefined,
       badgeColor: rollup1m.alerts > 0 ? 'text-red-400 bg-red-400/10' : undefined,
     })
 
     items.push({
       id: 'last-event',
-      label: 'LAST EVT',
-      value: lastEvent ? truncate(lastEvent.label, 24) : 'No recent events',
-      secondaryValue: lastEvent ? formatSinceTimestamp(lastEvent.at) : undefined,
+      label: t('ticker.lastEvt'),
+      value: lastEvent ? truncate(t(lastEvent.labelKey), 24) : t('ticker.noRecentEvents'),
+      secondaryValue: lastEvent ? formatSinceTimestamp(lastEvent.at, t) : undefined,
       icon: 'activity',
     })
 
@@ -622,6 +626,7 @@ export default function LiveTickerTape({
     sourceCounts.scanner,
     sourceCounts.traders,
     sourceCounts.weather,
+    t,
     workers.amber,
     workers.green,
     workers.red,
