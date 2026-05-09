@@ -1122,7 +1122,7 @@ export default function SettingsPanel({
                     <div className="space-y-4">
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <Label className="text-xs text-muted-foreground">Scan Interval (seconds)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.scanInterval')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.scan_interval_seconds}
@@ -1133,7 +1133,7 @@ export default function SettingsPanel({
                           />
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Min Profit Threshold (%)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.minProfit')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.min_profit_threshold}
@@ -1144,7 +1144,7 @@ export default function SettingsPanel({
                           />
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Min Liquidity (USD)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.minLiquidity')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.min_liquidity}
@@ -1155,7 +1155,7 @@ export default function SettingsPanel({
                           />
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Max Markets / Scan</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.maxMarkets')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.max_markets_to_scan}
@@ -1164,10 +1164,10 @@ export default function SettingsPanel({
                             max={200000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Set `0` for no cap (full active universe).</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.noCapHint')}</p>
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Max Events / Scan</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.maxEvents')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.max_events_to_scan}
@@ -1176,10 +1176,10 @@ export default function SettingsPanel({
                             max={200000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Set `0` for no cap (full active universe).</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.noCapHint')}</p>
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Market Fetch Page Size</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.marketPageSize')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.market_fetch_page_size}
@@ -1190,7 +1190,7 @@ export default function SettingsPanel({
                           />
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Market Fetch Order</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.marketOrder')}</Label>
                           <Input
                             type="text"
                             value={scannerForm.market_fetch_order}
@@ -1198,10 +1198,10 @@ export default function SettingsPanel({
                             placeholder="volume"
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">`volume`, `updatedAt`, `createdAt`, or empty</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.orderHint')}</p>
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Max Opportunities (Total)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.maxOppsTotal')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.max_opportunities_total}
@@ -1210,10 +1210,10 @@ export default function SettingsPanel({
                             max={50000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Set `0` to disable</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.disableHint')}</p>
                         </div>
                         <div>
-                          <Label className="text-xs text-muted-foreground">Max Opportunities / Strategy</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.scanner.maxOppsPerStrategy')}</Label>
                           <Input
                             type="number"
                             value={scannerForm.max_opportunities_per_strategy}
@@ -1222,14 +1222,14 @@ export default function SettingsPanel({
                             max={10000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Set `0` to disable</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.disableHint')}</p>
                         </div>
                       </div>
                       <div className="rounded-md border border-border/60 bg-muted/15 p-3 space-y-3">
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Scanner Runtime</p>
+                        <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{t('settings.scanner.runtime')}</p>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div>
-                            <Label className="text-xs text-muted-foreground">Skipped Signal Cooldown (seconds)</Label>
+                            <Label className="text-xs text-muted-foreground">{t('settings.scanner.skippedCooldown')}</Label>
                             <Input
                               type="number"
                               value={scannerForm.skipped_signal_reactivation_cooldown_seconds}
@@ -1241,10 +1241,10 @@ export default function SettingsPanel({
                               max={86400}
                               className="mt-1 text-sm"
                             />
-                            <p className="text-[11px] text-muted-foreground/70 mt-1">How long unchanged skipped signals stay suppressed before they can reactivate.</p>
+                            <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.skippedCooldownDesc')}</p>
                           </div>
                           <div>
-                            <Label className="text-xs text-muted-foreground">Scanner Strict WS Age Budget (ms)</Label>
+                            <Label className="text-xs text-muted-foreground">{t('settings.scanner.wsAge')}</Label>
                             <Input
                               type="number"
                               value={scannerForm.strict_ws_max_age_ms}
@@ -1256,7 +1256,7 @@ export default function SettingsPanel({
                               max={30000}
                               className="mt-1 text-sm"
                             />
-                            <p className="text-[11px] text-muted-foreground/70 mt-1">Maximum age for scanner websocket pricing before the row is treated as stale.</p>
+                            <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.scanner.wsAgeDesc')}</p>
                           </div>
                         </div>
                       </div>
@@ -1270,7 +1270,7 @@ export default function SettingsPanel({
                       <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => handleSaveSection('scanner')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
-                          Save
+                          {t('settings.actions.save')}
                         </Button>
                       </div>
                     </div>
@@ -1283,8 +1283,8 @@ export default function SettingsPanel({
                         <Card className="bg-muted">
                           <CardContent className="flex items-center justify-between p-3">
                             <div>
-                              <p className="font-medium text-sm">Enable Notifications</p>
-                              <p className="text-xs text-muted-foreground">Receive alerts via Telegram</p>
+                              <p className="font-medium text-sm">{t('settings.notif.enableTitle')}</p>
+                              <p className="text-xs text-muted-foreground">{t('settings.notif.enableDesc')}</p>
                             </div>
                             <Switch
                               checked={notificationsForm.enabled}
@@ -1294,34 +1294,34 @@ export default function SettingsPanel({
                         </Card>
 
                         <SecretInput
-                          label="Telegram Bot Token"
+                          label={t('settings.notif.botToken')}
                           value={notificationsForm.telegram_bot_token}
-                          placeholder={settings?.notifications.telegram_bot_token || 'Enter bot token'}
+                          placeholder={settings?.notifications.telegram_bot_token || t('settings.notif.botTokenPlaceholder')}
                           onChange={(v) => setNotificationsForm(p => ({ ...p, telegram_bot_token: v }))}
                           showSecret={showSecrets['tg_token']}
                           onToggle={() => toggleSecret('tg_token')}
-                          description="Get this from @BotFather on Telegram"
+                          description={t('settings.notif.botTokenDesc')}
                         />
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Telegram Chat ID</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.notif.chatId')}</Label>
                           <Input
                             type="text"
                             value={notificationsForm.telegram_chat_id}
                             onChange={(e) => setNotificationsForm(p => ({ ...p, telegram_chat_id: e.target.value }))}
-                            placeholder="Your chat ID"
+                            placeholder={t('settings.notif.chatIdPlaceholder')}
                             className="mt-1 text-sm"
                           />
                         </div>
 
                         <div className="space-y-2 pt-2">
-                          <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Alert Types</p>
+                          <p className="text-[10px] uppercase tracking-widest text-muted-foreground">{t('settings.notif.alertTypes')}</p>
 
                           <Card className="bg-muted">
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
-                                <p className="text-sm">Autotrader Timeline</p>
-                                <p className="text-xs text-muted-foreground">Periodic timeline summaries while orchestrator is running</p>
+                                <p className="text-sm">{t('settings.notif.timeline')}</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.notif.timelineDesc')}</p>
                               </div>
                               <Switch
                                 checked={notificationsForm.notify_autotrader_timeline}
@@ -1333,8 +1333,8 @@ export default function SettingsPanel({
                           <Card className="bg-muted">
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
-                                <p className="text-sm">Autotrader Issue Alerts</p>
-                                <p className="text-xs text-muted-foreground">Immediate alerts for kill switch, preflight failure, order failures, and worker errors</p>
+                                <p className="text-sm">{t('settings.notif.issues')}</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.notif.issuesDesc')}</p>
                               </div>
                               <Switch
                                 checked={notificationsForm.notify_autotrader_issues}
@@ -1346,8 +1346,8 @@ export default function SettingsPanel({
                           <Card className="bg-muted">
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
-                                <p className="text-sm">Autotrader Order Alerts</p>
-                                <p className="text-xs text-muted-foreground">Immediate order activity summaries per cycle</p>
+                                <p className="text-sm">{t('settings.notif.orders')}</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.notif.ordersDesc')}</p>
                               </div>
                               <Switch
                                 checked={notificationsForm.notify_autotrader_orders}
@@ -1359,8 +1359,8 @@ export default function SettingsPanel({
                           <Card className="bg-muted">
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
-                                <p className="text-sm">Autotrader Close Alerts</p>
-                                <p className="text-xs text-muted-foreground">Immediate alert when a position closes or resolves</p>
+                                <p className="text-sm">{t('settings.notif.closes')}</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.notif.closesDesc')}</p>
                               </div>
                               <Switch
                                 checked={notificationsForm.notify_autotrader_closes}
@@ -1372,8 +1372,8 @@ export default function SettingsPanel({
                           <Card className="bg-muted">
                             <CardContent className="flex items-center justify-between p-3">
                               <div>
-                                <p className="text-sm">Per-Trader Timeline Breakdown</p>
-                                <p className="text-xs text-muted-foreground">Include trader-level lines in timeline summaries</p>
+                                <p className="text-sm">{t('settings.notif.perTrader')}</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.notif.perTraderDesc')}</p>
                               </div>
                               <Switch
                                 checked={notificationsForm.notify_autotrader_summary_per_trader}
@@ -1383,7 +1383,7 @@ export default function SettingsPanel({
                           </Card>
 
                           <div>
-                            <Label className="text-xs text-muted-foreground">Autotrader Summary Interval (minutes)</Label>
+                            <Label className="text-xs text-muted-foreground">{t('settings.notif.summaryInterval')}</Label>
                             <Input
                               type="number"
                               value={notificationsForm.notify_autotrader_summary_interval_minutes}
@@ -1403,7 +1403,7 @@ export default function SettingsPanel({
                       <div className="flex items-center gap-2 flex-wrap">
                         <Button size="sm" onClick={() => handleSaveSection('notifications')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
-                          Save
+                          {t('settings.actions.save')}
                         </Button>
                         <Button
                           variant="secondary"
@@ -1412,7 +1412,7 @@ export default function SettingsPanel({
                           disabled={testTelegramMutation.isPending}
                         >
                           <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
-                          Test Telegram
+                          {t('settings.actions.testTelegram')}
                         </Button>
                         {testTelegramMutation.data && (
                           <Badge variant={testTelegramMutation.data.status === 'success' ? "default" : "outline"} className={cn(
@@ -1432,9 +1432,9 @@ export default function SettingsPanel({
                       <Card className="bg-muted border-emerald-500/30">
                         <CardContent className="flex items-center justify-between p-3">
                           <div>
-                            <p className="font-medium text-sm">Enable UI Lock</p>
+                            <p className="font-medium text-sm">{t('settings.uiLock.enableTitle')}</p>
                             <p className="text-xs text-muted-foreground">
-                              Locks the UI after inactivity while backend workers continue running.
+                              {t('settings.uiLock.enableDesc')}
                             </p>
                           </div>
                           <Switch
@@ -1446,7 +1446,7 @@ export default function SettingsPanel({
 
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <Label className="text-xs text-muted-foreground">Idle Timeout (minutes)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.uiLock.idleTimeout')}</Label>
                           <Input
                             type="number"
                             value={uiLockForm.idle_timeout_minutes}
@@ -1464,24 +1464,24 @@ export default function SettingsPanel({
                         </div>
                         <div className="flex items-end">
                           <p className="text-[11px] text-muted-foreground/70">
-                            Password configured: {uiLockForm.has_password ? 'Yes' : 'No'}
+                            {t('settings.uiLock.passwordConfigured', { value: uiLockForm.has_password ? t('common.yes') : t('common.no') })}
                           </p>
                         </div>
                       </div>
 
                       <SecretInput
-                        label="Set New Password"
+                        label={t('settings.uiLock.setNewPassword')}
                         value={uiLockForm.password}
-                        placeholder={uiLockForm.has_password ? 'Leave blank to keep existing' : 'Enter a password'}
+                        placeholder={uiLockForm.has_password ? t('settings.uiLock.setNewPlaceholderHas') : t('settings.uiLock.setNewPlaceholder')}
                         onChange={(value) => setUiLockForm((prev) => ({ ...prev, password: value }))}
                         showSecret={showSecrets['ui_lock_password']}
                         onToggle={() => toggleSecret('ui_lock_password')}
                       />
 
                       <SecretInput
-                        label="Confirm Password"
+                        label={t('settings.uiLock.confirmPassword')}
                         value={uiLockForm.confirm_password}
-                        placeholder="Re-enter password"
+                        placeholder={t('settings.uiLock.confirmPlaceholder')}
                         onChange={(value) => setUiLockForm((prev) => ({ ...prev, confirm_password: value }))}
                         showSecret={showSecrets['ui_lock_confirm_password']}
                         onToggle={() => toggleSecret('ui_lock_confirm_password')}
@@ -1490,9 +1490,9 @@ export default function SettingsPanel({
                       <Card className="bg-muted">
                         <CardContent className="flex items-center justify-between p-3">
                           <div>
-                            <p className="text-sm">Clear Stored Password</p>
+                            <p className="text-sm">{t('settings.uiLock.clearStored')}</p>
                             <p className="text-xs text-muted-foreground">
-                              Only use this when UI lock is disabled, or while setting a replacement password now.
+                              {t('settings.uiLock.clearStoredDesc')}
                             </p>
                           </div>
                           <Switch
@@ -1507,7 +1507,7 @@ export default function SettingsPanel({
                       <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => handleSaveSection('security')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
-                          Save
+                          {t('settings.actions.save')}
                         </Button>
                       </div>
                     </div>
@@ -1519,9 +1519,9 @@ export default function SettingsPanel({
                       <Card className="bg-muted border-green-500/30">
                         <CardContent className="flex items-center justify-between p-3">
                           <div>
-                            <p className="font-medium text-sm">Discovery Catalog Maintenance</p>
+                            <p className="font-medium text-sm">{t('settings.discovery.maintenanceTitle')}</p>
                             <p className="text-xs text-muted-foreground">
-                              Control catalog growth, cleanup cadence, and retention policy
+                              {t('settings.discovery.maintenanceDesc')}
                             </p>
                           </div>
                           <Switch
@@ -1533,7 +1533,7 @@ export default function SettingsPanel({
 
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <Label className="text-xs text-muted-foreground">Max Discovered Wallets</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.maxWallets')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.max_discovered_wallets}
@@ -1542,11 +1542,11 @@ export default function SettingsPanel({
                             max={1_000_000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Max rows kept in wallet catalog</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.maxWalletsDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Discovery Maintenance Batch</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.batch')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.maintenance_batch}
@@ -1555,11 +1555,11 @@ export default function SettingsPanel({
                             max={5000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Chunk size for remove/insert operations</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.batchDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Keep Wallets w/ Recent Trades (days)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.keepRecent')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.keep_recent_trade_days}
@@ -1568,11 +1568,11 @@ export default function SettingsPanel({
                             max={365}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Protect wallets that traded recently</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.keepRecentDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Keep Newly Discovered Wallets (days)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.keepNew')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.keep_new_discoveries_days}
@@ -1581,11 +1581,11 @@ export default function SettingsPanel({
                             max={365}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Protect wallets found in this window</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.keepNewDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Stale Analysis Threshold (hours)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.staleHours')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.stale_analysis_hours}
@@ -1594,11 +1594,11 @@ export default function SettingsPanel({
                             max={720}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Re-analyze wallets older than this age</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.staleHoursDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Priority Queue Limit</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.priorityLimit')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.analysis_priority_batch_limit}
@@ -1607,11 +1607,11 @@ export default function SettingsPanel({
                             max={10_000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">High-priority queue cap for new/stale wallets</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.priorityLimitDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Delay Between Markets (s)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.delayMarkets')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.delay_between_markets}
@@ -1621,11 +1621,11 @@ export default function SettingsPanel({
                             step={0.05}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Throttling between market scans</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.delayMarketsDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Delay Between Wallet Analysis (s)</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.delayWallets')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.delay_between_wallets}
@@ -1635,11 +1635,11 @@ export default function SettingsPanel({
                             step={0.05}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Throttle wallet analysis loop</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.delayWalletsDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Max Markets Per Discovery Run</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.maxMarketsPerRun')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.max_markets_per_run}
@@ -1648,11 +1648,11 @@ export default function SettingsPanel({
                             max={1_000}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">How many active markets to sample</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.maxMarketsPerRunDesc')}</p>
                         </div>
 
                         <div>
-                          <Label className="text-xs text-muted-foreground">Max Wallets Per Market</Label>
+                          <Label className="text-xs text-muted-foreground">{t('settings.discovery.maxWalletsPerMarket')}</Label>
                           <Input
                             type="number"
                             value={discoveryForm.max_wallets_per_market}
@@ -1661,7 +1661,7 @@ export default function SettingsPanel({
                             max={500}
                             className="mt-1 text-sm"
                           />
-                          <p className="text-[11px] text-muted-foreground/70 mt-1">Wallets extracted per sampled market</p>
+                          <p className="text-[11px] text-muted-foreground/70 mt-1">{t('settings.discovery.maxWalletsPerMarketDesc')}</p>
                         </div>
                       </div>
 
@@ -1670,7 +1670,7 @@ export default function SettingsPanel({
                       <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => handleSaveSection('discovery')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
-                          Save
+                          {t('settings.actions.save')}
                         </Button>
                       </div>
                     </div>
@@ -1683,8 +1683,8 @@ export default function SettingsPanel({
                         <Card className="bg-muted border-indigo-500/30">
                           <CardContent className="flex items-center justify-between p-3">
                             <div>
-                              <p className="font-medium text-sm">Enable Trading Proxy</p>
-                              <p className="text-xs text-muted-foreground">Route Polymarket/Kalshi trading requests through the proxy below</p>
+                              <p className="font-medium text-sm">{t('settings.vpn.enableTitle')}</p>
+                              <p className="text-xs text-muted-foreground">{t('settings.vpn.enableDesc')}</p>
                             </div>
                             <Switch
                               checked={vpnForm.enabled}
@@ -1694,18 +1694,18 @@ export default function SettingsPanel({
                         </Card>
 
                         <SecretInput
-                          label="Proxy URL"
+                          label={t('settings.vpn.proxyUrl')}
                           value={vpnForm.proxy_url}
-                          placeholder={settings?.trading_proxy?.proxy_url || 'socks5://user:pass@host:port'}
+                          placeholder={settings?.trading_proxy?.proxy_url || t('settings.vpn.proxyUrlPlaceholder')}
                           onChange={(v) => setVpnForm(p => ({ ...p, proxy_url: v }))}
                           showSecret={showSecrets['proxy_url']}
                           onToggle={() => toggleSecret('proxy_url')}
-                          description="Supports socks5://, http://, https:// proxy URLs"
+                          description={t('settings.vpn.proxyUrlDesc')}
                         />
 
                         <div className="grid grid-cols-2 gap-3">
                           <div>
-                            <Label className="text-xs text-muted-foreground">Request Timeout (seconds)</Label>
+                            <Label className="text-xs text-muted-foreground">{t('settings.vpn.requestTimeout')}</Label>
                             <Input
                               type="number"
                               value={vpnForm.timeout}
@@ -1720,8 +1720,8 @@ export default function SettingsPanel({
                         <Card className="bg-muted">
                           <CardContent className="flex items-center justify-between p-3">
                             <div>
-                              <p className="text-sm font-medium">Verify SSL Certificates</p>
-                              <p className="text-xs text-muted-foreground">Verify SSL certs for requests through the proxy</p>
+                              <p className="text-sm font-medium">{t('settings.vpn.verifySsl')}</p>
+                              <p className="text-xs text-muted-foreground">{t('settings.vpn.verifySslDesc')}</p>
                             </div>
                             <Switch
                               checked={vpnForm.verify_ssl}
@@ -1733,8 +1733,8 @@ export default function SettingsPanel({
                         <Card className="bg-muted border-yellow-500/20">
                           <CardContent className="flex items-center justify-between p-3">
                             <div>
-                              <p className="text-sm font-medium">Require VPN for Trading</p>
-                              <p className="text-xs text-muted-foreground">Block all trades if the VPN proxy is unreachable (recommended)</p>
+                              <p className="text-sm font-medium">{t('settings.vpn.requireVpn')}</p>
+                              <p className="text-xs text-muted-foreground">{t('settings.vpn.requireVpnDesc')}</p>
                             </div>
                             <Switch
                               checked={vpnForm.require_vpn}
@@ -1747,8 +1747,7 @@ export default function SettingsPanel({
                         <div className="flex items-start gap-2 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
                           <Shield className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
                           <p className="text-xs text-muted-foreground">
-                            Only actual trading requests (order placement, cancellation) are routed through the proxy.
-                            Market scanning, price feeds, and all other data remain on your direct connection for maximum speed.
+                            {t('settings.vpn.infoNote')}
                           </p>
                         </div>
                       </div>
@@ -1758,7 +1757,7 @@ export default function SettingsPanel({
                       <div className="flex items-center gap-2 flex-wrap">
                         <Button size="sm" onClick={() => handleSaveSection('vpn')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
-                          Save
+                          {t('settings.actions.save')}
                         </Button>
                         <Button
                           variant="secondary"
@@ -1767,7 +1766,7 @@ export default function SettingsPanel({
                           disabled={testVpnMutation.isPending}
                         >
                           <Shield className="w-3.5 h-3.5 mr-1.5" />
-                          Test VPN
+                          {t('settings.actions.testVpn')}
                         </Button>
                         {testVpnMutation.data && (
                           <Badge variant={testVpnMutation.data.status === 'success' ? "default" : "outline"} className={cn(
@@ -1789,9 +1788,9 @@ export default function SettingsPanel({
                       <Card className="bg-muted border-sky-500/30">
                         <CardContent className="flex items-center justify-between p-3">
                           <div>
-                            <p className="font-medium text-sm">Allow Network Access</p>
+                            <p className="font-medium text-sm">{t('settings.net.allowTitle')}</p>
                             <p className="text-xs text-muted-foreground">
-                              Let other devices on your local network reach the dashboard
+                              {t('settings.net.allowDesc')}
                             </p>
                           </div>
                           <Switch
@@ -1815,7 +1814,7 @@ export default function SettingsPanel({
                       <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => handleSaveSection('network')} disabled={saveMutation.isPending}>
                           <Save className="w-3.5 h-3.5 mr-1.5" />
-                          Save
+                          {t('settings.actions.save')}
                         </Button>
                       </div>
                     </div>
