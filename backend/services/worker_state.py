@@ -6,7 +6,9 @@ import asyncio
 import ctypes
 import os
 import sys
+import time
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 
 from utils.utcnow import utcnow
@@ -236,25 +238,89 @@ async def _restore_pending_session_state(session: AsyncSession, snapshot: dict[s
         await session.execute(sa_delete(model_cls).where(*where_clauses))
 
 
+@dataclass(frozen=True)
+class CommitMetrics:
+    """R12-C: fine-grained timing/row metrics for a ``_commit_with_retry`` call.
+
+    Used by the trader orchestrator (and anyone else who wants to
+    attribute slow commits) to split a 3s ``ps_db_commit`` budget into:
+
+    * ``commit_call_ms`` — wall time of the final successful
+      ``await session.commit()`` itself.  Excludes rollback, sleep, and
+      replay time inside the retry loop.  If this is high, the commit
+      itself is slow (big transaction, lock wait at commit).
+    * ``total_ms`` — wall time of the entire ``_commit_with_retry``
+      call, including any retries.  ``total_ms - commit_call_ms`` is
+      the overhead from rollback + sleep + replay.
+    * ``retry_count`` — number of retries before success.  ``0`` means
+      the first attempt succeeded.
+    * ``dirty_rows`` — ``len(session.new) + len(session.dirty) +
+      len(session.deleted)`` captured before the first commit attempt.
+      Lets us tell "one big transaction" apart from "small transaction
+      waiting on a lock".
+
+    Returned from every ``_commit_with_retry`` call.  Callers that
+    don't care can safely ignore the return value — existing semantics
+    (return ``None`` on success, raise on final failure) are preserved
+    because failures still raise and successful returns now hand back
+    metrics instead of ``None``.
+    """
+
+    commit_call_ms: int
+    total_ms: int
+    retry_count: int
+    dirty_rows: int
+
+
+def _count_pending_rows(session: AsyncSession) -> int:
+    """Best-effort pending-unit-of-work row count for R12-C metrics."""
+    try:
+        new = len(session.new) if hasattr(session, "new") else 0
+        dirty = len(session.dirty) if hasattr(session, "dirty") else 0
+        deleted = len(session.deleted) if hasattr(session, "deleted") else 0
+        return int(new + dirty + deleted)
+    except Exception:
+        return 0
+
+
 async def _commit_with_retry(
     session: AsyncSession,
     *,
     retry_attempts: int = DB_RETRY_ATTEMPTS,
     base_delay_seconds: float = DB_RETRY_BASE_DELAY_SECONDS,
     max_delay_seconds: float = DB_RETRY_MAX_DELAY_SECONDS,
-) -> None:
+) -> "CommitMetrics | None":
     if not hasattr(session, "commit"):
-        return
+        return None
 
     attempts = max(1, int(retry_attempts))
     base_delay = max(0.0, float(base_delay_seconds))
     max_delay = max(base_delay, float(max_delay_seconds))
 
+    # R12-C: capture row count + start the total-wall timer before we
+    # snapshot pending state.  ``dirty_rows`` is sampled once, pre-
+    # commit; on retry the pending snapshot is replayed so the count
+    # stays meaningful across attempts.
+    dirty_rows = _count_pending_rows(session)
+    total_started = time.monotonic()
+
     pending_snapshot = _capture_pending_session_state(session)
+    retry_count = 0
     for attempt in range(attempts):
         try:
+            # R12-C: time only the commit call itself, not the
+            # surrounding retry loop.  On the final successful attempt
+            # this is what we emit as ``ps_db_commit_call``.
+            commit_started = time.monotonic()
             await session.commit()
-            return
+            commit_call_ms = int((time.monotonic() - commit_started) * 1000)
+            total_ms = int((time.monotonic() - total_started) * 1000)
+            return CommitMetrics(
+                commit_call_ms=commit_call_ms,
+                total_ms=total_ms,
+                retry_count=retry_count,
+                dirty_rows=dirty_rows,
+            )
         except DBAPIError as exc:
             if hasattr(session, "rollback"):
                 await session.rollback()
@@ -262,11 +328,13 @@ async def _commit_with_retry(
             is_last = attempt >= attempts - 1
             if not is_locked or is_last:
                 raise
+            retry_count += 1
             if pending_snapshot.get("new") or pending_snapshot.get("dirty") or pending_snapshot.get("deleted"):
                 await _restore_pending_session_state(session, pending_snapshot)
             delay = min(base_delay * (2**attempt), max_delay)
             if delay > 0:
                 await asyncio.sleep(delay)
+    return None
 
 
 def _now() -> datetime:

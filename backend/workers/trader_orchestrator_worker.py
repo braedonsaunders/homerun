@@ -4399,6 +4399,20 @@ async def _run_trader_once(
         delta_ms = (time.monotonic() - started_mono) * 1000.0
         _accumulators[name] = _accumulators.get(name, 0.0) + delta_ms
 
+    def _accumulate_value(name: str, value: float) -> None:
+        """R12-C: push a pre-computed millisecond/count value into a bucket.
+
+        Identical to ``_accumulate`` except it takes the value directly
+        instead of timing from a monotonic start.  Used to surface
+        sub-metrics (commit_call_ms, retry_count, dirty_rows) that
+        ``_commit_with_retry`` computes internally.
+        """
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return
+        _accumulators[name] = _accumulators.get(name, 0.0) + numeric
+
     # ARCHITECTURAL CONTRACT: the orchestrator hot path MUST NOT call
     # Polymarket REST APIs.  All wallet state is push-driven via the
     # CLOB user-channel WS into ``WalletStateCache``; market data is
@@ -4489,21 +4503,19 @@ async def _run_trader_once_inner(
 
     _mnt_session_open_started = time.monotonic()
     async with AsyncSessionLocal() as session:
-        # R11-D: split ``mnt_session_open`` into two sub-buckets so we can
-        # tell whether the 1.9s budget is spent waiting for a connection
-        # out of the asyncpg pool (``mnt_session_checkout``) or on the
-        # per-connection SET LOCAL round trip (``mnt_session_stmt_timeout``).
+        # R12-A: the per-cycle ``SET LOCAL statement_timeout`` used to
+        # cost 0.5-1.3s per cycle (R11-D measurements:
+        # ``mnt_session_stmt_timeout = 531/704/1281 ms``) — a full DB
+        # round trip on a busy event loop that queued behind other
+        # tasks.  The pool already configures ``statement_timeout`` as
+        # an asyncpg ``server_settings`` entry (see database.py, 30s
+        # default) so every checked-out connection already has a
+        # server-side cap.  ``asyncio.wait_for`` wraps the cycle at the
+        # asyncio layer, so the belt-and-suspenders per-cycle SET LOCAL
+        # was buying us almost nothing in return for ~1s of steady-state
+        # overhead.  Drop it entirely.  ``mnt_session_checkout`` stays
+        # as instrumentation to prove the checkout itself is free.
         _accumulate("mnt_session_checkout", _mnt_session_open_started)
-        # Bound DB statements inside this cycle without leaking the timeout
-        # onto pooled connections used by unrelated tasks.
-        _mnt_stmt_timeout_started = time.monotonic()
-        if cycle_timeout_seconds > 0:
-            _stmt_timeout_ms = int(max(3000, (cycle_timeout_seconds - 2) * 1000))
-            try:
-                await session.execute(text(f"SET LOCAL statement_timeout = '{_stmt_timeout_ms}'"))
-            except Exception:
-                pass
-        _accumulate("mnt_session_stmt_timeout", _mnt_stmt_timeout_started)
         _accumulate("mnt_session_open", _mnt_session_open_started)
         trader_id = str(trader["id"])
         source_configs = _normalize_source_configs(trader)
@@ -7461,9 +7473,19 @@ async def _run_trader_once_inner(
                             cursor_signal_id = signal_id
                             cursor_runtime_sequence = _signal_runtime_sequence(signal) or cursor_runtime_sequence
                         _commit_mono = time.monotonic()
-                        await _commit_with_retry(session)
+                        # R12-C: capture CommitMetrics so we can split
+                        # the 3s ``ps_db_commit`` budget into the actual
+                        # commit-call time vs retry/rollback overhead,
+                        # and tag each commit with its pending row count
+                        # so "big transaction" and "lock-wait" cases are
+                        # distinguishable in the next soak.
+                        _commit_metrics = await _commit_with_retry(session)
                         _commit_done_mono = time.monotonic()
                         _accumulate("ps_db_commit", _commit_mono)
+                        if _commit_metrics is not None:
+                            _accumulate_value("ps_db_commit_call", _commit_metrics.commit_call_ms)
+                            _accumulate_value("ps_db_commit_retries", _commit_metrics.retry_count)
+                            _accumulate_value("ps_db_commit_dirty_rows", _commit_metrics.dirty_rows)
                         try:
                             await session.reset()
                         except Exception:
@@ -7992,8 +8014,14 @@ async def _run_trader_once_inner(
                         # to close.  Safe to ignore.
                         pass
                     _commit_mono = time.monotonic()
-                    await _commit_with_retry(session)
+                    # R12-C: same metrics split as the submit-path commit
+                    # above — see comment there for rationale.
+                    _commit_metrics = await _commit_with_retry(session)
                     _accumulate("ps_db_commit", _commit_mono)
+                    if _commit_metrics is not None:
+                        _accumulate_value("ps_db_commit_call", _commit_metrics.commit_call_ms)
+                        _accumulate_value("ps_db_commit_retries", _commit_metrics.retry_count)
+                        _accumulate_value("ps_db_commit_dirty_rows", _commit_metrics.dirty_rows)
                     try:
                         await session.reset()
                     except Exception:
@@ -8116,8 +8144,17 @@ async def _run_trader_once_inner(
                             commit=False,
                         )
                         _commit_mono = time.monotonic()
-                        await _commit_with_retry(session)
+                        # R12-C: error-recovery path commit — instrument
+                        # the same way so we can tell whether the
+                        # decision_error write itself is slow (e.g. if
+                        # it's contending for a lock on trade_signals
+                        # alongside the main path).
+                        _commit_metrics = await _commit_with_retry(session)
                         _accumulate("ps_db_commit", _commit_mono)
+                        if _commit_metrics is not None:
+                            _accumulate_value("ps_db_commit_call", _commit_metrics.commit_call_ms)
+                            _accumulate_value("ps_db_commit_retries", _commit_metrics.retry_count)
+                            _accumulate_value("ps_db_commit_dirty_rows", _commit_metrics.dirty_rows)
                         try:
                             await session.reset()
                         except Exception:

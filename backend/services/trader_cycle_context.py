@@ -511,27 +511,52 @@ class _TraderCycleContextManager:
         pending_live_exit_summary: Mapping[str, Any]
         live_provider_failure_snapshot: Mapping[str, Any]
         if normalized_mode == "live":
-            _t0 = time.monotonic()
-            pending_live_exit_summary = await self._get_pending_live_exit_summary(
-                trader_id=trader_key[0],
-                mode=normalized_mode,
-                terminal_statuses=terminal_statuses,
-                prefetch_db=prefetch_db,
+            # R12-B: R11-A data showed these two projection awaits together
+            # ate the entire ``setup_ctx_acquire`` budget (1-4 s) while every
+            # other wrapper was 0 ms.  They're fully independent reads — no
+            # shared state, no ordering constraint — so run them in parallel.
+            # Cache-hit path is still ~0 ms each; on cache miss the wall
+            # time becomes ``max(pending, provider)`` instead of the sum,
+            # halving the observed cost.  ``asyncio.gather`` also surfaces
+            # per-branch timings individually (``_record_step`` wraps each
+            # awaitable), so the existing ``setup_ca_*`` sub-buckets stay
+            # populated.
+            _window_seconds = int(
+                provider_window_seconds
+                if provider_window_seconds is not None
+                else DEFAULT_LIVE_PROVIDER_HEALTH["window_seconds"]
             )
-            _record_step("pending_live_exit", _t0)
+
+            async def _timed_pending() -> Mapping[str, Any]:
+                _tp = time.monotonic()
+                try:
+                    return await self._get_pending_live_exit_summary(
+                        trader_id=trader_key[0],
+                        mode=normalized_mode,
+                        terminal_statuses=terminal_statuses,
+                        prefetch_db=prefetch_db,
+                    )
+                finally:
+                    _record_step("pending_live_exit", _tp)
+
+            async def _timed_provider() -> Mapping[str, Any]:
+                _tp = time.monotonic()
+                try:
+                    return await self._get_live_provider_failure_snapshot(
+                        trader_id=trader_key[0],
+                        mode=normalized_mode,
+                        window_seconds=_window_seconds,
+                        prefetch_db=prefetch_db,
+                    )
+                finally:
+                    _record_step("provider_failure", _tp)
 
             _t0 = time.monotonic()
-            live_provider_failure_snapshot = await self._get_live_provider_failure_snapshot(
-                trader_id=trader_key[0],
-                mode=normalized_mode,
-                window_seconds=int(
-                    provider_window_seconds
-                    if provider_window_seconds is not None
-                    else DEFAULT_LIVE_PROVIDER_HEALTH["window_seconds"]
-                ),
-                prefetch_db=prefetch_db,
+            pending_live_exit_summary, live_provider_failure_snapshot = await asyncio.gather(
+                _timed_pending(),
+                _timed_provider(),
             )
-            _record_step("provider_failure", _t0)
+            _record_step("projection_gather", _t0)
         else:
             pending_live_exit_summary = _EMPTY_PENDING_LIVE_EXIT
             live_provider_failure_snapshot = _EMPTY_PROVIDER_FAILURE
