@@ -96,7 +96,12 @@ MAX_PROJECTION_ENTRIES: int = 256
 
 #: Per-prefetch DB timeout.  Below this we abort and serve cached/empty
 #: state so the cycle still makes progress under DB pressure.
-PROJECTION_QUERY_TIMEOUT_SECONDS: float = 1.5
+#: R10-C: tightened 1.5 → 0.5 after R10-A sub-instrumentation showed
+#: ``setup_ctx_acquire`` peaking at 7.3 s during pool starvation.  The
+#: projection is non-authoritative — the reconciler repairs drift on a
+#: 30 s cadence — so a short timeout + empty-sentinel fallback is the
+#: correct trade-off in favor of trader-cycle latency.
+PROJECTION_QUERY_TIMEOUT_SECONDS: float = 0.5
 
 
 # ── Frozen value objects ────────────────────────────────────────────

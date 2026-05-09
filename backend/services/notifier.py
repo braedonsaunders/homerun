@@ -642,47 +642,57 @@ class TelegramNotifier:
                 new_orders: list[TraderOrder] = []
                 updated_orders: list[TraderOrder] = []
                 runtime_state_message: Optional[str] = None
+
+                # R10-B.1c: each DB call gets its own short-lived session so
+                # the asyncpg pool is never held across more than one query.
+                # Previously a single ``async with AsyncSessionLocal()`` block
+                # wrapped five sequential queries; under load that held the
+                # connection for 30+ seconds, starving the trader hot path.
                 async with AsyncSessionLocal() as session:
                     control = await session.get(TraderOrchestratorControl, "default")
+                async with AsyncSessionLocal() as session:
                     snapshot = await session.get(TraderOrchestratorSnapshot, "latest")
 
-                    active = bool(control is not None and bool(control.is_enabled) and not bool(control.is_paused))
-                    mode = _mode_label(getattr(control, "mode", "shadow"))
+                active = bool(control is not None and bool(control.is_enabled) and not bool(control.is_paused))
+                mode = _mode_label(getattr(control, "mode", "shadow"))
 
-                    traders_running = int(getattr(snapshot, "traders_running", 0) if snapshot else 0)
-                    traders_total = int(getattr(snapshot, "traders_total", 0) if snapshot else 0)
+                traders_running = int(getattr(snapshot, "traders_running", 0) if snapshot else 0)
+                traders_total = int(getattr(snapshot, "traders_total", 0) if snapshot else 0)
 
-                    if active and not self._autotrader_active:
-                        # Defer the "Active" message by one poll cycle so the
-                        # orchestrator has time to run its first cycle and write
-                        # a snapshot with real trader counts (otherwise we read
-                        # stale 0/0 from the previous snapshot).
-                        self._autotrader_active = True
-                        self._pending_active_message = (mode,)
-                        self._last_summary_at = utcnow()
-                    elif active and getattr(self, "_pending_active_message", None):
-                        pending_mode = self._pending_active_message[0]
-                        self._pending_active_message = None
-                        runtime_state_message = self._format_runtime_state_message(
-                            title="Autotrader Active",
-                            mode=pending_mode,
-                            traders_running=traders_running,
-                            traders_total=traders_total,
-                        )
-                    elif not active and self._autotrader_active:
-                        self._pending_active_message = None
-                        runtime_state_message = self._format_runtime_state_message(
-                            title="Autotrader Paused",
-                            mode=mode,
-                            traders_running=traders_running,
-                            traders_total=traders_total,
-                        )
-                        self._last_summary_at = None
+                if active and not self._autotrader_active:
+                    # Defer the "Active" message by one poll cycle so the
+                    # orchestrator has time to run its first cycle and write
+                    # a snapshot with real trader counts (otherwise we read
+                    # stale 0/0 from the previous snapshot).
+                    self._autotrader_active = True
+                    self._pending_active_message = (mode,)
+                    self._last_summary_at = utcnow()
+                elif active and getattr(self, "_pending_active_message", None):
+                    pending_mode = self._pending_active_message[0]
+                    self._pending_active_message = None
+                    runtime_state_message = self._format_runtime_state_message(
+                        title="Autotrader Active",
+                        mode=pending_mode,
+                        traders_running=traders_running,
+                        traders_total=traders_total,
+                    )
+                elif not active and self._autotrader_active:
+                    self._pending_active_message = None
+                    runtime_state_message = self._format_runtime_state_message(
+                        title="Autotrader Paused",
+                        mode=mode,
+                        traders_running=traders_running,
+                        traders_total=traders_total,
+                    )
+                    self._last_summary_at = None
 
-                    self._autotrader_active = active
+                self._autotrader_active = active
 
+                async with AsyncSessionLocal() as session:
                     new_events = await self._load_new_trader_events(session)
+                async with AsyncSessionLocal() as session:
                     new_orders = await self._load_new_trader_orders(session)
+                async with AsyncSessionLocal() as session:
                     updated_orders = await self._load_updated_trader_orders(session)
 
                 if runtime_state_message:
@@ -2614,6 +2624,37 @@ class TelegramNotifier:
         websocket health) call ``_enqueue`` directly.  This wrapper
         gives external callers a stable surface without needing to
         reach into the underscore-prefixed internals.
+
+        Routing: R10-B.1 moved the notifier to the discovery plane so
+        the trader-orchestrator hot path never waits on a Telegram
+        session hold.  Callers on OTHER planes (trading, API, news)
+        publish via Redis and the notifier host subscribes — see
+        ``services.notifier_bridge``.  On the host plane (``_started``
+        is True), we bypass Redis and enqueue directly.
+        """
+        if not text:
+            return
+        normalized = str(text).strip()
+        if not normalized:
+            return
+        if self._started:
+            # We're the host plane — enqueue directly.
+            await self._enqueue(normalized)
+            return
+        # Not host: publish over Redis so the host plane delivers.
+        try:
+            from services import notifier_bridge
+
+            await notifier_bridge.publish_alert(normalized, category=category)
+        except Exception as exc:
+            logger.debug("notifier_bridge.publish_alert failed", exc_info=exc)
+
+    async def send_operator_alert_local(
+        self, text: str, *, category: str = "operator"
+    ) -> None:
+        """Host-plane-only entrypoint used by ``notifier_bridge``'s
+        subscriber.  Bypasses the host-check in ``send_operator_alert``
+        so a Redis-delivered payload is always enqueued locally.
         """
         if not text:
             return

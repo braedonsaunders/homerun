@@ -3834,6 +3834,64 @@ async def _persist_trader_cycle_heartbeat(
     )
 
 
+# R10-E: fire-and-forget heartbeat for the end-of-cycle hot path.
+#
+# ``_persist_trader_cycle_heartbeat`` does an UPDATE on Trader then a
+# blocking commit.  Under pool pressure R10-A instrumentation captured
+# ``slp_heartbeat`` at 3797 ms — budget that directly delays the next
+# trader's cycle start.  The heartbeat is a liveness signal (the
+# orchestrator's own scheduler doesn't read it in the hot path; it is
+# consumed by the GUI + external monitors that can tolerate seconds of
+# lag), so we detach the commit to a background task whose own short
+# session cannot steal budget from the cycle.
+#
+# We keep references to in-flight heartbeat tasks so they aren't
+# garbage-collected mid-flight (asyncio only weakly holds task refs).
+_heartbeat_bg_tasks: set[asyncio.Task] = set()
+
+
+async def _persist_trader_cycle_heartbeat_bg(
+    trader_id: str,
+    *,
+    advance_run_clock: bool = True,
+) -> None:
+    """Detached body: open a fresh session, run the UPDATE + commit."""
+    try:
+        async with AsyncSessionLocal() as session:
+            await _persist_trader_cycle_heartbeat(
+                session,
+                trader_id,
+                advance_run_clock=advance_run_clock,
+            )
+    except Exception as exc:
+        logger.debug("Fire-and-forget heartbeat failed: %s", exc)
+
+
+def schedule_trader_cycle_heartbeat(
+    trader_id: str,
+    *,
+    advance_run_clock: bool = True,
+) -> None:
+    """Fire-and-forget heartbeat: caller returns immediately.  Safe to
+    call from the trader-cycle hot path; the actual UPDATE/commit runs
+    on a background task with its own session, decoupled from the
+    caller's connection.
+    """
+    try:
+        task = asyncio.create_task(
+            _persist_trader_cycle_heartbeat_bg(
+                trader_id,
+                advance_run_clock=advance_run_clock,
+            ),
+            name=f"heartbeat-{trader_id}",
+        )
+    except Exception as exc:
+        logger.debug("Failed to schedule fire-and-forget heartbeat: %s", exc)
+        return
+    _heartbeat_bg_tasks.add(task)
+    task.add_done_callback(_heartbeat_bg_tasks.discard)
+
+
 def _signal_cursor_timestamp(signal: Any) -> Any:
     updated_at = getattr(signal, "updated_at", None)
     if updated_at is not None:
@@ -8159,7 +8217,12 @@ async def _run_trader_once_inner(
                 prefetched_signals = None
                 _accumulate("slp_deferred_republish", _slp_deferred_republish_started)
             _slp_heartbeat_started = time.monotonic()
-            await _persist_trader_cycle_heartbeat(session, trader_id)
+            # R10-E: fire-and-forget to keep the cycle's hot path off
+            # the heartbeat commit's pool wait.  The outer session is
+            # still used for in-cycle writes above this line; the
+            # heartbeat UPDATE moves to a detached task with its own
+            # short session.
+            schedule_trader_cycle_heartbeat(trader_id)
             _accumulate("slp_heartbeat", _slp_heartbeat_started)
             _accumulate("sl_post_loop", _sl_post_loop_started)
             if defer_signal_processing or stream_trigger_mode:
@@ -9350,31 +9413,22 @@ async def run_worker_loop(
 
 
 async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True, write_snapshot: bool = True) -> None:
-    """Run the trader orchestrator worker loop (called from API process lifespan)."""
-    notifier = None
-    notifier_start_task: asyncio.Task | None = None
+    """Run the trader orchestrator worker loop (called from API process lifespan).
+
+    R10-B.1d: The TelegramNotifier used to start here on the trading
+    plane.  Its monitor loop + queue worker held asyncpg connections
+    for 30+ seconds under load, starving the trader hot path.  The
+    notifier now lives on the discovery plane (see
+    ``workers/host.py::_initialize_services``); callers on this plane
+    publish via ``services.notifier_bridge.publish_alert`` which round-
+    trips through Redis to the host plane's subscriber.  The
+    ``notifier_enabled`` parameter is retained for API-surface stability
+    but is a no-op here.
+    """
     runtime_trigger_task: asyncio.Task | None = None
-    if notifier_enabled:
-        try:
-            from services.notifier import notifier as notifier_service
-
-            notifier = notifier_service
-            notifier_start_task = asyncio.create_task(notifier.start(), name="autotrader-notifier-start")
-
-            def _handle_notifier_start_done(task: asyncio.Task) -> None:
-                try:
-                    task.result()
-                except asyncio.CancelledError:
-                    return
-                except Exception as exc:
-                    logger.warning("Autotrader notifier start failed (non-critical): %s", exc)
-                else:
-                    logger.info("Autotrader notifier started")
-
-            notifier_start_task.add_done_callback(_handle_notifier_start_done)
-            logger.info("Autotrader notifier start scheduled")
-        except Exception as exc:
-            logger.warning("Autotrader notifier start failed (non-critical): %s", exc)
+    # notifier_enabled is intentionally ignored on this plane — kept in
+    # the signature for callers that still pass it.
+    _ = notifier_enabled
 
     # Start the cycle-context manager BEFORE the worker loop so the
     # global snapshot has time to warm up (~1 s) before the first
@@ -9419,19 +9473,7 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
                 pass
             except Exception as exc:
                 logger.debug("Runtime trigger loop cleanup skipped: %s", exc)
-        if notifier_start_task is not None and not notifier_start_task.done():
-            notifier_start_task.cancel()
-            try:
-                await notifier_start_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                logger.debug("Notifier start task cleanup skipped: %s", exc)
-        if notifier is not None:
-            try:
-                await notifier.shutdown()
-            except Exception as exc:
-                logger.debug("Notifier shutdown skipped: %s", exc)
+        # R10-B.1d: notifier lifecycle moved off this plane.
 
 
 async def main(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True, write_snapshot: bool = True) -> None:

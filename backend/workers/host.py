@@ -1314,6 +1314,42 @@ class WorkerHost:
                     exc_info=exc,
                 )
 
+        # R10-B.1e: TelegramNotifier moved OFF the trading plane so its
+        # 5 s DB poll + 30+ s asyncpg holds can never steal budget from
+        # the trader-orchestrator hot path.  The discovery plane has
+        # spare cycles, owns the singleton (a second notifier would
+        # double-deliver every message), and hosts the cross-plane
+        # ``notifier_bridge`` subscriber so producers on other planes can
+        # publish via Redis.
+        if self._plane_name == "discovery":
+            try:
+                from services.notifier import notifier as notifier_service
+
+                async def _start_notifier() -> None:
+                    await notifier_service.start()
+
+                self._schedule_background_startup(
+                    task_name="notifier-start",
+                    starter=_start_notifier,
+                    failure_message="Autotrader notifier start failed (non-critical)",
+                    started_attr="_notifier_started",
+                    started_check=lambda: bool(getattr(notifier_service, "_started", False)),
+                )
+
+                from services import notifier_bridge
+
+                self._schedule_background_startup(
+                    task_name="notifier-bridge-subscriber",
+                    starter=notifier_bridge.start_subscriber,
+                    failure_message="notifier_bridge subscriber start failed",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to schedule notifier / notifier_bridge",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+
             # Signal cache: full-payload Redis subscriber that
             # eliminates the fast trader's per-cycle
             # ``list_unconsumed_trade_signals`` DB query.  Architecture:
@@ -1580,6 +1616,32 @@ class WorkerHost:
                     plane=self._plane_name,
                     exc_info=exc,
                 )
+
+        if self._plane_name == "discovery":
+            # R10-B.1e: stop notifier bridge subscriber first (no more
+            # incoming messages), then stop the notifier itself.
+            try:
+                from services import notifier_bridge
+
+                await notifier_bridge.stop_subscriber()
+            except Exception as exc:
+                logger.warning(
+                    "notifier_bridge stop raised",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                from services.notifier import notifier as notifier_service
+
+                await notifier_service.shutdown()
+            except Exception as exc:
+                logger.warning(
+                    "Notifier shutdown raised",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+
+        if self._plane_name == "trading":
             try:
                 from services import signal_cache
 

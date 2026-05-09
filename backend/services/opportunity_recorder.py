@@ -165,30 +165,45 @@ class OpportunityRecorder:
         cutoff = utcnow() - timedelta(days=_MAX_RESOLUTION_AGE_DAYS)
         resolution_due_by = utcnow() + timedelta(hours=_RESOLUTION_LOOKAHEAD_HOURS)
 
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(OpportunityHistory)
-                .where(
-                    and_(
-                        OpportunityHistory.was_profitable.is_(None),
-                        OpportunityHistory.detected_at >= cutoff,
-                        or_(
-                            and_(
-                                OpportunityHistory.resolution_date.is_not(None),
-                                OpportunityHistory.resolution_date <= resolution_due_by,
+        # R10-B.2: bound the outer SELECT with a hard timeout so we can
+        # never hold the asyncpg pool waiting on a slow-planner query.
+        # Pool-hold warnings up to 30.5 s were traced to this path on
+        # the discovery plane; 8 s is well above the healthy p99 and
+        # below the trader-cycle's 10 s budget.
+        async def _fetch_unresolved() -> list[OpportunityHistory]:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(OpportunityHistory)
+                    .where(
+                        and_(
+                            OpportunityHistory.was_profitable.is_(None),
+                            OpportunityHistory.detected_at >= cutoff,
+                            or_(
+                                and_(
+                                    OpportunityHistory.resolution_date.is_not(None),
+                                    OpportunityHistory.resolution_date <= resolution_due_by,
+                                ),
+                                OpportunityHistory.resolution_date.is_(None),
                             ),
-                            OpportunityHistory.resolution_date.is_(None),
-                        ),
+                        )
                     )
+                    .order_by(
+                        case((OpportunityHistory.resolution_date.is_(None), 1), else_=0),
+                        OpportunityHistory.resolution_date.asc(),
+                        OpportunityHistory.detected_at.asc(),
+                    )
+                    .limit(_RESOLUTION_CHECK_BATCH_SIZE)
                 )
-                .order_by(
-                    case((OpportunityHistory.resolution_date.is_(None), 1), else_=0),
-                    OpportunityHistory.resolution_date.asc(),
-                    OpportunityHistory.detected_at.asc(),
-                )
-                .limit(_RESOLUTION_CHECK_BATCH_SIZE)
+                return result.scalars().all()
+
+        try:
+            unresolved = await asyncio.wait_for(_fetch_unresolved(), timeout=8.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Opportunity resolution fetch timed out; skipping this cycle",
+                timeout_seconds=8.0,
             )
-            unresolved = result.scalars().all()
+            return
 
         if not unresolved:
             return

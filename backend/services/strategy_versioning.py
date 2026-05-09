@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,61 @@ class ResolvedStrategyVersion:
     version_row: StrategyVersion
     latest_version: int
     requested_version: int | None
+
+
+# ─── R10-D: resolve_strategy_version TTL cache ─────────────────────────
+#
+# ``resolve_strategy_version`` used to do three SQL round-trips on every
+# trader cycle — ``get_strategy_by_id_or_slug`` (slug lookup),
+# ``ensure_strategy_version_seeded`` (latest-row lookup), and optionally
+# a pinned-version lookup.  Under pool pressure the aggregate call
+# reached ``prs_resolve_version = 2078 ms`` in R10-A instrumentation.
+#
+# Strategy rows and their latest versions change at save-time (operator
+# edits in the UI), which is on the order of minutes-to-hours, not per
+# cycle.  A short identity-only cache that maps
+# ``(strategy_key, requested_version)`` → ``(strategy_id,
+# version_row_id, latest_version)`` turns each cached resolve into two
+# ``session.get`` PK lookups (identity-map hits when the session has
+# already loaded them) instead of three SQL statements.
+#
+# Invalidation: ``invalidate_strategy_version_cache(strategy_key)``
+# must be called from every write path that touches a strategy or
+# creates a new StrategyVersion snapshot.  TTL acts as a safety net;
+# operators can tolerate at most ``_CACHE_TTL_SECONDS`` of version lag
+# before a newly-saved strategy becomes visible.
+_CACHE_TTL_SECONDS: float = 60.0
+
+
+@dataclass
+class _CachedIds:
+    strategy_id: str
+    version_row_id: str
+    latest_version: int
+    expires_at: float
+
+
+_resolve_cache: dict[tuple[str, int | None], _CachedIds] = {}
+
+
+def invalidate_strategy_version_cache(strategy_key: str | None = None) -> None:
+    """Drop cached ID tuples for a strategy, or the entire cache.
+
+    Call this from every write path that touches Strategy or creates a
+    StrategyVersion snapshot.  Free-form key because callers may have
+    either the slug or the uuid; we normalize and prune both prefix
+    matches on the (strategy_key, *) entries.
+    """
+    global _resolve_cache
+    if strategy_key is None:
+        _resolve_cache.clear()
+        return
+    key = _normalize_strategy_key(strategy_key)
+    if not key:
+        return
+    _resolve_cache = {
+        k: v for k, v in _resolve_cache.items() if k[0] != key
+    }
 
 
 def _normalize_strategy_key(value: Any) -> str:
@@ -210,6 +266,12 @@ async def create_strategy_version_snapshot(
             await session.commit()
             await session.refresh(existing_version)
             await session.refresh(strategy)
+        # R10-D: latest-pointer moved — invalidate cache.
+        try:
+            invalidate_strategy_version_cache(str(strategy.slug or ""))
+            invalidate_strategy_version_cache(str(strategy.id or ""))
+        except Exception:
+            pass
         return existing_version
 
     await session.execute(
@@ -248,6 +310,15 @@ async def create_strategy_version_snapshot(
         await session.refresh(snapshot)
         await session.refresh(strategy)
 
+    # R10-D: a new version row (or bump to latest=true for an existing
+    # row just above) invalidates every cached entry for this strategy.
+    # We invalidate by slug AND id because callers can resolve either.
+    try:
+        invalidate_strategy_version_cache(str(strategy.slug or ""))
+        invalidate_strategy_version_cache(str(strategy.id or ""))
+    except Exception:
+        pass
+
     return snapshot
 
 
@@ -260,6 +331,28 @@ async def resolve_strategy_version(
     normalized_key = _normalize_strategy_key(strategy_key)
     if not normalized_key:
         raise ValueError("strategy_key is required")
+
+    # R10-D: fast-path — we've resolved this (strategy_key, version)
+    # before within the TTL.  Fall back to two ``session.get`` PK
+    # lookups instead of the three queries that uncached resolution
+    # issues.  On a well-warmed session these are identity-map hits
+    # with zero SQL.
+    cache_key = (normalized_key, int(requested_version) if requested_version is not None else None)
+    now_mono = time.monotonic()
+    cached = _resolve_cache.get(cache_key)
+    if cached is not None and cached.expires_at > now_mono:
+        strategy_row = await session.get(Strategy, cached.strategy_id)
+        version_row = await session.get(StrategyVersion, cached.version_row_id)
+        if strategy_row is not None and version_row is not None:
+            return ResolvedStrategyVersion(
+                strategy=strategy_row,
+                version_row=version_row,
+                latest_version=cached.latest_version,
+                requested_version=int(requested_version) if requested_version is not None else None,
+            )
+        # Cache entry is stale (row deleted) — drop it and fall through
+        # to the slow path.
+        _resolve_cache.pop(cache_key, None)
 
     strategy_row = await get_strategy_by_id_or_slug(session, strategy_key=normalized_key)
     if strategy_row is None:
@@ -275,6 +368,12 @@ async def resolve_strategy_version(
     latest_version = int(latest_row.version or strategy_row.version or 1)
 
     if requested_version is None:
+        _resolve_cache[cache_key] = _CachedIds(
+            strategy_id=str(strategy_row.id),
+            version_row_id=str(latest_row.id),
+            latest_version=latest_version,
+            expires_at=now_mono + _CACHE_TTL_SECONDS,
+        )
         return ResolvedStrategyVersion(
             strategy=strategy_row,
             version_row=latest_row,
@@ -301,6 +400,12 @@ async def resolve_strategy_version(
     if version_row is None:
         raise ValueError(f"Strategy '{normalized_key}' does not have version {int(requested_version)}")
 
+    _resolve_cache[cache_key] = _CachedIds(
+        strategy_id=str(strategy_row.id),
+        version_row_id=str(version_row.id),
+        latest_version=latest_version,
+        expires_at=now_mono + _CACHE_TTL_SECONDS,
+    )
     return ResolvedStrategyVersion(
         strategy=strategy_row,
         version_row=version_row,
