@@ -58,6 +58,42 @@ def _short_frame_key(frame: object) -> str | None:
         return None
 
 
+# Frame filters: when the deepest suspended frame sits inside an
+# asyncio/stdlib primitive (Semaphore.acquire, Lock.acquire, Queue.get,
+# tasks.sleep, etc.), its file:func:lineno is the same for every parked
+# task and gives ZERO signal about WHO is actually waiting.  We walk
+# back up the chain to the first frame that sits in USER code and key
+# by that frame instead, while appending a short tag so operators
+# still see "parked on a Semaphore at caller_X:42".
+#
+# Simple substring match on the filename — robust across Python
+# versions and avoids importing asyncio internals.
+_STDLIB_FILENAME_MARKERS = (
+    # Windows + POSIX path separators both end up here after rsplit.
+    "asyncio/locks.py",
+    "asyncio\\locks.py",
+    "asyncio/queues.py",
+    "asyncio\\queues.py",
+    "asyncio/tasks.py",
+    "asyncio\\tasks.py",
+    "asyncio/base_events.py",
+    "asyncio\\base_events.py",
+    "asyncio/futures.py",
+    "asyncio\\futures.py",
+    "asyncio/streams.py",
+    "asyncio\\streams.py",
+)
+
+
+def _frame_is_stdlib_asyncio(frame: object) -> bool:
+    try:
+        fname = frame.f_code.co_filename  # type: ignore[attr-defined]
+    except Exception:
+        return False
+    # Normalize forward slashes for cross-platform matching.
+    return any(marker in fname for marker in _STDLIB_FILENAME_MARKERS)
+
+
 def _innermost_coro_frame_key(task: asyncio.Task) -> str | None:
     """Walk the cr_await chain to the deepest coroutine still suspended.
 
@@ -65,6 +101,14 @@ def _innermost_coro_frame_key(task: asyncio.Task) -> str | None:
     coroutine is actually parked — i.e. the true blocking await point.
     Falls back to the outer ``task.get_stack(limit=1)`` frame if
     traversal isn't possible (e.g. C-extension coro, non-coroutine awaitable).
+
+    If the deepest frame sits inside an asyncio stdlib primitive
+    (Semaphore.acquire, Lock.acquire, Queue.get, sleep, etc.) we walk
+    BACK UP the chain to the first user-code frame and append a short
+    ``[via <primitive>:<lineno>]`` tag so operators can see who is
+    parked on which primitive — ``Semaphore.acquire:386 x30`` is
+    structurally useless but ``trader_hot_state.py:flush_audit:1452
+    [via locks.py:acquire:386] x30`` identifies the real caller.
     """
     # Start from the Task's coroutine.  In CPython this is ``_coro``.
     coro = getattr(task, "_coro", None)
@@ -78,10 +122,10 @@ def _innermost_coro_frame_key(task: asyncio.Task) -> str | None:
         except Exception:
             return None
 
-    # Walk cr_await as far as it points to another coroutine.  ``cr_frame``
-    # may be None if the coroutine hasn't started yet; in that case we
-    # emit the coroutine's own code object (qualname) as the key.
-    last_frame = None
+    # Walk cr_await as far as it points to another coroutine.  Collect
+    # EVERY frame along the chain so we can pick a non-stdlib one to
+    # report when the innermost is stdlib-primitive noise.
+    frames: list[object] = []
     current = coro
     for _ in range(_MAX_CORO_DEPTH):
         if current is None:
@@ -94,7 +138,7 @@ def _innermost_coro_frame_key(task: asyncio.Task) -> str | None:
             or getattr(current, "ag_frame", None)
         )
         if frame is not None:
-            last_frame = frame
+            frames.append(frame)
         next_awaited = (
             getattr(current, "cr_await", None)
             or getattr(current, "gi_yieldfrom", None)
@@ -113,19 +157,31 @@ def _innermost_coro_frame_key(task: asyncio.Task) -> str | None:
             break
         current = next_awaited
 
-    if last_frame is not None:
-        key = _short_frame_key(last_frame)
-        if key is not None:
-            return key
-
-    # Fallback: use the Task's regular stack.
-    try:
-        stack = task.get_stack(limit=1)
-        if not stack:
+    if not frames:
+        # Fallback: use the Task's regular stack.
+        try:
+            stack = task.get_stack(limit=1)
+            if not stack:
+                return None
+            return _short_frame_key(stack[-1])
+        except Exception:
             return None
-        return _short_frame_key(stack[-1])
-    except Exception:
-        return None
+
+    leaf_frame = frames[-1]
+    leaf_key = _short_frame_key(leaf_frame)
+
+    # If the leaf sits in asyncio stdlib, walk back up the chain to
+    # the first USER frame and report that, tagged with the primitive.
+    if _frame_is_stdlib_asyncio(leaf_frame):
+        for candidate in reversed(frames[:-1]):
+            if not _frame_is_stdlib_asyncio(candidate):
+                caller_key = _short_frame_key(candidate)
+                if caller_key is not None and leaf_key is not None:
+                    return f"{caller_key} [via {leaf_key}]"
+                return caller_key or leaf_key
+        # Every frame was asyncio stdlib — fall through and emit the
+        # leaf as-is (rare; typically means a bare stdlib task).
+    return leaf_key
 
 
 class _Watchdog:

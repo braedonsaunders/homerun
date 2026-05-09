@@ -264,65 +264,152 @@ _AUDIT_KIND_PRIORITY = {
 
 _AUDIT_OVERFLOW_LOGGED_AT: float = 0.0
 
-# Round 6: Redis publish fan-out for trader events is fire-and-forget.
+# Round 6 / Round 7: Redis publish fan-out for trader events.
 #
-# Pre-fix: ``buffer_trader_event`` did ``await client.publish(...)`` inline
-# inside every caller.  Under firehose load (N~30 concurrent emissions per
-# tick), each emission task parked on the shared Redis connection pool
-# waiting for its PUBLISH round-trip to complete.  When Redis was even
-# slightly slow (network hiccup, or pool saturation), callers piled up
-# holding event-loop time — post-Round-5 stall dumps showed x30 tasks
-# parked at ``_tracked_emission:393`` which is ``await coro`` delegating
-# to ``emit_gate`` → ``buffer_trader_event`` → ``await client.publish``.
+# History:
+#   R6 — make it fire-and-forget: ``buffer_trader_event`` returned
+#        immediately, PUBLISH ran on a background task with a bounded
+#        in-flight budget.  This unblocked the emission callers.
+#   R7 — batch the publishes through a single pump coroutine that uses
+#        ``pipeline(transaction=False)`` to send N publishes in ONE
+#        Redis round-trip.  Round-6's fire-and-forget spawned ONE task
+#        per event, so under firehose load the watchdog showed x12-30
+#        tasks parked at ``_publish_trader_event_safely`` racing for
+#        the shared connection pool.  On this dev box Redis runs in
+#        Docker across the Windows↔WSL2 NAT vSwitch; each round-trip
+#        is ~1-5 ms in the healthy case and spikes to tens of ms under
+#        Hyper-V scheduler pressure — piling 30 PUBLISHes on the pool
+#        means 30 serialized waits.  Pipelining collapses that to ONE
+#        round-trip amortized across the whole burst.
 #
-# The fix: detach the publish from the caller.  ``buffer_trader_event``
-# now returns immediately after the local in-memory buffer append; the
-# PUBLISH runs on a background task with a bounded in-flight budget.
-# DB persistence still happens (via the audit flush loop) and the UI
-# still gets its <5ms fan-out as long as the publisher keeps up.  When
-# the budget is saturated (Redis wedged) we drop the publish rather
-# than let it queue and stall the caller.
-_TRADER_EVENT_PUBLISH_BUDGET = 512
-_trader_event_publish_inflight: int = 0
+# The queue is a plain list (not asyncio.Queue) so producers don't pay
+# Queue's lock/condition cost on the hot path — the only mutation from
+# the producer side is ``list.append``, which is O(1) and GIL-atomic.
+# The pump thread-of-control is a single coroutine; no contention.
+_TRADER_EVENT_PUBLISH_QUEUE_MAX = 4096
+_trader_event_publish_queue: list[tuple[str, str]] = []
 _trader_event_publish_dropped: int = 0
+_trader_event_publish_task: Optional[asyncio.Task] = None
+_trader_event_publish_wake: Optional[asyncio.Event] = None
+# Pump tuning: drain up to this many entries per pipeline round-trip.
+# Above ~200 the marginal gain shrinks and a single long pipeline holds
+# one connection for longer, so we cap at a sane batch size.
+_TRADER_EVENT_PUBLISH_BATCH_MAX = 128
+# Max time the pump idles with an empty queue before it wakes to check
+# shutdown / recheck — keeps the pump reactive without busy-looping.
+_TRADER_EVENT_PUBLISH_IDLE_SECONDS = 0.25
 
 
-async def _publish_trader_event_safely(client: Any, channel: str, payload: str) -> None:
-    """Fire-and-forget Redis publish.  Never raises; accounts for in-flight budget."""
-    global _trader_event_publish_inflight
-    try:
-        await client.publish(channel, payload)
-    except Exception:
-        # Publish failures are observability-only; DB persistence still
-        # lands via the audit flush loop.
-        pass
-    finally:
-        _trader_event_publish_inflight -= 1
+async def _trader_event_publish_pump() -> None:
+    """Single-writer pump: drains the publish queue via Redis pipeline.
+
+    Collapses bursts of PUBLISH commands into ONE pipelined round-trip.
+    Never raises — all failures are swallowed so a wedged Redis can't
+    crash the hot state module.  When Redis is unavailable (returns
+    ``None`` from ``get_client_or_none``), we drop the current batch
+    silently; subscribers re-derive from the next audit flush.
+    """
+    global _trader_event_publish_queue, _trader_event_publish_dropped
+    wake = _trader_event_publish_wake
+    assert wake is not None
+
+    while True:
+        # Wait for a producer signal, or time out periodically to catch
+        # any missed wakes.  The producer sets ``wake`` after appending
+        # to the queue.
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=_TRADER_EVENT_PUBLISH_IDLE_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        except asyncio.CancelledError:
+            raise
+        wake.clear()
+
+        # Snapshot-and-swap: grab the pending batch and reset the queue
+        # atomically from the pump's perspective (producer is on the same
+        # event loop — the swap is race-free between awaits).
+        if not _trader_event_publish_queue:
+            continue
+        batch = _trader_event_publish_queue[:_TRADER_EVENT_PUBLISH_BATCH_MAX]
+        del _trader_event_publish_queue[:_TRADER_EVENT_PUBLISH_BATCH_MAX]
+
+        try:
+            # Local import to avoid import cycles at module load.
+            from services import redis_client  # noqa: PLC0415
+            client = redis_client.get_client_or_none()
+        except Exception:
+            client = None
+        if client is None:
+            # Redis down — silently drop.  DB persistence still lands
+            # via the audit flusher; subscribers reseed from REST/DB.
+            continue
+
+        try:
+            # ``transaction=False`` skips MULTI/EXEC so the pipeline
+            # merges into a single raw round-trip.  We don't need
+            # atomicity for PUBLISH fan-out.
+            async with client.pipeline(transaction=False) as pipe:
+                for channel, payload in batch:
+                    pipe.publish(channel, payload)
+                await pipe.execute()
+        except Exception as exc:
+            # Failed pipeline — swallow.  Log every 1000th failure so a
+            # chronic issue is visible without spamming.
+            _trader_event_publish_dropped += len(batch)
+            if _trader_event_publish_dropped % 1000 < len(batch):
+                logger.warning(
+                    "trader_event Redis publish batch failed",
+                    batch_size=len(batch),
+                    total_dropped=_trader_event_publish_dropped,
+                    exc=str(exc),
+                )
 
 
-def _schedule_trader_event_publish(client: Any, channel: str, payload: str) -> None:
-    """Schedule a Redis publish as a background task, subject to a bounded budget."""
-    global _trader_event_publish_inflight, _trader_event_publish_dropped
-    if _trader_event_publish_inflight >= _TRADER_EVENT_PUBLISH_BUDGET:
-        _trader_event_publish_dropped += 1
-        # Log every 1000th drop so a wedged Redis is visible without
-        # spamming the log.
-        if _trader_event_publish_dropped % 1000 == 1:
-            logger.warning(
-                "trader_event Redis publish dropped (in-flight budget exhausted)",
-                inflight=_trader_event_publish_inflight,
-                budget=_TRADER_EVENT_PUBLISH_BUDGET,
-                total_dropped=_trader_event_publish_dropped,
-            )
+def _ensure_trader_event_publish_pump() -> None:
+    """Lazy-start the pump on the first publish attempt.
+
+    The pump lives for the life of the event loop.  If the loop is
+    torn down the task will be cancelled; the next ``_schedule`` call
+    from a new loop restarts it transparently.
+    """
+    global _trader_event_publish_task, _trader_event_publish_wake
+    if _trader_event_publish_task is not None and not _trader_event_publish_task.done():
         return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    _trader_event_publish_inflight += 1
-    task = loop.create_task(_publish_trader_event_safely(client, channel, payload))
-    # Prevent "Task was destroyed but it is pending" warnings at shutdown.
-    task.add_done_callback(lambda _t: None)
+    _trader_event_publish_wake = asyncio.Event()
+    _trader_event_publish_task = loop.create_task(
+        _trader_event_publish_pump(),
+        name="trader_event_publish_pump",
+    )
+    _trader_event_publish_task.add_done_callback(lambda _t: None)
+
+
+def _schedule_trader_event_publish(client: Any, channel: str, payload: str) -> None:
+    """Enqueue a Redis publish for the pump to drain.
+
+    The ``client`` argument is kept for API compatibility with the
+    Round-6 signature; the pump itself fetches the live client each
+    drain so we don't hold a stale reference across reconnects.
+    """
+    global _trader_event_publish_dropped
+    if len(_trader_event_publish_queue) >= _TRADER_EVENT_PUBLISH_QUEUE_MAX:
+        _trader_event_publish_dropped += 1
+        if _trader_event_publish_dropped % 1000 == 1:
+            logger.warning(
+                "trader_event Redis publish dropped (queue full)",
+                queue_size=len(_trader_event_publish_queue),
+                cap=_TRADER_EVENT_PUBLISH_QUEUE_MAX,
+                total_dropped=_trader_event_publish_dropped,
+            )
+        return
+    _trader_event_publish_queue.append((channel, payload))
+    _ensure_trader_event_publish_pump()
+    wake = _trader_event_publish_wake
+    if wake is not None and not wake.is_set():
+        wake.set()
 
 
 def _audit_buffer_append(entry: _AuditEntry) -> None:

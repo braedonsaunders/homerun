@@ -7064,6 +7064,12 @@ async def _run_trader_once_inner(
 
                     _enter_stage("decision_write_main")
                     _decision_writes_mono = time.monotonic()
+                    # Round 7: isolate create_trader_decision timing so
+                    # we can tell whether ps_decision_writes' 3-9s is
+                    # dominated by this INSERT vs. the surrounding
+                    # experiment-assignment / checks / signal-status
+                    # work that also lands inside the same bucket.
+                    _ps_dw_create_decision_mono = time.monotonic()
                     decision_row = await create_trader_decision(
                         session,
                         trader_id=trader_id,
@@ -7147,7 +7153,9 @@ async def _run_trader_once_inner(
                         # round-trip per signal under contention.
                         flush_on_add=False,
                     )
+                    _accumulate("ps_dw_create_decision", _ps_dw_create_decision_mono)
                     decisions_written += 1
+                    _ps_dw_experiment_mono = time.monotonic()
                     if experiment_row is not None:
                         await upsert_strategy_experiment_assignment(
                             session,
@@ -7166,13 +7174,16 @@ async def _run_trader_once_inner(
                             },
                             commit=False,
                         )
+                    _accumulate("ps_dw_experiment", _ps_dw_experiment_mono)
 
+                    _ps_dw_checks_mono = time.monotonic()
                     await create_trader_decision_checks(
                         session,
                         decision_id=decision_row.id,
                         checks=checks_payload,
                         commit=False,
                     )
+                    _accumulate("ps_dw_checks", _ps_dw_checks_mono)
                     if freshness_status in {"passed", "blocked"} and freshness_source in {"scanner", "crypto"}:
                         freshness_age_ms = safe_float(freshness_payload.get("age_ms"), None)
                         freshness_max_age_ms = safe_float(freshness_payload.get("max_age_ms"), None)
