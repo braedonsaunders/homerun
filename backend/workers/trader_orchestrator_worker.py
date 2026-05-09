@@ -4436,6 +4436,7 @@ async def _run_trader_once(
             _accumulators=_accumulators,
             _checkpoint=_checkpoint,
             _accumulate=_accumulate,
+            _accumulate_value=_accumulate_value,
         )
 
 
@@ -4452,6 +4453,7 @@ async def _run_trader_once_inner(
     _accumulators: dict[str, float],
     _checkpoint,
     _accumulate,
+    _accumulate_value,
 ) -> tuple[int, int, int]:
     decisions_written = 0
     orders_written = 0
