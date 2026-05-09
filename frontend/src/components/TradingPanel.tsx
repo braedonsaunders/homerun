@@ -8838,11 +8838,17 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       }
     }
     if (fresh.length === 0) {
-      // Upstream rows might have been pruned (e.g. trader switch); if
-      // displayed length exceeds upstream, trim to match.
-      if (displayedActivityRows.length > filteredTraderActivityRows.length) {
-        setDisplayedActivityRows(filteredTraderActivityRows)
-      }
+      // No new rows to stream in.  Deliberately do NOT trim displayed to
+      // match upstream here — TanStack Query REPLACES the cache on each
+      // 30s refetch of ``allEventsQuery`` (limit=500 from REST), which
+      // can shrink ``filteredTraderActivityRows`` from ~800 rows (cache
+      // grown via ``upsertTraderEventCache`` WS upserts, capped at 800)
+      // back down to 500.  A trim here would silently drop the 300
+      // oldest rows the user was scrolled past, producing the
+      // "disappearing terminal rows" bug.  User-driven resets (trader
+      // switch, filter change, density/volume/maxRows change) are
+      // handled explicitly by the effect at the ``selectedTraderId``
+      // dependency above, so we don't need an auto-shrink fallback.
       return
     }
     if (terminalSlowMode) {
