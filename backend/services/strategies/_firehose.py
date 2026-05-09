@@ -80,8 +80,30 @@ _BINDING_STALE_HARD_SECONDS = 30.0
 _orchestrator_enabled: bool = False
 _strategy_to_trader_ids: dict[str, list[str]] = {}
 _binding_cache_at: float = 0.0
-_binding_refresh_lock: asyncio.Lock | None = None
-_binding_refresh_inflight: bool = False
+# Round 5: replace {_binding_refresh_lock, _binding_refresh_inflight}
+# with a single shared Future that every waiter can await in parallel.
+#
+# Pre-fix stall dumps showed x22-x27 concurrent emission tasks parked
+# at _refresh_binding_cache_guarded:169 and x27-x54 at _tracked_emission:337.
+# Two latent bugs drove the herd:
+#
+#   1. Race in the soft-stale path: ``if not _binding_refresh_inflight``
+#      was a sync read, but the flag was set INSIDE the refresh task
+#      (after the await boundary).  N concurrent callers all passed the
+#      check and each scheduled its own refresh task — hence the x27
+#      copies of _refresh_binding_cache_guarded in stall dumps.
+#
+#   2. Hard-stale path used ``async with _binding_refresh_lock:``, which
+#      serialized N waiters through one DB roundtrip.  27 waiters × one
+#      roundtrip queued the whole orchestrator behind the slowest path.
+#
+# The Future replaces both paths:
+#   - Sync assignment (``_binding_refresh_future = loop.create_future()``)
+#     claims the refresh slot atomically — concurrent readers either
+#     observe the existing future or create one, never both.
+#   - All waiters await the SAME future in parallel.  One refresh, N
+#     wakeups simultaneously.
+_binding_refresh_future: asyncio.Future[None] | None = None
 
 # ---------------------------------------------------------------------------
 # Fix OO — Firehose emission backpressure.
@@ -166,45 +188,79 @@ def _binding_cache_hard_stale() -> bool:
     return (_time.monotonic() - _binding_cache_at) >= _BINDING_STALE_HARD_SECONDS
 
 
-async def _refresh_binding_cache_guarded() -> None:
-    """Refresh the cache but never let two coroutines hit the DB at once.
+def _claim_or_join_refresh(
+    loop: asyncio.AbstractEventLoop,
+) -> tuple[asyncio.Future[None], bool]:
+    """Atomically either claim the refresh slot or join an in-flight one.
 
-    On contention this returns immediately — the in-flight refresh
-    will update the shared globals when it completes.
+    Returns ``(future, is_owner)``.  The owner must drive the refresh
+    and set the future's result/exception; joiners just await the
+    future.  Because this runs entirely synchronously between any two
+    awaits, concurrent callers on the same event loop cannot both
+    become owners — the asyncio single-threaded model guarantees
+    atomicity of the check-and-set.
     """
-    global _binding_refresh_inflight
-    if _binding_refresh_inflight:
-        return
-    _binding_refresh_inflight = True
+    global _binding_refresh_future
+    existing = _binding_refresh_future
+    if existing is not None and not existing.done():
+        return existing, False
+    fut: asyncio.Future[None] = loop.create_future()
+    _binding_refresh_future = fut
+    return fut, True
+
+
+async def _drive_refresh(fut: asyncio.Future[None]) -> None:
+    """Run the refresh and publish the result on the shared future."""
+    global _binding_refresh_future
     try:
         await _refresh_binding_cache()
+        if not fut.done():
+            fut.set_result(None)
+    except BaseException as exc:  # noqa: BLE001 — must propagate to waiters
+        if not fut.done():
+            fut.set_exception(exc)
+        raise
     finally:
-        _binding_refresh_inflight = False
+        # Release the slot so the next cache expiry can start a new
+        # refresh.  Only clear if we're still the published future —
+        # don't stomp on a subsequent refresh that raced in.
+        if _binding_refresh_future is fut:
+            _binding_refresh_future = None
 
 
 async def _ensure_binding_cache() -> None:
-    global _binding_refresh_lock
     if _binding_cache_fresh():
         return
-    if _binding_refresh_lock is None:
-        _binding_refresh_lock = asyncio.Lock()
-    # Soft-stale: serve the cached value, schedule a background refresh
-    # if one isn't already running.  This breaks the thundering-herd
-    # behaviour where every concurrent evaluation task queues behind
-    # one DB roundtrip on cache expiry.
-    if not _binding_cache_hard_stale():
-        if not _binding_refresh_inflight:
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_refresh_binding_cache_guarded())
-            except RuntimeError:
-                pass
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
         return
-    # Hard-stale: cache is too old to trust, block on the refresh.
-    async with _binding_refresh_lock:
-        if _binding_cache_fresh():
-            return
-        await _refresh_binding_cache()
+    fut, is_owner = _claim_or_join_refresh(loop)
+    if is_owner:
+        # Owner schedules the actual refresh as a background task so
+        # the owner call itself doesn't block any longer than the
+        # joiners.  If we're hard-stale the owner ALSO awaits the
+        # future below — N waiters wake up simultaneously when the
+        # single refresh task completes.
+        loop.create_task(_drive_refresh(fut))
+    # Soft-stale: serve the stale value and let the refresh run in the
+    # background.  This preserves the behaviour that made soft-stale
+    # cheap — strategy evaluations never pay a DB roundtrip on a
+    # warm-but-expired cache.
+    if not _binding_cache_hard_stale():
+        return
+    # Hard-stale: cache is too old to trust.  All N waiters now park
+    # on the same Future (not a Lock), so when the single refresh
+    # task completes they resume in parallel instead of serialising
+    # through a lock.
+    try:
+        await fut
+    except Exception:
+        # Refresh failed — fall through and return; _emit_should_fire
+        # will observe whatever is in the globals (typically the last
+        # successful refresh).  Errors are logged inside
+        # _refresh_binding_cache.
+        return
 
 
 async def _emit_should_fire(strategy_slug: str) -> tuple[bool, list[str]]:
