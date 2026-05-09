@@ -27,7 +27,10 @@ from models.database import WorkerControl, WorkerSnapshot
 from services.event_bus import event_bus
 from services.live_pressure import is_db_pressure_active, maybe_mark_db_pressure
 from utils.converters import to_iso
+from utils.logger import get_logger
 from utils.retry import db_retry_delay as _shared_db_retry_delay
+
+logger = get_logger("worker_state")
 from utils.retry import is_retryable_db_error as _shared_is_retryable_db_error
 
 
@@ -283,6 +286,144 @@ def _count_pending_rows(session: AsyncSession) -> int:
         return 0
 
 
+_SLOW_COMMIT_THRESHOLD_MS = 2000
+_SLOW_COMMIT_DIAG_LAST_AT_MONO: float = 0.0
+_SLOW_COMMIT_DIAG_INTERVAL_S = 30.0
+
+
+async def _capture_slow_commit_diagnostic(commit_ms: int, dirty_rows: int) -> None:
+    """Capture pg-side state when a commit takes >_SLOW_COMMIT_THRESHOLD_MS.
+
+    The 2026-05-09 soak showed steady-state ``ps_db_commit`` at 1500 ms/row
+    vs a baseline of 90 ms/row at startup — a 16× regression with
+    ``ps_db_commit_retries=0`` (no LockNotAvailable, no row-lock
+    contention). The slowness is below the application layer: index
+    update overhead, TOAST rewrites, WAL fsync latency, or autovacuum
+    interaction. To diagnose without expensive always-on observation,
+    capture pg_stat_user_tables (n_dead_tup, n_live_tup, last_vacuum,
+    last_autovacuum), pg_stat_user_indexes (idx_scan), and the current
+    pg_stat_activity for the session's PID — only when a slow commit
+    fires AND we haven't dumped recently (rate-limited to once per
+    30s to keep the log readable).
+
+    Uses a fresh asyncpg connection so it never competes with the work
+    it's trying to observe.
+    """
+    global _SLOW_COMMIT_DIAG_LAST_AT_MONO
+    now = time.monotonic()
+    if now - _SLOW_COMMIT_DIAG_LAST_AT_MONO < _SLOW_COMMIT_DIAG_INTERVAL_S:
+        return
+    _SLOW_COMMIT_DIAG_LAST_AT_MONO = now
+
+    try:
+        import asyncpg
+        from config import settings as _settings
+
+        dsn = str(_settings.DATABASE_URL).replace("+asyncpg", "")
+        probe = await asyncio.wait_for(asyncpg.connect(dsn=dsn, timeout=3), timeout=4)
+    except Exception as exc:
+        logger.debug("slow_commit diag connect failed: %s", exc)
+        return
+
+    try:
+        # Per-table bloat + autovacuum lag for the hot tables that the
+        # orchestrator commits typically touch. Add others if the
+        # diagnostic surfaces gaps.
+        table_rows = await asyncio.wait_for(
+            probe.fetch(
+                """
+                SELECT relname,
+                       n_live_tup,
+                       n_dead_tup,
+                       n_mod_since_analyze,
+                       EXTRACT(EPOCH FROM now() - last_vacuum)::int AS last_vacuum_age_s,
+                       EXTRACT(EPOCH FROM now() - last_autovacuum)::int AS last_autovacuum_age_s,
+                       EXTRACT(EPOCH FROM now() - last_analyze)::int AS last_analyze_age_s,
+                       EXTRACT(EPOCH FROM now() - last_autoanalyze)::int AS last_autoanalyze_age_s
+                FROM pg_stat_user_tables
+                WHERE relname IN (
+                    'trade_signals',
+                    'trader_decisions',
+                    'trader_decision_checks',
+                    'trade_signal_emissions',
+                    'trader_signal_consumptions',
+                    'trader_events'
+                )
+                ORDER BY n_dead_tup DESC NULLS LAST
+                """,
+            ),
+            timeout=3,
+        )
+        # Top WAL writers: who's been writing the most since pg_stat_reset?
+        # Combined with the table-level dead_tup, this points at the
+        # producer driving the load.
+        wal_rows = await asyncio.wait_for(
+            probe.fetch(
+                """
+                SELECT relname,
+                       n_tup_ins,
+                       n_tup_upd,
+                       n_tup_del,
+                       n_tup_hot_upd
+                FROM pg_stat_user_tables
+                WHERE relname IN (
+                    'trade_signals',
+                    'trade_signal_emissions',
+                    'trader_decisions'
+                )
+                """,
+            ),
+            timeout=3,
+        )
+    except Exception as exc:
+        logger.debug("slow_commit diag query failed: %s", exc)
+        try:
+            await probe.close()
+        except Exception:
+            pass
+        return
+    finally:
+        try:
+            await probe.close()
+        except Exception:
+            pass
+
+    tables = {
+        r["relname"]: {
+            "live": int(r["n_live_tup"] or 0),
+            "dead": int(r["n_dead_tup"] or 0),
+            "dead_pct": (
+                round(100.0 * (r["n_dead_tup"] or 0) / max(1, (r["n_live_tup"] or 0) + (r["n_dead_tup"] or 0)), 1)
+            ),
+            "mod_since_analyze": int(r["n_mod_since_analyze"] or 0),
+            "vacuum_age_s": int(r["last_vacuum_age_s"] or 0),
+            "autovacuum_age_s": int(r["last_autovacuum_age_s"] or 0),
+            "analyze_age_s": int(r["last_analyze_age_s"] or 0),
+            "autoanalyze_age_s": int(r["last_autoanalyze_age_s"] or 0),
+        }
+        for r in table_rows
+    }
+    wal = {
+        r["relname"]: {
+            "ins": int(r["n_tup_ins"] or 0),
+            "upd": int(r["n_tup_upd"] or 0),
+            "del": int(r["n_tup_del"] or 0),
+            "hot_upd": int(r["n_tup_hot_upd"] or 0),
+            "hot_pct": (
+                round(100.0 * (r["n_tup_hot_upd"] or 0) / max(1, r["n_tup_upd"] or 0), 1)
+            ),
+        }
+        for r in wal_rows
+    }
+    logger.warning(
+        "SLOW COMMIT DIAGNOSTIC commit_ms=%d dirty_rows=%d tables=%r wal=%r",
+        commit_ms,
+        dirty_rows,
+        tables,
+        wal,
+    )
+
+
 async def _commit_with_retry(
     session: AsyncSession,
     *,
@@ -315,6 +456,19 @@ async def _commit_with_retry(
             await session.commit()
             commit_call_ms = int((time.monotonic() - commit_started) * 1000)
             total_ms = int((time.monotonic() - total_started) * 1000)
+            # 2026-05-09 slow-commit diagnostic: when a single commit
+            # exceeds the threshold AND nothing visible at the
+            # application layer (retry_count=0, no LockNotAvailable)
+            # explains it, the cause is DB-side. Capture pg_stat
+            # state inline so the next slow-commit log line carries
+            # the autovacuum / dead-tup / WAL-writer evidence.
+            # Rate-limited to one dump per _SLOW_COMMIT_DIAG_INTERVAL_S
+            # to keep the log readable.
+            if commit_call_ms >= _SLOW_COMMIT_THRESHOLD_MS and retry_count == 0:
+                try:
+                    await _capture_slow_commit_diagnostic(commit_call_ms, dirty_rows)
+                except Exception as diag_exc:
+                    logger.debug("slow_commit diag suppressed: %s", diag_exc)
             return CommitMetrics(
                 commit_call_ms=commit_call_ms,
                 total_ms=total_ms,
