@@ -19,6 +19,7 @@ import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider as JotaiProvider } from 'jotai'
 import App from './App'
+import './i18n'
 // OpenUI CSS must load BEFORE index.css so our .theme-light/.theme-dark
 // overrides in index.css take precedence over OpenUI's @media(prefers-color-scheme).
 import '@openuidev/react-ui/defaults.css'

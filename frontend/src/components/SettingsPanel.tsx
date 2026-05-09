@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
+import LanguageSwitcher from './LanguageSwitcher'
 import {
   Bell,
   Database,
@@ -216,6 +218,7 @@ export default function SettingsPanel({
 }: {
   showHeader?: boolean
 }) {
+  const { t } = useTranslation()
   const [expandedSections, setExpandedSections] = useState<Set<SettingsSection>>(new Set())
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -916,7 +919,7 @@ export default function SettingsPanel({
       {/* Header */}
       {showHeader ? (
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold tracking-tight">Settings</h2>
+          <h2 className="text-lg font-bold tracking-tight">{t('settings.title')}</h2>
           {settings?.updated_at && (
             <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
               Updated {new Date(settings.updated_at).toLocaleString()}
@@ -924,6 +927,9 @@ export default function SettingsPanel({
           )}
         </div>
       ) : null}
+
+      {/* Language switcher */}
+      <LanguageSwitcher />
 
       {/* Floating toast for save messages */}
       {saveMessage && (
