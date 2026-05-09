@@ -1487,13 +1487,45 @@ async def upsert_trade_signal(
                     # last contention source.  Skipping equal-value
                     # assignments removes the row from the dirty set
                     # entirely; no UPDATE is emitted, no row lock taken.
+                    #
+                    # 2026-05-09: tighten the JSON comparisons so a
+                    # fresh ``signal_emitted_at`` timestamp doesn't
+                    # itself defeat the skip. ``_has_signal_material_change``
+                    # already runs ``_normalize_reactivation_value`` over
+                    # both sides (strips ``signal_emitted_at``,
+                    # ``runtime_sequence``, ``scan_completed_at``,
+                    # ``updated_at`` etc.) before declaring no material
+                    # change. We were re-comparing the RAW JSON here,
+                    # which always reported "differs" because every call
+                    # stamps a new ``signal_emitted_at`` at line ~1296.
+                    # Result: every active-unchanged refresh dirtied the
+                    # row and emitted an UPDATE — exactly the contention
+                    # the surrounding block was meant to eliminate.
+                    # Match the comparison: if the normalized forms are
+                    # equal, the stored RAW with stale ``signal_emitted_at``
+                    # is functionally identical and we keep it untouched.
+                    # (The volatile keys are not load-bearing for any
+                    # downstream consumer — they're audit timestamps,
+                    # superseded by trade_signal_emissions rows.)
                     new_payload = _safe_json(normalized_payload_json)
                     new_strategy_ctx = _safe_json(strategy_context_json)
                     if existing_expires_naive != incoming_expires_naive:
                         row.expires_at = incoming_expires_naive
-                    if row.payload_json != new_payload:
+                    existing_payload_normalized = _normalize_reactivation_value(
+                        ensure_market_roster_payload(
+                            _safe_json(row.payload_json),
+                            market_id=market_id,
+                            market_question=market_question,
+                        )
+                    )
+                    incoming_payload_normalized = _normalize_reactivation_value(new_payload)
+                    if existing_payload_normalized != incoming_payload_normalized:
                         row.payload_json = new_payload
-                    if row.strategy_context_json != new_strategy_ctx:
+                    existing_ctx_normalized = _normalize_reactivation_value(
+                        _safe_json(row.strategy_context_json)
+                    )
+                    incoming_ctx_normalized = _normalize_reactivation_value(new_strategy_ctx)
+                    if existing_ctx_normalized != incoming_ctx_normalized:
                         row.strategy_context_json = new_strategy_ctx
                     if quality_passed is not None:
                         new_rejection_reasons = (

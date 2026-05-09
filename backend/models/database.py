@@ -5299,6 +5299,15 @@ async def _observe_lock_contention() -> int:
     Uses a short-lived raw asyncpg connection separate from the
     SQLAlchemy pool so this observer can never compete with the work
     it's trying to observe.
+
+    2026-05-09: extended to also capture the HOLDER's query + transaction
+    age. Original observer logged only the blocked side ("we're waiting on
+    PID X"), which left the operator guessing what X was actually doing.
+    The new structured ``holders=[...]`` field on the LOCK CONTENTION line
+    surfaces the holder's query, app_name, transaction age, and
+    wait_event so we can identify the producer responsible (e.g. "scanner
+    UPSERT trade_signals row=X holding lock 4s; orchestrator status
+    UPDATE waiting").
     """
     try:
         import asyncpg
@@ -5330,6 +5339,52 @@ async def _observe_lock_contention() -> int:
             ),
             timeout=4,
         )
+        # Second query: for every PID that's blocking someone, capture its
+        # current query + transaction state so we can name the holder in
+        # the operator log. Single round-trip, bounded by the holder PID
+        # set (at most 20 distinct holders given the LIMIT 20 above).
+        holder_pids: set[int] = set()
+        for row in rows:
+            for pid in (row["blocked_by"] or []):
+                if pid is not None:
+                    holder_pids.add(int(pid))
+        holders_by_pid: dict[int, dict[str, Any]] = {}
+        if holder_pids:
+            try:
+                holder_rows = await asyncio.wait_for(
+                    probe_conn.fetch(
+                        """
+                        SELECT
+                            pid,
+                            application_name,
+                            state,
+                            EXTRACT(EPOCH FROM now() - xact_start)::int AS xact_age_s,
+                            EXTRACT(EPOCH FROM now() - query_start)::int AS query_age_s,
+                            wait_event_type,
+                            wait_event,
+                            LEFT(query, 200) AS q
+                        FROM pg_stat_activity
+                        WHERE pid = ANY($1::int[])
+                        """,
+                        list(holder_pids),
+                    ),
+                    timeout=3,
+                )
+                for hr in holder_rows:
+                    holders_by_pid[int(hr["pid"])] = {
+                        "app": hr["application_name"] or "?",
+                        "state": hr["state"] or "?",
+                        "xact_age_s": int(hr["xact_age_s"] or 0),
+                        "query_age_s": int(hr["query_age_s"] or 0),
+                        "wait": (
+                            f"{hr['wait_event_type']}/{hr['wait_event']}"
+                            if hr["wait_event_type"]
+                            else None
+                        ),
+                        "q": (hr["q"] or "").strip(),
+                    }
+            except Exception as exc:
+                _db_logger.debug("Lock observer holder-query failed: %s", exc)
     except Exception as exc:
         _db_logger.debug("Lock observer query failed: %s", exc)
         try:
@@ -5346,11 +5401,15 @@ async def _observe_lock_contention() -> int:
         return 0
     # Surface contention loudly. The format is structured-friendly so
     # downstream log parsing can extract the blocking_pid and the
-    # blocked-by chain.
+    # blocked-by chain. ``holders`` is per-blocked-row so each line is
+    # self-contained for grep / jq.
     for row in rows:
-        blocked_by = list(row["blocked_by"] or [])
+        blocked_by = [int(p) for p in (row["blocked_by"] or []) if p is not None]
+        holders_list = [holders_by_pid.get(p, {"pid": p}) for p in blocked_by]
+        for h, p in zip(holders_list, blocked_by):
+            h.setdefault("pid", p)
         _db_logger.warning(
-            "LOCK CONTENTION blocked_pid=%d age=%ds blocked_by=%s wait=%s/%s app=%s query=%r",
+            "LOCK CONTENTION blocked_pid=%d age=%ds blocked_by=%s wait=%s/%s app=%s query=%r holders=%r",
             int(row["pid"]),
             int(row["age_s"] or 0),
             blocked_by,
@@ -5358,6 +5417,7 @@ async def _observe_lock_contention() -> int:
             row["wait_event"],
             (row["application_name"] or "?"),
             row["q"] or "",
+            holders_list,
         )
     return len(rows)
 
