@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAtom } from 'jotai'
+import { useTranslation } from 'react-i18next'
 // framer-motion used in AnimatedNumber component
 import {
   TrendingUp,
@@ -157,17 +158,17 @@ function PanelFallback({ label }: { label: string }) {
   )
 }
 
-const NAV_ITEMS: { id: Tab; icon: React.ElementType; label: string; shortcut: string }[] = [
-  { id: 'opportunities', icon: Zap, label: 'Opportunities', shortcut: '1' },
-  { id: 'trading', icon: Bot, label: 'Bots', shortcut: '2' },
-  { id: 'positions', icon: Briefcase, label: 'Positions', shortcut: '6' },
-  { id: 'performance', icon: BarChart3, label: 'Performance', shortcut: '7' },
-  { id: 'accounts', icon: Wallet, label: 'Accounts', shortcut: '4' },
-  { id: 'strategies', icon: Layers3, label: 'Strategies', shortcut: '3' },
-  { id: 'traders', icon: Users, label: 'Traders', shortcut: '5' },
-  { id: 'data', icon: Database, label: 'Data', shortcut: 'D' },
-  { id: 'ai', icon: Brain, label: 'AI', shortcut: '8' },
-  { id: 'settings', icon: Settings, label: 'Settings', shortcut: '9' },
+const NAV_ITEMS: { id: Tab; icon: React.ElementType; labelKey: string; shortcut: string }[] = [
+  { id: 'opportunities', icon: Zap, labelKey: 'nav.opportunities', shortcut: '1' },
+  { id: 'trading', icon: Bot, labelKey: 'nav.bots', shortcut: '2' },
+  { id: 'positions', icon: Briefcase, labelKey: 'nav.positions', shortcut: '6' },
+  { id: 'performance', icon: BarChart3, labelKey: 'nav.performance', shortcut: '7' },
+  { id: 'accounts', icon: Wallet, labelKey: 'nav.accounts', shortcut: '4' },
+  { id: 'strategies', icon: Layers3, labelKey: 'nav.strategies', shortcut: '3' },
+  { id: 'traders', icon: Users, labelKey: 'nav.traders', shortcut: '5' },
+  { id: 'data', icon: Database, labelKey: 'nav.data', shortcut: 'D' },
+  { id: 'ai', icon: Brain, labelKey: 'nav.ai', shortcut: '8' },
+  { id: 'settings', icon: Settings, labelKey: 'nav.settings', shortcut: '9' },
 ]
 
 type WorkerHealthTone = 'green' | 'amber' | 'red'
@@ -402,6 +403,7 @@ function resolveWorkerHealth(worker?: WorkerStatus): {
 }
 
 function App() {
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<Tab>('opportunities')
   const [selectedAccountId] = useAtom(selectedAccountIdAtom)
   const [tradersSubTab, setTradersSubTab] = useState<TradersSubTab>('discovery')
@@ -2118,11 +2120,11 @@ function App() {
                         <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-green-400 rounded-r shadow-[0_0_8px_rgba(0,255,136,0.3)]" />
                       )}
                       <Icon className={cn("w-4 h-4", isActive && "drop-shadow-[0_0_4px_rgba(0,255,136,0.3)]")} />
-                      <span className="text-[9px] font-medium leading-none truncate max-w-full">{item.label}</span>
+                      <span className="text-[9px] font-medium leading-none truncate max-w-full">{t(item.labelKey)}</span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="right" className="flex items-center gap-2">
-                    {item.label}
+                    {t(item.labelKey)}
                     <kbd className="px-1 py-0.5 text-[9px] font-data bg-muted rounded border border-border">{item.shortcut}</kbd>
                   </TooltipContent>
                 </Tooltip>
