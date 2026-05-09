@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react'
 import { useAtom } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import { aiTabSubtabAtom } from '../../store/atoms'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/tabs'
 import { RefreshCw } from 'lucide-react'
@@ -23,6 +24,7 @@ function SubtabFallback() {
 const VALID_SUBTABS = new Set(['chat', 'agents', 'tools', 'providers', 'models', 'activity'])
 
 export default function AITab() {
+  const { t } = useTranslation()
   const [subtab, setSubtab] = useAtom(aiTabSubtabAtom)
 
   // Guard against stale localStorage values (e.g. removed 'system' tab)
@@ -37,12 +39,12 @@ export default function AITab() {
       <Tabs value={activeSubtab} onValueChange={(v) => setSubtab(v as typeof subtab)} className="flex flex-col h-full">
         <div className="border-b border-white/10 px-4">
           <TabsList className="bg-transparent gap-1">
-            <TabsTrigger value="chat" className="data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300">Chat</TabsTrigger>
-            <TabsTrigger value="agents" className="data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">Agents</TabsTrigger>
-            <TabsTrigger value="tools" className="data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-700 dark:text-violet-300">Tools</TabsTrigger>
-            <TabsTrigger value="providers" className="data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-300">Providers</TabsTrigger>
-            <TabsTrigger value="models" className="data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-300">Models</TabsTrigger>
-            <TabsTrigger value="activity" className="data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300">Activity</TabsTrigger>
+            <TabsTrigger value="chat" className="data-[state=active]:bg-purple-500/20 data-[state=active]:text-purple-300">{t('ai.chat')}</TabsTrigger>
+            <TabsTrigger value="agents" className="data-[state=active]:bg-cyan-500/20 data-[state=active]:text-cyan-300">{t('ai.agents')}</TabsTrigger>
+            <TabsTrigger value="tools" className="data-[state=active]:bg-violet-500/20 data-[state=active]:text-violet-700 dark:text-violet-300">{t('ai.tools')}</TabsTrigger>
+            <TabsTrigger value="providers" className="data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-300">{t('ai.providers')}</TabsTrigger>
+            <TabsTrigger value="models" className="data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-300">{t('ai.models')}</TabsTrigger>
+            <TabsTrigger value="activity" className="data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300">{t('ai.activity')}</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="chat" forceMount className={cn('flex-1 overflow-hidden mt-0', activeSubtab !== 'chat' && 'hidden')}><AIChatView /></TabsContent>
