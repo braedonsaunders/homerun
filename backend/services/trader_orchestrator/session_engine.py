@@ -1198,27 +1198,23 @@ class ExecutionSessionEngine:
         ) -> None:
             normalized_signal_id = str(getattr(signal, "id", "") or "").strip()
             normalized_signal_status = str(signal_status or "").strip().lower()
-            # Round 4: collapse three per-table flushes into one.
-            # Pre-Round-4, we flushed after (session_row + legs +
-            # trader_orders), then after execution_orders, then after
-            # execution_events — three Postgres round-trips per signal.
-            # All primary keys here are client-assigned strings (not
-            # server defaults), so FK references resolve without needing
-            # an intermediate flush; the cascade FKs on
-            # execution_session_{orders,legs,events} target session_row
-            # / leg_rows whose IDs are already populated on the Python
-            # side.  Single flush at the end preserves correctness and
-            # cuts two DB round-trips off the hot path.
+            # Flush trader_orders (and session/leg parents) before
+            # execution_orders so the FK trader_order_id is satisfied at
+            # flush time for any newly-created rows in shadow mode.
             self.db.add(session_row)
             for leg_row in leg_rows.values():
                 self.db.add(leg_row)
             for trader_order in trader_orders:
                 self.db.add(trader_order)
+            await self.db.flush()
             for execution_order in execution_orders:
                 self.db.add(execution_order)
+            if execution_orders:
+                await self.db.flush()
             for execution_event in execution_events:
                 self.db.add(execution_event)
-            await self.db.flush()
+            if execution_events:
+                await self.db.flush()
             if normalized_signal_id:
                 await set_trade_signal_status(
                     self.db,
