@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import and_, func, select
@@ -13,6 +15,63 @@ from services.strategy_versioning import normalize_strategy_version
 from utils.utcnow import utcnow
 
 _EXPERIMENT_STATUSES = {"active", "paused", "completed", "archived"}
+
+
+# ─── R11-C: get_active_strategy_experiment TTL cache ────────────────────
+#
+# ``get_active_strategy_experiment`` runs a filtered SELECT with three
+# ``lower(coalesce())`` comparisons + ORDER BY created_at DESC on every
+# trader cycle.  Soak instrumentation showed ``prs_get_experiment =
+# 609 ms`` under pool pressure.
+#
+# Experiments change at operator-save cadence (minutes to hours), not
+# per cycle.  The vast majority of (source_key, strategy_key) pairs
+# have NO active experiment, so we cache negative hits as well
+# (experiment_id=None).  The cached path collapses to either a no-op
+# (negative cache) or a single ``session.get(StrategyExperiment, id)``
+# PK lookup that hits the identity map when the session has already
+# loaded it.
+#
+# Invalidation: ``invalidate_experiment_cache()`` must be called from
+# every write path that creates, status-changes, or promotes a
+# StrategyExperiment row.  TTL acts as a safety net; operators can
+# tolerate at most ``_EXPERIMENT_CACHE_TTL_SECONDS`` of staleness
+# before a newly-activated experiment takes effect.
+_EXPERIMENT_CACHE_TTL_SECONDS: float = 60.0
+
+
+@dataclass
+class _CachedExperiment:
+    experiment_id: str | None  # None = negative cache (no active experiment)
+    expires_at: float
+
+
+_experiment_cache: dict[tuple[str, str], _CachedExperiment] = {}
+
+
+def invalidate_experiment_cache(
+    source_key: str | None = None,
+    strategy_key: str | None = None,
+) -> None:
+    """Drop cached active-experiment pointers.
+
+    If neither key is supplied, the entire cache is cleared.  If only
+    one is supplied, every entry matching that dimension is dropped.
+    Callers that touch a StrategyExperiment row should invalidate both
+    the (source_key, strategy_key) of the affected experiment.
+    """
+    global _experiment_cache
+    if source_key is None and strategy_key is None:
+        _experiment_cache.clear()
+        return
+    normalized_source = _normalize_source_key(source_key) if source_key is not None else None
+    normalized_strategy = _normalize_strategy_key(strategy_key) if strategy_key is not None else None
+    _experiment_cache = {
+        k: v
+        for k, v in _experiment_cache.items()
+        if (normalized_source is not None and k[0] != normalized_source)
+        or (normalized_strategy is not None and k[1] != normalized_strategy)
+    }
 
 
 def _normalize_source_key(value: Any) -> str:
@@ -186,6 +245,14 @@ async def create_strategy_experiment(
     if commit:
         await session.commit()
         await session.refresh(row)
+    # R11-C: new experiment (active) — drop negative/stale cache entries.
+    try:
+        invalidate_experiment_cache(
+            source_key=normalized_source,
+            strategy_key=normalized_strategy,
+        )
+    except Exception:
+        pass
     return row
 
 
@@ -239,6 +306,16 @@ async def set_strategy_experiment_status(
     if commit:
         await session.commit()
         await session.refresh(row)
+    # R11-C: status transition flips (possibly) the active experiment
+    # for this (source_key, strategy_key) — drop the cache entry so
+    # the next resolve re-reads.
+    try:
+        invalidate_experiment_cache(
+            source_key=str(row.source_key or ""),
+            strategy_key=str(row.strategy_key or ""),
+        )
+    except Exception:
+        pass
     return row
 
 
@@ -322,6 +399,15 @@ async def promote_strategy_experiment(
     if commit:
         await session.commit()
         await session.refresh(row)
+    # R11-C: promotion flips status=completed — the cached "active"
+    # pointer for this (source_key, strategy_key) is now stale.
+    try:
+        invalidate_experiment_cache(
+            source_key=str(row.source_key or ""),
+            strategy_key=str(row.strategy_key or ""),
+        )
+    except Exception:
+        pass
     return row
 
 
@@ -352,16 +438,37 @@ async def get_active_strategy_experiment(
     source_key: str,
     strategy_key: str,
 ) -> StrategyExperiment | None:
-    return (
+    # R11-C: most (source_key, strategy_key) pairs have NO active
+    # experiment — instrument showed ``prs_get_experiment = 609 ms``
+    # per cycle on that negative path.  Cache both positive and
+    # negative results for ``_EXPERIMENT_CACHE_TTL_SECONDS`` so the
+    # per-cycle cost drops to either zero SQL (negative hit) or a PK
+    # ``session.get`` that usually hits the identity map.
+    normalized_source = _normalize_source_key(source_key)
+    normalized_strategy = _normalize_strategy_key(strategy_key)
+    cache_key = (normalized_source, normalized_strategy)
+    now_mono = time.monotonic()
+    cached = _experiment_cache.get(cache_key)
+    if cached is not None and cached.expires_at > now_mono:
+        if cached.experiment_id is None:
+            return None
+        row = await session.get(StrategyExperiment, cached.experiment_id)
+        # Validate the cached row is still "active".  If an operator
+        # paused/completed/archived it within the TTL window we need
+        # to fall through to the slow path so a different active
+        # experiment (if any) is picked up.
+        if row is not None and str(row.status or "").strip().lower() == "active":
+            return row
+        _experiment_cache.pop(cache_key, None)
+
+    row = (
         (
             await session.execute(
                 select(StrategyExperiment)
                 .where(
                     and_(
-                        func.lower(func.coalesce(StrategyExperiment.source_key, ""))
-                        == _normalize_source_key(source_key),
-                        func.lower(func.coalesce(StrategyExperiment.strategy_key, ""))
-                        == _normalize_strategy_key(strategy_key),
+                        func.lower(func.coalesce(StrategyExperiment.source_key, "")) == normalized_source,
+                        func.lower(func.coalesce(StrategyExperiment.strategy_key, "")) == normalized_strategy,
                         func.lower(func.coalesce(StrategyExperiment.status, "")) == "active",
                     )
                 )
@@ -372,6 +479,11 @@ async def get_active_strategy_experiment(
         .scalars()
         .first()
     )
+    _experiment_cache[cache_key] = _CachedExperiment(
+        experiment_id=str(row.id) if row is not None else None,
+        expires_at=now_mono + _EXPERIMENT_CACHE_TTL_SECONDS,
+    )
+    return row
 
 
 def _assignment_sample(*, experiment_id: str, trader_id: str, signal_id: str) -> float:

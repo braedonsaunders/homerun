@@ -197,6 +197,15 @@ class TraderCycleContext:
     #: Not part of the public API.
     _generation: int = 0
 
+    #: R11-A: per-step wall time (milliseconds) for every await inside
+    #: ``acquire()``.  The orchestrator emits these as ``setup_ctx_*``
+    #: sub-buckets on the slow-cycle SLA log so we can see which of the
+    #: 10 awaits inside acquire() ate the ``setup_ctx_acquire`` budget.
+    #: Keyed by short names: ``open_pos``, ``open_order``, ``occupied``,
+    #: ``reentry_cd``, ``daily_pnl``, ``loss_count``, ``last_loss``,
+    #: ``unrealized_pnl``, ``pending_live_exit``, ``provider_failure``.
+    acquire_timings_ms: Mapping[str, int] = MappingProxyType({})
+
 
 # ── Internal projection state ───────────────────────────────────────
 
@@ -360,6 +369,14 @@ class _TraderCycleContextManager:
         trader_key = (str(trader_id or ""), normalized_mode)
         self._record_working_set(trader_key)
 
+        # R11-A: per-step timings so the orchestrator can split
+        # setup_ctx_acquire into its 10 sub-steps on slow-cycle logs.
+        # Milliseconds (int) keeps log payloads compact.
+        _step_timings_ms: dict[str, int] = {}
+
+        def _record_step(label: str, started_mono: float) -> None:
+            _step_timings_ms[label] = int((time.monotonic() - started_mono) * 1000.0)
+
         # Per-trader hot reads.  We route through the wrapper functions
         # in ``workers.trader_orchestrator_worker`` rather than calling
         # ``hot_state`` directly so the orchestrator's existing test
@@ -380,6 +397,7 @@ class _TraderCycleContextManager:
             get_last_resolved_loss_at as _wrap_last_loss,
         )
 
+        _t0 = time.monotonic()
         try:
             open_position_count = await _wrap_open_pos_count(
                 None, trader_key[0], mode=normalized_mode, position_cap_scope="market_direction"
@@ -391,6 +409,9 @@ class _TraderCycleContextManager:
                 exc_info=exc,
             )
             open_position_count = 0
+        _record_step("open_pos", _t0)
+
+        _t0 = time.monotonic()
         try:
             open_order_count = await _wrap_open_order_count(None, trader_key[0], mode=normalized_mode)
         except Exception as exc:
@@ -400,6 +421,8 @@ class _TraderCycleContextManager:
                 exc_info=exc,
             )
             open_order_count = 0
+        _record_step("open_order", _t0)
+
         # ``get_occupied_market_ids_for_trader`` is the one wrapper that
         # still performs DB queries on top of hot_state (the 3 redundant
         # SELECTs are a defensive safety net for callers that may have
@@ -408,9 +431,13 @@ class _TraderCycleContextManager:
         # production path falls through to a try/except and we serve
         # from hot_state alone — preserving the architectural goal of
         # zero DB on the cycle hot path.
+        _t0 = time.monotonic()
         occupied_market_ids = await self._resolve_occupied_market_ids(
             trader_key[0], normalized_mode
         )
+        _record_step("occupied", _t0)
+
+        _t0 = time.monotonic()
         try:
             reentry_cooldown_market_ids = frozenset(
                 await _wrap_reentry_cd(None, trader_key[0], mode=normalized_mode)
@@ -422,6 +449,9 @@ class _TraderCycleContextManager:
                 exc_info=exc,
             )
             reentry_cooldown_market_ids = frozenset()
+        _record_step("reentry_cd", _t0)
+
+        _t0 = time.monotonic()
         try:
             trader_daily_realized_pnl = float(
                 await _wrap_daily_pnl(None, trader_id=trader_key[0], mode=normalized_mode)
@@ -433,6 +463,9 @@ class _TraderCycleContextManager:
                 exc_info=exc,
             )
             trader_daily_realized_pnl = 0.0
+        _record_step("daily_pnl", _t0)
+
+        _t0 = time.monotonic()
         try:
             consecutive_loss_count = int(
                 await _wrap_loss_count(None, trader_id=trader_key[0], mode=normalized_mode)
@@ -444,6 +477,9 @@ class _TraderCycleContextManager:
                 exc_info=exc,
             )
             consecutive_loss_count = 0
+        _record_step("loss_count", _t0)
+
+        _t0 = time.monotonic()
         try:
             last_resolved_loss_at = await _wrap_last_loss(
                 None, trader_id=trader_key[0], mode=normalized_mode
@@ -455,6 +491,9 @@ class _TraderCycleContextManager:
                 exc_info=exc,
             )
             last_resolved_loss_at = None
+        _record_step("last_loss", _t0)
+
+        _t0 = time.monotonic()
         try:
             trader_unrealized_pnl = float(
                 await _wrap_unrealized_pnl(None, trader_id=trader_key[0], mode=normalized_mode)
@@ -466,17 +505,22 @@ class _TraderCycleContextManager:
                 exc_info=exc,
             )
             trader_unrealized_pnl = 0.0
+        _record_step("unrealized_pnl", _t0)
 
         # Projection-backed values (event-driven cache + 30 s TTL).
         pending_live_exit_summary: Mapping[str, Any]
         live_provider_failure_snapshot: Mapping[str, Any]
         if normalized_mode == "live":
+            _t0 = time.monotonic()
             pending_live_exit_summary = await self._get_pending_live_exit_summary(
                 trader_id=trader_key[0],
                 mode=normalized_mode,
                 terminal_statuses=terminal_statuses,
                 prefetch_db=prefetch_db,
             )
+            _record_step("pending_live_exit", _t0)
+
+            _t0 = time.monotonic()
             live_provider_failure_snapshot = await self._get_live_provider_failure_snapshot(
                 trader_id=trader_key[0],
                 mode=normalized_mode,
@@ -487,6 +531,7 @@ class _TraderCycleContextManager:
                 ),
                 prefetch_db=prefetch_db,
             )
+            _record_step("provider_failure", _t0)
         else:
             pending_live_exit_summary = _EMPTY_PENDING_LIVE_EXIT
             live_provider_failure_snapshot = _EMPTY_PROVIDER_FAILURE
@@ -506,6 +551,7 @@ class _TraderCycleContextManager:
             pending_live_exit_summary=pending_live_exit_summary,
             live_provider_failure_snapshot=live_provider_failure_snapshot,
             global_snapshot=self._global_snapshot,
+            acquire_timings_ms=MappingProxyType(dict(_step_timings_ms)),
         )
 
     async def _resolve_occupied_market_ids(

@@ -4489,14 +4489,21 @@ async def _run_trader_once_inner(
 
     _mnt_session_open_started = time.monotonic()
     async with AsyncSessionLocal() as session:
+        # R11-D: split ``mnt_session_open`` into two sub-buckets so we can
+        # tell whether the 1.9s budget is spent waiting for a connection
+        # out of the asyncpg pool (``mnt_session_checkout``) or on the
+        # per-connection SET LOCAL round trip (``mnt_session_stmt_timeout``).
+        _accumulate("mnt_session_checkout", _mnt_session_open_started)
         # Bound DB statements inside this cycle without leaking the timeout
         # onto pooled connections used by unrelated tasks.
+        _mnt_stmt_timeout_started = time.monotonic()
         if cycle_timeout_seconds > 0:
             _stmt_timeout_ms = int(max(3000, (cycle_timeout_seconds - 2) * 1000))
             try:
                 await session.execute(text(f"SET LOCAL statement_timeout = '{_stmt_timeout_ms}'"))
             except Exception:
                 pass
+        _accumulate("mnt_session_stmt_timeout", _mnt_stmt_timeout_started)
         _accumulate("mnt_session_open", _mnt_session_open_started)
         trader_id = str(trader["id"])
         source_configs = _normalize_source_configs(trader)
@@ -4999,6 +5006,18 @@ async def _run_trader_once_inner(
             provider_window_seconds=_ctx_provider_window_seconds,
         )
         _accumulate("setup_ctx_acquire", _setup_ctx_acquire_started)
+        # R11-A: surface per-step timings inside acquire() so slow cycles
+        # log which of the 10 awaits ate the setup_ctx_acquire budget.
+        # ``acquire_timings_ms`` is already in milliseconds — convert to
+        # the seconds-since-start baseline _accumulate expects.
+        _ca_timings = getattr(trader_ctx, "acquire_timings_ms", None)
+        if _ca_timings:
+            _now = time.monotonic()
+            for _label, _ms in _ca_timings.items():
+                # Fake a "started" timestamp so _accumulate records the
+                # same millisecond delta we already measured inside
+                # acquire().  No additional clock call per label.
+                _accumulate(f"setup_ca_{_label}", _now - (float(_ms) / 1000.0))
         open_positions = trader_ctx.open_position_count
         open_order_count = trader_ctx.open_order_count
         demoted_strategy_types = set(trader_ctx.global_snapshot.demoted_strategy_types)
