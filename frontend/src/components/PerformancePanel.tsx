@@ -1,4 +1,5 @@
 import { type ElementType, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -95,29 +96,29 @@ type PnlPoint = {
   cumulativePnl: number
 }
 
-const VIEW_MODE_OPTIONS: Array<{ id: ViewMode; label: string }> = [
-  { id: 'live', label: 'Live' },
-  { id: 'simulation', label: 'Sandbox' },
+const VIEW_MODE_OPTIONS: Array<{ id: ViewMode; labelKey: string }> = [
+  { id: 'live', labelKey: 'performance.live' },
+  { id: 'simulation', labelKey: 'performance.sandbox' },
 ]
 
-const RANGE_OPTIONS: Array<{ id: TimeRange; label: string }> = [
-  { id: '7d', label: '7D' },
-  { id: '30d', label: '30D' },
-  { id: '90d', label: '90D' },
-  { id: 'all', label: 'All Time' },
+const RANGE_OPTIONS: Array<{ id: TimeRange; labelKey: string }> = [
+  { id: '7d', labelKey: 'performance.range7d' },
+  { id: '30d', labelKey: 'performance.range30d' },
+  { id: '90d', labelKey: 'performance.range90d' },
+  { id: 'all', labelKey: 'performance.rangeAll' },
 ]
 
 const TRADE_TAPE_PAGE_SIZE = 100
 
-const HISTORY_SORT_OPTIONS: Array<{ id: HistorySortKey; label: string }> = [
-  { id: 'closedAt', label: 'Closed Time' },
-  { id: 'pnl', label: 'P&L' },
-  { id: 'roiPercent', label: 'ROI' },
-  { id: 'holdMinutes', label: 'Hold Duration' },
-  { id: 'buyNotional', label: 'Buy Notional' },
-  { id: 'sellNotional', label: 'Sell Notional' },
-  { id: 'marketQuestion', label: 'Market' },
-  { id: 'category', label: 'Category' },
+const HISTORY_SORT_OPTIONS: Array<{ id: HistorySortKey; labelKey: string }> = [
+  { id: 'closedAt', labelKey: 'performance.sortClosedAt' },
+  { id: 'pnl', labelKey: 'performance.sortPnl' },
+  { id: 'roiPercent', labelKey: 'performance.sortRoi' },
+  { id: 'holdMinutes', labelKey: 'performance.sortHold' },
+  { id: 'buyNotional', labelKey: 'performance.sortBuyNotional' },
+  { id: 'sellNotional', labelKey: 'performance.sortSellNotional' },
+  { id: 'marketQuestion', labelKey: 'performance.sortMarket' },
+  { id: 'category', labelKey: 'performance.sortCategory' },
 ]
 
 const SIM_RESOLVED_STATUSES = new Set(['resolved_win', 'resolved_loss', 'closed_win', 'closed_loss', 'win', 'loss'])
@@ -306,6 +307,7 @@ function aggregateRollup(rows: UnifiedTradeRow[], keySelector: (row: UnifiedTrad
 }
 
 export default function PerformancePanel() {
+  const { t } = useTranslation()
   const [viewMode, setViewMode] = useState<ViewMode>('live')
   const [detailTab, setDetailTab] = useState<DetailTab>('overview')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
@@ -879,7 +881,7 @@ export default function PerformancePanel() {
     void refetchLivePerformance()
   }
 
-  const modeLabel = viewMode === 'live' ? 'Live' : 'Sandbox'
+  const modeLabel = viewMode === 'live' ? t('performance.live') : t('performance.sandbox')
 
   return (
     <div className="h-full min-h-0 flex flex-col gap-2 overflow-hidden">
@@ -888,14 +890,14 @@ export default function PerformancePanel() {
           <div className="flex items-center gap-3">
             <h2 className="text-base font-semibold flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-cyan-300" />
-              Performance
+              {t('performance.title')}
             </h2>
             <Badge variant="outline" className="text-[10px] border-border/50">
-              {modeLabel} • {summary.totalTrades} trades
+              {t('performance.tradesCount', { mode: modeLabel, n: summary.totalTrades })}
             </Badge>
             {viewMode === 'live' && (
               <Badge variant="outline" className="text-[10px] border-border/50">
-                Wallet {shortAddress(livePerformance?.wallet_address)}
+                {t('performance.wallet', { addr: shortAddress(livePerformance?.wallet_address) })}
               </Badge>
             )}
           </div>
@@ -919,7 +921,7 @@ export default function PerformancePanel() {
                     : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
                 )}
               >
-                {option.label}
+                {t(option.labelKey)}
               </button>
             ))}
           </div>
@@ -939,7 +941,7 @@ export default function PerformancePanel() {
                     : 'border-border bg-background/60 text-muted-foreground hover:text-foreground'
                 )}
               >
-                {option.label}
+                {t(option.labelKey)}
               </button>
             ))}
           </div>
@@ -952,7 +954,7 @@ export default function PerformancePanel() {
                 onChange={(event) => setSelectedAccount(event.target.value || null)}
                 className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
               >
-                <option value="">All accounts</option>
+                <option value="">{t('performance.allAccounts')}</option>
                 {accounts.map((account: SimulationAccount) => (
                   <option key={account.id} value={account.id}>{account.name}</option>
                 ))}
@@ -967,48 +969,53 @@ export default function PerformancePanel() {
       ) : (
         <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-border/50 py-1.5 px-0.5">
           <MetricChip
-            label="Realized P&L"
+            label={t('performance.realizedPnl')}
             value={formatSignedCurrency(summary.totalPnl, true)}
             detail={formatCurrency(summary.totalPnl)}
             icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
             valueClassName={summary.totalPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}
           />
           <MetricChip
-            label="ROI"
+            label={t('performance.roi')}
             value={formatSignedPercent(summary.roi)}
-            detail={`on ${formatCurrency(summary.totalCost, true)}`}
+            detail={t('performance.roiDetail', { amount: formatCurrency(summary.totalCost, true) })}
             icon={Target}
             valueClassName={summary.roi >= 0 ? 'text-emerald-300' : 'text-red-300'}
           />
           <MetricChip
-            label="Win Rate"
+            label={t('performance.winRate')}
             value={formatPercent(summary.winRate)}
-            detail={`${summary.wins}W / ${summary.losses}L`}
+            detail={t('performance.winRateDetail', { w: summary.wins, l: summary.losses })}
             icon={Activity}
             valueClassName={summary.winRate >= 50 ? 'text-emerald-300' : 'text-amber-300'}
           />
           <MetricChip
-            label="Open"
+            label={t('performance.open')}
             value={String(summary.openTrades)}
-            detail={viewMode === 'live' ? `${formatCurrency(summary.openLiveNotional, true)} inventory` : `${summary.resolvedTrades} closed`}
+            detail={viewMode === 'live'
+              ? t('performance.openDetailLive', { amount: formatCurrency(summary.openLiveNotional, true) })
+              : t('performance.openDetailSim', { n: summary.resolvedTrades })}
             icon={Calendar}
           />
           <MetricChip
-            label="Expectancy"
+            label={t('performance.expectancy')}
             value={formatSignedCurrency(advancedMetrics.expectancy, true)}
-            detail={`${formatSignedCurrency(advancedMetrics.avgWin, true)} avg win / ${formatSignedCurrency(advancedMetrics.avgLoss, true)} avg loss`}
+            detail={t('performance.expectancyDetail', {
+              win: formatSignedCurrency(advancedMetrics.avgWin, true),
+              loss: formatSignedCurrency(advancedMetrics.avgLoss, true),
+            })}
             icon={TrendingUp}
             valueClassName={advancedMetrics.expectancy >= 0 ? 'text-emerald-300' : 'text-red-300'}
           />
           <MetricChip
-            label="Median Hold"
+            label={t('performance.medianHold')}
             value={formatDurationMinutes(advancedMetrics.medianHold)}
             icon={Clock3}
           />
           <MetricChip
-            label="Drawdown"
+            label={t('performance.drawdown')}
             value={formatCurrency(maxDrawdown, true)}
-            detail={`PF ${summary.profitFactor >= 999 ? '∞' : summary.profitFactor.toFixed(2)}`}
+            detail={t('performance.drawdownDetail', { pf: summary.profitFactor >= 999 ? '∞' : summary.profitFactor.toFixed(2) })}
             icon={TrendingDown}
             valueClassName={maxDrawdown > 0 ? 'text-amber-300' : undefined}
           />
@@ -1021,9 +1028,9 @@ export default function PerformancePanel() {
         className="flex-1 min-h-0 flex flex-col"
       >
         <TabsList className="h-auto w-fit rounded-lg border border-border/80 bg-background/70 p-1">
-          <TabsTrigger value="overview" className="h-7 px-3 text-xs">Overview</TabsTrigger>
-          <TabsTrigger value="insights" className="h-7 px-3 text-xs">Insights</TabsTrigger>
-          <TabsTrigger value="history" className="h-7 px-3 text-xs">History</TabsTrigger>
+          <TabsTrigger value="overview" className="h-7 px-3 text-xs">{t('performance.tabOverview')}</TabsTrigger>
+          <TabsTrigger value="insights" className="h-7 px-3 text-xs">{t('performance.tabInsights')}</TabsTrigger>
+          <TabsTrigger value="history" className="h-7 px-3 text-xs">{t('performance.tabHistory')}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-2 flex-1 min-h-0">
@@ -1035,18 +1042,18 @@ export default function PerformancePanel() {
                 <div className="shrink-0 flex items-center justify-between gap-2 mb-2">
                   <p className="text-xs font-semibold flex items-center gap-1.5">
                     <BarChart3 className="h-3.5 w-3.5 text-cyan-300" />
-                    {modeLabel} Cumulative Realized P&L
+                    {t('performance.cumulativePnl', { mode: modeLabel })}
                   </p>
                   {viewMode === 'live' && orchestratorStats?.last_trade_at && (
                     <span className="text-[10px] text-muted-foreground">
-                      last trade: {new Date(orchestratorStats.last_trade_at).toLocaleString()}
+                      {t('performance.lastTrade', { when: new Date(orchestratorStats.last_trade_at).toLocaleString() })}
                     </span>
                   )}
                 </div>
                 <div className="flex-1 min-h-0">
                   {cumulativePnlData.length === 0 ? (
                     <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                      No trade history in range.
+                      {t('performance.noTradeHistoryRange')}
                     </div>
                   ) : (
                     <PerformancePnlChart data={cumulativePnlData} mode={viewMode} />
@@ -1055,30 +1062,30 @@ export default function PerformancePanel() {
               </div>
 
               <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 flex flex-col min-h-[260px]">
-                <p className="shrink-0 text-xs font-semibold mb-2">Quick Insights</p>
+                <p className="shrink-0 text-xs font-semibold mb-2">{t('performance.quickInsights')}</p>
                 <div className="space-y-2 text-xs">
                   <InsightStat
-                    label="Best Trade"
+                    label={t('performance.bestTrade')}
                     value={advancedMetrics.bestTrade ? formatSignedCurrency(advancedMetrics.bestTrade.pnl || 0, true) : '—'}
-                    hint={advancedMetrics.bestTrade ? advancedMetrics.bestTrade.marketQuestion : 'No closed trades'}
+                    hint={advancedMetrics.bestTrade ? advancedMetrics.bestTrade.marketQuestion : t('performance.noClosedTrades')}
                     positive={(advancedMetrics.bestTrade?.pnl || 0) >= 0}
                   />
                   <InsightStat
-                    label="Worst Trade"
+                    label={t('performance.worstTrade')}
                     value={advancedMetrics.worstTrade ? formatSignedCurrency(advancedMetrics.worstTrade.pnl || 0, true) : '—'}
-                    hint={advancedMetrics.worstTrade ? advancedMetrics.worstTrade.marketQuestion : 'No closed trades'}
+                    hint={advancedMetrics.worstTrade ? advancedMetrics.worstTrade.marketQuestion : t('performance.noClosedTrades')}
                     positive={false}
                   />
                   <InsightStat
-                    label="Median ROI"
+                    label={t('performance.medianRoi')}
                     value={formatSignedPercent(advancedMetrics.medianRoi)}
-                    hint="Robust against outliers"
+                    hint={t('performance.medianRoiHint')}
                     positive={advancedMetrics.medianRoi >= 0}
                   />
                   <InsightStat
-                    label="Gross Win/Loss"
+                    label={t('performance.grossWinLoss')}
                     value={`${formatCurrency(summary.grossWins, true)} / ${formatCurrency(summary.grossLosses, true)}`}
-                    hint="Absolute dollars"
+                    hint={t('performance.grossHint')}
                   />
                 </div>
               </div>
@@ -1093,12 +1100,12 @@ export default function PerformancePanel() {
             <div className="h-full min-h-0 grid gap-2 lg:grid-cols-12">
             <div className="lg:col-span-5 rounded-md border border-border/60 bg-card/80 p-3 min-h-0 flex flex-col">
               <p className="shrink-0 text-xs font-semibold mb-2">
-                {viewMode === 'live' ? 'Market Category Performance' : 'Strategy Performance'}
+                {viewMode === 'live' ? t('performance.marketCategoryPerformance') : t('performance.strategyPerformance')}
               </p>
               <ScrollArea className="flex-1 min-h-0">
                 <div className="space-y-1.5 pr-2">
                   {categoryRollup.length === 0 ? (
-                    <p className="text-[11px] text-muted-foreground">No closed trades in range.</p>
+                    <p className="text-[11px] text-muted-foreground">{t('performance.noClosedTradesRange')}</p>
                   ) : (
                     categoryRollup.map((row) => {
                       const winRate = row.trades > 0 ? (row.wins / row.trades) * 100 : 0
@@ -1125,11 +1132,11 @@ export default function PerformancePanel() {
             </div>
 
             <div className="lg:col-span-4 rounded-md border border-border/60 bg-card/80 p-3 min-h-0 flex flex-col">
-              <p className="shrink-0 text-xs font-semibold mb-2">Time Performance</p>
+              <p className="shrink-0 text-xs font-semibold mb-2">{t('performance.timePerformance')}</p>
               <ScrollArea className="flex-1 min-h-0">
                 <div className="space-y-3 pr-2">
                   <section>
-                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Day of Week</p>
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">{t('performance.dayOfWeek')}</p>
                     <div className="space-y-1">
                       {weekdayRollup.map((row) => {
                         const winRate = row.trades > 0 ? (row.wins / row.trades) * 100 : 0
@@ -1150,7 +1157,7 @@ export default function PerformancePanel() {
                   </section>
 
                   <section>
-                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Time of Day</p>
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">{t('performance.timeOfDay')}</p>
                     <div className="space-y-1">
                       {timeOfDayRollup.map((row) => {
                         const winRate = row.trades > 0 ? (row.wins / row.trades) * 100 : 0
@@ -1174,37 +1181,45 @@ export default function PerformancePanel() {
             </div>
 
             <div className="lg:col-span-3 rounded-md border border-border/60 bg-card/80 p-3 min-h-0 flex flex-col">
-              <p className="shrink-0 text-xs font-semibold mb-2">Pattern Insights</p>
+              <p className="shrink-0 text-xs font-semibold mb-2">{t('performance.patternInsights')}</p>
               <ScrollArea className="flex-1 min-h-0">
                 <div className="space-y-2 pr-2 text-xs">
                   <InsightStat
-                    label="Best Day"
+                    label={t('performance.bestDay')}
                     value={patternInsights.bestDay ? `${patternInsights.bestDay.label} ${formatSignedCurrency(patternInsights.bestDay.pnl, true)}` : '—'}
-                    hint={patternInsights.bestDay ? `${patternInsights.bestDay.trades} trades, ${formatPercent((patternInsights.bestDay.wins / Math.max(1, patternInsights.bestDay.trades)) * 100)} win rate` : 'No closed trades in range'}
+                    hint={patternInsights.bestDay
+                      ? t('performance.bestDayHint', { n: patternInsights.bestDay.trades, rate: formatPercent((patternInsights.bestDay.wins / Math.max(1, patternInsights.bestDay.trades)) * 100) })
+                      : t('performance.noClosedTradesInRange')}
                     positive={(patternInsights.bestDay?.pnl || 0) >= 0}
                   />
                   <InsightStat
-                    label="Weakest Day"
+                    label={t('performance.weakestDay')}
                     value={patternInsights.worstDay ? `${patternInsights.worstDay.label} ${formatSignedCurrency(patternInsights.worstDay.pnl, true)}` : '—'}
-                    hint={patternInsights.worstDay ? `${patternInsights.worstDay.trades} trades, ${formatPercent((patternInsights.worstDay.wins / Math.max(1, patternInsights.worstDay.trades)) * 100)} win rate` : 'No closed trades in range'}
+                    hint={patternInsights.worstDay
+                      ? t('performance.bestDayHint', { n: patternInsights.worstDay.trades, rate: formatPercent((patternInsights.worstDay.wins / Math.max(1, patternInsights.worstDay.trades)) * 100) })
+                      : t('performance.noClosedTradesInRange')}
                     positive={false}
                   />
                   <InsightStat
-                    label="Best Session"
+                    label={t('performance.bestSession')}
                     value={patternInsights.bestSession ? `${patternInsights.bestSession.label} ${formatSignedCurrency(patternInsights.bestSession.pnl, true)}` : '—'}
-                    hint={patternInsights.bestSession ? `${patternInsights.bestSession.trades} trades in this time bucket` : 'No closed trades in range'}
+                    hint={patternInsights.bestSession
+                      ? t('performance.sessionHint', { n: patternInsights.bestSession.trades })
+                      : t('performance.noClosedTradesInRange')}
                     positive={(patternInsights.bestSession?.pnl || 0) >= 0}
                   />
                   <InsightStat
-                    label="Streak Profile"
+                    label={t('performance.streakProfile')}
                     value={`${patternInsights.maxWinStreak}W / ${patternInsights.maxLossStreak}L`}
-                    hint={`${patternInsights.activeDays} active days, ${patternInsights.tradesPerActiveDay.toFixed(1)} trades/day`}
+                    hint={t('performance.streakHint', { days: patternInsights.activeDays, rate: patternInsights.tradesPerActiveDay.toFixed(1) })}
                     positive={patternInsights.maxWinStreak >= patternInsights.maxLossStreak}
                   />
                   <InsightStat
-                    label="Top Category Concentration"
+                    label={t('performance.topCategoryConcentration')}
                     value={patternInsights.topCategory ? `${patternInsights.topCategory.label} ${formatPercent(patternInsights.topCategoryNotionalShare)}` : '—'}
-                    hint={patternInsights.topCategory ? `${formatPercent(patternInsights.topCategoryTradeShare)} of closed trades` : 'No category concentration in range'}
+                    hint={patternInsights.topCategory
+                      ? t('performance.topCategoryHint', { rate: formatPercent(patternInsights.topCategoryTradeShare) })
+                      : t('performance.noCategoryConcentration')}
                   />
                 </div>
               </ScrollArea>
@@ -1219,10 +1234,10 @@ export default function PerformancePanel() {
           ) : (
             <div className="h-full min-h-0 rounded-md border border-border/60 bg-card/80 flex flex-col">
             <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-b border-border/40">
-              <p className="text-xs font-semibold">Trade History</p>
+              <p className="text-xs font-semibold">{t('performance.tradeHistory')}</p>
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] text-muted-foreground">
-                  {filteredSortedHistoryTrades.length}/{unifiedTrades.length} trades • {TRADE_TAPE_PAGE_SIZE}/page
+                  {t('performance.tradesMeta', { filtered: filteredSortedHistoryTrades.length, total: unifiedTrades.length, page: TRADE_TAPE_PAGE_SIZE })}
                 </span>
                 <Button
                   size="sm"
@@ -1231,7 +1246,7 @@ export default function PerformancePanel() {
                   onClick={() => setTradeTapePage((page) => Math.max(1, page - 1))}
                   disabled={tradeTapePage <= 1}
                 >
-                  Prev
+                  {t('performance.prev')}
                 </Button>
                 <span className="min-w-[62px] text-center text-[10px] font-mono text-muted-foreground">
                   {tradeTapePage}/{tradeTapePageCount}
@@ -1243,7 +1258,7 @@ export default function PerformancePanel() {
                   onClick={() => setTradeTapePage((page) => Math.min(tradeTapePageCount, page + 1))}
                   disabled={tradeTapePage >= tradeTapePageCount}
                 >
-                  Next
+                  {t('performance.next')}
                 </Button>
               </div>
             </div>
@@ -1253,7 +1268,7 @@ export default function PerformancePanel() {
                 <input
                   value={historySearch}
                   onChange={(event) => setHistorySearch(event.target.value)}
-                  placeholder="Search market, outcome, category, strategy"
+                  placeholder={t('performance.searchPlaceholder')}
                   className="h-7 min-w-[220px] flex-1 rounded-md border border-border bg-background/80 px-2 text-xs"
                 />
                 <select
@@ -1261,7 +1276,7 @@ export default function PerformancePanel() {
                   onChange={(event) => setHistoryCategoryFilter(event.target.value)}
                   className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
                 >
-                  <option value="all">{viewMode === 'live' ? 'All categories' : 'All strategy categories'}</option>
+                  <option value="all">{viewMode === 'live' ? t('performance.allCategories') : t('performance.allStrategyCategories')}</option>
                   {historyCategoryOptions.map((category) => (
                     <option key={category} value={category}>{category}</option>
                   ))}
@@ -1271,10 +1286,10 @@ export default function PerformancePanel() {
                   onChange={(event) => setHistoryOutcomeFilter(event.target.value as HistoryOutcomeFilter)}
                   className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
                 >
-                  <option value="all">All outcomes</option>
-                  <option value="wins">Wins only</option>
-                  <option value="losses">Losses only</option>
-                  <option value="breakeven">Breakeven only</option>
+                  <option value="all">{t('performance.allOutcomes')}</option>
+                  <option value="wins">{t('performance.winsOnly')}</option>
+                  <option value="losses">{t('performance.lossesOnly')}</option>
+                  <option value="breakeven">{t('performance.breakevenOnly')}</option>
                 </select>
                 <select
                   value={historySortKey}
@@ -1282,7 +1297,7 @@ export default function PerformancePanel() {
                   className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
                 >
                   {HISTORY_SORT_OPTIONS.map((option) => (
-                    <option key={option.id} value={option.id}>{option.label}</option>
+                    <option key={option.id} value={option.id}>{t(option.labelKey)}</option>
                   ))}
                 </select>
                 <select
@@ -1290,8 +1305,8 @@ export default function PerformancePanel() {
                   onChange={(event) => setHistorySortDirection(event.target.value as HistorySortDirection)}
                   className="h-7 rounded-md border border-border bg-background/80 px-2 text-xs"
                 >
-                  <option value="desc">Desc</option>
-                  <option value="asc">Asc</option>
+                  <option value="desc">{t('performance.desc')}</option>
+                  <option value="asc">{t('performance.asc')}</option>
                 </select>
               </div>
             </div>
@@ -1301,18 +1316,18 @@ export default function PerformancePanel() {
                 <Table className="min-w-[1024px]">
                   <TableHeader>
                     <TableRow className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
-                      <TableHead className="text-[10px]">Market</TableHead>
-                      <TableHead className="text-[10px]">Outcome</TableHead>
-                      <TableHead className="text-[10px] text-right">Qty</TableHead>
-                      <TableHead className="text-[10px] text-right">Buy Px</TableHead>
-                      <TableHead className="text-[10px] text-right">Sell Px</TableHead>
-                      <TableHead className="text-[10px] text-right">Buy $</TableHead>
-                      <TableHead className="text-[10px] text-right">Sell $</TableHead>
-                      <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                      <TableHead className="text-[10px] text-right">ROI</TableHead>
-                      <TableHead className="text-[10px] text-right">Hold</TableHead>
-                      <TableHead className="text-[10px]">Category</TableHead>
-                      <TableHead className="text-[10px]">Closed</TableHead>
+                      <TableHead className="text-[10px]">{t('performance.colMarket')}</TableHead>
+                      <TableHead className="text-[10px]">{t('performance.colOutcome')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colQty')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colBuyPx')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colSellPx')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colBuy$')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colSell$')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colPnl')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colRoi')}</TableHead>
+                      <TableHead className="text-[10px] text-right">{t('performance.colHold')}</TableHead>
+                      <TableHead className="text-[10px]">{t('performance.colCategory')}</TableHead>
+                      <TableHead className="text-[10px]">{t('performance.colClosed')}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1366,7 +1381,7 @@ export default function PerformancePanel() {
                     {filteredSortedHistoryTrades.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={12} className="py-6 text-center text-xs text-muted-foreground">
-                          No trades match the current filters.
+                          {t('performance.noTradesMatch')}
                         </TableCell>
                       </TableRow>
                     )}
@@ -1559,9 +1574,10 @@ function PerformancePnlChart({
   data: PnlPoint[]
   mode: ViewMode
 }) {
+  const { t } = useTranslation()
   const stroke = mode === 'live' ? '#22d3ee' : '#f59e0b'
   const gradientId = mode === 'live' ? 'liveModeGradient' : 'sandboxModeGradient'
-  const label = mode === 'live' ? 'Live cumulative' : 'Sandbox cumulative'
+  const label = mode === 'live' ? t('performance.liveCumulative') : t('performance.sandboxCumulative')
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tooltipFormatter = (value: any) => {
