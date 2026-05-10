@@ -1,11 +1,11 @@
 {
   "runId": 1778445362989,
-  "workflowRunId": 25639067222,
+  "workflowRunId": 25639178116,
   "workflowId": 230872278,
   "workflowName": "CI",
   "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25639067222",
   "branch": "main",
-  "headSha": "e9815278d19c35937edac02b60462b159a64984f",
+  "headSha": "bd14188672fe5e7a41c10460608fde2fb706ae19",
   "prNumber": null,
   "passes": [
     {
@@ -37,13 +37,95 @@
       "newFailures": [],
       "costCents": 1,
       "durationMs": 29012
+    },
+    {
+      "pass": 2,
+      "cluster": {
+        "type": "type-error",
+        "files": [
+          "##[error]src/components/TradingPanel.tsx"
+        ],
+        "failures": [
+          {
+            "type": "type-error",
+            "file": "##[error]src/components/TradingPanel.tsx",
+            "line": 951,
+            "column": 33,
+            "message": "TS2339: Property 'max_daily_spend_usd_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "rule": "TS2339",
+            "rawLog": "##[error]src/components/TradingPanel.tsx(951,33): error TS2339: Property 'max_daily_spend_usd_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "confidence": 0.95
+          },
+          {
+            "type": "type-error",
+            "file": "##[error]src/components/TradingPanel.tsx",
+            "line": 952,
+            "column": 29,
+            "message": "TS2339: Property 'max_spread_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "rule": "TS2339",
+            "rawLog": "##[error]src/components/TradingPanel.tsx(952,29): error TS2339: Property 'max_spread_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "confidence": 0.95
+          },
+          {
+            "type": "type-error",
+            "file": "##[error]src/components/TradingPanel.tsx",
+            "line": 953,
+            "column": 28,
+            "message": "TS2339: Property 'slippage_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "rule": "TS2339",
+            "rawLog": "##[error]src/components/TradingPanel.tsx(953,28): error TS2339: Property 'slippage_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "confidence": 0.95
+          },
+          {
+            "type": "type-error",
+            "file": "##[error]src/components/TradingPanel.tsx",
+            "line": 954,
+            "column": 27,
+            "message": "TS2339: Property 'retry_limit_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "rule": "TS2339",
+            "rawLog": "##[error]src/components/TradingPanel.tsx(954,27): error TS2339: Property 'retry_limit_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "confidence": 0.95
+          },
+          {
+            "type": "type-error",
+            "file": "##[error]src/components/TradingPanel.tsx",
+            "line": 955,
+            "column": 31,
+            "message": "TS2339: Property 'retry_backoff_ms_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "rule": "TS2339",
+            "rawLog": "##[error]src/components/TradingPanel.tsx(955,31): error TS2339: Property 'retry_backoff_ms_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "confidence": 0.95
+          },
+          {
+            "type": "type-error",
+            "file": "##[error]src/components/TradingPanel.tsx",
+            "line": 956,
+            "column": 32,
+            "message": "TS2339: Property 'order_ttl_seconds_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "rule": "TS2339",
+            "rawLog": "##[error]src/components/TradingPanel.tsx(956,32): error TS2339: Property 'order_ttl_seconds_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+            "confidence": 0.95
+          }
+        ],
+        "strategy": "llm"
+      },
+      "commitSha": "866f092b53b89d2660c90dec588611a0efd8fa46",
+      "filesChanged": [
+        ".greencheck/state.json",
+        "frontend/src/services/apiTraders.ts"
+      ],
+      "result": "fixed",
+      "newFailures": [],
+      "costCents": 1,
+      "durationMs": 105604
     }
   ],
-  "totalCostCents": 1,
+  "totalCostCents": 2,
   "startedAt": "2026-05-10T20:36:02.989Z",
   "result": null,
   "commits": [
-    "bd14188672fe5e7a41c10460608fde2fb706ae19"
+    "bd14188672fe5e7a41c10460608fde2fb706ae19",
+    "866f092b53b89d2660c90dec588611a0efd8fa46"
   ],
   "latestFailures": [
     {
@@ -145,18 +227,8 @@
       "rule": null,
       "rawLog": "ERROR tests/test_stuck_position_monitor.py",
       "confidence": 0.7
-    },
-    {
-      "type": "lint",
-      "file": "backend/tests/test_trader_orchestrator_state.py",
-      "line": 15,
-      "column": 24,
-      "message": "[*] `sqlalchemy.select` imported but unused",
-      "rule": "F401",
-      "rawLog": "F401 [*] `sqlalchemy.select` imported but unused\n  --> tests/test_trader_orchestrator_state.py:15:24",
-      "confidence": 0.95
     }
   ],
-  "latestParserUsed": "typescript, pytest, ruff",
-  "latestLogPath": ".greencheck/logs/workflow-run-25639067222.log"
+  "latestParserUsed": "typescript, pytest",
+  "latestLogPath": ".greencheck/logs/workflow-run-25639178116.log"
 }
