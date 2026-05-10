@@ -3675,18 +3675,54 @@
       "mostLiquid": "Más líquido"
     },
     "type": {
-      "market": { "label": "Mercado", "plural": "Mercados" },
-      "event": { "label": "Evento", "plural": "Eventos" },
-      "category": { "label": "Categoría", "plural": "Categorías" },
-      "opportunity": { "label": "Oportunidad", "plural": "Oportunidades" },
-      "strategy": { "label": "Estrategia", "plural": "Estrategias" },
-      "dataSource": { "label": "Fuente de datos", "plural": "Fuentes de datos" },
-      "trader": { "label": "Trader", "plural": "Traders" },
-      "wallet": { "label": "Billetera", "plural": "Billeteras" },
-      "news": { "label": "Noticia", "plural": "Noticias" },
-      "alert": { "label": "Alerta", "plural": "Alertas" },
-      "research": { "label": "Investigación", "plural": "Investigaciones" },
-      "fallback": { "label": "Elemento", "plural": "Elementos" }
+      "market": {
+        "label": "Mercado",
+        "plural": "Mercados"
+      },
+      "event": {
+        "label": "Evento",
+        "plural": "Eventos"
+      },
+      "category": {
+        "label": "Categoría",
+        "plural": "Categorías"
+      },
+      "opportunity": {
+        "label": "Oportunidad",
+        "plural": "Oportunidades"
+      },
+      "strategy": {
+        "label": "Estrategia",
+        "plural": "Estrategias"
+      },
+      "dataSource": {
+        "label": "Fuente de datos",
+        "plural": "Fuentes de datos"
+      },
+      "trader": {
+        "label": "Trader",
+        "plural": "Traders"
+      },
+      "wallet": {
+        "label": "Billetera",
+        "plural": "Billeteras"
+      },
+      "news": {
+        "label": "Noticia",
+        "plural": "Noticias"
+      },
+      "alert": {
+        "label": "Alerta",
+        "plural": "Alertas"
+      },
+      "research": {
+        "label": "Investigación",
+        "plural": "Investigaciones"
+      },
+      "fallback": {
+        "label": "Elemento",
+        "plural": "Elementos"
+      }
     },
     "time": {
       "justNow": "ahora mismo",
@@ -3979,11 +4015,26 @@
       "avoid": "Evitar"
     },
     "timePeriods": {
-      "24h": { "label": "24H", "description": "últimas 24 horas" },
-      "7d": { "label": "7D", "description": "últimos 7 días" },
-      "30d": { "label": "1M", "description": "últimos 30 días" },
-      "90d": { "label": "3M", "description": "últimos 90 días" },
-      "all": { "label": "Todo", "description": "siempre" }
+      "24h": {
+        "label": "24H",
+        "description": "últimas 24 horas"
+      },
+      "7d": {
+        "label": "7D",
+        "description": "últimos 7 días"
+      },
+      "30d": {
+        "label": "1M",
+        "description": "últimos 30 días"
+      },
+      "90d": {
+        "label": "3M",
+        "description": "últimos 90 días"
+      },
+      "all": {
+        "label": "Todo",
+        "description": "siempre"
+      }
     },
     "action": {
       "add": "Agregar",
@@ -4097,33 +4148,113 @@
     "poolReason": {
       "membershipDetail": "Detalle de membresía del pool",
       "qualityScoreMet": "Puntuación de calidad {{value}}% alcanzó el umbral.",
-      "manual_include": { "label": "Anulación de inclusión manual", "detail": "Añadido manualmente al pool." },
-      "manual_exclude": { "label": "Exclusión manual", "detail": "Excluido manualmente del pool." },
-      "blacklisted": { "label": "En lista negra", "detail": "En lista negra de acciones del pool." },
-      "tracked": { "label": "Wallet rastreada", "detail": "Incluido desde flujos de wallets rastreadas." },
-      "core_quality_gate": { "label": "Nivel de calidad core", "detail": "Pasó las puertas de calidad core." },
-      "rising_quality_gate": { "label": "Nivel de calidad emergente", "detail": "Pasó las puertas de calidad y actividad de nivel emergente." },
-      "churn_guard_retained": { "label": "Retención por guard de rotación", "detail": "Mantenido para limitar la rotación por hora." },
-      "elite_composite": { "label": "Perfil compuesto élite", "detail": "Perfil sólido de calidad, actividad y estabilidad." },
-      "active_momentum": { "label": "Momentum activo", "detail": "La velocidad de operaciones reciente alcanzó el umbral." },
-      "active_recent": { "label": "Actividad reciente", "detail": "Operó dentro de la ventana activa." },
-      "insider_alignment": { "label": "Señal alineada con insider", "detail": "Alta puntuación insider con actividad reciente." },
-      "cluster_capped": { "label": "Slot limitado por clúster", "detail": "Incluido dentro de los límites de concentración del clúster." },
-      "quality_gate_pass": { "label": "Aprobó la puerta de calidad", "detail": "Pasó las verificaciones de elegibilidad de calidad." },
-      "below_selection_cutoff": { "label": "Por debajo del corte del pool", "detail": "No superó el corte de selección actual." },
-      "tier_thresholds_not_met": { "label": "Umbrales de nivel no alcanzados", "detail": "No se alcanzaron los umbrales core ni emergentes." },
-      "non_positive_pnl": { "label": "PnL no positivo", "detail": "El PnL total debe ser positivo." },
-      "insufficient_trades": { "label": "Muestra de operaciones insuficiente", "detail": "Necesita más historial de operaciones." },
-      "anomaly_too_high": { "label": "Puntuación de anomalía demasiado alta", "detail": "La puntuación de anomalía superó el límite." },
-      "recommendation_blocked": { "label": "Recomendación bloqueada", "detail": "La recomendación no es elegible para el pool." },
-      "not_analyzed": { "label": "Análisis ausente", "detail": "Aún no hay análisis de discovery completado." },
-      "fallback": { "label": "Razón de selección no disponible", "detail": "Faltan metadatos de razón para este ciclo de recálculo." },
-      "stableRiskAdjusted": { "label": "Perfil estable ajustado al riesgo", "detail": "Drawdown y rendimientos relativamente estables." },
-      "manualIncludeShort": { "label": "Inclusión manual", "detail": "Incluido manualmente en el pool." },
-      "blacklistedShort": { "label": "En lista negra", "detail": "La wallet está en lista negra del pool." },
-      "trackedShort": { "label": "Wallet rastreada", "detail": "Incluido por actualizaciones de wallets rastreadas." },
-      "topPoolCandidate": { "label": "Candidato al top del pool" },
-      "poolPending": { "label": "Membresía del pool pendiente", "detail": "La wallet no está actualmente en el pool activo." }
+      "manual_include": {
+        "label": "Anulación de inclusión manual",
+        "detail": "Añadido manualmente al pool."
+      },
+      "manual_exclude": {
+        "label": "Exclusión manual",
+        "detail": "Excluido manualmente del pool."
+      },
+      "blacklisted": {
+        "label": "En lista negra",
+        "detail": "En lista negra de acciones del pool."
+      },
+      "tracked": {
+        "label": "Wallet rastreada",
+        "detail": "Incluido desde flujos de wallets rastreadas."
+      },
+      "core_quality_gate": {
+        "label": "Nivel de calidad core",
+        "detail": "Pasó las puertas de calidad core."
+      },
+      "rising_quality_gate": {
+        "label": "Nivel de calidad emergente",
+        "detail": "Pasó las puertas de calidad y actividad de nivel emergente."
+      },
+      "churn_guard_retained": {
+        "label": "Retención por guard de rotación",
+        "detail": "Mantenido para limitar la rotación por hora."
+      },
+      "elite_composite": {
+        "label": "Perfil compuesto élite",
+        "detail": "Perfil sólido de calidad, actividad y estabilidad."
+      },
+      "active_momentum": {
+        "label": "Momentum activo",
+        "detail": "La velocidad de operaciones reciente alcanzó el umbral."
+      },
+      "active_recent": {
+        "label": "Actividad reciente",
+        "detail": "Operó dentro de la ventana activa."
+      },
+      "insider_alignment": {
+        "label": "Señal alineada con insider",
+        "detail": "Alta puntuación insider con actividad reciente."
+      },
+      "cluster_capped": {
+        "label": "Slot limitado por clúster",
+        "detail": "Incluido dentro de los límites de concentración del clúster."
+      },
+      "quality_gate_pass": {
+        "label": "Aprobó la puerta de calidad",
+        "detail": "Pasó las verificaciones de elegibilidad de calidad."
+      },
+      "below_selection_cutoff": {
+        "label": "Por debajo del corte del pool",
+        "detail": "No superó el corte de selección actual."
+      },
+      "tier_thresholds_not_met": {
+        "label": "Umbrales de nivel no alcanzados",
+        "detail": "No se alcanzaron los umbrales core ni emergentes."
+      },
+      "non_positive_pnl": {
+        "label": "PnL no positivo",
+        "detail": "El PnL total debe ser positivo."
+      },
+      "insufficient_trades": {
+        "label": "Muestra de operaciones insuficiente",
+        "detail": "Necesita más historial de operaciones."
+      },
+      "anomaly_too_high": {
+        "label": "Puntuación de anomalía demasiado alta",
+        "detail": "La puntuación de anomalía superó el límite."
+      },
+      "recommendation_blocked": {
+        "label": "Recomendación bloqueada",
+        "detail": "La recomendación no es elegible para el pool."
+      },
+      "not_analyzed": {
+        "label": "Análisis ausente",
+        "detail": "Aún no hay análisis de discovery completado."
+      },
+      "fallback": {
+        "label": "Razón de selección no disponible",
+        "detail": "Faltan metadatos de razón para este ciclo de recálculo."
+      },
+      "stableRiskAdjusted": {
+        "label": "Perfil estable ajustado al riesgo",
+        "detail": "Drawdown y rendimientos relativamente estables."
+      },
+      "manualIncludeShort": {
+        "label": "Inclusión manual",
+        "detail": "Incluido manualmente en el pool."
+      },
+      "blacklistedShort": {
+        "label": "En lista negra",
+        "detail": "La wallet está en lista negra del pool."
+      },
+      "trackedShort": {
+        "label": "Wallet rastreada",
+        "detail": "Incluido por actualizaciones de wallets rastreadas."
+      },
+      "topPoolCandidate": {
+        "label": "Candidato al top del pool"
+      },
+      "poolPending": {
+        "label": "Membresía del pool pendiente",
+        "detail": "La wallet no está actualmente en el pool activo."
+      }
     }
   },
   "tradersNetworkPanel": {
@@ -4280,5 +4411,171 @@
       "trackGroupMembers": "Error al rastrear miembros del grupo",
       "deleteGroup": "Error al eliminar el grupo"
     }
+  },
+  "traderSignalViews": {
+    "sourceConfluence": "CONFLUENCIA",
+    "sourceInsider": "INSIDER",
+    "sourceConfluenceShort": "CNF",
+    "sourceInsiderShort": "INS",
+    "tierWatch": "VIGILAR",
+    "tierHigh": "ALTO",
+    "tierExtreme": "EXTREMO",
+    "tierInsider": "INSIDER",
+    "tierWatchShort": "VIG",
+    "tierHighShort": "ALT",
+    "tierExtremeShort": "EXT",
+    "tierInsiderShort": "INS",
+    "qualityTradeable": "OPERABLE",
+    "qualitySourceCheck": "VERIFICAR",
+    "qualityInvalid": "INVÁLIDO",
+    "buySummary": "Comprar {{outcome}} · {{count}} carteras · Confianza {{confidence}}",
+    "close": "Cerrar",
+    "buyAction": "COMPRAR {{outcome}}",
+    "signal": "SEÑAL",
+    "strategySdkTitle": "StrategySDK: {{sdk}}",
+    "sdkLabel": "SDK {{sdk}}",
+    "poolBadge": "Pool {{count}}",
+    "trackedBadge": "Seguidas {{count}}",
+    "groupsBadge": "Grupos {{count}}",
+    "noQualifiedSource": "Sin fuente calificada",
+    "selected": "Seleccionado",
+    "selectedSide": "Lado seleccionado",
+    "entry": "Entrada",
+    "confidence": "Confianza",
+    "conviction": "Convicción",
+    "wallets": "Carteras",
+    "netNotional": "Nocional Neto",
+    "window": "Ventana",
+    "edge": "Edge",
+    "preNewsLead": "Anticipo Pre-noticia",
+    "sourceFit": "Ajuste de Fuente",
+    "qualified": "Calificado",
+    "yes": "SÍ",
+    "no": "NO",
+    "walletBase": "Base de Carteras",
+    "insiderScore": "Puntuación Insider",
+    "freshness": "Frescura",
+    "clusters": "Clusters",
+    "market": "Mercado",
+    "copilot": "Copiloto",
+    "poolWallets": "Carteras del Pool",
+    "trackedWallets": "Carteras Seguidas",
+    "groupWallets": "Carteras de Grupo",
+    "coverage": "Cobertura",
+    "coreWallets": "Carteras Centrales",
+    "signalType": "Tipo de Señal",
+    "suggestedSize": "Tamaño Sugerido",
+    "marketLiquidity": "Liquidez del Mercado",
+    "involvedWallets": "Carteras Involucradas",
+    "validation": "Validación",
+    "first": "Primero",
+    "last": "Último",
+    "walletsCount": "{{count}} carteras",
+    "expandedSignalAria": "Señal de operador expandida: {{market}}",
+    "colType": "Tipo",
+    "colTier": "Nivel",
+    "colMarket": "Mercado",
+    "colSide": "Lado",
+    "colConf": "Conf",
+    "colWallets": "Cart",
+    "colEdgeNet": "Edge/Neto",
+    "colScore": "Puntaje",
+    "colAge": "Edad",
+    "viewLiveMarket": "Ver mercado en vivo",
+    "lastReinforced": "Último Refuerzo",
+    "openMarket": "Abrir Mercado",
+    "terminalTitle": "FEED DE SEÑALES DE OPERADORES",
+    "signalsCount": "{{count}} señales",
+    "live": "EN VIVO",
+    "disconnected": "DESCONECTADO",
+    "bootInitializing": "Inicializando feed de señales de operadores...",
+    "bootConnected": "Conectado a pipelines de confluencia del pool + operaciones seguidas/grupo",
+    "bootLoaded": "{{count}} señales cargadas",
+    "awaitingNextSignal": "esperando próxima señal"
+  },
+  "walletAnalysisPanel": {
+    "period24h": "24H",
+    "period7d": "7D",
+    "period30d": "30D",
+    "periodAll": "Todo el tiempo",
+    "tabOverview": "Resumen",
+    "tabTrades": "Operaciones",
+    "tabPositions": "Posiciones",
+    "tabRisk": "Riesgo",
+    "riskHigh": "Riesgo Alto",
+    "riskModerate": "Riesgo Moderado",
+    "riskLow": "Riesgo Bajo",
+    "notEnoughTradeHistory": "Historial de operaciones insuficiente para la línea de tendencia.",
+    "paginationRange": "{{start}}-{{end}} de {{total}} {{itemLabel}}",
+    "pageSizeOption": "{{size}}/página",
+    "pageOf": "Página {{page}}/{{totalPages}}",
+    "openProfile": "Abrir perfil",
+    "anomalyPercent": "{{percent}}% anomalía",
+    "totalPnl": "P&L Total",
+    "winRate": "Tasa de Ganancia",
+    "winsLosses": "{{wins}}V / {{losses}}D",
+    "volume": "Volumen",
+    "tradesDelta": "{{count}} operaciones",
+    "riskScore": "Puntuación de Riesgo",
+    "pnlTrend": "Tendencia P&L",
+    "sampledTrades": "{{count}} operaciones muestreadas",
+    "realizedPnl": "P&L Realizado",
+    "unrealizedPnl": "P&L No Realizado",
+    "dataHealth": "Salud de Datos",
+    "loadingFreshMetrics": "Cargando métricas frescas...",
+    "metricsSynchronized": "Métricas sincronizadas",
+    "dataHealthDetail": "Operaciones: {{trades}} cargadas, Posiciones: {{positions}}, Anomalías: {{anomalies}}",
+    "noTradesFound": "No se encontraron operaciones",
+    "noTradesSubtitle": "Esta cartera no expone actualmente historial de operaciones.",
+    "tradesSubtitle": "Últimas operaciones ejecutadas con enlaces directos a mercado y transacción.",
+    "itemTrades": "operaciones",
+    "colTime": "Hora",
+    "colMarket": "Mercado",
+    "colSide": "Lado",
+    "colOutcome": "Resultado",
+    "colSize": "Tamaño",
+    "colPrice": "Precio",
+    "colNotional": "Nocional",
+    "colLinks": "Enlaces",
+    "openMarket": "Abrir mercado",
+    "openTransaction": "Abrir transacción",
+    "noOpenPositions": "Sin posiciones abiertas",
+    "noOpenPositionsSubtitle": "Esta cartera no tiene actualmente riesgo abierto en mercados rastreados.",
+    "positionValue": "Valor de Posición",
+    "itemPositions": "posiciones",
+    "colAvg": "Prom",
+    "colCurrent": "Actual",
+    "colValue": "Valor",
+    "colUnrealized": "No Realizado",
+    "colRoi": "ROI",
+    "colLink": "Enlace",
+    "noRiskAnalysis": "No hay análisis de riesgo disponible",
+    "noRiskAnalysisSubtitle": "El análisis de riesgo se genera después de recopilar suficiente contexto de mercado y operaciones.",
+    "anomalyScore": "Puntuación de Anomalía",
+    "recommendation": "Recomendación",
+    "profitablePattern": "Patrón Rentable",
+    "patternUnclear": "Patrón Poco Claro",
+    "noStrategyFingerprint": "No se detectó huella de estrategia.",
+    "itemAnomalies": "anomalías",
+    "noAnomaliesDetected": "No se detectaron anomalías",
+    "noAnomaliesSubtitle": "Esta cartera actualmente parece estadísticamente normal según el comportamiento observado.",
+    "colSeverity": "Gravedad",
+    "colTypeHeader": "Tipo",
+    "colScore": "Puntaje",
+    "colDescription": "Descripción",
+    "colEvidence": "Evidencia",
+    "headerEyebrow": "Inteligencia de Traders",
+    "headerTitle": "Análisis de Cartera",
+    "headerSubtitle": "Perfila cualquier cartera de trader con inteligencia estructurada de rendimiento, ejecución y anomalías.",
+    "searchPlaceholder": "Introduce dirección de cartera, @handle o URL de perfil",
+    "analyze": "Analizar",
+    "refresh": "Actualizar",
+    "activeBadge": "Activa: {{address}}",
+    "riskBadge": "Riesgo: {{label}}",
+    "reverseEngineerTitle": "Abrir Investigación de Estrategia → Ingeniería Inversa con esta cartera precargada",
+    "reverseEngineerStrategy": "Ingeniería inversa de estrategia",
+    "noWalletSelected": "No hay cartera seleccionada",
+    "noWalletSubtitle": "Introduce una dirección de cartera, @handle o URL de perfil de Polymarket para desbloquear un perfil completo de trader con tablas paginadas de operaciones y posiciones.",
+    "unableToResolveWallet": "No se puede resolver el identificador de cartera a una dirección en cadena"
   }
 }

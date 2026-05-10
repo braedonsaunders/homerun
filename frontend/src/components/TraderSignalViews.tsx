@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAtomValue } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   CheckCircle2,
   Clock,
@@ -751,6 +752,34 @@ export function TraderSignalCards({ signals, onNavigateToWallet, onOpenCopilot }
   )
 }
 
+function getSourceLabel(t: (k: string) => string, source: string): string {
+  return source === 'insider' ? t('traderSignalViews.sourceInsider') : t('traderSignalViews.sourceConfluence')
+}
+
+function getSourceTagShort(t: (k: string) => string, source: string): string {
+  return source === 'insider' ? t('traderSignalViews.sourceInsiderShort') : t('traderSignalViews.sourceConfluenceShort')
+}
+
+function getTierLabel(t: (k: string) => string, tier: string): string {
+  switch (tier) {
+    case 'WATCH': return t('traderSignalViews.tierWatch')
+    case 'HIGH': return t('traderSignalViews.tierHigh')
+    case 'EXTREME': return t('traderSignalViews.tierExtreme')
+    case 'INSIDER': return t('traderSignalViews.tierInsider')
+    default: return tier
+  }
+}
+
+function getTierTagShort(t: (k: string) => string, tier: string): string {
+  switch (tier) {
+    case 'WATCH': return t('traderSignalViews.tierWatchShort')
+    case 'HIGH': return t('traderSignalViews.tierHighShort')
+    case 'EXTREME': return t('traderSignalViews.tierExtremeShort')
+    case 'INSIDER': return t('traderSignalViews.tierInsiderShort')
+    default: return tier.slice(0, 3)
+  }
+}
+
 function TraderSignalCard({
   signal,
   onNavigateToWallet,
@@ -764,6 +793,7 @@ function TraderSignalCard({
   isModalView?: boolean
   onCloseModal?: () => void
 }) {
+  const { t } = useTranslation()
   const expanded = isModalView
   const [modalOpen, setModalOpen] = useState(false)
   const themeMode = useAtomValue(themeAtom)
@@ -820,10 +850,10 @@ function TraderSignalCard({
       ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
       : 'bg-red-500/10 text-red-300 border-red-500/30'
   const qualityLabel = signal.is_tradeable
-    ? 'TRADEABLE'
+    ? t('traderSignalViews.qualityTradeable')
     : signal.is_valid
-      ? 'SOURCE CHECK'
-      : 'INVALID'
+      ? t('traderSignalViews.qualitySourceCheck')
+      : t('traderSignalViews.qualityInvalid')
 
   const bgGradient = signal.source === 'insider'
     ? 'from-purple-500/[0.04] via-transparent to-transparent'
@@ -878,14 +908,14 @@ function TraderSignalCard({
                   {marketLabel}
                 </h3>
                 <Badge variant="outline" className={cn('h-5 px-1.5 text-[10px] font-medium border', SOURCE_COLORS[signal.source])}>
-                  {signal.source === 'insider' ? 'INSIDER' : 'CONFLUENCE'}
+                  {getSourceLabel(t, signal.source)}
                 </Badge>
                 <Badge variant="outline" className={cn('h-5 px-1.5 text-[10px] font-bold', TIER_COLORS[signal.tier])}>
-                  {signal.tier}
+                  {getTierLabel(t, signal.tier)}
                 </Badge>
               </div>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Buy {selectedOutcomeLabel} · {signal.wallet_count} wallets · Confidence {signal.confidence}
+                {t('traderSignalViews.buySummary', { outcome: selectedOutcomeLabel, count: signal.wallet_count, confidence: signal.confidence })}
               </p>
             </div>
             <div className="flex items-center gap-1 flex-shrink-0">
@@ -895,7 +925,7 @@ function TraderSignalCard({
                 className="inline-flex items-center gap-1 h-7 px-2 text-[11px] rounded-md border border-border/60 bg-background text-foreground hover:bg-muted/60 transition-colors font-medium"
               >
                 <Minimize2 className="w-3 h-3" />
-                Close
+                {t('traderSignalViews.close')}
               </button>
             </div>
           </div>
@@ -912,13 +942,13 @@ function TraderSignalCard({
             variant="outline"
             className={cn('text-[10px] font-medium border', SOURCE_COLORS[signal.source])}
           >
-            {signal.source === 'insider' ? 'INSIDER' : 'CONFLUENCE'}
+            {getSourceLabel(t, signal.source)}
           </Badge>
           <Badge
             variant="outline"
             className={cn('text-[10px] font-medium border', TIER_COLORS[signal.tier])}
           >
-            {signal.tier}
+            {getTierLabel(t, signal.tier)}
           </Badge>
           <Badge
             variant="outline"
@@ -932,8 +962,8 @@ function TraderSignalCard({
             )}
           >
             {signal.direction === 'BUY' || signal.direction === 'SELL'
-              ? `BUY ${directionLabelCompact}`
-              : signal.outcome || signal.signal_type?.replace(/_/g, ' ') || 'SIGNAL'}
+              ? t('traderSignalViews.buyAction', { outcome: directionLabelCompact })
+              : signal.outcome || signal.signal_type?.replace(/_/g, ' ') || t('traderSignalViews.signal')}
           </Badge>
           <Badge
             variant="outline"
@@ -945,9 +975,9 @@ function TraderSignalCard({
           <Badge
             variant="outline"
             className="max-w-[170px] truncate text-[9px] px-1.5 py-0 font-mono border-border/50 bg-muted/25 text-muted-foreground"
-            title={`StrategySDK: ${strategySdk}`}
+            title={t('traderSignalViews.strategySdkTitle', { sdk: strategySdk })}
           >
-            SDK {strategySdk}
+            {t('traderSignalViews.sdkLabel', { sdk: strategySdk })}
           </Badge>
 
           <div className="ml-auto flex items-center gap-1 text-xs text-muted-foreground/70">
@@ -965,22 +995,22 @@ function TraderSignalCard({
         <div className="mb-3 flex flex-wrap items-center gap-1.5">
           {poolWallets > 0 && (
             <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
-              Pool {poolWallets}
+              {t('traderSignalViews.poolBadge', { count: poolWallets })}
             </Badge>
           )}
           {trackedWallets > 0 && (
             <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-blue-500/30 bg-blue-500/10 text-blue-300">
-              Tracked {trackedWallets}
+              {t('traderSignalViews.trackedBadge', { count: trackedWallets })}
             </Badge>
           )}
           {groupWallets > 0 && (
             <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-amber-500/30 bg-amber-500/10 text-amber-300">
-              Groups {groupWallets}
+              {t('traderSignalViews.groupsBadge', { count: groupWallets })}
             </Badge>
           )}
           {signal.source_coverage_score === 0 && (
             <Badge variant="outline" className="text-[10px] h-5 px-1.5 border-red-500/30 bg-red-500/10 text-red-300">
-              No qualified source
+              {t('traderSignalViews.noQualifiedSource')}
             </Badge>
           )}
         </div>
@@ -1039,7 +1069,7 @@ function TraderSignalCard({
                 )}
               >
                 {isSelectedOutcomeRow(signal, row, index) && (
-                  <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-foreground/75">Selected</p>
+                  <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-foreground/75">{t('traderSignalViews.selected')}</p>
                 )}
                 <p className="text-sm font-bold truncate">{compactOutcomeLabel(row.label, 14)}</p>
                 <p className="text-xs font-semibold font-data">
@@ -1060,7 +1090,7 @@ function TraderSignalCard({
               isBuy && 'ring-1 ring-white/40 shadow-[0_0_0_1px_rgba(255,255,255,0.08)]',
             )}>
               {isBuy && (
-                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-green-200/80">Selected</p>
+                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-green-200/80">{t('traderSignalViews.selected')}</p>
               )}
               <p className="text-sm font-bold text-green-300 truncate">{yesLabel}</p>
               <p className="text-xs font-semibold text-green-300 font-data">{formatPriceCents(currentYes)}</p>
@@ -1070,7 +1100,7 @@ function TraderSignalCard({
               signal.direction === 'SELL' && 'ring-1 ring-white/40 shadow-[0_0_0_1px_rgba(255,255,255,0.08)]',
             )}>
               {signal.direction === 'SELL' && (
-                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-red-200/80">Selected</p>
+                <p className="text-[9px] font-semibold uppercase tracking-[0.12em] text-red-200/80">{t('traderSignalViews.selected')}</p>
               )}
               <p className="text-sm font-bold text-red-300 truncate">{noLabel}</p>
               <p className="text-xs font-semibold text-red-300 font-data">{formatPriceCents(currentNo)}</p>
@@ -1081,23 +1111,23 @@ function TraderSignalCard({
         {/* Row 5: Metrics grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-3">
           <div>
-            <p className="text-muted-foreground/70">Selected Side</p>
+            <p className="text-muted-foreground/70">{t('traderSignalViews.selectedSide')}</p>
             <p className="font-semibold text-foreground truncate" title={selectedOutcomeLabel}>
               {selectedOutcomeLabel}
             </p>
           </div>
           <div>
-            <p className="text-muted-foreground/70">Entry</p>
+            <p className="text-muted-foreground/70">{t('traderSignalViews.entry')}</p>
             <p className="font-semibold text-foreground font-data">
               {formatPriceCents(actionPrice)}
             </p>
           </div>
           <div>
-            <p className="text-muted-foreground/70">Confidence</p>
+            <p className="text-muted-foreground/70">{t('traderSignalViews.confidence')}</p>
             <p className="font-semibold text-foreground font-data">{signal.confidence}</p>
           </div>
           <div>
-            <p className="text-muted-foreground/70">Wallets</p>
+            <p className="text-muted-foreground/70">{t('traderSignalViews.wallets')}</p>
             <p className="font-semibold text-foreground font-data flex items-center gap-1">
               <Users className="w-3 h-3 text-muted-foreground/70" />
               {signal.source === 'confluence'
@@ -1112,13 +1142,13 @@ function TraderSignalCard({
           {signal.source === 'confluence' ? (
             <>
               <div>
-                <p className="text-muted-foreground/70">Net Notional</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.netNotional')}</p>
                 <p className="font-semibold text-foreground font-data">
                   {formatCompact(signal.net_notional)}
                 </p>
               </div>
               <div>
-                <p className="text-muted-foreground/70">Window</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.window')}</p>
                 <p className="font-semibold text-foreground font-data">
                   {signal.window_minutes || 60}m
                 </p>
@@ -1127,13 +1157,13 @@ function TraderSignalCard({
           ) : (
             <>
               <div>
-                <p className="text-muted-foreground/70">Edge</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.edge')}</p>
                 <p className="font-semibold text-foreground font-data">
                   {signal.edge_percent != null ? `${signal.edge_percent.toFixed(1)}%` : '\u2014'}
                 </p>
               </div>
               <div>
-                <p className="text-muted-foreground/70">Pre-news Lead</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.preNewsLead')}</p>
                 <p className="font-semibold text-foreground font-data">
                   {signal.pre_news_lead_minutes != null ? `${signal.pre_news_lead_minutes.toFixed(0)}m` : '\u2014'}
                 </p>
@@ -1141,18 +1171,18 @@ function TraderSignalCard({
             </>
           )}
           <div>
-            <p className="text-muted-foreground/70">Source Fit</p>
+            <p className="text-muted-foreground/70">{t('traderSignalViews.sourceFit')}</p>
             <p className="font-semibold text-foreground font-data">{sourceCoverageLabel}</p>
           </div>
           <div>
-            <p className="text-muted-foreground/70">Qualified</p>
+            <p className="text-muted-foreground/70">{t('traderSignalViews.qualified')}</p>
             <p className={cn('font-semibold font-data', signal.is_tradeable ? 'text-emerald-300' : 'text-red-300')}>
-              {signal.is_tradeable ? 'YES' : 'NO'}
+              {signal.is_tradeable ? t('traderSignalViews.yes') : t('traderSignalViews.no')}
             </p>
           </div>
           {isModalView && (
             <div>
-              <p className="text-muted-foreground/70">Wallet Base</p>
+              <p className="text-muted-foreground/70">{t('traderSignalViews.walletBase')}</p>
               <p className="font-semibold text-foreground font-data">{walletsConsidered}</p>
             </div>
           )}
@@ -1162,7 +1192,7 @@ function TraderSignalCard({
         <div>
           <div className="flex items-center justify-between text-[11px] mb-1">
             <span className="text-muted-foreground/70">
-              {signal.source === 'insider' ? 'Confidence' : 'Conviction'}
+              {signal.source === 'insider' ? t('traderSignalViews.confidence') : t('traderSignalViews.conviction')}
             </span>
             <span className="text-foreground/90 font-medium font-data">{signal.confidence}/100</span>
           </div>
@@ -1192,13 +1222,13 @@ function TraderSignalCard({
         {signal.source === 'insider' && (
           <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground/70">
             {signal.insider_score != null && (
-              <span>Insider Score: <span className="text-purple-400 font-data">{signal.insider_score.toFixed(2)}</span></span>
+              <span>{t('traderSignalViews.insiderScore')}: <span className="text-purple-400 font-data">{signal.insider_score.toFixed(2)}</span></span>
             )}
             {signal.freshness_minutes != null && (
-              <span>Freshness: <span className="text-foreground/80 font-data">{signal.freshness_minutes.toFixed(0)}m</span></span>
+              <span>{t('traderSignalViews.freshness')}: <span className="text-foreground/80 font-data">{signal.freshness_minutes.toFixed(0)}m</span></span>
             )}
             {signal.cluster_count != null && (
-              <span>Clusters: <span className="text-foreground/80 font-data">{signal.cluster_count}</span></span>
+              <span>{t('traderSignalViews.clusters')}: <span className="text-foreground/80 font-data">{signal.cluster_count}</span></span>
             )}
           </div>
         )}
@@ -1254,7 +1284,7 @@ function TraderSignalCard({
               className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
             >
               <ExternalLink className="w-3 h-3" />
-              Market
+              {t('traderSignalViews.market')}
             </a>
           )}
           {onOpenCopilot && (
@@ -1266,7 +1296,7 @@ function TraderSignalCard({
               className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300"
             >
               <MessageCircle className="w-3 h-3" />
-              Copilot
+              {t('traderSignalViews.copilot')}
             </button>
           )}
           <BuyButton traderSignal={signal} variant="inline" />
@@ -1277,19 +1307,19 @@ function TraderSignalCard({
           <div className="mt-3 pt-3 border-t border-border/50 space-y-2 text-xs">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div>
-                <p className="text-muted-foreground/70">Pool Wallets</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.poolWallets')}</p>
                 <p className="font-semibold text-foreground">{poolWallets}</p>
               </div>
               <div>
-                <p className="text-muted-foreground/70">Tracked Wallets</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.trackedWallets')}</p>
                 <p className="font-semibold text-foreground">{trackedWallets}</p>
               </div>
               <div>
-                <p className="text-muted-foreground/70">Group Wallets</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.groupWallets')}</p>
                 <p className="font-semibold text-foreground">{groupWallets}</p>
               </div>
               <div>
-                <p className="text-muted-foreground/70">Coverage</p>
+                <p className="text-muted-foreground/70">{t('traderSignalViews.coverage')}</p>
                 <p className="font-semibold text-foreground">{sourceCoverageLabel}</p>
               </div>
             </div>
@@ -1298,11 +1328,11 @@ function TraderSignalCard({
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <p className="text-muted-foreground/70">Core Wallets</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.coreWallets')}</p>
                     <p className="font-semibold text-foreground">{signal.unique_core_wallets || 0}</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Signal Type</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.signalType')}</p>
                     <p className="font-semibold text-foreground">{signal.signal_type?.replace(/_/g, ' ') || '\u2014'}</p>
                   </div>
                 </div>
@@ -1312,13 +1342,13 @@ function TraderSignalCard({
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <p className="text-muted-foreground/70">Suggested Size</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.suggestedSize')}</p>
                     <p className="font-semibold text-foreground">
                       {signal.suggested_size_usd != null ? formatCompact(signal.suggested_size_usd) : '\u2014'}
                     </p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Market Liquidity</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.marketLiquidity')}</p>
                     <p className="font-semibold text-foreground">
                       {signal.market_liquidity != null ? formatCompact(signal.market_liquidity) : '\u2014'}
                     </p>
@@ -1326,7 +1356,7 @@ function TraderSignalCard({
                 </div>
                 {signal.wallets && signal.wallets.length > 1 && (
                   <div>
-                    <p className="text-muted-foreground/70 mb-1">Involved Wallets</p>
+                    <p className="text-muted-foreground/70 mb-1">{t('traderSignalViews.involvedWallets')}</p>
                     <div className="flex flex-wrap gap-1.5">
                       {signal.wallets.slice(0, 6).map((w) => (
                         <button
@@ -1349,7 +1379,7 @@ function TraderSignalCard({
 
             {signal.validation_reasons.length > 0 && (
               <div>
-                <p className="text-muted-foreground/70 mb-1">Validation</p>
+                <p className="text-muted-foreground/70 mb-1">{t('traderSignalViews.validation')}</p>
                 <div className="flex flex-wrap gap-1.5">
                   {signal.validation_reasons.map((reason) => (
                     <span
@@ -1366,15 +1396,15 @@ function TraderSignalCard({
             <div className="flex flex-wrap gap-4 text-[11px] text-muted-foreground/70 pt-1">
               <span className="inline-flex items-center gap-1">
                 <Clock className="w-3 h-3" />
-                First: {timeAgo(signal.first_seen_at || signal.detected_at)}
+                {t('traderSignalViews.first')}: {timeAgo(signal.first_seen_at || signal.detected_at)}
               </span>
               <span className="inline-flex items-center gap-1">
                 <Clock className="w-3 h-3" />
-                Last: {timeAgo(signal.last_seen_at || signal.detected_at)}
+                {t('traderSignalViews.last')}: {timeAgo(signal.last_seen_at || signal.detected_at)}
               </span>
               <span className="inline-flex items-center gap-1">
                 <Users className="w-3 h-3" />
-                {signal.wallet_count} wallets
+                {t('traderSignalViews.walletsCount', { count: signal.wallet_count })}
               </span>
             </div>
 
@@ -1407,7 +1437,7 @@ function TraderSignalCard({
                 className="relative z-10"
                 role="dialog"
                 aria-modal="true"
-                aria-label={`Expanded trader signal: ${marketLabel}`}
+                aria-label={t('traderSignalViews.expandedSignalAria', { market: marketLabel })}
                 initial={{ scale: 0.94, opacity: 0, y: 22 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 14 }}
@@ -1441,6 +1471,7 @@ interface TableProps {
 }
 
 export function TraderSignalTable({ signals, onNavigateToWallet, onOpenCopilot }: TableProps) {
+  const { t } = useTranslation()
   const themeMode = useAtomValue(themeAtom)
   const [modalMarket, setModalMarket] = useState<CryptoMarket | null>(null)
   const closeModal = () => setModalMarket(null)
@@ -1475,15 +1506,15 @@ export function TraderSignalTable({ signals, onNavigateToWallet, onOpenCopilot }
     <div className="border border-border/50 rounded-lg overflow-hidden">
       {/* Header */}
       <div className="grid grid-cols-[44px_36px_minmax(0,1fr)_108px_60px_56px_64px_72px_52px_28px] gap-0 bg-muted/50 border-b border-border/50 text-[9px] text-muted-foreground uppercase tracking-wider font-medium">
-        <div className="px-2 py-2">Type</div>
-        <div className="px-2 py-2">Tier</div>
-        <div className="px-2 py-2">Market</div>
-        <div className="px-2 py-2 text-center">Side</div>
-        <div className="px-2 py-2 text-right">Conf</div>
-        <div className="px-2 py-2 text-right">Wlts</div>
-        <div className="px-2 py-2 text-right">Edge/Net</div>
-        <div className="px-2 py-2 text-center">Score</div>
-        <div className="px-2 py-2 text-right">Age</div>
+        <div className="px-2 py-2">{t('traderSignalViews.colType')}</div>
+        <div className="px-2 py-2">{t('traderSignalViews.colTier')}</div>
+        <div className="px-2 py-2">{t('traderSignalViews.colMarket')}</div>
+        <div className="px-2 py-2 text-center">{t('traderSignalViews.colSide')}</div>
+        <div className="px-2 py-2 text-right">{t('traderSignalViews.colConf')}</div>
+        <div className="px-2 py-2 text-right">{t('traderSignalViews.colWallets')}</div>
+        <div className="px-2 py-2 text-right">{t('traderSignalViews.colEdgeNet')}</div>
+        <div className="px-2 py-2 text-center">{t('traderSignalViews.colScore')}</div>
+        <div className="px-2 py-2 text-right">{t('traderSignalViews.colAge')}</div>
         <div className="px-1 py-2" />
       </div>
 
@@ -1561,6 +1592,7 @@ function TraderSignalTableRow({
   cryptoMarket?: CryptoMarket
   onOpenMarketModal?: (market: CryptoMarket) => void
 }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const isBuy = signal.direction === 'BUY'
   const marketLabel = normalizeMarketLabel(signal)
@@ -1598,7 +1630,7 @@ function TraderSignalTableRow({
               SOURCE_COLORS[signal.source],
             )}
           >
-            {signal.source === 'insider' ? 'INS' : 'CNF'}
+            {getSourceTagShort(t, signal.source)}
           </span>
         </div>
 
@@ -1610,7 +1642,7 @@ function TraderSignalTableRow({
               TIER_COLORS[signal.tier],
             )}
           >
-            {signal.tier === 'INSIDER' ? 'INS' : signal.tier.slice(0, 3)}
+            {getTierTagShort(t, signal.tier)}
           </span>
         </div>
 
@@ -1696,7 +1728,7 @@ function TraderSignalTableRow({
             <button
               onClick={(e) => { e.stopPropagation(); onOpenMarketModal?.(cryptoMarket) }}
               className="inline-flex h-5 w-5 items-center justify-center rounded border border-border/40 text-muted-foreground/60 hover:text-foreground hover:border-border transition-colors"
-              title="View live market"
+              title={t('traderSignalViews.viewLiveMarket')}
             >
               <Maximize2 className="w-2.5 h-2.5" />
             </button>
@@ -1715,19 +1747,19 @@ function TraderSignalTableRow({
               {signal.source === 'confluence' && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   <div>
-                    <p className="text-muted-foreground/70">Core Wallets</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.coreWallets')}</p>
                     <p className="font-semibold">{signal.unique_core_wallets || 0}</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Signal Type</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.signalType')}</p>
                     <p className="font-semibold">{signal.signal_type?.replace(/_/g, ' ') || '\u2014'}</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Window</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.window')}</p>
                     <p className="font-semibold">{signal.window_minutes || 60}m</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Last Reinforced</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.lastReinforced')}</p>
                     <p className="font-semibold">{timeAgo(signal.last_seen_at || signal.detected_at)}</p>
                   </div>
                 </div>
@@ -1736,19 +1768,19 @@ function TraderSignalTableRow({
               {signal.source === 'insider' && (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   <div>
-                    <p className="text-muted-foreground/70">Insider Score</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.insiderScore')}</p>
                     <p className="font-semibold text-purple-400">{signal.insider_score?.toFixed(2) || '\u2014'}</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Pre-news Lead</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.preNewsLead')}</p>
                     <p className="font-semibold">{signal.pre_news_lead_minutes?.toFixed(0) || '\u2014'}m</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Clusters</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.clusters')}</p>
                     <p className="font-semibold">{signal.cluster_count || '\u2014'}</p>
                   </div>
                   <div>
-                    <p className="text-muted-foreground/70">Freshness</p>
+                    <p className="text-muted-foreground/70">{t('traderSignalViews.freshness')}</p>
                     <p className="font-semibold">{signal.freshness_minutes?.toFixed(0) || '\u2014'}m</p>
                   </div>
                 </div>
@@ -1799,7 +1831,7 @@ function TraderSignalTableRow({
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-blue-500/15 text-xs text-blue-300 hover:bg-blue-500/25"
                 >
                   <ExternalLink className="w-3 h-3" />
-                  Open Market
+                  {t('traderSignalViews.openMarket')}
                 </a>
               )}
               {onOpenCopilot && (
@@ -1811,7 +1843,7 @@ function TraderSignalTableRow({
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-purple-500/15 text-xs text-purple-300 hover:bg-purple-500/25"
                 >
                   <MessageCircle className="w-3 h-3" />
-                  Copilot
+                  {t('traderSignalViews.copilot')}
                 </button>
               )}
             </div>
@@ -1841,6 +1873,7 @@ export function TraderSignalTerminal({
   isConnected,
   totalCount,
 }: TerminalProps) {
+  const { t } = useTranslation()
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -1856,12 +1889,12 @@ export function TraderSignalTerminal({
       <div className="terminal-header flex items-center justify-between px-3 py-1.5">
         <div className="flex items-center gap-2">
           <Terminal className="w-3.5 h-3.5 text-green-400" />
-          <span className="text-green-400 font-bold text-xs">TRADER SIGNAL FEED</span>
+          <span className="text-green-400 font-bold text-xs">{t('traderSignalViews.terminalTitle')}</span>
           <span className="text-green-400/40">v2.0</span>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-green-400/60">
-            {totalCount ?? signals.length} signals
+            {t('traderSignalViews.signalsCount', { count: totalCount ?? signals.length })}
           </span>
           <div className="flex items-center gap-1">
             <div
@@ -1876,7 +1909,7 @@ export function TraderSignalTerminal({
                 isConnected ? 'text-green-400/70' : 'text-red-400/70',
               )}
             >
-              {isConnected ? 'LIVE' : 'DISCONNECTED'}
+              {isConnected ? t('traderSignalViews.live') : t('traderSignalViews.disconnected')}
             </span>
           </div>
         </div>
@@ -1886,9 +1919,9 @@ export function TraderSignalTerminal({
       <div ref={scrollRef} className="max-h-[calc(100vh-280px)] overflow-y-auto p-3 space-y-0">
         {/* Boot sequence */}
         <div className="text-green-500/30 mb-3 space-y-0.5">
-          <p>{'>'} Initializing trader signal feed...</p>
-          <p>{'>'} Connected to pool confluence + tracked/group trade pipelines</p>
-          <p>{'>'} {signals.length} signals loaded</p>
+          <p>{'>'} {t('traderSignalViews.bootInitializing')}</p>
+          <p>{'>'} {t('traderSignalViews.bootConnected')}</p>
+          <p>{'>'} {t('traderSignalViews.bootLoaded', { count: signals.length })}</p>
           <p className="text-green-500/15">{'\u2500'.repeat(72)}</p>
         </div>
 
@@ -1907,7 +1940,7 @@ export function TraderSignalTerminal({
         {/* Cursor line */}
         <div className="text-green-400/60 mt-2 flex items-center">
           <span className="text-green-400/30">{'>'} </span>
-          <span className="text-green-400/40">awaiting next signal</span>
+          <span className="text-green-400/40">{t('traderSignalViews.awaitingNextSignal')}</span>
           <span
             className={cn(
               'inline-block w-2 h-3.5 bg-green-400/60 ml-1 -mb-0.5',
@@ -1933,8 +1966,9 @@ function TerminalSignalEntry({
   onNavigateToWallet?: (address: string) => void
   onOpenCopilot?: (signal: UnifiedTraderSignal) => void
 }) {
-  const sourceTag = signal.source === 'insider' ? 'INS' : 'CNF'
-  const tierTag = signal.tier === 'INSIDER' ? 'INS' : signal.tier
+  const { t } = useTranslation()
+  const sourceTag = getSourceTagShort(t, signal.source)
+  const tierTag = signal.tier === 'INSIDER' ? t('traderSignalViews.tierInsiderShort') : signal.tier
   const isBuy = signal.direction === 'BUY'
   const marketLabel = normalizeMarketLabel(signal)
   const directionLabel = compactOutcomeLabel(directionOutcomeLabel(signal), 18)
@@ -1987,7 +2021,7 @@ function TerminalSignalEntry({
         <span className={cn('font-bold mr-2', dirColor)}>
           {signal.direction === 'BUY' || signal.direction === 'SELL'
             ? `BUY_${directionLabel}`
-            : signal.outcome || 'SIGNAL'}
+            : signal.outcome || t('traderSignalViews.signal')}
         </span>
         {signal.source === 'insider' && signal.edge_percent != null && (
           <span className="text-purple-300/80 mr-2">EDGE:{signal.edge_percent.toFixed(1)}%</span>

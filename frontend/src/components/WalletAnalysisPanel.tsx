@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Activity,
   ArrowUpRight,
@@ -49,18 +50,18 @@ interface WalletAnalysisPanelProps {
 type AnalysisTab = 'overview' | 'trades' | 'positions' | 'risk'
 type TimePeriod = 'DAY' | 'WEEK' | 'MONTH' | 'ALL'
 
-const TIME_PERIOD_OPTIONS: Array<{ value: TimePeriod; label: string }> = [
-  { value: 'DAY', label: '24H' },
-  { value: 'WEEK', label: '7D' },
-  { value: 'MONTH', label: '30D' },
-  { value: 'ALL', label: 'All Time' },
+const TIME_PERIOD_OPTIONS: Array<{ value: TimePeriod; labelKey: string }> = [
+  { value: 'DAY', labelKey: 'walletAnalysisPanel.period24h' },
+  { value: 'WEEK', labelKey: 'walletAnalysisPanel.period7d' },
+  { value: 'MONTH', labelKey: 'walletAnalysisPanel.period30d' },
+  { value: 'ALL', labelKey: 'walletAnalysisPanel.periodAll' },
 ]
 
-const TAB_OPTIONS: Array<{ id: AnalysisTab; label: string; icon: ComponentType<{ className?: string }> }> = [
-  { id: 'overview', label: 'Overview', icon: BarChart3 },
-  { id: 'trades', label: 'Trades', icon: History },
-  { id: 'positions', label: 'Positions', icon: Briefcase },
-  { id: 'risk', label: 'Risk', icon: ShieldAlert },
+const TAB_OPTIONS: Array<{ id: AnalysisTab; labelKey: string; icon: ComponentType<{ className?: string }> }> = [
+  { id: 'overview', labelKey: 'walletAnalysisPanel.tabOverview', icon: BarChart3 },
+  { id: 'trades', labelKey: 'walletAnalysisPanel.tabTrades', icon: History },
+  { id: 'positions', labelKey: 'walletAnalysisPanel.tabPositions', icon: Briefcase },
+  { id: 'risk', labelKey: 'walletAnalysisPanel.tabRisk', icon: ShieldAlert },
 ]
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -101,22 +102,22 @@ function formatTimestamp(timestamp: string): string {
   })
 }
 
-function readErrorMessage(error: unknown): string {
+function readErrorMessage(error: unknown, fallback = 'Request failed'): string {
   if (typeof error === 'object' && error && 'message' in error) {
-    return String((error as { message?: unknown }).message ?? 'Request failed')
+    return String((error as { message?: unknown }).message ?? fallback)
   }
-  return 'Request failed'
+  return fallback
 }
 
 function riskModel(score: number): {
-  label: string
+  labelKey: string
   badgeClass: string
   textClass: string
   borderClass: string
 } {
   if (score >= 0.7) {
     return {
-      label: 'High Risk',
+      labelKey: 'walletAnalysisPanel.riskHigh',
       badgeClass: 'bg-red-500/15 text-red-300 border-red-500/30',
       textClass: 'text-red-300',
       borderClass: 'border-red-500/25',
@@ -124,14 +125,14 @@ function riskModel(score: number): {
   }
   if (score >= 0.3) {
     return {
-      label: 'Moderate Risk',
+      labelKey: 'walletAnalysisPanel.riskModerate',
       badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
       textClass: 'text-amber-300',
       borderClass: 'border-amber-500/25',
     }
   }
   return {
-    label: 'Low Risk',
+    labelKey: 'walletAnalysisPanel.riskLow',
     badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
     textClass: 'text-emerald-300',
     borderClass: 'border-emerald-500/25',
@@ -139,10 +140,11 @@ function riskModel(score: number): {
 }
 
 function Sparkline({ values, positive }: { values: number[]; positive: boolean }) {
+  const { t } = useTranslation()
   if (values.length < 2) {
     return (
       <div className="flex h-[84px] items-center justify-center text-xs text-muted-foreground/70">
-        Not enough trade history for trend line.
+        {t('walletAnalysisPanel.notEnoughTradeHistory')}
       </div>
     )
   }
@@ -233,6 +235,7 @@ function PaginationControls({
   onPageChange,
   onPageSizeChange,
 }: PaginationControlsProps) {
+  const { t } = useTranslation()
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1
   const end = total === 0 ? 0 : Math.min(total, page * pageSize)
@@ -240,7 +243,7 @@ function PaginationControls({
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className="text-muted-foreground">
-        {start}-{end} of {total} {itemLabel}
+        {t('walletAnalysisPanel.paginationRange', { start, end, total, itemLabel })}
       </span>
       <select
         value={pageSize}
@@ -249,7 +252,7 @@ function PaginationControls({
       >
         {PAGE_SIZE_OPTIONS.map((size) => (
           <option key={size} value={size}>
-            {size}/page
+            {t('walletAnalysisPanel.pageSizeOption', { size })}
           </option>
         ))}
       </select>
@@ -263,7 +266,7 @@ function PaginationControls({
         <ChevronLeft className="h-3.5 w-3.5" />
       </Button>
       <span className="w-[74px] text-center text-muted-foreground">
-        Page {page}/{totalPages}
+        {t('walletAnalysisPanel.pageOf', { page, totalPages })}
       </span>
       <Button
         variant="outline"
@@ -333,6 +336,7 @@ function OverviewHeroPanel({
   positionsCount: number
   anomaliesCount: number
 }) {
+  const { t } = useTranslation()
   if (isLoading) {
     return <SectionLoading />
   }
@@ -357,7 +361,7 @@ function OverviewHeroPanel({
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex h-6 w-6 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
-                      title="Open profile"
+                      title={t('walletAnalysisPanel.openProfile')}
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
                     </a>
@@ -368,38 +372,41 @@ function OverviewHeroPanel({
 
               <div className="flex items-center gap-2">
                 <Badge variant="outline" className={riskBadgeClass}>
-                  {(anomalyScore * 100).toFixed(0)}% anomaly
+                  {t('walletAnalysisPanel.anomalyPercent', { percent: (anomalyScore * 100).toFixed(0) })}
                 </Badge>
                 <Badge variant="outline" className="border-border bg-background/60 text-muted-foreground">
-                  {TIME_PERIOD_OPTIONS.find((option) => option.value === timePeriod)?.label}
+                  {(() => {
+                    const opt = TIME_PERIOD_OPTIONS.find((option) => option.value === timePeriod)
+                    return opt ? t(opt.labelKey) : ''
+                  })()}
                 </Badge>
               </div>
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
               <StatTile
-                label="Total P&L"
+                label={t('walletAnalysisPanel.totalPnl')}
                 value={formatSignedCurrency(totalPnl)}
                 delta={formatSignedPercent(roiPercent)}
                 positive={isProfitable}
                 icon={isProfitable ? TrendingUp : TrendingDown}
               />
               <StatTile
-                label="Win Rate"
+                label={t('walletAnalysisPanel.winRate')}
                 value={`${winRate.toFixed(1)}%`}
-                delta={`${wins}W / ${losses}L`}
+                delta={t('walletAnalysisPanel.winsLosses', { wins, losses })}
                 positive={winRate >= 50}
                 icon={Percent}
               />
               <StatTile
-                label="Volume"
+                label={t('walletAnalysisPanel.volume')}
                 value={formatCurrency(volume, 0)}
-                delta={`${formatCompact(totalTrades)} trades`}
+                delta={t('walletAnalysisPanel.tradesDelta', { count: formatCompact(totalTrades) })}
                 positive
                 icon={Activity}
               />
               <StatTile
-                label="Risk Score"
+                label={t('walletAnalysisPanel.riskScore')}
                 value={`${(anomalyScore * 100).toFixed(0)}%`}
                 delta={riskLabel}
                 positive={anomalyScore < 0.3}
@@ -409,8 +416,8 @@ function OverviewHeroPanel({
 
             <div className="mt-4 rounded-xl border border-border/70 bg-background/40 p-3">
               <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
-                <span>PnL Trend</span>
-                <span>{totalTrades} sampled trades</span>
+                <span>{t('walletAnalysisPanel.pnlTrend')}</span>
+                <span>{t('walletAnalysisPanel.sampledTrades', { count: totalTrades })}</span>
               </div>
               <Sparkline values={sparklineValues} positive={isProfitable} />
             </div>
@@ -420,24 +427,24 @@ function OverviewHeroPanel({
         <Card className="col-span-12 border-border/80 bg-card/75 lg:col-span-4">
           <CardContent className="space-y-3 p-5">
             <div className="rounded-xl border border-border/70 bg-background/40 p-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Realized P&L</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('walletAnalysisPanel.realizedPnl')}</p>
               <p className={cn('mt-1 text-lg font-semibold', realizedPnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
                 {formatSignedCurrency(realizedPnl)}
               </p>
             </div>
             <div className="rounded-xl border border-border/70 bg-background/40 p-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Unrealized P&L</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('walletAnalysisPanel.unrealizedPnl')}</p>
               <p className={cn('mt-1 text-lg font-semibold', unrealizedPnl >= 0 ? 'text-emerald-300' : 'text-red-300')}>
                 {formatSignedCurrency(unrealizedPnl)}
               </p>
             </div>
             <div className="rounded-xl border border-border/70 bg-background/40 p-3">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Data Health</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('walletAnalysisPanel.dataHealth')}</p>
               <p className="mt-1 text-sm text-foreground">
-                {isHeaderLoading ? 'Loading fresh metrics...' : 'Metrics synchronized'}
+                {isHeaderLoading ? t('walletAnalysisPanel.loadingFreshMetrics') : t('walletAnalysisPanel.metricsSynchronized')}
               </p>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                Trades: {totalTrades} loaded, Positions: {positionsCount}, Anomalies: {anomaliesCount}
+                {t('walletAnalysisPanel.dataHealthDetail', { trades: totalTrades, positions: positionsCount, anomalies: anomaliesCount })}
               </p>
             </div>
           </CardContent>
@@ -462,10 +469,11 @@ function TradesPanel({
   onPageChange: (page: number) => void
   onPageSizeChange: (size: number) => void
 }) {
+  const { t } = useTranslation()
   if (isLoading) return <SectionLoading />
 
   if (trades.length === 0) {
-    return <EmptyData icon={History} title="No trades found" subtitle="This wallet does not currently expose trade history." />
+    return <EmptyData icon={History} title={t('walletAnalysisPanel.noTradesFound')} subtitle={t('walletAnalysisPanel.noTradesSubtitle')} />
   }
 
   const totalPages = Math.max(1, Math.ceil(trades.length / pageSize))
@@ -476,12 +484,12 @@ function TradesPanel({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border/70 px-4 py-3">
-        <p className="text-xs text-muted-foreground">Latest executed trades with direct market and transaction links.</p>
+        <p className="text-xs text-muted-foreground">{t('walletAnalysisPanel.tradesSubtitle')}</p>
         <PaginationControls
           page={safePage}
           pageSize={pageSize}
           total={trades.length}
-          itemLabel="trades"
+          itemLabel={t('walletAnalysisPanel.itemTrades')}
           onPageChange={onPageChange}
           onPageSizeChange={onPageSizeChange}
         />
@@ -491,14 +499,14 @@ function TradesPanel({
         <Table className="text-xs">
           <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
             <TableRow className="border-b border-border/80 bg-muted/40">
-              <TableHead className="h-9 px-3">Time</TableHead>
-              <TableHead className="h-9 px-3 min-w-[240px]">Market</TableHead>
-              <TableHead className="h-9 px-3">Side</TableHead>
-              <TableHead className="h-9 px-3">Outcome</TableHead>
-              <TableHead className="h-9 px-3 text-right">Size</TableHead>
-              <TableHead className="h-9 px-3 text-right">Price</TableHead>
-              <TableHead className="h-9 px-3 text-right">Notional</TableHead>
-              <TableHead className="h-9 px-3 text-right">Links</TableHead>
+              <TableHead className="h-9 px-3">{t('walletAnalysisPanel.colTime')}</TableHead>
+              <TableHead className="h-9 px-3 min-w-[240px]">{t('walletAnalysisPanel.colMarket')}</TableHead>
+              <TableHead className="h-9 px-3">{t('walletAnalysisPanel.colSide')}</TableHead>
+              <TableHead className="h-9 px-3">{t('walletAnalysisPanel.colOutcome')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colSize')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colPrice')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colNotional')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colLinks')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -546,7 +554,7 @@ function TradesPanel({
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
-                          title="Open market"
+                          title={t('walletAnalysisPanel.openMarket')}
                         >
                           <ExternalLink className="h-3.5 w-3.5" />
                         </a>
@@ -557,7 +565,7 @@ function TradesPanel({
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
-                          title="Open transaction"
+                          title={t('walletAnalysisPanel.openTransaction')}
                         >
                           <ArrowUpRight className="h-3.5 w-3.5" />
                         </a>
@@ -595,12 +603,13 @@ function PositionsPanel({
   onPageChange: (page: number) => void
   onPageSizeChange: (size: number) => void
 }) {
+  const { t } = useTranslation()
   if (isLoading) return <SectionLoading />
 
   const positions = data?.positions ?? []
 
   if (positions.length === 0) {
-    return <EmptyData icon={Briefcase} title="No open positions" subtitle="This wallet currently has no open risk on tracked markets." />
+    return <EmptyData icon={Briefcase} title={t('walletAnalysisPanel.noOpenPositions')} subtitle={t('walletAnalysisPanel.noOpenPositionsSubtitle')} />
   }
 
   const totalPages = Math.max(1, Math.ceil(positions.length / pageSize))
@@ -612,11 +621,11 @@ function PositionsPanel({
     <div className="flex h-full min-h-0 flex-col">
       <div className="grid shrink-0 grid-cols-1 gap-3 border-b border-border/70 px-4 py-3 md:grid-cols-2">
         <div className="rounded-lg border border-border/70 bg-background/40 p-3">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Position Value</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('walletAnalysisPanel.positionValue')}</p>
           <p className="mt-1 text-lg font-semibold text-foreground">{formatCurrency(data?.total_value ?? 0)}</p>
         </div>
         <div className="rounded-lg border border-border/70 bg-background/40 p-3">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Unrealized P&L</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('walletAnalysisPanel.unrealizedPnl')}</p>
           <p className={cn('mt-1 text-lg font-semibold', (data?.total_unrealized_pnl ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300')}>
             {formatSignedCurrency(data?.total_unrealized_pnl ?? 0)}
           </p>
@@ -628,7 +637,7 @@ function PositionsPanel({
           page={safePage}
           pageSize={pageSize}
           total={positions.length}
-          itemLabel="positions"
+          itemLabel={t('walletAnalysisPanel.itemPositions')}
           onPageChange={onPageChange}
           onPageSizeChange={onPageSizeChange}
         />
@@ -638,15 +647,15 @@ function PositionsPanel({
         <Table className="text-xs">
           <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
             <TableRow className="border-b border-border/80 bg-muted/40">
-              <TableHead className="h-9 px-3 min-w-[220px]">Market</TableHead>
-              <TableHead className="h-9 px-3">Outcome</TableHead>
-              <TableHead className="h-9 px-3 text-right">Size</TableHead>
-              <TableHead className="h-9 px-3 text-right">Avg</TableHead>
-              <TableHead className="h-9 px-3 text-right">Current</TableHead>
-              <TableHead className="h-9 px-3 text-right">Value</TableHead>
-              <TableHead className="h-9 px-3 text-right">Unrealized</TableHead>
-              <TableHead className="h-9 px-3 text-right">ROI</TableHead>
-              <TableHead className="h-9 px-3 text-right">Link</TableHead>
+              <TableHead className="h-9 px-3 min-w-[220px]">{t('walletAnalysisPanel.colMarket')}</TableHead>
+              <TableHead className="h-9 px-3">{t('walletAnalysisPanel.colOutcome')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colSize')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colAvg')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colCurrent')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colValue')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colUnrealized')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colRoi')}</TableHead>
+              <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colLink')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -686,7 +695,7 @@ function PositionsPanel({
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-background/70 text-muted-foreground transition-colors hover:text-foreground"
-                        title="Open market"
+                        title={t('walletAnalysisPanel.openMarket')}
                       >
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
@@ -719,10 +728,11 @@ function RiskPanel({
   onPageChange: (page: number) => void
   onPageSizeChange: (size: number) => void
 }) {
+  const { t } = useTranslation()
   if (isLoading) return <SectionLoading />
 
   if (!data) {
-    return <EmptyData icon={ShieldAlert} title="No risk analysis available" subtitle="Risk analysis is generated after enough market and trade context is collected." />
+    return <EmptyData icon={ShieldAlert} title={t('walletAnalysisPanel.noRiskAnalysis')} subtitle={t('walletAnalysisPanel.noRiskAnalysisSubtitle')} />
   }
 
   const risk = riskModel(data.anomaly_score)
@@ -736,17 +746,17 @@ function RiskPanel({
     <div className="flex h-full min-h-0 flex-col">
       <div className="grid shrink-0 grid-cols-1 gap-3 border-b border-border/70 px-4 py-3 lg:grid-cols-3">
         <div className={cn('rounded-lg border bg-background/40 p-3', risk.borderClass)}>
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Anomaly Score</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('walletAnalysisPanel.anomalyScore')}</p>
           <p className={cn('mt-1 text-2xl font-semibold', risk.textClass)}>{(data.anomaly_score * 100).toFixed(0)}%</p>
-          <p className="mt-1 text-xs text-muted-foreground">{risk.label}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t(risk.labelKey)}</p>
         </div>
 
         <div className="rounded-lg border border-border/70 bg-background/40 p-3 lg:col-span-2">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Recommendation</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">{t('walletAnalysisPanel.recommendation')}</p>
           <p className="mt-1 text-sm text-foreground">{data.recommendation}</p>
           <div className="mt-2 flex flex-wrap gap-2">
             <Badge variant="outline" className={risk.badgeClass}>
-              {risk.label}
+              {t(risk.labelKey)}
             </Badge>
             <Badge
               variant="outline"
@@ -756,7 +766,7 @@ function RiskPanel({
                   : 'border-border bg-background/60 text-muted-foreground',
               )}
             >
-              {data.is_profitable_pattern ? 'Profitable Pattern' : 'Pattern Unclear'}
+              {data.is_profitable_pattern ? t('walletAnalysisPanel.profitablePattern') : t('walletAnalysisPanel.patternUnclear')}
             </Badge>
           </div>
         </div>
@@ -770,14 +780,14 @@ function RiskPanel({
             </Badge>
           ))}
           {data.strategies_detected.length === 0 && (
-            <span className="text-xs text-muted-foreground">No strategy fingerprint detected.</span>
+            <span className="text-xs text-muted-foreground">{t('walletAnalysisPanel.noStrategyFingerprint')}</span>
           )}
         </div>
         <PaginationControls
           page={safePage}
           pageSize={pageSize}
           total={anomalies.length}
-          itemLabel="anomalies"
+          itemLabel={t('walletAnalysisPanel.itemAnomalies')}
           onPageChange={onPageChange}
           onPageSizeChange={onPageSizeChange}
         />
@@ -787,18 +797,18 @@ function RiskPanel({
         {anomalies.length === 0 ? (
           <EmptyData
             icon={ShieldCheck}
-            title="No anomalies detected"
-            subtitle="This wallet currently looks statistically normal based on observed behavior."
+            title={t('walletAnalysisPanel.noAnomaliesDetected')}
+            subtitle={t('walletAnalysisPanel.noAnomaliesSubtitle')}
           />
         ) : (
           <Table className="text-xs">
             <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
               <TableRow className="border-b border-border/80 bg-muted/40">
-                <TableHead className="h-9 px-3">Severity</TableHead>
-                <TableHead className="h-9 px-3">Type</TableHead>
-                <TableHead className="h-9 px-3 text-right">Score</TableHead>
-                <TableHead className="h-9 px-3 min-w-[280px]">Description</TableHead>
-                <TableHead className="h-9 px-3 min-w-[200px]">Evidence</TableHead>
+                <TableHead className="h-9 px-3">{t('walletAnalysisPanel.colSeverity')}</TableHead>
+                <TableHead className="h-9 px-3">{t('walletAnalysisPanel.colTypeHeader')}</TableHead>
+                <TableHead className="h-9 px-3 text-right">{t('walletAnalysisPanel.colScore')}</TableHead>
+                <TableHead className="h-9 px-3 min-w-[280px]">{t('walletAnalysisPanel.colDescription')}</TableHead>
+                <TableHead className="h-9 px-3 min-w-[200px]">{t('walletAnalysisPanel.colEvidence')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -866,6 +876,7 @@ function EvidencePreview({ evidence }: { evidence: Record<string, unknown> }) {
 }
 
 export default function WalletAnalysisPanel({ initialWallet, initialUsername, onWalletAnalyzed }: WalletAnalysisPanelProps) {
+  const { t } = useTranslation()
   const [searchAddress, setSearchAddress] = useState('')
   const [activeWallet, setActiveWallet] = useState<string | null>(null)
   const [passedUsername, setPassedUsername] = useState<string | null>(null)
@@ -971,7 +982,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
       const profile = await getWalletProfile(value)
       const resolvedAddress = String(profile.address || '').trim().toLowerCase()
       if (!resolvedAddress) {
-        throw new Error('Unable to resolve wallet handle to an on-chain address')
+        throw new Error(t('walletAnalysisPanel.unableToResolveWallet'))
       }
       setActiveWallet(resolvedAddress)
       setSearchAddress(resolvedAddress)
@@ -1033,10 +1044,10 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
         <CardContent className="p-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div>
-              <p className="text-[11px] uppercase tracking-wide text-cyan-700 dark:text-cyan-200/90">Trader Intelligence</p>
-              <h2 className="mt-1 text-lg font-semibold text-foreground">Wallet Analysis</h2>
+              <p className="text-[11px] uppercase tracking-wide text-cyan-700 dark:text-cyan-200/90">{t('walletAnalysisPanel.headerEyebrow')}</p>
+              <h2 className="mt-1 text-lg font-semibold text-foreground">{t('walletAnalysisPanel.headerTitle')}</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Profile any trader wallet with structured performance, execution, and anomaly intelligence.
+                {t('walletAnalysisPanel.headerSubtitle')}
               </p>
             </div>
 
@@ -1052,7 +1063,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                       void handleAnalyze()
                     }
                   }}
-                  placeholder="Enter wallet address, @handle, or profile URL"
+                  placeholder={t('walletAnalysisPanel.searchPlaceholder')}
                   className="h-9 border-border bg-background/80 pl-10 font-mono text-xs"
                 />
               </div>
@@ -1065,7 +1076,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                 className="h-9 bg-cyan-500 text-slate-950 hover:bg-cyan-400"
               >
                 <Search className={cn('mr-1.5 h-3.5 w-3.5', isResolvingInput && 'animate-spin')} />
-                Analyze
+                {t('walletAnalysisPanel.analyze')}
               </Button>
 
               <Button
@@ -1075,7 +1086,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                 disabled={!activeWallet}
               >
                 <RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', (pnlQuery.isFetching || summaryQuery.isFetching) && 'animate-spin')} />
-                Refresh
+                {t('walletAnalysisPanel.refresh')}
               </Button>
 
               <div className="flex h-9 items-center rounded-lg border border-border bg-background/70 p-0.5">
@@ -1090,7 +1101,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                         : 'text-muted-foreground hover:text-foreground',
                     )}
                   >
-                    {option.label}
+                    {t(option.labelKey)}
                   </button>
                 ))}
               </div>
@@ -1100,10 +1111,10 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
           {activeWallet && (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
               <Badge variant="outline" className="border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200">
-                Active: {shortAddress(activeWallet)}
+                {t('walletAnalysisPanel.activeBadge', { address: shortAddress(activeWallet) })}
               </Badge>
               <Badge variant="outline" className={risk.badgeClass}>
-                Risk: {risk.label}
+                {t('walletAnalysisPanel.riskBadge', { label: t(risk.labelKey) })}
               </Badge>
               <Button
                 size="sm"
@@ -1132,10 +1143,10 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                     /* ignore */
                   }
                 }}
-                title="Open Strategy Research → Reverse Engineer with this wallet pre-loaded"
+                title={t('walletAnalysisPanel.reverseEngineerTitle')}
               >
                 <Sparkles className="h-3 w-3" />
-                Reverse-engineer strategy
+                {t('walletAnalysisPanel.reverseEngineerStrategy')}
               </Button>
             </div>
           )}
@@ -1158,9 +1169,9 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
         <Card className="flex-1 border-border/80">
           <CardContent className="flex h-full flex-col items-center justify-center px-6 text-center">
             <Wallet className="mb-4 h-12 w-12 text-muted-foreground/35" />
-            <p className="text-sm text-foreground">No wallet selected</p>
+            <p className="text-sm text-foreground">{t('walletAnalysisPanel.noWalletSelected')}</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Enter a wallet address, @handle, or Polymarket profile URL to unlock a full trader profile with paginated trade and position tables.
+              {t('walletAnalysisPanel.noWalletSubtitle')}
             </p>
           </CardContent>
         </Card>
@@ -1183,7 +1194,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                     )}
                   >
                     <tab.icon className="h-3.5 w-3.5" />
-                    {tab.label}
+                    {t(tab.labelKey)}
                   </Button>
                 ))}
               </div>
@@ -1197,7 +1208,7 @@ export default function WalletAnalysisPanel({ initialWallet, initialUsername, on
                   username={username}
                   timePeriod={timePeriod}
                   anomalyScore={anomalyQuery.data?.anomaly_score ?? 0}
-                  riskLabel={risk.label}
+                  riskLabel={t(risk.labelKey)}
                   riskBadgeClass={risk.badgeClass}
                   totalPnl={totalPnl}
                   roiPercent={roiPercent}

@@ -3675,18 +3675,54 @@
       "mostLiquid": "Most liquid"
     },
     "type": {
-      "market": { "label": "Market", "plural": "Markets" },
-      "event": { "label": "Event", "plural": "Events" },
-      "category": { "label": "Category", "plural": "Categories" },
-      "opportunity": { "label": "Opportunity", "plural": "Opportunities" },
-      "strategy": { "label": "Strategy", "plural": "Strategies" },
-      "dataSource": { "label": "Data source", "plural": "Data sources" },
-      "trader": { "label": "Trader", "plural": "Traders" },
-      "wallet": { "label": "Wallet", "plural": "Wallets" },
-      "news": { "label": "News", "plural": "News" },
-      "alert": { "label": "Alert", "plural": "Alerts" },
-      "research": { "label": "Research", "plural": "Research" },
-      "fallback": { "label": "Item", "plural": "Items" }
+      "market": {
+        "label": "Market",
+        "plural": "Markets"
+      },
+      "event": {
+        "label": "Event",
+        "plural": "Events"
+      },
+      "category": {
+        "label": "Category",
+        "plural": "Categories"
+      },
+      "opportunity": {
+        "label": "Opportunity",
+        "plural": "Opportunities"
+      },
+      "strategy": {
+        "label": "Strategy",
+        "plural": "Strategies"
+      },
+      "dataSource": {
+        "label": "Data source",
+        "plural": "Data sources"
+      },
+      "trader": {
+        "label": "Trader",
+        "plural": "Traders"
+      },
+      "wallet": {
+        "label": "Wallet",
+        "plural": "Wallets"
+      },
+      "news": {
+        "label": "News",
+        "plural": "News"
+      },
+      "alert": {
+        "label": "Alert",
+        "plural": "Alerts"
+      },
+      "research": {
+        "label": "Research",
+        "plural": "Research"
+      },
+      "fallback": {
+        "label": "Item",
+        "plural": "Items"
+      }
     },
     "time": {
       "justNow": "just now",
@@ -3979,11 +4015,26 @@
       "avoid": "Avoid"
     },
     "timePeriods": {
-      "24h": { "label": "24H", "description": "last 24 hours" },
-      "7d": { "label": "7D", "description": "last 7 days" },
-      "30d": { "label": "1M", "description": "last 30 days" },
-      "90d": { "label": "3M", "description": "last 90 days" },
-      "all": { "label": "All", "description": "all time" }
+      "24h": {
+        "label": "24H",
+        "description": "last 24 hours"
+      },
+      "7d": {
+        "label": "7D",
+        "description": "last 7 days"
+      },
+      "30d": {
+        "label": "1M",
+        "description": "last 30 days"
+      },
+      "90d": {
+        "label": "3M",
+        "description": "last 90 days"
+      },
+      "all": {
+        "label": "All",
+        "description": "all time"
+      }
     },
     "action": {
       "add": "Add",
@@ -4097,33 +4148,113 @@
     "poolReason": {
       "membershipDetail": "Pool membership detail",
       "qualityScoreMet": "Quality score {{value}}% met threshold.",
-      "manual_include": { "label": "Manual include override", "detail": "Manually added to the pool." },
-      "manual_exclude": { "label": "Manual exclude", "detail": "Manually excluded from the pool." },
-      "blacklisted": { "label": "Blacklisted", "detail": "Blacklisted from pool actions." },
-      "tracked": { "label": "Tracked wallet", "detail": "Included from tracked-wallet workflows." },
-      "core_quality_gate": { "label": "Core quality tier", "detail": "Passed core quality gates." },
-      "rising_quality_gate": { "label": "Rising quality tier", "detail": "Passed rising-tier quality and activity gates." },
-      "churn_guard_retained": { "label": "Churn guard retention", "detail": "Kept to limit hourly churn." },
-      "elite_composite": { "label": "Elite composite profile", "detail": "Strong quality, activity, and stability profile." },
-      "active_momentum": { "label": "Active momentum", "detail": "Recent trade velocity met the threshold." },
-      "active_recent": { "label": "Recent activity", "detail": "Traded within the active window." },
-      "insider_alignment": { "label": "Insider-aligned signal", "detail": "High insider score with recent activity." },
-      "cluster_capped": { "label": "Cluster-capped slot", "detail": "Included within cluster concentration limits." },
-      "quality_gate_pass": { "label": "Quality gate pass", "detail": "Passed quality eligibility checks." },
-      "below_selection_cutoff": { "label": "Below pool cutoff", "detail": "Did not clear current selection cutoff." },
-      "tier_thresholds_not_met": { "label": "Tier thresholds not met", "detail": "Core and rising thresholds were not met." },
-      "non_positive_pnl": { "label": "Non-positive PnL", "detail": "Total PnL must be positive." },
-      "insufficient_trades": { "label": "Insufficient trade sample", "detail": "Needs more trade history." },
-      "anomaly_too_high": { "label": "Anomaly score too high", "detail": "Anomaly score exceeded the limit." },
-      "recommendation_blocked": { "label": "Recommendation blocked", "detail": "Recommendation is not pool-eligible." },
-      "not_analyzed": { "label": "Analysis missing", "detail": "No completed discovery analysis yet." },
-      "fallback": { "label": "Selection reason unavailable", "detail": "Reason metadata missing for this recompute cycle." },
-      "stableRiskAdjusted": { "label": "Stable risk-adjusted profile", "detail": "Drawdown and returns were relatively stable." },
-      "manualIncludeShort": { "label": "Manual include", "detail": "Manually included in the pool." },
-      "blacklistedShort": { "label": "Blacklisted", "detail": "Wallet is blacklisted from pool membership." },
-      "trackedShort": { "label": "Tracked wallet", "detail": "Included from tracked-wallet updates." },
-      "topPoolCandidate": { "label": "Top-pool candidate" },
-      "poolPending": { "label": "Pool membership pending", "detail": "Wallet is not currently in the active pool." }
+      "manual_include": {
+        "label": "Manual include override",
+        "detail": "Manually added to the pool."
+      },
+      "manual_exclude": {
+        "label": "Manual exclude",
+        "detail": "Manually excluded from the pool."
+      },
+      "blacklisted": {
+        "label": "Blacklisted",
+        "detail": "Blacklisted from pool actions."
+      },
+      "tracked": {
+        "label": "Tracked wallet",
+        "detail": "Included from tracked-wallet workflows."
+      },
+      "core_quality_gate": {
+        "label": "Core quality tier",
+        "detail": "Passed core quality gates."
+      },
+      "rising_quality_gate": {
+        "label": "Rising quality tier",
+        "detail": "Passed rising-tier quality and activity gates."
+      },
+      "churn_guard_retained": {
+        "label": "Churn guard retention",
+        "detail": "Kept to limit hourly churn."
+      },
+      "elite_composite": {
+        "label": "Elite composite profile",
+        "detail": "Strong quality, activity, and stability profile."
+      },
+      "active_momentum": {
+        "label": "Active momentum",
+        "detail": "Recent trade velocity met the threshold."
+      },
+      "active_recent": {
+        "label": "Recent activity",
+        "detail": "Traded within the active window."
+      },
+      "insider_alignment": {
+        "label": "Insider-aligned signal",
+        "detail": "High insider score with recent activity."
+      },
+      "cluster_capped": {
+        "label": "Cluster-capped slot",
+        "detail": "Included within cluster concentration limits."
+      },
+      "quality_gate_pass": {
+        "label": "Quality gate pass",
+        "detail": "Passed quality eligibility checks."
+      },
+      "below_selection_cutoff": {
+        "label": "Below pool cutoff",
+        "detail": "Did not clear current selection cutoff."
+      },
+      "tier_thresholds_not_met": {
+        "label": "Tier thresholds not met",
+        "detail": "Core and rising thresholds were not met."
+      },
+      "non_positive_pnl": {
+        "label": "Non-positive PnL",
+        "detail": "Total PnL must be positive."
+      },
+      "insufficient_trades": {
+        "label": "Insufficient trade sample",
+        "detail": "Needs more trade history."
+      },
+      "anomaly_too_high": {
+        "label": "Anomaly score too high",
+        "detail": "Anomaly score exceeded the limit."
+      },
+      "recommendation_blocked": {
+        "label": "Recommendation blocked",
+        "detail": "Recommendation is not pool-eligible."
+      },
+      "not_analyzed": {
+        "label": "Analysis missing",
+        "detail": "No completed discovery analysis yet."
+      },
+      "fallback": {
+        "label": "Selection reason unavailable",
+        "detail": "Reason metadata missing for this recompute cycle."
+      },
+      "stableRiskAdjusted": {
+        "label": "Stable risk-adjusted profile",
+        "detail": "Drawdown and returns were relatively stable."
+      },
+      "manualIncludeShort": {
+        "label": "Manual include",
+        "detail": "Manually included in the pool."
+      },
+      "blacklistedShort": {
+        "label": "Blacklisted",
+        "detail": "Wallet is blacklisted from pool membership."
+      },
+      "trackedShort": {
+        "label": "Tracked wallet",
+        "detail": "Included from tracked-wallet updates."
+      },
+      "topPoolCandidate": {
+        "label": "Top-pool candidate"
+      },
+      "poolPending": {
+        "label": "Pool membership pending",
+        "detail": "Wallet is not currently in the active pool."
+      }
     }
   },
   "tradersNetworkPanel": {
@@ -4280,5 +4411,171 @@
       "trackGroupMembers": "Failed to track group members",
       "deleteGroup": "Failed to delete group"
     }
+  },
+  "traderSignalViews": {
+    "sourceConfluence": "CONFLUENCE",
+    "sourceInsider": "INSIDER",
+    "sourceConfluenceShort": "CNF",
+    "sourceInsiderShort": "INS",
+    "tierWatch": "WATCH",
+    "tierHigh": "HIGH",
+    "tierExtreme": "EXTREME",
+    "tierInsider": "INSIDER",
+    "tierWatchShort": "WAT",
+    "tierHighShort": "HIG",
+    "tierExtremeShort": "EXT",
+    "tierInsiderShort": "INS",
+    "qualityTradeable": "TRADEABLE",
+    "qualitySourceCheck": "SOURCE CHECK",
+    "qualityInvalid": "INVALID",
+    "buySummary": "Buy {{outcome}} · {{count}} wallets · Confidence {{confidence}}",
+    "close": "Close",
+    "buyAction": "BUY {{outcome}}",
+    "signal": "SIGNAL",
+    "strategySdkTitle": "StrategySDK: {{sdk}}",
+    "sdkLabel": "SDK {{sdk}}",
+    "poolBadge": "Pool {{count}}",
+    "trackedBadge": "Tracked {{count}}",
+    "groupsBadge": "Groups {{count}}",
+    "noQualifiedSource": "No qualified source",
+    "selected": "Selected",
+    "selectedSide": "Selected Side",
+    "entry": "Entry",
+    "confidence": "Confidence",
+    "conviction": "Conviction",
+    "wallets": "Wallets",
+    "netNotional": "Net Notional",
+    "window": "Window",
+    "edge": "Edge",
+    "preNewsLead": "Pre-news Lead",
+    "sourceFit": "Source Fit",
+    "qualified": "Qualified",
+    "yes": "YES",
+    "no": "NO",
+    "walletBase": "Wallet Base",
+    "insiderScore": "Insider Score",
+    "freshness": "Freshness",
+    "clusters": "Clusters",
+    "market": "Market",
+    "copilot": "Copilot",
+    "poolWallets": "Pool Wallets",
+    "trackedWallets": "Tracked Wallets",
+    "groupWallets": "Group Wallets",
+    "coverage": "Coverage",
+    "coreWallets": "Core Wallets",
+    "signalType": "Signal Type",
+    "suggestedSize": "Suggested Size",
+    "marketLiquidity": "Market Liquidity",
+    "involvedWallets": "Involved Wallets",
+    "validation": "Validation",
+    "first": "First",
+    "last": "Last",
+    "walletsCount": "{{count}} wallets",
+    "expandedSignalAria": "Expanded trader signal: {{market}}",
+    "colType": "Type",
+    "colTier": "Tier",
+    "colMarket": "Market",
+    "colSide": "Side",
+    "colConf": "Conf",
+    "colWallets": "Wlts",
+    "colEdgeNet": "Edge/Net",
+    "colScore": "Score",
+    "colAge": "Age",
+    "viewLiveMarket": "View live market",
+    "lastReinforced": "Last Reinforced",
+    "openMarket": "Open Market",
+    "terminalTitle": "TRADER SIGNAL FEED",
+    "signalsCount": "{{count}} signals",
+    "live": "LIVE",
+    "disconnected": "DISCONNECTED",
+    "bootInitializing": "Initializing trader signal feed...",
+    "bootConnected": "Connected to pool confluence + tracked/group trade pipelines",
+    "bootLoaded": "{{count}} signals loaded",
+    "awaitingNextSignal": "awaiting next signal"
+  },
+  "walletAnalysisPanel": {
+    "period24h": "24H",
+    "period7d": "7D",
+    "period30d": "30D",
+    "periodAll": "All Time",
+    "tabOverview": "Overview",
+    "tabTrades": "Trades",
+    "tabPositions": "Positions",
+    "tabRisk": "Risk",
+    "riskHigh": "High Risk",
+    "riskModerate": "Moderate Risk",
+    "riskLow": "Low Risk",
+    "notEnoughTradeHistory": "Not enough trade history for trend line.",
+    "paginationRange": "{{start}}-{{end}} of {{total}} {{itemLabel}}",
+    "pageSizeOption": "{{size}}/page",
+    "pageOf": "Page {{page}}/{{totalPages}}",
+    "openProfile": "Open profile",
+    "anomalyPercent": "{{percent}}% anomaly",
+    "totalPnl": "Total P&L",
+    "winRate": "Win Rate",
+    "winsLosses": "{{wins}}W / {{losses}}L",
+    "volume": "Volume",
+    "tradesDelta": "{{count}} trades",
+    "riskScore": "Risk Score",
+    "pnlTrend": "PnL Trend",
+    "sampledTrades": "{{count}} sampled trades",
+    "realizedPnl": "Realized P&L",
+    "unrealizedPnl": "Unrealized P&L",
+    "dataHealth": "Data Health",
+    "loadingFreshMetrics": "Loading fresh metrics...",
+    "metricsSynchronized": "Metrics synchronized",
+    "dataHealthDetail": "Trades: {{trades}} loaded, Positions: {{positions}}, Anomalies: {{anomalies}}",
+    "noTradesFound": "No trades found",
+    "noTradesSubtitle": "This wallet does not currently expose trade history.",
+    "tradesSubtitle": "Latest executed trades with direct market and transaction links.",
+    "itemTrades": "trades",
+    "colTime": "Time",
+    "colMarket": "Market",
+    "colSide": "Side",
+    "colOutcome": "Outcome",
+    "colSize": "Size",
+    "colPrice": "Price",
+    "colNotional": "Notional",
+    "colLinks": "Links",
+    "openMarket": "Open market",
+    "openTransaction": "Open transaction",
+    "noOpenPositions": "No open positions",
+    "noOpenPositionsSubtitle": "This wallet currently has no open risk on tracked markets.",
+    "positionValue": "Position Value",
+    "itemPositions": "positions",
+    "colAvg": "Avg",
+    "colCurrent": "Current",
+    "colValue": "Value",
+    "colUnrealized": "Unrealized",
+    "colRoi": "ROI",
+    "colLink": "Link",
+    "noRiskAnalysis": "No risk analysis available",
+    "noRiskAnalysisSubtitle": "Risk analysis is generated after enough market and trade context is collected.",
+    "anomalyScore": "Anomaly Score",
+    "recommendation": "Recommendation",
+    "profitablePattern": "Profitable Pattern",
+    "patternUnclear": "Pattern Unclear",
+    "noStrategyFingerprint": "No strategy fingerprint detected.",
+    "itemAnomalies": "anomalies",
+    "noAnomaliesDetected": "No anomalies detected",
+    "noAnomaliesSubtitle": "This wallet currently looks statistically normal based on observed behavior.",
+    "colSeverity": "Severity",
+    "colTypeHeader": "Type",
+    "colScore": "Score",
+    "colDescription": "Description",
+    "colEvidence": "Evidence",
+    "headerEyebrow": "Trader Intelligence",
+    "headerTitle": "Wallet Analysis",
+    "headerSubtitle": "Profile any trader wallet with structured performance, execution, and anomaly intelligence.",
+    "searchPlaceholder": "Enter wallet address, @handle, or profile URL",
+    "analyze": "Analyze",
+    "refresh": "Refresh",
+    "activeBadge": "Active: {{address}}",
+    "riskBadge": "Risk: {{label}}",
+    "reverseEngineerTitle": "Open Strategy Research → Reverse Engineer with this wallet pre-loaded",
+    "reverseEngineerStrategy": "Reverse-engineer strategy",
+    "noWalletSelected": "No wallet selected",
+    "noWalletSubtitle": "Enter a wallet address, @handle, or Polymarket profile URL to unlock a full trader profile with paginated trade and position tables.",
+    "unableToResolveWallet": "Unable to resolve wallet handle to an on-chain address"
   }
 }
