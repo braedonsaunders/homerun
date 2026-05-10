@@ -295,6 +295,93 @@ async def cancel_run(run_id: str) -> dict[str, Any]:
     return {"run_id": run_id, "cancel_requested": True}
 
 
+@router.delete("/runs/{run_id}")
+async def delete_run(run_id: str) -> dict[str, Any]:
+    """Delete a single backtest run row.
+
+    Refuses to delete runs that are still actively executing
+    (status ∈ {queued, running}) — the operator should cancel
+    those first via POST /runs/{id}/cancel; once they reach a
+    terminal state (completed / failed / cancelled / ok) the row
+    is safe to remove.
+
+    Returns 404 if the run doesn't exist, 409 if it's still alive.
+    """
+    from sqlalchemy import delete as sql_delete, select
+    from models.database import AsyncSessionLocal, BacktestRun
+
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(select(BacktestRun).where(BacktestRun.id == run_id))
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        if row.status in ("queued", "running"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' is still {row.status}. "
+                    f"Cancel it first via POST /runs/{run_id}/cancel, "
+                    f"then delete once it reaches a terminal state."
+                ),
+            )
+        await session.execute(sql_delete(BacktestRun).where(BacktestRun.id == run_id))
+        await session.commit()
+    return {"deleted": True, "run_id": run_id}
+
+
+class BulkDeleteRequest(BaseModel):
+    """List of run IDs to delete.  Active runs are skipped silently
+    and reported in the response so the UI can surface which ones
+    needed cancellation first."""
+    run_ids: list[str] = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/runs/bulk-delete")
+async def bulk_delete_runs(req: BulkDeleteRequest) -> dict[str, Any]:
+    """Delete multiple terminal runs in one call.
+
+    Active rows (queued / running) are skipped and listed under
+    ``skipped_active`` so the UI can show "3 of 7 deleted, 4 still
+    running — cancel them first" without needing per-row error
+    handling.
+    """
+    from sqlalchemy import delete as sql_delete, select
+    from models.database import AsyncSessionLocal, BacktestRun
+
+    deleted: list[str] = []
+    skipped_active: list[str] = []
+    not_found: list[str] = []
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(BacktestRun).where(BacktestRun.id.in_(req.run_ids))
+            )
+        ).scalars().all()
+        seen_ids = {r.id for r in rows}
+        for run_id in req.run_ids:
+            if run_id not in seen_ids:
+                not_found.append(run_id)
+        deletable_ids: list[str] = []
+        for r in rows:
+            if r.status in ("queued", "running"):
+                skipped_active.append(r.id)
+            else:
+                deletable_ids.append(r.id)
+        if deletable_ids:
+            await session.execute(
+                sql_delete(BacktestRun).where(BacktestRun.id.in_(deletable_ids))
+            )
+            await session.commit()
+            deleted.extend(deletable_ids)
+    return {
+        "deleted_count": len(deleted),
+        "deleted": deleted,
+        "skipped_active": skipped_active,
+        "not_found": not_found,
+    }
+
+
 class WalkForwardRequest(BaseModel):
     source_code: str = Field(..., min_length=10)
     slug: str = Field(default="_backtest_walk_forward", min_length=1)

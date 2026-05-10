@@ -315,7 +315,13 @@ export interface BacktestRunSummary {
   started_at: string
   completed_at: string
   total_time_ms: number
-  status: 'ok' | 'failed'
+  // Mirrors backend ``BacktestRun.status`` exactly:
+  //   'ok'        — legacy in-process sync path (POST /backtest/run)
+  //   'completed' — worker queue finished successfully
+  //   'failed'    — terminal failure
+  //   'cancelled' — operator cancelled
+  //   'queued' | 'running' — still in flight on the worker queue
+  status: 'ok' | 'completed' | 'failed' | 'cancelled' | 'queued' | 'running'
   trade_count: number
   total_return_pct: number
   // Up-to-16-point equity-curve % drift from the run's start.  Empty
@@ -416,6 +422,36 @@ export async function getBacktestRunStatus(runId: string): Promise<BacktestRunSt
 export async function cancelBacktestRun(runId: string): Promise<{ run_id: string; cancel_requested: boolean }> {
   const { data } = await api.post<{ run_id: string; cancel_requested: boolean }>(
     `/backtest/runs/${encodeURIComponent(runId)}/cancel`,
+  )
+  return data
+}
+
+/** Delete a single terminal run.  Backend rejects (409) runs still
+ *  in queued/running state — operator must cancel first. */
+export async function deleteBacktestRun(
+  runId: string,
+): Promise<{ deleted: boolean; run_id: string }> {
+  const { data } = await api.delete<{ deleted: boolean; run_id: string }>(
+    `/backtest/runs/${encodeURIComponent(runId)}`,
+  )
+  return data
+}
+
+/** Bulk-delete terminal runs.  Active rows are skipped silently and
+ *  reported in ``skipped_active`` so the UI can prompt the operator
+ *  to cancel them first. */
+export interface BulkDeleteResult {
+  deleted_count: number
+  deleted: string[]
+  skipped_active: string[]
+  not_found: string[]
+}
+export async function bulkDeleteBacktestRuns(
+  runIds: string[],
+): Promise<BulkDeleteResult> {
+  const { data } = await api.post<BulkDeleteResult>(
+    '/backtest/runs/bulk-delete',
+    { run_ids: runIds },
   )
   return data
 }

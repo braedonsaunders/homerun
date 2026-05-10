@@ -28,6 +28,7 @@ import {
   Loader2,
   Play,
   RotateCcw,
+  Trash2,
   Sliders,
   Sparkles,
   Square,
@@ -63,7 +64,9 @@ import {
   type UnifiedBacktestResult,
   type WalkForwardResult,
   type BacktestRunStatus,
+  bulkDeleteBacktestRuns,
   cancelBacktestRun,
+  deleteBacktestRun,
   enqueueBacktest,
   getBacktestRun,
   getBacktestRunStatus,
@@ -970,10 +973,20 @@ function RunHistory({
   runs,
   activeId,
   onSelect,
+  onDelete,
+  deletingId,
 }: {
   runs: BacktestRunSummary[]
   activeId: string | null
   onSelect: (run: BacktestRunSummary) => void
+  /** Optional per-row delete handler.  When provided, a trash icon
+   *  appears on hover/active row.  Status='queued'|'running' rows
+   *  show the trash button DISABLED with a tooltip ("Cancel first")
+   *  since the backend rejects deletes of active runs. */
+  onDelete?: (run: BacktestRunSummary) => void
+  /** Run id whose delete request is in flight (replaces the trash
+   *  icon with a spinner). */
+  deletingId?: string | null
 }) {
   const { t } = useTranslation()
   if (runs.length === 0) {
@@ -986,12 +999,22 @@ function RunHistory({
       {runs.map((run) => {
         const active = run.run_id === activeId
         const tone = run.status === 'failed' ? 'bad' : run.total_return_pct >= 0 ? 'good' : 'bad'
+        const isAlive = run.status === 'queued' || run.status === 'running'
+        const isDeleting = deletingId === run.run_id
         return (
-          <button
+          <div
             key={run.run_id}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(run)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onSelect(run)
+              }
+            }}
             className={cn(
-              'block w-full rounded-sm border px-2 py-1.5 text-left text-[11px] transition-colors',
+              'group relative block w-full rounded-sm border px-2 py-1.5 text-left text-[11px] transition-colors cursor-pointer',
               active
                 ? 'border-amber-500/40 bg-amber-500/5'
                 : 'border-border/30 bg-card/40 hover:border-border/60 hover:bg-card/60',
@@ -1024,7 +1047,44 @@ function RunHistory({
               </span>
               <span>{new Date(run.started_at).toLocaleTimeString()}</span>
             </div>
-          </button>
+
+            {/* Per-row delete affordance — appears on hover.  Active
+                (queued/running) rows show a disabled trash with a
+                tooltip explaining why; backend would 409 the delete. */}
+            {onDelete ? (
+              <button
+                type="button"
+                aria-label={t('backtestStudio.deleteRunAria', { defaultValue: 'Delete this run' })}
+                title={
+                  isAlive
+                    ? t('backtestStudio.deleteRunDisabledTip', { defaultValue: 'Cancel this run before deleting' })
+                    : t('backtestStudio.deleteRunTip', { defaultValue: 'Delete this run' })
+                }
+                disabled={isAlive || isDeleting}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (isAlive || isDeleting) return
+                  onDelete(run)
+                }}
+                className={cn(
+                  'absolute right-1 top-1 hidden h-5 w-5 items-center justify-center rounded-sm transition-colors',
+                  'group-hover:flex',
+                  isAlive
+                    ? 'cursor-not-allowed text-muted-foreground/40'
+                    : 'text-muted-foreground hover:bg-red-500/15 hover:text-red-600 dark:hover:text-red-400',
+                  // Force-visible while deleting so the spinner is
+                  // unmistakable (otherwise the row's hover hides it).
+                  isDeleting && '!flex',
+                )}
+              >
+                {isDeleting ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3 w-3" />
+                )}
+              </button>
+            ) : null}
+          </div>
         )
       })}
     </div>
@@ -1794,6 +1854,85 @@ export default function BacktestStudio({
   const cancelMutation = useMutation({
     mutationFn: cancelBacktestRun,
   })
+
+  // Track which run id is mid-delete so the row can render a
+  // spinner inline (vs the trash icon).  Only one delete in flight
+  // at a time is plenty for a single-user local studio.
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const deleteMutation = useMutation({
+    mutationFn: deleteBacktestRun,
+    onMutate: (runId: string) => {
+      setDeletingRunId(runId)
+      setDeleteError(null)
+    },
+    onSuccess: (_data, runId: string) => {
+      // If we just deleted the run currently displayed in Inspect,
+      // clear it so the operator isn't staring at a phantom report.
+      if (activeRun && activeRun.run_id === runId) {
+        setActiveRun(null)
+        persistActiveRunId(null)
+      }
+      queryClient.invalidateQueries({ queryKey: ['backtest', 'runs'] })
+    },
+    onError: (err: unknown) => {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? (err instanceof Error ? err.message : 'failed to delete')
+      setDeleteError(msg)
+    },
+    onSettled: () => {
+      setDeletingRunId(null)
+    },
+  })
+
+  // Bulk-delete all terminal runs (queued/running rows are skipped
+  // on the backend automatically).  The Runs panel header exposes
+  // this behind a confirm dialog.
+  const bulkDeleteMutation = useMutation({
+    mutationFn: bulkDeleteBacktestRuns,
+    onSuccess: (data) => {
+      // If the active run was in the deleted set, clear it.
+      if (activeRun && data.deleted.includes(activeRun.run_id)) {
+        setActiveRun(null)
+        persistActiveRunId(null)
+      }
+      queryClient.invalidateQueries({ queryKey: ['backtest', 'runs'] })
+    },
+    onError: (err: unknown) => {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? (err instanceof Error ? err.message : 'failed to delete')
+      setDeleteError(msg)
+    },
+  })
+
+  const handleDeleteRun = (run: BacktestRunSummary) => {
+    if (deletingRunId) return // serial deletes only
+    const ok = window.confirm(
+      t('backtestStudio.deleteRunConfirm', {
+        id: run.run_id.slice(0, 8),
+        defaultValue: `Delete run ${run.run_id.slice(0, 8)}?  This is permanent.`,
+      }),
+    )
+    if (!ok) return
+    deleteMutation.mutate(run.run_id)
+  }
+
+  const handleBulkDeleteAll = () => {
+    const all = (runsQuery.data ?? []).filter(
+      (r) => r.status !== 'queued' && r.status !== 'running',
+    )
+    if (all.length === 0) return
+    const ok = window.confirm(
+      t('backtestStudio.deleteAllConfirm', {
+        n: all.length,
+        defaultValue: `Delete ${all.length} terminal run${all.length === 1 ? '' : 's'}?  This is permanent. (Active runs will be skipped — cancel those first.)`,
+      }),
+    )
+    if (!ok) return
+    bulkDeleteMutation.mutate(all.map((r) => r.run_id))
+  }
 
   // ── Restore on mount ────────────────────────────────────────────────
   //
@@ -2654,21 +2793,45 @@ export default function BacktestStudio({
 
               {/* §2 RUNS — bottom, bounded height, compact list */}
               <div className="border-t border-border/50 flex flex-col max-h-[40%]">
-                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/30">
+                <div className="flex items-center justify-between gap-1 px-2 py-1.5 border-b border-border/30">
                   <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     {t('backtestStudio.tabRuns')}
                   </span>
-                  {runsQuery.data && runsQuery.data.length > 0 ? (
-                    <span className="font-mono text-[10px] text-muted-foreground">
-                      {runsQuery.data.length}
-                    </span>
-                  ) : null}
+                  <div className="flex items-center gap-1">
+                    {runsQuery.data && runsQuery.data.length > 0 ? (
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {runsQuery.data.length}
+                      </span>
+                    ) : null}
+                    {runsQuery.data && runsQuery.data.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={handleBulkDeleteAll}
+                        disabled={bulkDeleteMutation.isPending}
+                        title={t('backtestStudio.deleteAllTip', { defaultValue: 'Delete all terminal runs (active runs are skipped — cancel those first)' })}
+                        className="flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-red-500/15 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                      >
+                        {bulkDeleteMutation.isPending ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3 w-3" />
+                        )}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
+                {deleteError ? (
+                  <div className="border-b border-border/30 bg-red-50 px-2 py-1 text-[10px] text-red-700 dark:bg-red-500/10 dark:text-red-300">
+                    {deleteError}
+                  </div>
+                ) : null}
                 <ScrollArea className="min-h-0 flex-1">
                   <RunHistory
                     runs={(runsQuery.data ?? []).slice(0, 30)}
                     activeId={activeRun?.run_id ?? null}
                     onSelect={(run) => loadRunMutation.mutate(run.run_id)}
+                    onDelete={handleDeleteRun}
+                    deletingId={deletingRunId}
                   />
                 </ScrollArea>
               </div>
