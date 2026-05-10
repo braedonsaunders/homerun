@@ -989,7 +989,13 @@ class PolymarketClient:
                     response=httpx.Response(429, request=httpx.Request("GET", f"{self.gamma_url}/markets")),
                 )
             # Gamma expects plural ``condition_ids`` for direct condition lookups.
-            for params in ({"condition_ids": condition_id, "limit": 80},):
+            # Gamma defaults to ``closed=false``; resolved markets only come back
+            # when we explicitly ask. Probe active first, then closed as fallback,
+            # so reconciliation can see resolved markets without doubling steady-state load.
+            for params in (
+                {"condition_ids": condition_id, "limit": 80},
+                {"condition_ids": condition_id, "limit": 80, "closed": "true"},
+            ):
                 response = await self._rate_limited_get(
                     f"{self.gamma_url}/markets",
                     params=params,

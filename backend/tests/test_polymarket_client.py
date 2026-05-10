@@ -257,6 +257,107 @@ def test_get_market_by_condition_id_uses_condition_ids_query_param(monkeypatch):
     assert any(params.get("condition_ids") == requested for params in seen_params)
 
 
+def test_get_market_by_condition_id_falls_back_to_closed_when_first_probe_empty(monkeypatch):
+    client = PolymarketClient()
+    requested = "0xc2cdb3b65e84e1d2fb2ee43e09f7d2cf66e36c9b0d76d6adafefd6cb16d10aa1"
+    seen_params: list[dict] = []
+
+    async def _fake_rate_limited_get(url: str, **kwargs):
+        params = kwargs.get("params") or {}
+        seen_params.append(dict(params))
+        # First probe (active markets) is empty: gamma defaults to closed=false.
+        if "closed" not in params:
+            return _FakeResponse([])
+        # Second probe (closed=true) returns a resolved market row.
+        return _FakeResponse(
+            [
+                {
+                    "id": "1488421",
+                    "question": "UFC 328: Du Plessis vs. Chimaev — Du Plessis to win",
+                    "conditionId": requested,
+                    "slug": "ufc-328-du-plessis-vs-chimaev-du-plessis",
+                    "endDate": "2026-05-09T05:00:00Z",
+                    "active": False,
+                    "closed": True,
+                    "archived": False,
+                    "acceptingOrders": False,
+                    "resolved": True,
+                    "winningOutcome": "No",
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0", "1"]',
+                    "umaResolutionStatus": "resolved",
+                }
+            ]
+        )
+
+    async def _fake_get_market_trades(*args, **kwargs):
+        raise AssertionError("should not fall back to trade lookup when closed probe matches")
+
+    async def _fake_cache():
+        return None
+
+    monkeypatch.setattr(client, "_rate_limited_get", _fake_rate_limited_get)
+    monkeypatch.setattr(client, "get_market_trades", _fake_get_market_trades)
+    monkeypatch.setattr(client, "_get_persistent_cache", _fake_cache)
+
+    info = asyncio.run(client.get_market_by_condition_id(requested))
+
+    assert info is not None
+    assert info["condition_id"] == requested
+    assert info["closed"] is True
+    assert info["resolved"] is True
+    assert info["winning_outcome"] == "No"
+    assert len(seen_params) == 2
+    assert seen_params[0].get("condition_ids") == requested
+    assert seen_params[0].get("closed") is None
+    assert seen_params[1].get("condition_ids") == requested
+    assert seen_params[1].get("closed") == "true"
+    assert client._market_cache[requested]["resolved"] is True
+
+
+def test_get_market_by_condition_id_does_not_probe_closed_when_active_match(monkeypatch):
+    client = PolymarketClient()
+    requested = "0x3a1b8e7d5b2f4c6a9e8b1d2c4a6b8e0f1a2d4c5b6e7f8a9b0c1d2e3f4a5b6c7d"
+    call_count = 0
+
+    async def _fake_rate_limited_get(url: str, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        params = kwargs.get("params") or {}
+        if call_count == 1:
+            return _FakeResponse(
+                [
+                    {
+                        "id": "9000123",
+                        "question": "Active market lookup happy path",
+                        "conditionId": requested,
+                        "slug": "active-market-happy-path",
+                        "endDate": "2026-12-31T23:59:00Z",
+                        "active": True,
+                        "closed": False,
+                        "acceptingOrders": True,
+                    }
+                ]
+            )
+        raise AssertionError(f"closed-probe should not run when active match exists; got params={params}")
+
+    async def _fake_get_market_trades(*args, **kwargs):
+        raise AssertionError("should not hit trade fallback")
+
+    async def _fake_cache():
+        return None
+
+    monkeypatch.setattr(client, "_rate_limited_get", _fake_rate_limited_get)
+    monkeypatch.setattr(client, "get_market_trades", _fake_get_market_trades)
+    monkeypatch.setattr(client, "_get_persistent_cache", _fake_cache)
+
+    info = asyncio.run(client.get_market_by_condition_id(requested))
+
+    assert info is not None
+    assert info["condition_id"] == requested
+    assert call_count == 1
+
+
 def test_get_market_by_condition_id_rejects_cache_without_tradability(monkeypatch):
     client = PolymarketClient()
     requested = "0xf23a18c26127d9b153ef1ca40ec94f7603b18170c474d0415cdca71ac52dbebd"
