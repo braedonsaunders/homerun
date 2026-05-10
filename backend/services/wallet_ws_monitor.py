@@ -485,6 +485,16 @@ class WalletWebSocketMonitor:
         self._rpc_endpoint_failure_log_interval_seconds: float = 10.0
         self._rpc_last_total_failure_log_at: float = 0.0
         self._rpc_total_failure_log_interval_seconds: float = 30.0
+        # 2026-05-09: re-read polygon_rpc_url / polygon_ws_url from
+        # AppSettings on RPC-exhaustion paths so a SettingsPanel update
+        # takes effect without a backend restart. Throttled to one
+        # re-read per 60s so an actually-broken provider list doesn't
+        # hammer the AppSettings table on every failed eth_getLogs call.
+        # The 2026-05-09 soak showed an hour of every-1-3-min
+        # ``RPC failed across all endpoints`` while the configured
+        # Ankr URL was being entered in the UI but never picked up.
+        self._rpc_endpoints_db_reload_at: float = 0.0
+        self._rpc_endpoints_db_reload_interval_seconds: float = 60.0
         # Fix SS — per-endpoint consecutive-failure counter.  401/403 already
         # evict immediately (auth required), and the existing
         # ``_rpc_error_requires_auth`` / ``unsupported_logs_query`` heuristics
@@ -799,11 +809,21 @@ class WalletWebSocketMonitor:
         / NULL DB values leave the env-var defaults in place. Read
         failures are non-fatal — the monitor still starts on env-var
         defaults plus the public fallback list.
+
+        2026-05-09: instrumented at INFO level. The 2026-05-09 soak
+        showed a user who entered an Ankr URL "many restarts ago" yet
+        the monitor was still failing over publicnode endpoints. The
+        Ankr URL didn't appear in active or evicted lists — meaning
+        ``_load_endpoints_from_db`` was returning empty. The five most
+        likely reasons (column missing, NULL value, decrypt failure
+        from APP_SECRETS_KEY mismatch, normalize rejected the value,
+        or ws override applied without rpc) are now logged distinctly
+        so the next startup tells the operator exactly which.
         """
         try:
             from sqlalchemy import select
             from models.database import AsyncSessionLocal, AppSettings
-            from utils.secrets import decrypt_secret
+            from utils.secrets import decrypt_secret, is_encrypted
 
             async with AsyncSessionLocal() as session:
                 result = await session.execute(
@@ -811,9 +831,15 @@ class WalletWebSocketMonitor:
                 )
                 row = result.scalar_one_or_none()
                 if row is None:
+                    logger.info(
+                        "Wallet WS monitor: AppSettings row 'default' missing; "
+                        "running on env-var/public defaults"
+                    )
                     return
-                stored_rpc = decrypt_secret(getattr(row, "polygon_rpc_url", None)) or ""
-                stored_ws = decrypt_secret(getattr(row, "polygon_ws_url", None)) or ""
+                rpc_raw = getattr(row, "polygon_rpc_url", None)
+                ws_raw = getattr(row, "polygon_ws_url", None)
+                stored_rpc = decrypt_secret(rpc_raw) or ""
+                stored_ws = decrypt_secret(ws_raw) or ""
         except Exception as exc:
             logger.warning(
                 "Wallet WS monitor: failed to read Polygon RPC overrides from AppSettings; "
@@ -822,7 +848,55 @@ class WalletWebSocketMonitor:
             )
             return
 
+        # Surface per-field state at INFO so the operator can see
+        # exactly what happened to the values they typed into the UI.
+        # We log only metadata (presence, length, encryption flag) —
+        # the URL itself is masked further down once it lands in
+        # ``_http_rpc_url`` / ``_ws_url``.
+        rpc_present = bool(rpc_raw)
+        ws_present = bool(ws_raw)
+        rpc_decrypted_ok = bool(stored_rpc) if rpc_present else None
+        ws_decrypted_ok = bool(stored_ws) if ws_present else None
         rpc_normalized = _normalize_rpc_http_url(stored_rpc)
+        if rpc_present and not rpc_decrypted_ok:
+            logger.warning(
+                "Wallet WS monitor: polygon_rpc_url is set in AppSettings but "
+                "decrypt_secret returned empty — APP_SECRETS_KEY may have "
+                "changed since the value was saved, OR the encryption key "
+                "isn't loaded on this process. Re-enter the URL in the "
+                "SettingsPanel UI to re-encrypt with the current key.",
+                rpc_stored_len=len(rpc_raw or ""),
+                rpc_is_encrypted=is_encrypted(rpc_raw),
+            )
+        elif rpc_present and rpc_decrypted_ok and not rpc_normalized:
+            logger.warning(
+                "Wallet WS monitor: polygon_rpc_url decrypted OK but "
+                "_normalize_rpc_http_url rejected it (must be http(s):// "
+                "or ws(s):// or a bare host)",
+                rpc_decoded_starts=stored_rpc[:12],
+            )
+        elif not rpc_present:
+            logger.info(
+                "Wallet WS monitor: polygon_rpc_url not set in AppSettings; "
+                "running on POLYGON_RPC_URL env var or public fallbacks. "
+                "Set it via SettingsPanel → Blockchain RPC."
+            )
+        else:
+            logger.info(
+                "Wallet WS monitor: loaded polygon_rpc_url from AppSettings",
+                rpc_was_encrypted=is_encrypted(rpc_raw),
+                rpc_normalized_starts=rpc_normalized[:12],
+            )
+
+        if ws_present and not ws_decrypted_ok:
+            logger.warning(
+                "Wallet WS monitor: polygon_ws_url is set but decrypt_secret "
+                "returned empty (APP_SECRETS_KEY mismatch?). Falling back to "
+                "env-var/default WS URL.",
+                ws_stored_len=len(ws_raw or ""),
+                ws_is_encrypted=is_encrypted(ws_raw),
+            )
+
         if rpc_normalized:
             self._http_rpc_url = rpc_normalized
             # Recompute the failover list so the new primary lands at
@@ -1507,6 +1581,36 @@ class WalletWebSocketMonitor:
             )
             self._rpc_backoff_until = time.monotonic() + cooldown_seconds
             now = time.monotonic()
+            # 2026-05-09: every-endpoint failure → re-poll AppSettings.
+            # If the operator just configured an authenticated endpoint
+            # (Ankr/Alchemy/QuickNode) via the SettingsPanel UI, this
+            # is when it takes effect without a backend restart.
+            # Throttled so we don't hammer the DB during a real
+            # all-endpoint outage.
+            if (now - self._rpc_endpoints_db_reload_at) >= self._rpc_endpoints_db_reload_interval_seconds:
+                self._rpc_endpoints_db_reload_at = now
+                prev_primary = self._http_rpc_url
+                try:
+                    await self._load_endpoints_from_db()
+                except Exception as reload_exc:
+                    logger.debug(
+                        "Wallet monitor: AppSettings reload during RPC exhaustion failed; "
+                        "continuing with current endpoint list",
+                        error_type=type(reload_exc).__name__,
+                    )
+                else:
+                    if self._http_rpc_url != prev_primary:
+                        # Picked up a new URL — clear transient evictions
+                        # so the new endpoint gets a clean attempt before
+                        # the old failure-streak shadow is held against it.
+                        self._evicted_rpc_urls_until.clear()
+                        self._rpc_failure_streak = 0
+                        self._rpc_backoff_until = 0.0
+                        logger.info(
+                            "Wallet monitor: picked up new Polygon RPC URL from AppSettings",
+                            primary_rpc_url=_mask_rpc_url(self._http_rpc_url),
+                            failover_order=[_mask_rpc_url(u) for u in self._rpc_urls],
+                        )
             if (now - self._rpc_last_total_failure_log_at) >= self._rpc_total_failure_log_interval_seconds:
                 self._rpc_last_total_failure_log_at = now
                 # Surface evicted endpoints alongside the active list so the

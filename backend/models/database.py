@@ -247,6 +247,47 @@ class RetryableAsyncSession(AsyncSession):
         except Exception:
             pass
 
+    def _stamp_outer_task_for_slow_tx(self) -> None:
+        """Record the OUTER asyncio task identity in session.info.
+
+        ``execute()`` and ``commit()`` below shield their work inside an
+        inner ``ensure_future`` task. Inside the inner task,
+        ``asyncio.current_task()`` returns that inner task — not the
+        application coroutine awaiting the call. SQLAlchemy session
+        events (``after_begin``, ``before_commit``) fire from the inner
+        task, so they too see only ``Task-NNNN::AsyncSession.execute``
+        — useless for pinning the actual call site.
+
+        Fix: stamp the outer task's name + coroutine __qualname__ into
+        ``session.info`` *before* spawning the inner. The slow-tx event
+        handlers below prefer this stamp over ``current_task()``.
+        Failures here are silent — instrumentation must never break a
+        commit path.
+        """
+        try:
+            task = asyncio.current_task()
+            if task is None:
+                return
+            try:
+                name = task.get_name() or f"task-{id(task)}"
+            except Exception:
+                name = f"task-{id(task)}"
+            coro = None
+            try:
+                coro = task.get_coro()
+            except Exception:
+                pass
+            qual = getattr(coro, "__qualname__", None) or getattr(coro, "__name__", None) or "?"
+            # Skip self-reference: if the outer is itself wrapping
+            # AsyncSession.execute / .commit (i.e. nested wrappers), keep
+            # the existing stamp from the truly outermost caller.
+            if "AsyncSession.execute" in qual or "AsyncSession.commit" in qual:
+                if self.info.get("_slow_tx_outer_task"):
+                    return
+            self.info["_slow_tx_outer_task"] = f"{name}::{qual}"
+        except Exception:
+            pass
+
     async def commit(self) -> None:
         """Cancellation-safe commit with retry on transient errors.
 
@@ -271,6 +312,10 @@ class RetryableAsyncSession(AsyncSession):
         from utils.retry import is_db_connection_broken
 
         await self._wait_inflight()
+        # Capture the outer asyncio task identity into session.info before
+        # we spawn the inner shielded task; the slow-tx event handlers
+        # need this to attribute long transactions to actual call sites.
+        self._stamp_outer_task_for_slow_tx()
         for attempt in range(1, self._COMMIT_RETRY_ATTEMPTS + 1):
             inner = asyncio.ensure_future(super().commit())
             self._track_inflight(inner)
@@ -339,6 +384,11 @@ class RetryableAsyncSession(AsyncSession):
         from utils.retry import is_db_connection_broken
 
         await self._wait_inflight()
+        # Capture the outer asyncio task identity into session.info before
+        # spawning the inner shielded task; SQLAlchemy session events
+        # (after_begin, before_commit) fire from inside the inner task
+        # and would otherwise see only the auto-named Task-NNNN.
+        self._stamp_outer_task_for_slow_tx()
         inner = asyncio.ensure_future(super().execute(statement, params=params, **kwargs))
         self._track_inflight(inner)
         try:
@@ -1918,10 +1968,17 @@ class DataSourceRecord(Base):
 
     __table_args__ = (
         Index("idx_data_source_records_source_slug", "source_slug"),
-        Index("idx_data_source_records_data_source_id", "data_source_id"),
-        Index("idx_data_source_records_observed_at", "observed_at"),
-        Index("idx_data_source_records_ingested_at", "ingested_at"),
-        Index("idx_data_source_records_geotagged", "geotagged"),
+        # 2026-05-09: dropped four dead indexes via migration
+        # 202605090008. pg_stat_user_indexes showed all four with
+        # idx_scan=0 across the full stat history while the table was
+        # taking 1.34M UPDATEs at 0% HOT. The duplicate
+        # ``idx_data_source_records_data_source_id`` was redundant with
+        # the SQLAlchemy auto-named ``ix_*`` below; the standalone
+        # observed_at/ingested_at/geotagged indexes were never read.
+        # Index("idx_data_source_records_data_source_id", "data_source_id"),  # dropped — duplicate of ix_*
+        # Index("idx_data_source_records_observed_at", "observed_at"),        # dropped — never scanned
+        # Index("idx_data_source_records_ingested_at", "ingested_at"),        # dropped — never scanned
+        # Index("idx_data_source_records_geotagged", "geotagged"),            # dropped — never scanned
         Index("idx_data_source_records_country", "country_iso3"),
         Index("idx_data_source_records_external", "source_slug", "external_id"),
         Index("ix_data_source_records_data_source_id", "data_source_id"),
@@ -3096,7 +3153,14 @@ class TradeSignal(Base):
     edge_percent = Column(Float, nullable=True)
     confidence = Column(Float, nullable=True)
     liquidity = Column(Float, nullable=True)
-    expires_at = Column(DateTime, nullable=True, index=True)
+    # 2026-05-09: dropped index=True on expires_at + runtime_sequence
+    # (migration 202605090006). Both columns are touched on every
+    # producer UPSERT, and any indexed-column UPDATE disqualifies HOT.
+    # Neither standalone index served a real query path -- expires_at
+    # is only a WHERE filter alongside (source, status) primary access,
+    # and runtime_sequence is read post-PK-fetch in upsert_trade_signal
+    # plus served by a Sort node in list_unconsumed_trade_signals.
+    expires_at = Column(DateTime, nullable=True)
     status = Column(
         String, nullable=False, default="pending"
     )  # pending | selected | submitted | executed | skipped | expired | failed
@@ -3105,7 +3169,7 @@ class TradeSignal(Base):
     quality_passed = Column(Boolean, nullable=True)  # True = passed quality filter at signal creation
     quality_rejection_reasons = Column(JSON, nullable=True)  # List of rejection reason strings
     dedupe_key = Column(String, nullable=False)
-    runtime_sequence = Column(BigInteger, nullable=True, index=True)
+    runtime_sequence = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -3128,16 +3192,28 @@ class TradeSignal(Base):
         # over the ~3,800 active rows. Renamed the index from
         # ``..._sequence`` to ``..._active`` so the name reflects the
         # actual columns.
+        #
+        # 2026-05-10: dropped ``status`` from the indexed key set on
+        # both partial indexes, and dropped the lower(status)
+        # functional index entirely (alembic 202605100001).  Status
+        # transitions were the dominant HOT killer on this table
+        # (601 K UPDATEs / 4.8% HOT in the 2026-05-09 soak); removing
+        # status from every index restores HOT-eligibility for
+        # status changes, which is the bulk of UPDATE volume.
+        # Queries that previously filtered on (source, status) or
+        # (market_id, status) now use the surviving partial index for
+        # the source / market lookup and a sub-ms status filter on
+        # the few hundred matching active rows.
         Index(
-            "idx_trade_signals_source_status_active",
-            "source", "status",
+            "idx_trade_signals_source_active",
+            "source",
             postgresql_where=text(
                 "status IN ('pending', 'selected', 'submitted')"
             ),
         ),
         Index(
-            "idx_trade_signals_market_status",
-            "market_id", "status",
+            "idx_trade_signals_market_active",
+            "market_id",
             postgresql_where=text(
                 "status IN ('pending', 'selected', 'submitted')"
             ),
@@ -4954,6 +5030,220 @@ def _on_invalidate(dbapi_connection, connection_record, exception):
 AsyncSessionLocal = sessionmaker(async_engine, class_=RetryableAsyncSession, expire_on_commit=False)
 
 
+# =====================================================================
+# TRANSACTION LIFETIME INSTRUMENTATION
+# =====================================================================
+#
+# 2026-05-09: the existing pool watchdog tells us *that* a connection is
+# held in ``idle in transaction`` state, and the slow-commit diagnostic
+# tells us *which tables* were dirty when the slow commit fired. What
+# neither tells us is *which Python call site* opened the transaction
+# and held it through the slow Python work that followed.
+#
+# This hook fills that gap. On every transaction begin we capture:
+#   * monotonic start time
+#   * the first non-stdlib, non-database.py, non-sqlalchemy frame in the
+#     call stack — i.e. the actual application code that triggered the
+#     SELECT/INSERT/UPDATE that opened the transaction
+#
+# On every commit, if the transaction held longer than the threshold
+# (LONG_TX_THRESHOLD_S, default 2.0s — same as the slow-commit floor),
+# we log:
+#   * total duration since begin
+#   * origin call site (file:line:func)
+#   * dirty/new/deleted row counts + their table names from the session's
+#     unit-of-work (read out before commit clears them)
+#   * top-3 frames of the current stack at commit time
+#
+# Output goes to a dedicated ``slow_tx`` logger so it's easy to grep,
+# and is rate-limited per origin-call-site so a single hot caller doesn't
+# spam the channel. Hooks attach to the sync session class behind
+# ``AsyncSessionLocal`` only — fast/audit tiers are excluded since they
+# already enforce statement_timeout limits that bound transaction
+# lifetime. The overhead per begin/commit is one ``traceback.extract_stack``
+# (~50us) and one dict insert/lookup; negligible vs the current commit
+# floor.
+import traceback as _traceback
+
+_slow_tx_logger = _logging.getLogger("homerun.db.slow_tx")
+_LONG_TX_THRESHOLD_S: float = 2.0
+_SLOW_TX_LOG_INTERVAL_S: float = 5.0
+_SLOW_TX_LAST_LOG_AT: dict[str, float] = {}
+
+
+def _resolve_tx_origin_frame() -> str:
+    """Identify the asyncio task + coroutine that opened/committed the tx.
+
+    SQLAlchemy events fire from inside a greenlet; ``traceback.extract_stack``
+    only sees the synchronous greenlet frames (Session.commit ->
+    _connection_for_bind -> codegen helpers), all of which we correctly
+    filter as ORM internals — leaving nothing useful. The application's
+    async call stack lives on a different greenlet entirely.
+
+    Fix: read the asyncio task identity instead. ``asyncio.current_task()``
+    is propagated via contextvars across greenlet boundaries (this is what
+    ``_pool_task_context()`` and ``_on_checkout`` already rely on for
+    connection-held warnings), so it returns the *async* task that's driving
+    the transaction. The task's name + coroutine __qualname__ is exactly
+    "which application function is at the top of the await stack" — which
+    is the call site we want.
+    """
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return "sync"
+    if task is None:
+        return "unknown"
+    try:
+        name = task.get_name() or f"task-{id(task)}"
+    except Exception:
+        name = f"task-{id(task)}"
+    coro = None
+    try:
+        coro = task.get_coro()
+    except Exception:
+        pass
+    qual = getattr(coro, "__qualname__", None) or getattr(coro, "__name__", None) or "?"
+    # Some asyncio internals show up as e.g. ``Task.__step``; surface them
+    # so the operator can tell when the task name is uninformative.
+    return f"{name}::{qual}"
+
+
+def _summarize_session_uow(session) -> dict:
+    """Collect dirty/new/deleted counts + table names from the session.
+
+    Called from ``before_commit`` while the unit-of-work is still
+    populated. Safe failure: returns an empty dict if anything trips.
+    """
+    summary: dict = {"dirty": 0, "new": 0, "deleted": 0, "tables": []}
+    try:
+        tables: set[str] = set()
+        for obj in getattr(session, "dirty", ()):
+            summary["dirty"] += 1
+            tname = getattr(obj.__class__, "__tablename__", None)
+            if tname:
+                tables.add(str(tname))
+        for obj in getattr(session, "new", ()):
+            summary["new"] += 1
+            tname = getattr(obj.__class__, "__tablename__", None)
+            if tname:
+                tables.add(str(tname))
+        for obj in getattr(session, "deleted", ()):
+            summary["deleted"] += 1
+            tname = getattr(obj.__class__, "__tablename__", None)
+            if tname:
+                tables.add(str(tname))
+        summary["tables"] = sorted(tables)[:8]
+    except Exception:
+        pass
+    return summary
+
+
+# Hook on the global sync Session (the underlying class behind every
+# AsyncSession). Filter to the main pool only by comparing connection's
+# engine; fast/audit have stricter statement_timeout floors and don't
+# need the lifetime-watcher overhead.
+from sqlalchemy.orm import Session as _SyncSessionForEvents
+
+
+def _slow_tx_is_main_pool(connection) -> bool:
+    try:
+        eng = getattr(connection, "engine", None)
+        return eng is async_engine.sync_engine
+    except Exception:
+        return False
+
+
+def _slow_tx_origin_for_session(session) -> str:
+    """Prefer the outer-task stamp from RetryableAsyncSession.execute/commit.
+
+    The stamp is set in ``session.info["_slow_tx_outer_task"]`` before the
+    inner shielded task is spawned, so it's the actual application coroutine
+    that initiated the operation — not the inner ``Task-NNNN`` we'd see
+    from ``asyncio.current_task()`` inside the SQLAlchemy event handler.
+    """
+    try:
+        stamped = session.info.get("_slow_tx_outer_task")
+        if stamped:
+            return str(stamped)
+    except Exception:
+        pass
+    return _resolve_tx_origin_frame()
+
+
+@_sa_event.listens_for(_SyncSessionForEvents, "after_begin")
+def _slow_tx_after_begin(session, transaction, connection):  # noqa: ANN001
+    try:
+        if not _slow_tx_is_main_pool(connection):
+            return
+        info = session.info
+        # Only stamp the OUTERMOST transaction's origin. Nested SAVEPOINTs
+        # fire after_begin too, but they aren't the lock-holding scope.
+        if info.get("_slow_tx_started_at") is None:
+            info["_slow_tx_started_at"] = _time.monotonic()
+            info["_slow_tx_origin"] = _slow_tx_origin_for_session(session)
+    except Exception:
+        pass
+
+
+@_sa_event.listens_for(_SyncSessionForEvents, "before_commit")
+def _slow_tx_before_commit(session):  # noqa: ANN001
+    try:
+        info = session.info
+        started_at = info.get("_slow_tx_started_at")
+        if started_at is None:
+            return
+        elapsed = _time.monotonic() - started_at
+        if elapsed < _LONG_TX_THRESHOLD_S:
+            return
+        origin = info.get("_slow_tx_origin", "unknown")
+        # Per-origin throttle: a hot caller logs at most once per
+        # interval, so bursty workloads don't flood the log.
+        now = _time.monotonic()
+        last = _SLOW_TX_LAST_LOG_AT.get(origin, 0.0)
+        if now - last < _SLOW_TX_LOG_INTERVAL_S:
+            return
+        _SLOW_TX_LAST_LOG_AT[origin] = now
+        uow = _summarize_session_uow(session)
+        # Capture the commit-time call site too; sometimes this is more
+        # informative than the begin site (different code path between
+        # tx open and commit).
+        commit_site = _slow_tx_origin_for_session(session)
+        _slow_tx_logger.warning(
+            "Long transaction held %.2fs origin=%s commit_site=%s "
+            "uow_dirty=%d uow_new=%d uow_deleted=%d tables=%s",
+            elapsed,
+            origin,
+            commit_site,
+            uow["dirty"],
+            uow["new"],
+            uow["deleted"],
+            ",".join(uow["tables"]) if uow["tables"] else "-",
+        )
+    except Exception:
+        pass
+
+
+@_sa_event.listens_for(_SyncSessionForEvents, "after_commit")
+def _slow_tx_after_commit(session):  # noqa: ANN001
+    try:
+        session.info.pop("_slow_tx_started_at", None)
+        session.info.pop("_slow_tx_origin", None)
+        session.info.pop("_slow_tx_outer_task", None)
+    except Exception:
+        pass
+
+
+@_sa_event.listens_for(_SyncSessionForEvents, "after_rollback")
+def _slow_tx_after_rollback(session):  # noqa: ANN001
+    try:
+        session.info.pop("_slow_tx_started_at", None)
+        session.info.pop("_slow_tx_origin", None)
+        session.info.pop("_slow_tx_outer_task", None)
+    except Exception:
+        pass
+
+
 # ==================== FAST-TIER ENGINE ====================
 #
 # Dedicated engine + session factory for the fast latency tier.  Traders with
@@ -5085,9 +5375,19 @@ FastAsyncSessionLocal = sessionmaker(fast_async_engine, class_=RetryableAsyncSes
 # so this is belt-and-suspenders.
 _AUDIT_POOL_SIZE = 2
 _AUDIT_MAX_OVERFLOW = 2
-_AUDIT_STATEMENT_TIMEOUT_MS = 5000
+# 2026-05-09: bumped 5000 -> 12000 in lock-step with
+# trader_hot_state._AUDIT_STATEMENT_TIMEOUT_MS. 5s was killing
+# normal-load 101-row trader_event batches under WAL pressure, with
+# the cancel triggering asyncpg connection invalidation and an
+# invalidate-storm on the 2-slot audit pool. See trader_hot_state.py
+# for the full rationale.
+_AUDIT_STATEMENT_TIMEOUT_MS = 12000
 _AUDIT_LOCK_TIMEOUT_MS = 2000
-_AUDIT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 8000
+# Stay > statement_timeout: a session that exhausts statement_timeout
+# is killed at the statement layer, not the idle-in-tx layer. Keeping
+# this at 15s ensures fail-fast on legitimate stuck transactions
+# without false-positive killing in-flight slow batches.
+_AUDIT_IDLE_IN_TRANSACTION_TIMEOUT_MS = 15000
 
 _audit_engine_kw: dict = {
     "echo": False,
@@ -5154,6 +5454,125 @@ def _audit_on_checkin(dbapi_connection, connection_record):  # noqa: ANN001
 
 
 AuditAsyncSessionLocal = sessionmaker(audit_async_engine, class_=RetryableAsyncSession, expire_on_commit=False)
+
+
+# =====================================================================
+# BACKTEST POOL — isolated from operational traffic.
+# =====================================================================
+#
+# Backtests are fundamentally different beasts from live trading:
+#
+#   * They scan multi-GB tables (``market_microstructure_snapshots`` is
+#     ~9.7 GB / 6.9M rows), pulling pages of 5K snapshots in cursor-
+#     style loops that intentionally raise ``statement_timeout`` to
+#     5 minutes.
+#   * They tolerate latency: a backtest taking 90s end-to-end is fine.
+#   * They MUST NOT block the trading hot path.  The 2026-05-10 soak
+#     captured a backtest holding a connection for 73.3s while running
+#     a single ``SELECT market_microstructure_snapshots ...`` for 69s,
+#     which starved the trading pool, fired
+#     ``Execution session reconcile timed out`` warnings repeatedly,
+#     and triggered a 16.19s ``_authority_recovery`` commit (a victim
+#     of the pool starvation, not a real DB issue).
+#
+# Until now backtest worker code reused the main ``AsyncSessionLocal``,
+# so a slow backtest query competed for connections with the
+# orchestrator and reconciler.  This pool is the architectural fix:
+# backtest reads/writes use ``BacktestAsyncSessionLocal``, which sits
+# on its own small dedicated pool.  Worst-case backtest pathology
+# stays inside its own neighborhood.
+#
+# Sizing rationale:
+#   * The backtest worker is a single asyncio task that may also run
+#     a fill simulator + portfolio correlator concurrently.  3 slots
+#     plus 2 overflow covers concurrent reads from book_replay +
+#     historical_data_provider + outcome_resolver inside one run.
+#   * statement_timeout matches the existing
+#     ``HOMERUN_BACKTEST_STATEMENT_TIMEOUT_MS`` env override default
+#     (300000 = 5 minutes) used by ``book_replay._raise_session_timeout``
+#     so the SET LOCAL there is now belt-and-suspenders rather than
+#     the only line of defense.
+#   * idle_in_transaction_timeout MUST exceed statement_timeout so a
+#     statement-timed-out backtest dies at the statement layer (clean
+#     rollback) rather than at the idle-in-tx layer (server-side FATAL,
+#     which invalidates the entire session and triggers
+#     ``InterfaceError`` cascades elsewhere).
+#   * synchronous_commit=off matches the global setting; backtest
+#     run-row writes are fully recoverable from re-running the backtest
+#     so durability is not required.
+_BACKTEST_POOL_SIZE = 3
+_BACKTEST_MAX_OVERFLOW = 2
+_BACKTEST_STATEMENT_TIMEOUT_MS = 300000  # 5 minutes
+_BACKTEST_LOCK_TIMEOUT_MS = 5000
+_BACKTEST_IDLE_IN_TRANSACTION_TIMEOUT_MS = 360000  # 6 minutes — must exceed statement_timeout
+
+_backtest_engine_kw: dict = {
+    "echo": False,
+    "pool_pre_ping": True,
+    "pool_size": _BACKTEST_POOL_SIZE,
+    "max_overflow": _BACKTEST_MAX_OVERFLOW,
+    "pool_timeout": 10,
+    "pool_recycle": max(30, int(settings.DATABASE_POOL_RECYCLE_SECONDS)),
+    "pool_use_lifo": True,
+}
+_backtest_connect_args: dict = {
+    "timeout": float(max(1.0, float(settings.DATABASE_CONNECT_TIMEOUT_SECONDS))),
+    "command_timeout": float((_BACKTEST_STATEMENT_TIMEOUT_MS / 1000.0) + 5.0),
+    "server_settings": {
+        "timezone": "UTC",
+        "statement_timeout": str(_BACKTEST_STATEMENT_TIMEOUT_MS),
+        "lock_timeout": str(_BACKTEST_LOCK_TIMEOUT_MS),
+        "idle_in_transaction_session_timeout": str(_BACKTEST_IDLE_IN_TRANSACTION_TIMEOUT_MS),
+        "tcp_keepalives_idle": "30",
+        "tcp_keepalives_interval": "10",
+        "tcp_keepalives_count": "3",
+        # Async commit is fine — backtest run-row writes are recoverable
+        # by re-running the backtest if the host crashes between
+        # commit-ack and disk-flush.
+        "synchronous_commit": "off",
+    },
+}
+_backtest_engine_kw["connect_args"] = _backtest_connect_args
+
+backtest_async_engine = create_async_engine(settings.DATABASE_URL, **_backtest_engine_kw)
+_db_logger.info(
+    "Backtest-tier connection pool created (pool_size=%d, max_overflow=%d, statement_timeout_ms=%d)",
+    _BACKTEST_POOL_SIZE,
+    _BACKTEST_MAX_OVERFLOW,
+    _BACKTEST_STATEMENT_TIMEOUT_MS,
+)
+
+
+@_sa_event.listens_for(backtest_async_engine.sync_engine, "checkout")
+def _backtest_on_checkout(dbapi_connection, connection_record, connection_proxy):  # noqa: ANN001
+    task_name, coro_name = _pool_task_context()
+    connection_record.info["checkout_time"] = _time.monotonic()
+    connection_record.info["checkout_task_name"] = task_name
+    connection_record.info["checkout_task_coro"] = coro_name
+
+
+@_sa_event.listens_for(backtest_async_engine.sync_engine, "checkin")
+def _backtest_on_checkin(dbapi_connection, connection_record):  # noqa: ANN001
+    checkout_time = connection_record.info.pop("checkout_time", None)
+    checkout_task_name = connection_record.info.pop("checkout_task_name", "unknown")
+    checkout_task_coro = connection_record.info.pop("checkout_task_coro", "unknown")
+    if checkout_time is not None:
+        elapsed = _time.monotonic() - checkout_time
+        # Backtests legitimately hold connections for tens of seconds
+        # during multi-million-row replays — that's why this pool
+        # exists.  But anything over 4 minutes is approaching the
+        # statement_timeout ceiling and worth surfacing in case a
+        # query is unexpectedly hitting the cap.
+        if elapsed > 240.0:
+            _db_logger.warning(
+                "Backtest-tier connection held for %.2fs before return to pool (task=%s, coro=%s)",
+                elapsed,
+                checkout_task_name,
+                checkout_task_coro,
+            )
+
+
+BacktestAsyncSessionLocal = sessionmaker(backtest_async_engine, class_=RetryableAsyncSession, expire_on_commit=False)
 
 
 async def recover_pool() -> None:

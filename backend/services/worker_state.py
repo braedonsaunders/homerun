@@ -375,6 +375,59 @@ async def _capture_slow_commit_diagnostic(commit_ms: int, dirty_rows: int) -> No
             ),
             timeout=3,
         )
+        # 2026-05-09: also snapshot pg_stat_activity wait-event
+        # distribution. With ``synchronous_commit=local`` applied, a
+        # ``dirty_rows=0`` commit taking 7s is unexplained at the
+        # row-write layer — it's either WAL fsync queuing (heavy
+        # concurrent writes), checkpoint stall, or a backend xmin
+        # holding old enough to cause vacuum-checkpoint serialization.
+        # Capture the wait-event histogram + the longest-running active
+        # transaction so we can tell which it is.
+        activity_rows = await asyncio.wait_for(
+            probe.fetch(
+                """
+                SELECT
+                    state,
+                    wait_event_type,
+                    wait_event,
+                    COUNT(*) AS n,
+                    MAX(EXTRACT(EPOCH FROM now() - xact_start))::int AS max_xact_age_s,
+                    MAX(EXTRACT(EPOCH FROM now() - state_change))::int AS max_state_age_s
+                FROM pg_stat_activity
+                WHERE pid <> pg_backend_pid()
+                  AND backend_type = 'client backend'
+                  AND datname = current_database()
+                GROUP BY state, wait_event_type, wait_event
+                ORDER BY n DESC
+                LIMIT 20
+                """,
+            ),
+            timeout=3,
+        )
+        # Also: any single long-running transaction (>5s) that might
+        # be holding xmin and back-pressuring the WAL pipeline.
+        long_tx_rows = await asyncio.wait_for(
+            probe.fetch(
+                """
+                SELECT
+                    pid,
+                    state,
+                    wait_event_type,
+                    wait_event,
+                    EXTRACT(EPOCH FROM now() - xact_start)::int AS xact_age_s,
+                    LEFT(query, 160) AS q
+                FROM pg_stat_activity
+                WHERE pid <> pg_backend_pid()
+                  AND backend_type = 'client backend'
+                  AND datname = current_database()
+                  AND xact_start IS NOT NULL
+                  AND xact_start < now() - INTERVAL '5 seconds'
+                ORDER BY xact_start ASC
+                LIMIT 5
+                """,
+            ),
+            timeout=3,
+        )
     except Exception as exc:
         logger.debug("slow_commit diag query failed: %s", exc)
         try:
@@ -415,12 +468,42 @@ async def _capture_slow_commit_diagnostic(commit_ms: int, dirty_rows: int) -> No
         }
         for r in wal_rows
     }
+    activity = [
+        {
+            "state": r["state"],
+            "wait": (
+                f"{r['wait_event_type']}/{r['wait_event']}"
+                if r["wait_event_type"] is not None
+                else None
+            ),
+            "n": int(r["n"] or 0),
+            "max_xact_age_s": int(r["max_xact_age_s"] or 0),
+            "max_state_age_s": int(r["max_state_age_s"] or 0),
+        }
+        for r in activity_rows
+    ]
+    long_tx = [
+        {
+            "pid": int(r["pid"]),
+            "state": r["state"],
+            "wait": (
+                f"{r['wait_event_type']}/{r['wait_event']}"
+                if r["wait_event_type"] is not None
+                else None
+            ),
+            "xact_age_s": int(r["xact_age_s"] or 0),
+            "q": r["q"],
+        }
+        for r in long_tx_rows
+    ]
     logger.warning(
-        "SLOW COMMIT DIAGNOSTIC commit_ms=%d dirty_rows=%d tables=%r wal=%r",
+        "SLOW COMMIT DIAGNOSTIC commit_ms=%d dirty_rows=%d tables=%r wal=%r activity=%r long_tx=%r",
         commit_ms,
         dirty_rows,
         tables,
         wal,
+        activity,
+        long_tx,
     )
 
 

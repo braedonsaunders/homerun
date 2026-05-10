@@ -1140,6 +1140,19 @@ RETURNING target.id
                 await autocommit_conn.execute(text("SET statement_timeout = '1800000'"))
             except Exception as exc:
                 logger.warning("VACUUM: failed to raise statement_timeout: %s", exc)
+            # 2026-05-09: lift the per-statement lock_timeout for the
+            # duration of VACUUM operations. The pool default (5s)
+            # caused VACUUM FULL on trade_signals to error with
+            # ``LockNotAvailableError: canceling statement due to lock
+            # timeout`` when AccessExclusiveLock contended with
+            # background producer UPSERTs. ``0`` = wait indefinitely.
+            # Bounded by the statement_timeout above (30 min cap), so
+            # there's no infinite-hang risk; just enough patience to
+            # actually acquire the lock between writer transactions.
+            try:
+                await autocommit_conn.execute(text("SET lock_timeout = '0'"))
+            except Exception as exc:
+                logger.warning("VACUUM: failed to clear lock_timeout: %s", exc)
             for table_name in tables_to_vacuum:
                 t0 = time.monotonic()
                 try:
@@ -1207,6 +1220,18 @@ RETURNING target.id
 
         async with async_engine.connect() as conn:
             autocommit_conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            # Same rationale as vacuum_analyze: REINDEX takes locks
+            # that may queue behind active producer transactions on
+            # high-churn tables. Lift the pool's 5s default lock_timeout
+            # and 30s statement_timeout so REINDEX can complete.
+            try:
+                await autocommit_conn.execute(text("SET statement_timeout = '1800000'"))
+            except Exception as exc:
+                logger.warning("REINDEX: failed to raise statement_timeout: %s", exc)
+            try:
+                await autocommit_conn.execute(text("SET lock_timeout = '0'"))
+            except Exception as exc:
+                logger.warning("REINDEX: failed to clear lock_timeout: %s", exc)
             for table_name in tables_to_reindex:
                 t0 = time.monotonic()
                 try:

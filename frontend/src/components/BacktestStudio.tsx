@@ -84,6 +84,15 @@ import {
   listProviderDatasets,
   type ProviderDataset,
 } from '../services/apiProviders'
+// Detect live-trading-enabled state so we can warn before kicking off a
+// backtest while real money is on the wire.  Backtests intentionally
+// raise statement_timeout to 5 minutes and read multi-GB tables; even
+// with the dedicated backtest connection pool (see models/database.py
+// ``BacktestAsyncSessionLocal``) they can still chew CPU and disk
+// bandwidth that a slow venue moment might need.  An institutional
+// rule of "no backtests during live trading" is the right operational
+// posture, and this banner enforces it visibly.
+import { getTraders } from '../services/apiTraders'
 
 interface BacktestStudioProps {
   initialSourceCode?: string
@@ -1663,8 +1672,58 @@ export default function BacktestStudio({
     return err.response?.data?.detail || err.message || t('autoresearch.unknownError')
   }, [runMutation.error, t])
 
+  // Live-trader watch.  Refreshes every 30s — fresh enough to catch
+  // an operator toggling live-on a few seconds before clicking Run,
+  // not so frequent that it pollutes the network panel.  Failures
+  // (no traders configured, network blip) collapse to "no live
+  // traders detected" so the warning fails OPEN — i.e. we let the
+  // backtest proceed rather than blocking on transient query
+  // failure.
+  const liveTradersQuery = useQuery({
+    queryKey: ['traders', 'live-active-for-backtest-warning'],
+    queryFn: () => getTraders({ mode: 'live' }),
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  })
+  const activeLiveTraders = useMemo(() => {
+    const rows = liveTradersQuery.data
+    if (!Array.isArray(rows)) return []
+    return rows.filter(
+      (t) => t.mode === 'live' && t.is_enabled && !t.is_paused,
+    )
+  }, [liveTradersQuery.data])
+  const liveTradingActive = activeLiveTraders.length > 0
+
   const handleRun = () => {
     if (!sourceCode.trim() || sourceCode.trim().length < 10) return
+    // Live-trading guard.  When at least one trader is in mode=live
+    // AND enabled AND not paused, ask the operator to confirm before
+    // we kick off a backtest run.  Backtest queries (book replay,
+    // historical_data_provider, fill simulators) read multi-GB
+    // tables on their own dedicated pool, but they still compete
+    // with live trading for postgres CPU, disk bandwidth, and WAL
+    // write capacity — and a 5-minute backtest run is a 5-minute
+    // window during which the host is doing other work.  The right
+    // posture is "don't backtest during live trading"; this dialog
+    // makes the choice explicit at decision time so an accidental
+    // click doesn't double-book the resource budget.
+    if (liveTradingActive) {
+      const traderNames = activeLiveTraders
+        .map((t) => t.name || t.id.slice(0, 8))
+        .join(', ')
+      const confirmed = window.confirm(
+        t('backtestStudio.liveTradingConfirm', {
+          n: activeLiveTraders.length,
+          names: traderNames,
+          defaultValue:
+            `${activeLiveTraders.length} live trader(s) currently running (${traderNames}).\n\n` +
+            `Backtests share PostgreSQL CPU, disk bandwidth, and WAL capacity with live trading. ` +
+            `Running one now can introduce extra latency on order placement and reconciliation.\n\n` +
+            `Continue anyway?`,
+        }),
+      )
+      if (!confirmed) return
+    }
     // Window is "last N days" measured from now.  Skip when the
     // operator left it blank or set to a non-positive number, in
     // which case the backend's 7d default applies.
@@ -2390,6 +2449,35 @@ export default function BacktestStudio({
                   <Wand2 className="h-3 w-3" />
                   {iterDoneSummary ? t('backtestStudio.iterateAgain') : t('backtestStudio.startIteration')}
                 </Button>
+              </div>
+            ) : null}
+
+            {/* Live-trading-active banner.  Surfaces the warning
+                BEFORE the operator clicks Run, in addition to the
+                ``window.confirm()`` dialog inside ``handleRun``.
+                Two layers of friction is intentional: this banner
+                catches attention passively, the confirm requires an
+                explicit "yes I know" click. */}
+            {liveTradingActive ? (
+              <div
+                className="rounded border border-amber-600/40 bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-200 flex items-start gap-1.5"
+                role="alert"
+              >
+                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                <div className="leading-tight">
+                  <div className="font-medium">
+                    {t('backtestStudio.liveTradingActiveTitle', {
+                      n: activeLiveTraders.length,
+                      defaultValue: `${activeLiveTraders.length} live trader(s) running`,
+                    })}
+                  </div>
+                  <div className="text-amber-300/80">
+                    {t('backtestStudio.liveTradingActiveBody', {
+                      defaultValue:
+                        'Backtests share PostgreSQL with live trading. Running one now may add latency to order placement.',
+                    })}
+                  </div>
+                </div>
               </div>
             ) : null}
 

@@ -32,7 +32,7 @@ from typing import Any, Optional
 
 from sqlalchemy import select
 
-from models.database import AsyncSessionLocal, MarketCatalog
+from models.database import BacktestAsyncSessionLocal, MarketCatalog
 from utils.logger import get_logger
 
 
@@ -93,7 +93,7 @@ class OutcomeResolver:
     async def _rebuild_index(self) -> None:
         by_token: dict[str, MarketRecord] = {}
         by_market: dict[str, MarketRecord] = {}
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             stmt = select(MarketCatalog.markets_json).order_by(MarketCatalog.updated_at.desc()).limit(1)
             result = await session.execute(stmt)
             row = result.first()

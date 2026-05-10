@@ -1103,10 +1103,10 @@ async def run_evaluate_backtest(
     # 3. Fetch recent trade signals
     data_start = time.monotonic()
     try:
-        from models.database import AsyncSessionLocal
+        from models.database import BacktestAsyncSessionLocal
         from sqlalchemy import select
 
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             from models.database import TradeSignalEmission
 
             query = select(TradeSignalEmission).order_by(TradeSignalEmission.created_at.desc()).limit(max_signals)
@@ -1366,10 +1366,10 @@ async def run_exit_backtest(
     # 3. Fetch open shadow positions
     data_start = time.monotonic()
     try:
-        from models.database import AsyncSessionLocal, TraderPosition
+        from models.database import BacktestAsyncSessionLocal, TraderPosition
         from sqlalchemy import select
 
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             query = select(TraderPosition).where(TraderPosition.status == "open")
             order_columns = []
             for column_name in ("first_order_at", "opened_at", "created_at"):
@@ -1946,7 +1946,7 @@ async def _replay_discover_opportunities(
     import json as _json
     from sqlalchemy import select as _select, text as _text
     from models.database import (
-        AsyncSessionLocal as _Sess,
+        BacktestAsyncSessionLocal as _Sess,
         MarketMicrostructureSnapshot as _MMS,
     )
 
@@ -2478,7 +2478,7 @@ async def run_execution_backtest(
     from services.trader_orchestrator.risk_manager import evaluate_risk
     from sqlalchemy import select, func as sa_func
     from models.database import (
-        AsyncSessionLocal,
+        BacktestAsyncSessionLocal,
         MarketMicrostructureSnapshot,
         # Historical opportunities live in the OpportunityHistory ORM
         # table.  Aliased as ``Opportunity`` here so the SQLAlchemy
@@ -2577,7 +2577,7 @@ async def run_execution_backtest(
     intents: list[TradeIntent] = []
     tokens: list[str] = []
     try:
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             # Always pull the strategy's opportunities first.  Earlier
             # we picked the token universe by raw microstructure
             # snapshot count (top 25) and THEN filtered opps to those
@@ -3422,7 +3422,7 @@ async def run_execution_backtest(
     run_start = time.monotonic()
     replay_for_run: Any = None
     try:
-        async with AsyncSessionLocal() as run_session:
+        async with BacktestAsyncSessionLocal() as run_session:
             if use_delta_replay:
                 replay_for_run = _BookDeltaReplay(
                     session=run_session,

@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from models.database import AsyncSessionLocal, MarketMicrostructureSnapshot
+from models.database import BacktestAsyncSessionLocal, MarketMicrostructureSnapshot
 from services.kalshi_client import kalshi_client
 from services.polymarket import polymarket_client
 
@@ -301,7 +301,7 @@ class HistoricalDataProvider:
             return {}
         start_dt = event_dt - timedelta(seconds=max(1.0, float(lookback_seconds)))
         end_dt = event_dt + timedelta(seconds=max(0.0, float(forward_seconds)))
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             before_book_query = (
                 select(MarketMicrostructureSnapshot)
                 .where(

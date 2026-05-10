@@ -72,12 +72,63 @@ services:
       - maintenance_work_mem=1GB
       - -c
       - synchronous_commit=off
+      # 2026-05-10: WAL/bgwriter tuning to address backend commit stalls
+      # observed under heavy concurrent write volume.  The 2026-05-09/10
+      # soak showed ``ps_db_commit_call`` at 6-8s on the trader cycle and
+      # 5-8s on heartbeat workers writing tiny rows — with
+      # ``synchronous_commit=off`` already set.  That ruled out fsync as
+      # the per-commit cost; the actual cause is backends blocking on a
+      # full WAL buffer waiting for the WAL writer to drain it (default
+      # buffer is min(shared_buffers/32, 16MB) = 16MB here, which fills
+      # in <1s under our churn rate of 1.3M trade_signal_emissions
+      # records/cycle plus 600K trade_signals updates).
       - -c
-      - wal_compression=on
+      - wal_buffers=64MB
+      # ``=on`` is an alias for pglz.  pg16's LZ4 is 2-3x faster on the
+      # WAL-write critical path with comparable compression ratios on
+      # our JSONB-heavy payload tables.
+      - -c
+      - wal_compression=lz4
+      # Drain the WAL buffer to disk more aggressively so it doesn't
+      # back-pressure committing backends.  Default is 200ms / 1MB.
+      - -c
+      - wal_writer_delay=100ms
+      - -c
+      - wal_writer_flush_after=4MB
+      # Group-commit safety net.  With sync_commit=off these are mostly
+      # inert (the backend doesn't initiate the WAL flush) but they
+      # become load-bearing if synchronous_commit ever gets flipped back
+      # to ``local`` or ``on`` for stricter durability.  Setting them
+      # now means a future durability bump won't immediately reintroduce
+      # per-commit fsync stalls.
+      - -c
+      - commit_delay=100
+      - -c
+      - commit_siblings=5
       - -c
       - max_wal_size=4GB
+      # Keep more WAL pre-allocated so segment-recycle doesn't churn
+      # under our write rate (1.3M+ records/min on the busiest tables).
+      - -c
+      - min_wal_size=1GB
+      # Fewer, larger checkpoints.  Default 5min was firing constantly
+      # under load — every checkpoint fsync stalled writers.  30min
+      # spreads the same dirty-page volume over a longer window with
+      # checkpoint_completion_target=0.9.
+      - -c
+      - checkpoint_timeout=30min
       - -c
       - checkpoint_completion_target=0.9
+      # bgwriter: flush dirty pages from shared_buffers more
+      # aggressively so backends rarely have to do their own page
+      # writes during commit.  Defaults (200ms, 100 pages, 2.0x) leave
+      # too much work to the checkpointer under our load.
+      - -c
+      - bgwriter_delay=50ms
+      - -c
+      - bgwriter_lru_maxpages=1000
+      - -c
+      - bgwriter_lru_multiplier=4.0
       - -c
       - autovacuum_max_workers=5
       - -c

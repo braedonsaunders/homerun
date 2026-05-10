@@ -504,6 +504,35 @@ async def run_data_source(
         if not bool(source.enabled):
             raise ValueError(f"Source '{source_slug}' is disabled")
         source.retention = dict(retention_policy)
+        # 2026-05-09: incremental flush + commit every BATCH_SIZE records.
+        # The 2026-05-09 soak showed 4 concurrent ``news-feed-source-*::_worker``
+        # transactions held 12-16s each on data_source_runs/data_sources writes
+        # — a single bulk flush of 200-500 rows × 6 indexes. Splitting the
+        # upsert into 50-row batches drops each commit to <500ms in steady
+        # state, releases row locks back to the pool quickly, and prevents
+        # the events-worker / news-feed-worker from monopolising connections
+        # during their fetch cycle. Each batch is in its own short tx, so
+        # a partial failure mid-loop simply abandons the rest of the batch
+        # rather than rolling back the whole source run.
+        BATCH_SIZE = 50
+
+        async def _commit_batch_if_due(force: bool = False) -> None:
+            pending = len(session.new) + len(session.dirty)
+            if pending == 0:
+                return
+            if not force and pending < BATCH_SIZE:
+                return
+            try:
+                await session.commit()
+            except Exception:
+                # On commit failure, rollback the partial batch and re-raise
+                # so the surrounding error handler can mark the run failed.
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
+                raise
+
         # Use no_autoflush for all reads and writes in this block so SQLAlchemy
         # never tries to flush pending objects on a potentially-dead connection
         # mid-operation. We flush explicitly at commit time.
@@ -565,6 +594,13 @@ async def run_data_source(
                         )
                     )
                 upserted_count += 1
+                # Commit when the in-memory batch reaches BATCH_SIZE so we
+                # don't hold the entire upsert as a single commit.
+                if upserted_count % BATCH_SIZE == 0:
+                    await _commit_batch_if_due()
+
+        # Drain anything that didn't reach a batch boundary before retention.
+        await _commit_batch_if_due(force=True)
 
         retention_pruned = await _apply_retention_policy(
             session,

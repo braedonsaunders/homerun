@@ -5104,7 +5104,26 @@ async def reconcile_live_positions(
         terminal_rows = terminal_rows[:_TERMINAL_REOPEN_AUDIT_MAX_ROWS_PER_PASS]
     terminal_rows = _dedupe_live_authority_rows(terminal_rows)
 
-    await session.commit()
+    # 2026-05-09: detach-then-rollback pattern. Slow_tx and
+    # _capture_slow_commit_diagnostic showed commit_ms=2155 / 4329 with
+    # dirty_rows=0 here — i.e. an empty COMMIT was costing 2-5s of WAL
+    # fsync under pool contention. Plain ``rollback()`` on its own would
+    # detach the loaded ORM rows AND expire their column attributes,
+    # raising DetachedInstanceError when the loop below reads
+    # ``row.id`` / ``row.payload_json`` / ``row.direction``.
+    #
+    # Instead we ``expunge`` the rows we loaded ourselves first.
+    # ``expunge`` removes a row from the session WITHOUT expiring its
+    # already-loaded columns, so the SELECTed values remain readable
+    # from the now-detached instance. Refresh would still fail, but we
+    # never trigger one — every downstream access is a column read of
+    # a value the SELECT already materialized. ``rollback`` then closes
+    # the read-only transaction without WAL fsync.
+    for row in candidates:
+        session.expunge(row)
+    for row in terminal_rows:
+        session.expunge(row)
+    await session.rollback()
     async with release_conn(session):
         wallet_positions_by_token = await _load_mapping_with_timeout(
             _load_execution_wallet_positions_by_token,

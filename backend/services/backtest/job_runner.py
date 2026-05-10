@@ -41,7 +41,7 @@ from typing import Any, Optional
 
 from sqlalchemy import select, update
 
-from models.database import AsyncSessionLocal, BacktestRun
+from models.database import BacktestAsyncSessionLocal, BacktestRun
 from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ async def enqueue_run(payload: dict[str, Any]) -> BacktestRun:
     now = utcnow()
     slug = (payload.get("slug") or "").strip() or None
 
-    async with AsyncSessionLocal() as session:
+    async with BacktestAsyncSessionLocal() as session:
         row = BacktestRun(
             id=run_id,
             strategy_slug=slug,
@@ -144,7 +144,7 @@ async def claim_next_queued_run() -> Optional[BacktestRun]:
 
     Returns the claimed row, or None when the queue is empty.
     """
-    async with AsyncSessionLocal() as session:
+    async with BacktestAsyncSessionLocal() as session:
         try:
             stmt = (
                 update(BacktestRun)
@@ -202,7 +202,7 @@ async def request_cancel(run_id: str) -> bool:
     and raises ``BacktestCancelled`` to short-circuit the run cleanly.
     Returns False if the row doesn't exist or has already finished.
     """
-    async with AsyncSessionLocal() as session:
+    async with BacktestAsyncSessionLocal() as session:
         row = (
             await session.execute(
                 select(BacktestRun).where(BacktestRun.id == run_id)
@@ -238,7 +238,7 @@ async def run_job(run_id: str) -> dict[str, Any]:
     """
     # Reload the row fresh inside the worker so we have the canonical
     # payload + cancel state.
-    async with AsyncSessionLocal() as session:
+    async with BacktestAsyncSessionLocal() as session:
         row = (
             await session.execute(
                 select(BacktestRun).where(BacktestRun.id == run_id)
@@ -275,7 +275,7 @@ async def run_job(run_id: str) -> dict[str, Any]:
             return
         state["last_write_ts"] = now
         try:
-            async with AsyncSessionLocal() as session:
+            async with BacktestAsyncSessionLocal() as session:
                 fresh = (
                     await session.execute(
                         select(BacktestRun).where(BacktestRun.id == run_id)
@@ -348,7 +348,7 @@ async def run_job(run_id: str) -> dict[str, Any]:
     # result.  Use the unified result's run_id only as a fallback;
     # we already allocated our own.
     exec_block = (result_blob.get("execution") if isinstance(result_blob, dict) else {}) or {}
-    async with AsyncSessionLocal() as session:
+    async with BacktestAsyncSessionLocal() as session:
         row = (
             await session.execute(
                 select(BacktestRun).where(BacktestRun.id == run_id)

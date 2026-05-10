@@ -250,7 +250,17 @@ _AUDIT_MAX_RETRIES = 5
 # pool default is 30s statement_timeout / 60s idle_in_transaction; that
 # is too generous for the audit path, which should fail-fast and re-queue
 # rather than tie up a main-pool connection for ~60s under contention.
-_AUDIT_STATEMENT_TIMEOUT_MS = 5000
+#
+# 2026-05-09: bumped 5000 -> 12000. The 2026-05-09 soak (4265-line
+# scanner_.txt) showed sustained ``flush_audit_buffer`` failures with
+# 101-row trader_event batches hitting QueryCanceledError at the 5s
+# limit. The cancel forces asyncpg to invalidate the connection, and
+# with audit pool_size=2 the invalidate-storm starves the audit queue.
+# Re-queued entries then hit the same 5s wall on retry. 12s gives
+# normal-load batches room to commit (typical < 200ms) while still
+# fail-fasting under genuine pathology — well below the main pool's
+# 30s and the orchestrator's 8s cycle budget.
+_AUDIT_STATEMENT_TIMEOUT_MS = 12000
 _AUDIT_LOCK_TIMEOUT_MS = 2000
 _AUDIT_KIND_PRIORITY = {
     "decision": 0,

@@ -1922,6 +1922,15 @@ export default function SettingsPanel({
                         onToggle={() => toggleSecret('polygon_ws_url')}
                         description="Optional. Used to subscribe to new block headers. Falls back to a public WS endpoint if unset."
                       />
+
+                      <Separator className="opacity-30" />
+
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" onClick={() => handleSaveSection('rpc')} disabled={saveMutation.isPending}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" />
+                          {t('settings.actions.save')}
+                        </Button>
+                      </div>
                     </div>
                   )}
 

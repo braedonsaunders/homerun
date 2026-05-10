@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import AsyncSessionLocal, TraderOrder
+from models.database import BacktestAsyncSessionLocal, TraderOrder
 
 
 logger = logging.getLogger("backtest.portfolio_correlation")
@@ -76,7 +76,7 @@ async def compute_portfolio_correlation(
     """
     own_session = session is None
     if own_session:
-        session = AsyncSessionLocal()
+        session = BacktestAsyncSessionLocal()
         await session.__aenter__()
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, window_days))

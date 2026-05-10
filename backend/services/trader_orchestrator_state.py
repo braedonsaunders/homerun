@@ -3638,7 +3638,30 @@ async def recover_missing_live_trader_orders(
             "adopted_existing_orders": 0,
         }
 
-    await session.flush()
+    # 2026-05-09: phased commit. Previously a single ``_commit_with_retry``
+    # at the end accumulated:
+    #   * upstream ExecutionSession status updates (~N rows)
+    #   * per-trader create_trader_event INSERTs (~M rows)
+    #   * per-trader sync_trader_position_inventory UPDATEs (~K rows)
+    # The 2026-05-09 soak captured this as 12 dirty trader_positions in
+    # ``trader-reconciliation-authority_recovery::_authority_recovery``
+    # held 7.75s. Splitting commits per phase keeps each transaction short
+    # (1-3 dirty rows) and releases row locks between traders rather than
+    # holding them all until the final commit.
+    if commit:
+        # Phase 1 commit: ExecutionSession/order mutations from above. These
+        # are independent of per-trader event/position state.
+        try:
+            await _commit_with_retry(session)
+        except Exception:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            raise
+    else:
+        await session.flush()
+
     for trader_id in sorted(affected_traders):
         trader_recovered_order_ids = [row.id for row in recovered_rows if row.trader_id == trader_id]
         if trader_recovered_order_ids:
@@ -3660,10 +3683,20 @@ async def recover_missing_live_trader_orders(
             mode="live",
             commit=False,
         )
+        # Phase 2 commit per trader: bounds each transaction to 1 trader's
+        # event INSERT + position UPDATEs (1-3 rows). Failure on one trader
+        # doesn't roll back work for previously-committed traders.
+        if commit:
+            try:
+                await _commit_with_retry(session)
+            except Exception:
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
+                raise
 
-    if commit:
-        await _commit_with_retry(session)
-    else:
+    if not commit:
         await session.flush()
 
     # Notify hot state so occupancy and cooldown reflect authority reconciliation immediately.
@@ -6804,7 +6837,17 @@ async def list_unconsumed_trade_signals(
     )
     pending_unconsumed_clause = and_(
         never_consumed_clause,
-        func.lower(func.coalesce(TradeSignal.status, "")) == "pending",
+        # 2026-05-10: dropped the ``func.lower(func.coalesce(...))``
+        # wrapper.  Producers (``set_trade_signal_status``, model default
+        # ``"pending"``) only ever write lowercase status values, and a
+        # production audit confirmed every existing row already
+        # satisfies ``status = lower(status)``.  The defensive wrapper
+        # was the sole consumer of ``idx_trade_signals_status_lower``;
+        # dropping it (alembic 202605100001) reclaims status updates as
+        # HOT-eligible operations.  Direct equality lets the planner
+        # use the surviving partial indexes (or the PK + filter) and
+        # is sub-millisecond on the 4 K-row table either way.
+        TradeSignal.status == "pending",
     )
     # The cursor-bypass branch is only meaningful when the cursor signal
     # has already been consumed; otherwise it can never widen the result
@@ -6894,7 +6937,16 @@ async def list_unconsumed_trade_signals(
         else ["pending"]
     )
     if normalized_statuses:
-        query = query.where(func.lower(func.coalesce(TradeSignal.status, "")).in_(normalized_statuses))
+        # 2026-05-10: ``normalized_statuses`` is already produced by
+        # ``str(...).strip().lower()`` four lines above, and the column
+        # is uniformly lowercase by producer contract (audit confirmed),
+        # so the ``func.lower(func.coalesce(...))`` wrapper buys nothing
+        # and was the sole consumer of ``idx_trade_signals_status_lower``
+        # (dropped in alembic 202605100001 to restore HOT-eligibility on
+        # status updates).  Direct ``IN`` predicate lands on the partial
+        # ``(source) WHERE status IN active`` index plus a sub-millisecond
+        # status filter on the result.
+        query = query.where(TradeSignal.status.in_(normalized_statuses))
     else:
         return []
 
@@ -7418,9 +7470,15 @@ async def reconcile_live_provider_orders(
             "price_updates": 0,
         }
 
-    # Release the DB connection while initializing the external trading provider.
+    # 2026-05-09: rollback the read-only transaction instead of committing.
+    # Above we only ran a single SELECT that materialized into ``list[str]``
+    # — no ORM objects are in scope here, so detach concerns don't apply.
+    # ``commit_ms`` instrumentation showed empty commits costing 2-5s of
+    # WAL fsync under pool contention; rollback drops the transaction
+    # without that cost. Mirrors the companion fix in
+    # ``services/trader_orchestrator/position_lifecycle.py``.
     if commit:
-        await session.commit()
+        await session.rollback()
     provider_ready = False
     async with release_conn(session):
         try:
@@ -7568,20 +7626,22 @@ async def reconcile_live_provider_orders(
         for linked_session in linked_sessions:
             session_status_by_id[str(linked_session.id)] = str(linked_session.status or "")
 
+    # 2026-05-09: removed per-order ``session.refresh(order, attribute_names=[...])``.
+    # The 2026-05-09 soak captured this loop as the dominant source of
+    # ``trader-reconciliation-reconcile::_reconcile_live_state_for_trader``
+    # holds at 7-13s with 0 dirty rows — read-only transactions held open
+    # by Python work. Each refresh issues a SELECT round-trip per order to
+    # re-read attributes that were already fetched 50 lines earlier by the
+    # bulk ``select(TraderOrder).where(TraderOrder.id.in_(active_order_ids))``
+    # at line ~7563. With 5-15 orders × 50-100ms per round-trip under
+    # main-pool load, that's 250-1500ms of pure redundant DB work per
+    # reconcile cycle. ``active_rows`` is the result of a fresh SELECT
+    # taken AFTER the upstream ``release_conn`` block ended, so its
+    # attributes are already authoritative — no autoflush race exists
+    # since the surrounding code is single-task and the loop body uses
+    # ``no_autoflush`` for any further modifications. Defensive refresh
+    # is therefore pure overhead.
     for order in active_rows:
-        with session.no_autoflush:
-            await session.refresh(
-                order,
-                attribute_names=[
-                    "status",
-                    "payload_json",
-                    "notional_usd",
-                    "effective_price",
-                    "entry_price",
-                    "updated_at",
-                    "executed_at",
-                ],
-            )
         if _normalize_status_key(order.status) not in LIVE_ACTIVE_ORDER_STATUSES:
             continue
 

@@ -34,7 +34,7 @@ from typing import Any, Optional
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import AsyncSessionLocal, BacktestRun, TraderOrder
+from models.database import BacktestAsyncSessionLocal, BacktestRun, TraderOrder
 
 logger = logging.getLogger("backtest.drift")
 
@@ -230,7 +230,7 @@ async def compute_drift(
     """
     own_session = session is None
     if own_session:
-        session = AsyncSessionLocal()
+        session = BacktestAsyncSessionLocal()
         await session.__aenter__()
     try:
         now = datetime.now(timezone.utc)

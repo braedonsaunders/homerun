@@ -69,7 +69,7 @@ async def _persist_run_to_db(run: dict[str, Any]) -> None:
     failures log but don't propagate (the cache still serves the run
     in this process even if persistence fails)."""
     from datetime import datetime as _dt
-    from models.database import AsyncSessionLocal, BacktestRun
+    from models.database import BacktestAsyncSessionLocal, BacktestRun
 
     def _parse_iso(value: Any) -> _dt | None:
         if not value:
@@ -95,7 +95,7 @@ async def _persist_run_to_db(run: dict[str, Any]) -> None:
         result_json=run,
     )
     try:
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             session.add(row)
             await session.commit()
     except Exception as exc:
@@ -142,12 +142,12 @@ async def list_recent_runs(*, limit: int = 32) -> list[dict[str, Any]]:
     the hot cache as a write-through that catches the most-recent
     additions before they've been read back from the table."""
     from sqlalchemy import select
-    from models.database import AsyncSessionLocal, BacktestRun
+    from models.database import BacktestAsyncSessionLocal, BacktestRun
 
     out: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     try:
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             result = await session.execute(
                 select(BacktestRun)
                 .order_by(BacktestRun.started_at.desc())
@@ -210,10 +210,10 @@ async def get_recent_run(run_id: str) -> Optional[dict[str, Any]]:
     if cached is not None:
         return cached
     from sqlalchemy import select
-    from models.database import AsyncSessionLocal, BacktestRun
+    from models.database import BacktestAsyncSessionLocal, BacktestRun
 
     try:
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             row = (
                 await session.execute(
                     select(BacktestRun).where(BacktestRun.id == str(run_id))
@@ -500,9 +500,9 @@ async def _capture_fill_model_snapshot() -> dict[str, Any]:
     calibration_bins: list[dict[str, Any]] | None = None
     try:
         from sqlalchemy import select
-        from models.database import AsyncSessionLocal, FillProbabilityModel
+        from models.database import BacktestAsyncSessionLocal, FillProbabilityModel
 
-        async with AsyncSessionLocal() as session:
+        async with BacktestAsyncSessionLocal() as session:
             result = await session.execute(
                 select(FillProbabilityModel.config_json)
                 .where(FillProbabilityModel.active.is_(True))
@@ -536,10 +536,10 @@ async def _capture_fill_model_snapshot() -> dict[str, Any]:
 
 async def _capture_decomposition_summary(hours: int) -> dict[str, Any]:
     from sqlalchemy import func, select
-    from models.database import AsyncSessionLocal, BookDeltaEvent
+    from models.database import BacktestAsyncSessionLocal, BookDeltaEvent
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
-    async with AsyncSessionLocal() as session:
+    async with BacktestAsyncSessionLocal() as session:
         result = await session.execute(
             select(
                 BookDeltaEvent.event_type,

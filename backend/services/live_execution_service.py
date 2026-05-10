@@ -619,6 +619,30 @@ class LiveExecutionService:
             getattr(settings, "POLYMARKET_SELL_ALLOWANCE_TTL_SECONDS", 5.0)
         )
 
+        # 2026-05-10: per-token cache for ``_select_signature_type_for_
+        # conditional_token``.  That function is the dominant cost in
+        # the SELL pre-submit critical path: it loops over every
+        # supported Polymarket signature type (typically 3) calling
+        # ``_fetch_conditional_balance_snapshot(refresh=True)`` for each
+        # — i.e. 3 sequential venue refresh-fetches just to pick the
+        # signature with the largest balance.  Without dedup,
+        # ``place_order`` for a SELL invokes it BOTH from
+        # ``prepare_sell_balance_allowance`` AND from
+        # ``_enforce_sell_pre_submit_gate``, duplicating those 3 fetches
+        # back-to-back (= 6 total).  Live traces showed this dominating
+        # the per-candidate reconcile time at 13s on the slow
+        # candidate, with breakdown ``prepare_sell_allowance=3344ms``
+        # plus ``sell_pre_submit_gate=2563ms`` ≈ 5.9s of pre-submit
+        # before the actual order even hits the wire.  The signature
+        # type with the largest conditional balance for a given token
+        # only moves when WE buy/sell that token — a 5 s TTL is safe
+        # (matches ``_sell_allowance_ttl_seconds``) and lets the second
+        # call be a near-zero-cost cache hit.
+        self._signature_type_cache: dict[str, tuple[float, int]] = {}
+        self._signature_type_cache_ttl_seconds = float(
+            getattr(settings, "POLYMARKET_SIGNATURE_TYPE_CACHE_TTL_SECONDS", 5.0)
+        )
+
     def _get_stats_lock(self) -> asyncio.Lock:
         if self._stats_lock is None:
             self._stats_lock = asyncio.Lock()
@@ -1071,6 +1095,26 @@ class LiveExecutionService:
         if not self.is_ready():
             return None
 
+        # 2026-05-10: TTL cache.  The expensive part of this method is
+        # the loop below — N sequential venue refresh-fetches to pick
+        # the signature type with the largest conditional balance.
+        # That property only changes when WE buy or sell this token,
+        # so within a few-second window the answer is stable.  On a
+        # cache hit we still re-apply the signature type to the client
+        # (cheap attribute mutation on the OrderBuilder) so callers
+        # observing the client's signature_type read consistent state.
+        cached = self._signature_type_cache.get(token_key)
+        if cached is not None:
+            cached_at, cached_signature_type = cached
+            if (_time.monotonic() - cached_at) < self._signature_type_cache_ttl_seconds:
+                if self._signature_type_supported(cached_signature_type):
+                    self._balance_signature_type = cached_signature_type
+                    self._apply_signature_type_to_client(cached_signature_type)
+                    return cached_signature_type
+                # Supported set changed since the cache was stamped;
+                # fall through and re-probe.
+                self._signature_type_cache.pop(token_key, None)
+
         current_signature_type = self._resolved_signature_type()
         candidates: list[int] = []
         if self._signature_type_supported(current_signature_type):
@@ -1109,6 +1153,10 @@ class LiveExecutionService:
         selected_signature_type = int(best_snapshot["signature_type"])
         self._balance_signature_type = selected_signature_type
         self._apply_signature_type_to_client(selected_signature_type)
+        # Stamp the cache with the freshly selected signature type so
+        # subsequent calls within the TTL window short-circuit the
+        # N-fetch probe.
+        self._signature_type_cache[token_key] = (_time.monotonic(), selected_signature_type)
         return selected_signature_type
 
     async def _refresh_signature_type(self, *, force: bool = False) -> bool:
