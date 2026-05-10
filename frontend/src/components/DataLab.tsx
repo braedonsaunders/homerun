@@ -1935,6 +1935,15 @@ export default function DataLab() {
   const allCols = result?.columns ?? activeSpec?.columns ?? []
   const renderedCols = allCols.filter((c) => visibleCols.has(c.key))
 
+  // True until we have a definitive response for the active dataset.
+  // Covers: initial datasets metadata fetch, the gap before `active`
+  // is set, and any state where we have not yet received a payload
+  // (`query.data` undefined). Background refetches that already have
+  // cached data do NOT trigger this — those keep showing stale rows
+  // and just spin the Refresh icon, so the table doesn't flicker.
+  const isLoadingRows =
+    datasetsQuery.isLoading || !active || (query.isFetching && query.data == null)
+
   // Pagination math
   const lastOffset = Math.max(0, Math.floor((total - 1) / perPage) * perPage)
   const pageStart = total === 0 ? 0 : offset + 1
@@ -2105,12 +2114,17 @@ export default function DataLab() {
       <>
       {/* TOOLBAR */}
       <div className="flex flex-wrap items-center gap-2 text-[10px]">
-        <span className="text-muted-foreground">
-          {total > 0
-            ? `Showing ${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}`
-            : query.isLoading
-            ? 'Loading…'
-            : 'No rows match'}
+        <span className="flex items-center gap-1 text-muted-foreground">
+          {total > 0 ? (
+            `Showing ${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}`
+          ) : isLoadingRows ? (
+            <>
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading…
+            </>
+          ) : (
+            'No rows match'
+          )}
         </span>
         <span className="text-muted-foreground">·</span>
         <span className="font-mono text-muted-foreground">
@@ -2212,12 +2226,13 @@ export default function DataLab() {
               </tr>
             </thead>
             <tbody>
-              {query.isLoading ? (
+              {isLoadingRows ? (
                 <tr>
                   <td
                     colSpan={renderedCols.length || 1}
-                    className="px-2 py-6 text-center text-[11px] text-muted-foreground"
+                    className="px-2 py-10 text-center text-[11px] text-muted-foreground"
                   >
+                    <Loader2 className="mx-auto mb-1.5 h-4 w-4 animate-spin opacity-60" />
                     Loading…
                   </td>
                 </tr>

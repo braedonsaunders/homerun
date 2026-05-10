@@ -33,7 +33,7 @@ from typing import Any, Iterable
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel as _PydBaseModel
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, bindparam, func, select, text
 
 from models.database import (
     AsyncSessionLocal,
@@ -426,24 +426,50 @@ def _serialize_filters(spec: DatasetSpec) -> list[dict[str, Any]]:
 
 @router.get("")
 async def list_datasets() -> dict[str, Any]:
-    """List every available dataset with its row count and metadata."""
-    out: list[dict[str, Any]] = []
+    """List every available dataset with its row count and metadata.
+
+    ``row_count`` is the planner estimate from ``pg_class.reltuples``,
+    falling back to ``pg_stat_user_tables.n_live_tup``. Both are O(1)
+    metadata lookups -- an exact ``COUNT(*)`` on a multi-million-row
+    table (e.g. market_microstructure_snapshots) seq-scans the heap
+    and routinely trips the connection statement_timeout, leaving the
+    UI badge stuck at zero.
+    """
+    table_names = [spec.model.__tablename__ for spec in _DATASETS.values()]
+    estimates: dict[str, int] = {}
     async with AsyncSessionLocal() as session:
-        for spec in _DATASETS.values():
-            try:
-                total = (await session.execute(select(func.count(spec.model.id)))).scalar_one()
-            except Exception:
-                total = 0
-            out.append({
-                "name": spec.name,
-                "label": spec.label,
-                "description": spec.description,
-                "row_count": int(total or 0),
-                "default_sort": spec.default_sort,
-                "default_sort_dir": spec.default_sort_dir,
-                "columns": _serialize_columns(spec),
-                "filters": _serialize_filters(spec),
-            })
+        try:
+            stmt = text(
+                """
+                SELECT c.relname,
+                       GREATEST(
+                         COALESCE(s.n_live_tup, 0),
+                         COALESCE(NULLIF(c.reltuples, -1)::bigint, 0)
+                       )::bigint AS row_estimate
+                FROM pg_class c
+                LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+                WHERE c.relkind = 'r'
+                  AND c.relname IN :names
+                """
+            ).bindparams(bindparam("names", expanding=True))
+            rows = (await session.execute(stmt, {"names": table_names})).all()
+            for r in rows:
+                estimates[r.relname] = int(r.row_estimate or 0)
+        except Exception:
+            logger.exception("dataset.list: failed to read row estimates")
+
+    out: list[dict[str, Any]] = []
+    for spec in _DATASETS.values():
+        out.append({
+            "name": spec.name,
+            "label": spec.label,
+            "description": spec.description,
+            "row_count": estimates.get(spec.model.__tablename__, 0),
+            "default_sort": spec.default_sort,
+            "default_sort_dir": spec.default_sort_dir,
+            "columns": _serialize_columns(spec),
+            "filters": _serialize_filters(spec),
+        })
     return {"datasets": out}
 
 
