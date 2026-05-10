@@ -49,7 +49,7 @@ from services.trader_orchestrator.position_lifecycle import (
 from services.polymarket import polymarket_client
 from services.simulation import simulation_service
 from services.live_execution_service import live_execution_service
-from services.live_pressure import is_db_pressure_active, maybe_mark_db_pressure
+from services.live_pressure import current_backpressure_level, is_db_pressure_active, maybe_mark_db_pressure
 from services.trader_orchestrator.risk_manager import evaluate_risk
 from services.trader_orchestrator.strategies.base import StrategyDecision
 from services.trader_orchestrator.decision_gates import (
@@ -683,7 +683,19 @@ async def list_unconsumed_trade_signals(
                 if str(getattr(row, "market_id", "") or "").strip() not in normalized_excluded_market_ids
             ]
         return runtime_rows[: max(1, min(int(limit), 5000))]
-    if is_db_pressure_active():
+    # 2026-05-10: when the intent_runtime cache has nothing for this
+    # trader, the authoritative DB fallback was guarded only by the
+    # REACTIVE ``is_db_pressure_active()`` flag — which only trips
+    # after a query has actually thrown.  During slow-soak the
+    # fallback still runs, and the soak 2026-05-10 20:42-20:51
+    # captured ``mnt_prefetch_signals`` at 968-2812ms per cycle as a
+    # result.  Honouring proactive backpressure ≥0.5 (same threshold
+    # as the trader_cycle_context fix) skips the DB SELECT once the
+    # intent_runtime queue starts saturating; the orchestrator then
+    # treats it as "no pending signals" and the cycle becomes idle,
+    # which is correct under load.  The cache will catch up once
+    # pressure clears.
+    if is_db_pressure_active() or current_backpressure_level() >= 0.5:
         return []
     try:
         return await _list_unconsumed_trade_signals_authoritative(
