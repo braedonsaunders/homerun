@@ -2475,7 +2475,13 @@ export default function BacktestStudio({
             <div className="border-t border-border/50 bg-background/60 px-6 py-3 space-y-2">
               {liveTradingActive ? (
                 <div
-                  className="rounded border border-amber-600/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200 flex items-start gap-1.5"
+                  className={cn(
+                    'flex items-start gap-1.5 rounded border px-3 py-2 text-[11px]',
+                    // Light: warm tint + dark amber text for contrast on white
+                    'border-amber-300 bg-amber-50 text-amber-900',
+                    // Dark: subtle tint + readable light amber
+                    'dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200',
+                  )}
                   role="alert"
                 >
                   <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
@@ -2483,7 +2489,7 @@ export default function BacktestStudio({
                     <div className="font-medium">
                       {t('backtestStudio.liveTradingActiveTitle', { n: activeLiveTraders.length, defaultValue: `${activeLiveTraders.length} live trader(s) running` })}
                     </div>
-                    <div className="text-amber-300/80">
+                    <div className="text-amber-800/90 dark:text-amber-300/80">
                       {t('backtestStudio.liveTradingActiveBody', { defaultValue: 'Backtests share PostgreSQL with live trading. Running one now may add latency to order placement.' })}
                     </div>
                   </div>
@@ -2517,7 +2523,7 @@ export default function BacktestStudio({
                 ) : null}
               </div>
               {errorMessage ? (
-                <div className="flex items-start gap-1 text-[11px] text-red-300">
+                <div className="flex items-start gap-1 text-[11px] text-red-700 dark:text-red-300">
                   <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
                   <span>{t('backtestStudio.runErrorPrefix', { msg: errorMessage })}</span>
                 </div>
@@ -2593,10 +2599,10 @@ export default function BacktestStudio({
                 ) : activeRun ? (
                   <>
                     {/* Run breadcrumb */}
-                    <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-1.5 text-[11px]">
-                      <Activity className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                    <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] dark:border-amber-500/40 dark:bg-amber-500/5">
+                      <Activity className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-300" />
                       <span className="text-muted-foreground">{t('backtestStudio.viewingRun')}</span>
-                      <span className="font-mono text-amber-200">{activeRun.run_id.slice(0, 8)}</span>
+                      <span className="font-mono text-amber-900 dark:text-amber-200">{activeRun.run_id.slice(0, 8)}</span>
                       <span className="text-muted-foreground">·</span>
                       <span className="truncate font-medium text-foreground">
                         {activeRun.strategy_name || activeRun.strategy_slug || t('backtestStudio.unknown')}
@@ -2604,7 +2610,9 @@ export default function BacktestStudio({
                       <span
                         className={cn(
                           'shrink-0 font-mono tabular-nums',
-                          (activeRun.execution?.total_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300',
+                          (activeRun.execution?.total_return_pct ?? 0) >= 0
+                            ? 'text-emerald-700 dark:text-emerald-300'
+                            : 'text-red-700 dark:text-red-300',
                         )}
                       >
                         {fmtPct(activeRun.execution?.total_return_pct, 2)}
