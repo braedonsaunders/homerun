@@ -2056,36 +2056,103 @@ export default function BacktestStudio({
         : 'bad'
 
 
-  // ─────────── Inspect-stage TOC sections ───────────
-  // Order is intentional and differs from the legacy Performance/
-  // Fill/Robustness tab grouping: walk-forward and the deflated
-  // Sharpe (the two metrics that most predict live behaviour) are
-  // promoted ABOVE regime decomposition and trade-order Monte Carlo
-  // (which are diagnostics, not predictors).
+  // ─────────── Inspect-stage TOC sections (grouped) ───────────
+  //
+  // Sections are bucketed into 4 semantic groups so the operator
+  // navigates by intent rather than scrolling a flat list of 16
+  // entries.  Order within each group is intentional: predictive
+  // metrics (walk-forward, deflated Sharpe) lead; descriptive
+  // diagnostics (regime, trade-order MC) follow.
   type InspectAnchor = {
     id: string
     label: string
     visible: boolean
-    icon: typeof TrendingUp
   }
-  const inspectAnchors: InspectAnchor[] = activeRun ? [
-    { id: 'headline',     label: t('backtestStudio.tocHeadline',      { defaultValue: 'Headline' }),       visible: true,                                          icon: TrendingUp },
-    { id: 'equity',       label: t('backtestStudio.tocEquity',        { defaultValue: 'Equity curve' }),   visible: true,                                          icon: LineChartIcon },
-    { id: 'risk',         label: t('backtestStudio.tocRisk',          { defaultValue: 'Risk-adjusted' }), visible: true,                                          icon: Activity },
-    { id: 'tail',         label: t('backtestStudio.tocTail',          { defaultValue: 'Tail risk' }),     visible: !!(exec?.expected_shortfall_5pct || exec?.tail_ratio || exec?.gain_to_pain), icon: TrendingDown },
-    { id: 'deflated',     label: t('backtestStudio.tocDeflated',      { defaultValue: 'Deflated Sharpe' }), visible: !!activeRun.deflated_sharpe,                  icon: Sparkles },
-    { id: 'walkforward',  label: t('backtestStudio.tocWalkForward',   { defaultValue: 'Walk-forward' }),  visible: true,                                          icon: Activity },
-    { id: 'tom',          label: t('backtestStudio.tocTom',           { defaultValue: 'Trade-order MC' }), visible: !!activeRun.trade_order_monte_carlo,            icon: Activity },
-    { id: 'cpcv',         label: t('backtestStudio.tocCpcv',          { defaultValue: 'CPCV' }),          visible: true,                                          icon: Activity },
-    { id: 'latencymc',    label: t('backtestStudio.tocLatencyMc',     { defaultValue: 'Latency MC' }),    visible: true,                                          icon: Clock },
-    { id: 'regime',       label: t('backtestStudio.tocRegime',        { defaultValue: 'Regime breakdown' }), visible: !!activeRun.regime_breakdown,                icon: Layers3 },
-    { id: 'triangulation',label: t('backtestStudio.tocTriangulation', { defaultValue: 'Triangulation' }), visible: !!triangulationQuery.data,                     icon: Activity },
-    { id: 'fillquality',  label: t('backtestStudio.tocFillQuality',   { defaultValue: 'Fill quality' }), visible: true,                                          icon: Zap },
-    { id: 'portfolio',    label: t('backtestStudio.tocPortfolio',     { defaultValue: 'Portfolio' }),     visible: true,                                          icon: Layers3 },
-    { id: 'outcome',      label: t('backtestStudio.tocOutcome',       { defaultValue: 'Outcome netting' }), visible: !!activeRun.outcome_netting,                  icon: Layers3 },
-    { id: 'drift',        label: t('backtestStudio.tocDrift',         { defaultValue: 'Drift monitor' }), visible: !!(driftQuery.data && driftQuery.data.strategies.length > 0), icon: Activity },
-    { id: 'diagnostics',  label: t('backtestStudio.tocDiagnostics',   { defaultValue: 'Diagnostics' }),   visible: !!(fillModel?.loaded || latency || decomp || constants), icon: Sparkles },
-  ].filter((a) => a.visible) : []
+  type InspectGroup = {
+    key: string
+    label: string
+    icon: typeof TrendingUp
+    anchors: InspectAnchor[]
+  }
+  const inspectGroups: InspectGroup[] = activeRun
+    ? [
+        {
+          key: 'performance',
+          label: t('backtestStudio.tocGroupPerformance', { defaultValue: 'Performance' }),
+          icon: TrendingUp,
+          anchors: [
+            { id: 'headline', label: t('backtestStudio.tocHeadline', { defaultValue: 'Headline' }), visible: true },
+            { id: 'equity', label: t('backtestStudio.tocEquity', { defaultValue: 'Equity curve' }), visible: true },
+            { id: 'risk', label: t('backtestStudio.tocRisk', { defaultValue: 'Risk-adjusted' }), visible: true },
+            { id: 'tail', label: t('backtestStudio.tocTail', { defaultValue: 'Tail risk' }), visible: !!(exec?.expected_shortfall_5pct || exec?.tail_ratio || exec?.gain_to_pain) },
+            { id: 'deflated', label: t('backtestStudio.tocDeflated', { defaultValue: 'Deflated Sharpe' }), visible: !!activeRun.deflated_sharpe },
+          ],
+        },
+        {
+          key: 'robustness',
+          label: t('backtestStudio.tocGroupRobustness', { defaultValue: 'Robustness' }),
+          icon: Activity,
+          anchors: [
+            { id: 'walkforward', label: t('backtestStudio.tocWalkForward', { defaultValue: 'Walk-forward' }), visible: true },
+            { id: 'tom', label: t('backtestStudio.tocTom', { defaultValue: 'Trade-order MC' }), visible: !!activeRun.trade_order_monte_carlo },
+            { id: 'cpcv', label: t('backtestStudio.tocCpcv', { defaultValue: 'CPCV' }), visible: true },
+            { id: 'latencymc', label: t('backtestStudio.tocLatencyMc', { defaultValue: 'Latency MC' }), visible: true },
+            { id: 'regime', label: t('backtestStudio.tocRegime', { defaultValue: 'Regime breakdown' }), visible: !!activeRun.regime_breakdown },
+            { id: 'triangulation', label: t('backtestStudio.tocTriangulation', { defaultValue: 'Triangulation' }), visible: !!triangulationQuery.data },
+          ],
+        },
+        {
+          key: 'execution',
+          label: t('backtestStudio.tocGroupExecution', { defaultValue: 'Execution' }),
+          icon: Zap,
+          anchors: [
+            { id: 'fillquality', label: t('backtestStudio.tocFillQuality', { defaultValue: 'Fill quality' }), visible: true },
+            { id: 'diagnostics', label: t('backtestStudio.tocDiagnostics', { defaultValue: 'Diagnostics' }), visible: !!(fillModel?.loaded || latency || decomp || constants) },
+          ],
+        },
+        {
+          key: 'crossstrategy',
+          label: t('backtestStudio.tocGroupCrossStrategy', { defaultValue: 'Cross-strategy' }),
+          icon: Layers3,
+          anchors: [
+            { id: 'portfolio', label: t('backtestStudio.tocPortfolio', { defaultValue: 'Portfolio' }), visible: true },
+            { id: 'outcome', label: t('backtestStudio.tocOutcome', { defaultValue: 'Outcome netting' }), visible: !!activeRun.outcome_netting },
+            { id: 'drift', label: t('backtestStudio.tocDrift', { defaultValue: 'Drift monitor' }), visible: !!(driftQuery.data && driftQuery.data.strategies.length > 0) },
+          ],
+        },
+      ].map((g) => ({ ...g, anchors: g.anchors.filter((a) => a.visible) }))
+        .filter((g) => g.anchors.length > 0)
+    : []
+
+  // Active section tracking — IntersectionObserver highlights the
+  // section currently in the operator's viewport so the TOC stays
+  // synced as they scroll.  Only attaches when on Inspect with a run.
+  const [activeSection, setActiveSection] = useState<string>('')
+  useEffect(() => {
+    if (stage !== 'inspect' || !activeRun) return
+    const ids = inspectGroups.flatMap((g) => g.anchors.map((a) => a.id))
+    const elements = ids
+      .map((id) => document.getElementById(`bts-section-${id}`))
+      .filter((el): el is HTMLElement => el !== null)
+    if (elements.length === 0) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Pick the topmost intersecting entry (smallest top boundingClientRect.top
+        // that's still > 0 OR the largest negative one if all are above viewport).
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
+        if (visible[0]) {
+          const id = visible[0].target.id.replace('bts-section-', '')
+          setActiveSection(id)
+        }
+      },
+      { rootMargin: '-80px 0px -60% 0px', threshold: 0 },
+    )
+    elements.forEach((el) => observer.observe(el))
+    return () => observer.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, activeRun?.run_id, inspectGroups.length])
 
   const scrollToAnchor = (id: string) => {
     const el = document.getElementById(`bts-section-${id}`)
@@ -2528,53 +2595,91 @@ export default function BacktestStudio({
         {/* ─────────── ③ INSPECT — TOC + scrolling report ─────────── */}
         {stage === 'inspect' ? (
           <div className="flex h-full">
-            {/* TOC sidebar */}
-            <div className="flex w-56 shrink-0 flex-col border-r border-border/50 bg-background/40">
-              {/* Run picker — compact list at top */}
-              <div className="border-b border-border/50 px-2 py-2">
-                <div className="mb-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <span>{t('backtestStudio.tabRuns')}</span>
-                  {runsQuery.data && runsQuery.data.length > 0 ? (
-                    <span className="font-mono">{runsQuery.data.length}</span>
-                  ) : null}
-                </div>
-              </div>
-              <ScrollArea className="flex-1 min-h-0">
-                <RunHistory
-                  runs={(runsQuery.data ?? []).slice(0, 30)}
-                  activeId={activeRun?.run_id ?? null}
-                  onSelect={(run) => loadRunMutation.mutate(run.run_id)}
-                />
-                {/* Anchor list */}
-                <div className="border-t border-border/50 px-2 py-2">
-                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {/* Sidebar — Sections at top (always visible, grouped),
+                Runs as a bounded panel at the bottom.  Old layout
+                buried Sections inside the same scroll as RunHistory,
+                so a long run list pushed Sections off-screen.  Now
+                Sections own the prime real estate and Runs cap at
+                ~33% of sidebar height. */}
+            <div className="flex w-52 shrink-0 flex-col border-r border-border/50 bg-background/40">
+              {/* §1 SECTIONS — top, prominent, grouped, scrollable */}
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/50">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     {t('backtestStudio.tocLabel', { defaultValue: 'Sections' })}
-                  </div>
-                  <div className="space-y-0.5">
-                    {inspectAnchors.map((a) => {
-                      const Icon = a.icon
+                  </span>
+                </div>
+                <ScrollArea className="flex-1 min-h-0">
+                  <div className="px-2 py-1.5 space-y-2">
+                    {inspectGroups.map((g) => {
+                      const GroupIcon = g.icon
                       return (
-                        <button
-                          key={a.id}
-                          type="button"
-                          onClick={() => scrollToAnchor(a.id)}
-                          className="flex w-full items-center gap-1.5 rounded-sm px-1.5 py-1 text-left text-[10.5px] text-muted-foreground hover:bg-muted/30 hover:text-foreground"
-                        >
-                          <Icon className="h-3 w-3 shrink-0" />
-                          <span className="truncate">{a.label}</span>
-                        </button>
+                        <div key={g.key}>
+                          <div className="flex items-center gap-1.5 px-1 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+                            <GroupIcon className="h-2.5 w-2.5" />
+                            <span>{g.label}</span>
+                          </div>
+                          <div className="space-y-px">
+                            {g.anchors.map((a) => {
+                              const isActive = activeSection === a.id
+                              return (
+                                <button
+                                  key={a.id}
+                                  type="button"
+                                  onClick={() => scrollToAnchor(a.id)}
+                                  className={cn(
+                                    'flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[10.5px] transition-colors',
+                                    isActive
+                                      ? 'bg-amber-500/15 text-amber-900 ring-1 ring-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100'
+                                      : 'text-muted-foreground hover:bg-muted/30 hover:text-foreground',
+                                  )}
+                                >
+                                  <span
+                                    className={cn(
+                                      'h-1 w-1 shrink-0 rounded-full',
+                                      isActive ? 'bg-amber-500 dark:bg-amber-400' : 'bg-border/50',
+                                    )}
+                                  />
+                                  <span className="truncate">{a.label}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
                       )
                     })}
                   </div>
+                </ScrollArea>
+              </div>
+
+              {/* §2 RUNS — bottom, bounded height, compact list */}
+              <div className="border-t border-border/50 flex flex-col max-h-[40%]">
+                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/30">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {t('backtestStudio.tabRuns')}
+                  </span>
+                  {runsQuery.data && runsQuery.data.length > 0 ? (
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {runsQuery.data.length}
+                    </span>
+                  ) : null}
                 </div>
-              </ScrollArea>
+                <ScrollArea className="min-h-0 flex-1">
+                  <RunHistory
+                    runs={(runsQuery.data ?? []).slice(0, 30)}
+                    activeId={activeRun?.run_id ?? null}
+                    onSelect={(run) => loadRunMutation.mutate(run.run_id)}
+                  />
+                </ScrollArea>
+              </div>
             </div>
 
             {/* Main scrolling report — full width, no max-w cap so
-                wide screens use all available space.  This is the
-                only stage that legitimately scrolls (long report). */}
+                wide screens use all available space.  Tightened
+                spacing (space-y-3, p-3) for higher data density;
+                section cards use p-2.5 internally. */}
             <ScrollArea className="flex-1 min-h-0">
-              <div className="space-y-4 p-4">
+              <div className="space-y-3 p-3">
                 {!activeRun && !pendingRunId ? (
                   <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-12 text-center">
                     <Flame className="h-8 w-8 text-amber-300/50" />
@@ -2636,7 +2741,7 @@ export default function BacktestStudio({
 
                     {/* §2 EQUITY CURVE */}
                     <section id="bts-section-equity" className="scroll-mt-4">
-                      <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                      <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                           <LineChartIcon className="h-3.5 w-3.5 text-emerald-300" />
                           {t('backtestStudio.equityCurveTitle')}
@@ -2656,7 +2761,7 @@ export default function BacktestStudio({
 
                     {/* §3 RISK-ADJUSTED */}
                     <section id="bts-section-risk" className="scroll-mt-4">
-                      <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                      <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                           <Activity className="h-3.5 w-3.5 text-amber-300" />
                           {t('backtestStudio.riskAdjustedTitle')}
@@ -2673,7 +2778,7 @@ export default function BacktestStudio({
                     {/* §4 TAIL RISK */}
                     {(exec?.expected_shortfall_5pct || exec?.tail_ratio || exec?.gain_to_pain) ? (
                       <section id="bts-section-tail" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-1 flex items-center justify-between text-xs font-medium">
                             <span>{t('backtestStudio.tailRiskTitle')}</span>
                             <span className="text-[10px] font-normal text-muted-foreground">{t('backtestStudio.tailRiskSub')}</span>
@@ -2694,7 +2799,7 @@ export default function BacktestStudio({
                     {/* §5 DEFLATED SHARPE */}
                     {activeRun.deflated_sharpe ? (
                       <section id="bts-section-deflated" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-1 flex items-center justify-between text-xs font-medium">
                             <span>{t('backtestStudio.deflatedSharpeTitle')}</span>
                             <span className="text-[10px] font-normal text-muted-foreground">
@@ -2740,7 +2845,7 @@ export default function BacktestStudio({
 
                     {/* §6 WALK-FORWARD (PROMOTED above regime) */}
                     <section id="bts-section-walkforward" className="scroll-mt-4">
-                      <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                      <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                           <Activity className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                           {t('backtestStudio.walkForwardTitle')}
@@ -2801,7 +2906,7 @@ export default function BacktestStudio({
                     {/* §7 TRADE-ORDER MONTE CARLO */}
                     {activeRun.trade_order_monte_carlo ? (
                       <section id="bts-section-tom" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Activity className="h-3.5 w-3.5 text-amber-300" />
                             {t('backtestStudio.tomTitle')}
@@ -2826,7 +2931,7 @@ export default function BacktestStudio({
 
                     {/* §8 CPCV */}
                     <section id="bts-section-cpcv" className="scroll-mt-4">
-                      <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                      <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                           <Activity className="h-3.5 w-3.5 text-emerald-300" />
                           {t('backtestStudio.cpcvTitle')}
@@ -2889,7 +2994,7 @@ export default function BacktestStudio({
 
                     {/* §9 LATENCY MONTE CARLO */}
                     <section id="bts-section-latencymc" className="scroll-mt-4">
-                      <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                      <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                           <Clock className="h-3.5 w-3.5 text-sky-300" />
                           {t('backtestStudio.latencyMcTitle')}
@@ -2947,7 +3052,7 @@ export default function BacktestStudio({
                     {/* §10 REGIME DECOMPOSITION (now AFTER walk-forward) */}
                     {activeRun.regime_breakdown ? (
                       <section id="bts-section-regime" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Layers3 className="h-3.5 w-3.5 text-amber-300" />
                             {t('backtestStudio.regimeTitle')}
@@ -2967,7 +3072,7 @@ export default function BacktestStudio({
                     {/* §11 TRIANGULATION */}
                     {triangulationQuery.data ? (
                       <section id="bts-section-triangulation" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Activity className="h-3.5 w-3.5 text-amber-300" />
                             {t('backtestStudio.triangulationTitle')}
@@ -2999,9 +3104,9 @@ export default function BacktestStudio({
                     ) : null}
 
                     {/* §12 FILL QUALITY (ensemble + counterfactuals + partial fills + DQ + INLINE diagnostics) */}
-                    <section id="bts-section-fillquality" className="scroll-mt-4 space-y-2">
+                    <section id="bts-section-fillquality" className="scroll-mt-4 space-y-1.5">
                       <div className="grid grid-cols-2 gap-2">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                             {t('backtestStudio.ensembleTitle')}
@@ -3009,7 +3114,7 @@ export default function BacktestStudio({
                           </div>
                           <EnsembleBand band={activeRun.ensemble_band} />
                         </div>
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Clock className="h-3.5 w-3.5 text-sky-300" />
                             {t('backtestStudio.counterfactualTitle')}
@@ -3021,7 +3126,7 @@ export default function BacktestStudio({
 
                       {/* Partial fill aggregates */}
                       {activeRun.partial_fills && activeRun.partial_fills.n_orders > 0 ? (
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Zap className="h-3.5 w-3.5 text-sky-300" />
                             {t('backtestStudio.partialFillTitle')}
@@ -3054,7 +3159,7 @@ export default function BacktestStudio({
 
                       {/* Data quality */}
                       {activeRun.data_quality ? (
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <AlertTriangle className="h-3.5 w-3.5 text-rose-300" />
                             {t('backtestStudio.dataQualityTitle')}
@@ -3086,7 +3191,7 @@ export default function BacktestStudio({
                           quality story) instead of in a disconnected
                           right rail. */}
                       <div className="grid grid-cols-2 gap-2">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                             <Sparkles className="h-3.5 w-3.5 text-amber-300" />
                             {t('backtestStudio.fillModelTitle')}
@@ -3128,7 +3233,7 @@ export default function BacktestStudio({
                           )}
                         </div>
                         {latency ? (
-                          <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                          <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                             <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                               <Clock className="h-3.5 w-3.5 text-sky-300" />
                               {latency.sample_count > 0 ? t('backtestStudio.measuredLatency') : t('backtestStudio.latencyDefaults')}
@@ -3154,7 +3259,7 @@ export default function BacktestStudio({
                     {/* §13 PORTFOLIO */}
                     <section id="bts-section-portfolio" className="scroll-mt-4">
                       {portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
                             {t('backtestStudio.portfolioCorrelationTitle')}
@@ -3174,7 +3279,7 @@ export default function BacktestStudio({
                     {/* §14 OUTCOME NETTING */}
                     {activeRun.outcome_netting ? (
                       <section id="bts-section-outcome" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                             {t('backtestStudio.outcomeNetting')}
@@ -3193,7 +3298,7 @@ export default function BacktestStudio({
                     {/* §15 DRIFT MONITOR */}
                     {driftQuery.data && driftQuery.data.strategies.length > 0 ? (
                       <section id="bts-section-drift" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Activity className="h-3.5 w-3.5 text-rose-300" />
                             {t('backtestStudio.driftTitle', { days: driftQuery.data.window_days })}
@@ -3216,7 +3321,7 @@ export default function BacktestStudio({
                       <section id="bts-section-diagnostics" className="scroll-mt-4">
                         <div className="grid grid-cols-2 gap-2">
                           {decomp ? (
-                            <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                            <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                               <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                                 <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
                                 {t('backtestStudio.tradeVsCancel', { hours: decomp.window_hours })}
@@ -3229,7 +3334,7 @@ export default function BacktestStudio({
                             </div>
                           ) : null}
                           {constants ? (
-                            <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                            <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                               <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300" />
                                 {t('backtestStudio.empiricalConstants')}
