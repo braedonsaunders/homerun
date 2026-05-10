@@ -687,6 +687,15 @@ type GlobalSettingsDraft = {
   maxTradeNotionalUsdCap: string
   maxOrdersPerCycleCap: string
   enforceHaltOnConsecutiveLosses: boolean
+  // Caps for the newly-wired live risk knobs (see backend
+  // _apply_live_risk_clamps and routes_trader_orchestrator
+  // LiveRiskClampsSettingsRequest).
+  maxDailySpendUsdCap: string
+  maxSpreadBpsCap: string
+  slippageBpsCap: string
+  retryLimitCap: string
+  retryBackoffMsCap: string
+  orderTtlSecondsCap: string
   liveMarketContextEnabled: boolean
   liveMarketHistoryWindowSeconds: string
   liveMarketHistoryFidelitySeconds: string
@@ -727,6 +736,12 @@ const DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME = {
     max_trade_notional_usd_cap: null as number | null,
     max_orders_per_cycle_cap: null as number | null,
     enforce_halt_on_consecutive_losses: null as boolean | null,
+    max_daily_spend_usd_cap: null as number | null,
+    max_spread_bps_cap: null as number | null,
+    slippage_bps_cap: null as number | null,
+    retry_limit_cap: null as number | null,
+    retry_backoff_ms_cap: null as number | null,
+    order_ttl_seconds_cap: null as number | null,
   },
   live_market_context: {
     enabled: true,
@@ -933,6 +948,12 @@ function buildGlobalSettingsDraft(
     maxTradeNotionalUsdCap: clamps.max_trade_notional_usd_cap != null ? String(clamps.max_trade_notional_usd_cap) : '',
     maxOrdersPerCycleCap: clamps.max_orders_per_cycle_cap != null ? String(clamps.max_orders_per_cycle_cap) : '',
     enforceHaltOnConsecutiveLosses: Boolean(clamps.enforce_halt_on_consecutive_losses),
+    maxDailySpendUsdCap: clamps.max_daily_spend_usd_cap != null ? String(clamps.max_daily_spend_usd_cap) : '',
+    maxSpreadBpsCap: clamps.max_spread_bps_cap != null ? String(clamps.max_spread_bps_cap) : '',
+    slippageBpsCap: clamps.slippage_bps_cap != null ? String(clamps.slippage_bps_cap) : '',
+    retryLimitCap: clamps.retry_limit_cap != null ? String(clamps.retry_limit_cap) : '',
+    retryBackoffMsCap: clamps.retry_backoff_ms_cap != null ? String(clamps.retry_backoff_ms_cap) : '',
+    orderTtlSecondsCap: clamps.order_ttl_seconds_cap != null ? String(clamps.order_ttl_seconds_cap) : '',
     liveMarketContextEnabled: Boolean(
       marketContext.enabled ?? DEFAULT_ORCHESTRATOR_GLOBAL_RUNTIME.live_market_context.enabled
     ),
@@ -6728,6 +6749,24 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       const maxOrdersPerCycleCap = globalSettingsDraft.maxOrdersPerCycleCap.trim()
         ? Math.trunc(clampNumber(toNumber(globalSettingsDraft.maxOrdersPerCycleCap), 1, 1000, 1000))
         : null
+      const maxDailySpendUsdCap = globalSettingsDraft.maxDailySpendUsdCap.trim()
+        ? clampNumber(toNumber(globalSettingsDraft.maxDailySpendUsdCap), 1, 100_000_000, 100_000_000)
+        : null
+      const maxSpreadBpsCap = globalSettingsDraft.maxSpreadBpsCap.trim()
+        ? clampNumber(toNumber(globalSettingsDraft.maxSpreadBpsCap), 0, 10_000, 10_000)
+        : null
+      const slippageBpsCap = globalSettingsDraft.slippageBpsCap.trim()
+        ? clampNumber(toNumber(globalSettingsDraft.slippageBpsCap), 0, 10_000, 10_000)
+        : null
+      const retryLimitCap = globalSettingsDraft.retryLimitCap.trim()
+        ? Math.trunc(clampNumber(toNumber(globalSettingsDraft.retryLimitCap), 0, 50, 50))
+        : null
+      const retryBackoffMsCap = globalSettingsDraft.retryBackoffMsCap.trim()
+        ? Math.trunc(clampNumber(toNumber(globalSettingsDraft.retryBackoffMsCap), 0, 60_000, 60_000))
+        : null
+      const orderTtlSecondsCap = globalSettingsDraft.orderTtlSecondsCap.trim()
+        ? Math.trunc(clampNumber(toNumber(globalSettingsDraft.orderTtlSecondsCap), 1, 86_400, 86_400))
+        : null
       const liveMarketHistoryWindowSeconds = Math.trunc(
         clampNumber(
           toNumber(globalSettingsDraft.liveMarketHistoryWindowSeconds),
@@ -6849,6 +6888,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               max_trade_notional_usd_cap: maxTradeNotionalUsdCap,
               max_orders_per_cycle_cap: maxOrdersPerCycleCap,
               enforce_halt_on_consecutive_losses: globalSettingsDraft.enforceHaltOnConsecutiveLosses,
+              max_daily_spend_usd_cap: maxDailySpendUsdCap,
+              max_spread_bps_cap: maxSpreadBpsCap,
+              slippage_bps_cap: slippageBpsCap,
+              retry_limit_cap: retryLimitCap,
+              retry_backoff_ms_cap: retryBackoffMsCap,
+              order_ttl_seconds_cap: orderTtlSecondsCap,
             }).filter(([, v]) => v != null)
           ),
           live_market_context: {
@@ -12989,6 +13034,78 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         value={globalSettingsDraft.maxOrdersPerCycleCap}
                         onChange={(event) => setGlobalSettingsField('maxOrdersPerCycleCap', event.target.value)}
                         className="mt-1"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Daily Spend Cap (USD)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={100_000_000}
+                        value={globalSettingsDraft.maxDailySpendUsdCap}
+                        onChange={(event) => setGlobalSettingsField('maxDailySpendUsdCap', event.target.value)}
+                        className="mt-1"
+                        placeholder="Unset → per-trader value applies"
+                      />
+                    </div>
+                    <div>
+                      <Label>Max Spread Cap (bps)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={10_000}
+                        value={globalSettingsDraft.maxSpreadBpsCap}
+                        onChange={(event) => setGlobalSettingsField('maxSpreadBpsCap', event.target.value)}
+                        className="mt-1"
+                        placeholder="Unset → per-trader value applies"
+                      />
+                    </div>
+                    <div>
+                      <Label>Slippage Cap (bps)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={10_000}
+                        value={globalSettingsDraft.slippageBpsCap}
+                        onChange={(event) => setGlobalSettingsField('slippageBpsCap', event.target.value)}
+                        className="mt-1"
+                        placeholder="Unset → per-trader value applies"
+                      />
+                    </div>
+                    <div>
+                      <Label>Retry Limit Cap</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={50}
+                        value={globalSettingsDraft.retryLimitCap}
+                        onChange={(event) => setGlobalSettingsField('retryLimitCap', event.target.value)}
+                        className="mt-1"
+                        placeholder="Unset → per-trader value applies"
+                      />
+                    </div>
+                    <div>
+                      <Label>Retry Backoff Cap (ms)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={60_000}
+                        value={globalSettingsDraft.retryBackoffMsCap}
+                        onChange={(event) => setGlobalSettingsField('retryBackoffMsCap', event.target.value)}
+                        className="mt-1"
+                        placeholder="Unset → per-trader value applies"
+                      />
+                    </div>
+                    <div>
+                      <Label>Order TTL Cap (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={86_400}
+                        value={globalSettingsDraft.orderTtlSecondsCap}
+                        onChange={(event) => setGlobalSettingsField('orderTtlSecondsCap', event.target.value)}
+                        className="mt-1"
+                        placeholder="Unset → per-trader value applies"
                       />
                     </div>
                   </div>
