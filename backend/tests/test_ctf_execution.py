@@ -641,7 +641,11 @@ def test_default_collateral_resolution_falls_back_to_pusd(monkeypatch):
 def test_v2_exchange_addresses_match_sdk():
     """Class attrs must equal what ``py_clob_client_v2`` ships with so
     we don't drift from the live exchange contracts."""
-    from py_clob_client_v2.config import get_contract_config
+    py_clob_client_v2 = pytest.importorskip(
+        "py_clob_client_v2",
+        reason="py-clob-client-v2 not installed (optional trading dependency)",
+    )
+    get_contract_config = py_clob_client_v2.config.get_contract_config
 
     cfg = get_contract_config(137)
     assert (

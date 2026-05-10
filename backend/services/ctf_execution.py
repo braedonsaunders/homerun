@@ -4,8 +4,6 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from py_clob_client_v2.config import get_contract_config as _clob_v2_contract_config
-
 from config import settings
 from services.polymarket import polymarket_client
 from services.live_execution_service import live_execution_service
@@ -23,31 +21,12 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-
-def _resolve_polymarket_clob_v2_exchanges() -> tuple[str, str]:
-    """Pin the Polymarket CLOB V2 exchange addresses sourced from the SDK.
-
-    Sourcing the addresses from ``py_clob_client_v2`` (rather than
-    hard-coding two more constants in this file) keeps a single source
-    of truth: when the SDK is upgraded for a future cutover, the
-    addresses move with it. The assert prevents a silent regression if
-    the SDK ever returns a stale or empty value.
-    """
-    cfg = _clob_v2_contract_config(137)  # Polygon mainnet
-    exchange_v2 = str(getattr(cfg, "exchange_v2", "") or "").strip()
-    neg_risk_v2 = str(getattr(cfg, "neg_risk_exchange_v2", "") or "").strip()
-    assert exchange_v2.lower() == "0xe111180000d2663c0091e4f400237545b87b996b", (
-        f"py_clob_client_v2 exchange_v2 unexpected: {exchange_v2!r}"
-    )
-    assert neg_risk_v2.lower() == "0xe2222d279d744050d28e00520010520000310f59", (
-        f"py_clob_client_v2 neg_risk_exchange_v2 unexpected: {neg_risk_v2!r}"
-    )
-    return exchange_v2, neg_risk_v2
-
-
-_POLYMARKET_EXCHANGE_V2, _POLYMARKET_NEG_RISK_EXCHANGE_V2 = (
-    _resolve_polymarket_clob_v2_exchanges()
-)
+# Polymarket CLOB V2 exchange addresses (Polygon mainnet, cutover 2026-04-28).
+# Previously sourced from py_clob_client_v2 SDK, but pinned here directly
+# since the SDK is an optional trading dependency and these values are stable
+# on-chain contract addresses that don't change without a protocol upgrade.
+_POLYMARKET_EXCHANGE_V2 = "0xe111180000d2663c0091e4f400237545b87b996b"
+_POLYMARKET_NEG_RISK_EXCHANGE_V2 = "0xe2222d279d744050d28e00520010520000310f59"
 
 _USDC_DECIMALS = 6
 _MAX_UINT256 = 2**256 - 1
