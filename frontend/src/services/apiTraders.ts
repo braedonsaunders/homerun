@@ -496,6 +496,12 @@ export interface TraderOrchestratorConfig {
       max_trade_notional_usd_cap?: number | null
       max_orders_per_cycle_cap?: number | null
       enforce_halt_on_consecutive_losses?: boolean | null
+      max_daily_spend_usd_cap?: number | null
+      max_spread_bps_cap?: number | null
+      slippage_bps_cap?: number | null
+      retry_limit_cap?: number | null
+      retry_backoff_ms_cap?: number | null
+      order_ttl_seconds_cap?: number | null
     }
     live_market_context: {
       enabled: boolean

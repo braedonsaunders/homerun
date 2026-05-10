@@ -1,72 +1,162 @@
 {
-  "runId": 1778420894910,
-  "workflowRunId": 25630162173,
+  "runId": 1778445362989,
+  "workflowRunId": 25639067222,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25630162173",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25639067222",
   "branch": "main",
-  "headSha": "f2034af80a6ac39ded538093e15c67e574461607",
+  "headSha": "e9815278d19c35937edac02b60462b159a64984f",
   "prNumber": null,
   "passes": [
     {
       "pass": 1,
       "cluster": {
-        "type": "test-failure",
+        "type": "lint",
         "files": [
-          "backend/tests/test_alembic_roundtrip.py"
+          "backend/tests/test_trader_orchestrator_state.py"
         ],
         "failures": [
           {
-            "type": "test-failure",
-            "file": "backend/tests/test_alembic_roundtrip.py",
-            "line": null,
-            "column": null,
-            "message": "Failed: alembic replay subprocess exited with 1",
-            "rule": null,
-            "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
-            "confidence": 0.7
+            "type": "lint",
+            "file": "backend/tests/test_trader_orchestrator_state.py",
+            "line": 15,
+            "column": 24,
+            "message": "[*] `sqlalchemy.select` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `sqlalchemy.select` imported but unused\n  --> tests/test_trader_orchestrator_state.py:15:24",
+            "confidence": 0.95
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "27727d03ecd27683341568ad9f308ea681fb658e",
+      "commitSha": "bd14188672fe5e7a41c10460608fde2fb706ae19",
       "filesChanged": [
-        "backend/tests/test_alembic_roundtrip.py"
+        "backend/tests/test_trader_orchestrator_state.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 72653
+      "durationMs": 29012
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-10T13:48:14.910Z",
+  "startedAt": "2026-05-10T20:36:02.989Z",
   "result": null,
   "commits": [
-    "27727d03ecd27683341568ad9f308ea681fb658e"
+    "bd14188672fe5e7a41c10460608fde2fb706ae19"
   ],
   "latestFailures": [
     {
+      "type": "type-error",
+      "file": "##[error]src/components/TradingPanel.tsx",
+      "line": 951,
+      "column": 33,
+      "message": "TS2339: Property 'max_daily_spend_usd_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "rule": "TS2339",
+      "rawLog": "##[error]src/components/TradingPanel.tsx(951,33): error TS2339: Property 'max_daily_spend_usd_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "confidence": 0.95
+    },
+    {
+      "type": "type-error",
+      "file": "##[error]src/components/TradingPanel.tsx",
+      "line": 952,
+      "column": 29,
+      "message": "TS2339: Property 'max_spread_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "rule": "TS2339",
+      "rawLog": "##[error]src/components/TradingPanel.tsx(952,29): error TS2339: Property 'max_spread_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "confidence": 0.95
+    },
+    {
+      "type": "type-error",
+      "file": "##[error]src/components/TradingPanel.tsx",
+      "line": 953,
+      "column": 28,
+      "message": "TS2339: Property 'slippage_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "rule": "TS2339",
+      "rawLog": "##[error]src/components/TradingPanel.tsx(953,28): error TS2339: Property 'slippage_bps_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "confidence": 0.95
+    },
+    {
+      "type": "type-error",
+      "file": "##[error]src/components/TradingPanel.tsx",
+      "line": 954,
+      "column": 27,
+      "message": "TS2339: Property 'retry_limit_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "rule": "TS2339",
+      "rawLog": "##[error]src/components/TradingPanel.tsx(954,27): error TS2339: Property 'retry_limit_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "confidence": 0.95
+    },
+    {
+      "type": "type-error",
+      "file": "##[error]src/components/TradingPanel.tsx",
+      "line": 955,
+      "column": 31,
+      "message": "TS2339: Property 'retry_backoff_ms_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "rule": "TS2339",
+      "rawLog": "##[error]src/components/TradingPanel.tsx(955,31): error TS2339: Property 'retry_backoff_ms_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "confidence": 0.95
+    },
+    {
+      "type": "type-error",
+      "file": "##[error]src/components/TradingPanel.tsx",
+      "line": 956,
+      "column": 32,
+      "message": "TS2339: Property 'order_ttl_seconds_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "rule": "TS2339",
+      "rawLog": "##[error]src/components/TradingPanel.tsx(956,32): error TS2339: Property 'order_ttl_seconds_cap' does not exist on type '{ enforce_allow_averaging_off?: boolean | null | undefined; min_cooldown_seconds?: number | null | undefined; max_consecutive_losses_cap?: number | null | undefined; max_open_orders_cap?: number | ... 1 more ... | undefined; max_open_positions_cap?: number | ... 1 more ... | undefined; max_trade_notional_usd_cap?: n...'.",
+      "confidence": 0.95
+    },
+    {
       "type": "test-failure",
-      "file": "backend/tests/test_alembic_roundtrip.py",
+      "file": "backend/tests/test_ctf_execution.py",
       "line": null,
       "column": null,
-      "message": "Failed: alembic replay subprocess exited with 1",
+      "message": "Collection error: tests/test_ctf_execution.py",
       "rule": null,
-      "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
+      "rawLog": "ERROR tests/test_ctf_execution.py",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_scanner_market_filter.py",
+      "file": "backend/tests/test_main_gui_health.py",
       "line": null,
       "column": null,
-      "message": "assert False",
+      "message": "Collection error: tests/test_main_gui_health.py",
       "rule": null,
-      "rawLog": "FAILED tests/test_scanner_market_filter.py::test_whitelist_zero_match_logs_warning - assert False",
+      "rawLog": "ERROR tests/test_main_gui_health.py",
       "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_routes_no_legacy_autotrader.py",
+      "line": null,
+      "column": null,
+      "message": "Collection error: tests/test_routes_no_legacy_autotrader.py",
+      "rule": null,
+      "rawLog": "ERROR tests/test_routes_no_legacy_autotrader.py",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_stuck_position_monitor.py",
+      "line": null,
+      "column": null,
+      "message": "Collection error: tests/test_stuck_position_monitor.py",
+      "rule": null,
+      "rawLog": "ERROR tests/test_stuck_position_monitor.py",
+      "confidence": 0.7
+    },
+    {
+      "type": "lint",
+      "file": "backend/tests/test_trader_orchestrator_state.py",
+      "line": 15,
+      "column": 24,
+      "message": "[*] `sqlalchemy.select` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `sqlalchemy.select` imported but unused\n  --> tests/test_trader_orchestrator_state.py:15:24",
+      "confidence": 0.95
     }
   ],
-  "latestParserUsed": "pytest",
-  "latestLogPath": ".greencheck/logs/workflow-run-25630162173.log"
+  "latestParserUsed": "typescript, pytest, ruff",
+  "latestLogPath": ".greencheck/logs/workflow-run-25639067222.log"
 }
