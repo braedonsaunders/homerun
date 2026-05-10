@@ -18,6 +18,7 @@
  *   - right drawer with the full row payload
  */
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowDown,
@@ -213,6 +214,7 @@ function FilterBar({
   timePreset: string | null
   onTimePreset: (label: string | null) => void
 }) {
+  const { t } = useTranslation()
   const hasTimeStart = filters.some((f) => f.kind === 'time_range_start')
   const hasTimeEnd = filters.some((f) => f.kind === 'time_range_end')
 
@@ -221,9 +223,10 @@ function FilterBar({
       {/* Time presets */}
       {hasTimeStart || hasTimeEnd ? (
         <div className="flex items-center gap-1">
-          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">Window</Label>
+          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.window')}</Label>
           {TIME_PRESETS.map((p) => {
             const isActive = timePreset === p.label
+            const displayLabel = p.label === 'All' ? t('dataLab.presetAll') : p.label
             return (
               <button
                 key={p.label}
@@ -235,7 +238,7 @@ function FilterBar({
                     : 'border-border/40 bg-background/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
                 )}
               >
-                {p.label}
+                {displayLabel}
               </button>
             )
           })}
@@ -258,7 +261,7 @@ function FilterBar({
                   <Input
                     value={typeof v === 'string' ? v : ''}
                     onChange={(e) => onChange(f.key, e.target.value || undefined)}
-                    placeholder={f.kind === 'contains' ? 'contains…' : '='}
+                    placeholder={f.kind === 'contains' ? t('dataLab.containsPlaceholder') : t('dataLab.eqPlaceholder')}
                     className="h-7 w-40 pl-6 text-[11px]"
                   />
                 </div>
@@ -294,7 +297,7 @@ function FilterBar({
           onClick={onReset}
         >
           <X className="h-3 w-3" />
-          Reset
+          {t('dataLab.reset')}
         </Button>
       </div>
     </div>
@@ -419,6 +422,7 @@ function RowDrawer({
   datasetLabel: string
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   if (!row) return null
   return (
     <div className="absolute right-0 top-0 z-10 flex h-full w-[440px] flex-col border-l border-border/50 bg-background/95 shadow-2xl backdrop-blur">
@@ -426,7 +430,7 @@ function RowDrawer({
         <div className="flex items-center gap-2">
           <Database className="h-3.5 w-3.5 text-violet-400" />
           <span className="text-xs font-semibold">{datasetLabel}</span>
-          <span className="text-[10px] text-muted-foreground">row detail</span>
+          <span className="text-[10px] text-muted-foreground">{t('dataLab.rowDetail')}</span>
         </div>
         <button onClick={onClose} className="rounded-sm p-1 text-muted-foreground hover:bg-muted/40 hover:text-foreground">
           <X className="h-3.5 w-3.5" />
@@ -455,7 +459,7 @@ function RowDrawer({
                     onClick={() => navigator.clipboard?.writeText(String(display))}
                     className="text-[9px] text-muted-foreground/60 hover:text-foreground"
                   >
-                    copy
+                    {t('dataLab.copy')}
                   </button>
                 </div>
                 <pre
@@ -488,6 +492,7 @@ function ColumnMenu({
   visible: Set<string>
   onToggle: (key: string) => void
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   return (
     <div className="relative">
@@ -498,12 +503,12 @@ function ColumnMenu({
         onClick={() => setOpen((v) => !v)}
       >
         <TableIcon className="h-3 w-3" />
-        Columns ({visible.size}/{columns.length})
+        {t('dataLab.columns', { visible: visible.size, total: columns.length })}
       </Button>
       {open ? (
         <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-md border border-border/60 bg-background/95 p-1.5 shadow-xl backdrop-blur">
           <div className="mb-1 px-1 text-[9px] uppercase tracking-wide text-muted-foreground">
-            Visible columns
+            {t('dataLab.visibleColumns')}
           </div>
           <div className="max-h-72 space-y-0.5 overflow-y-auto">
             {columns.map((c) => {
@@ -577,6 +582,7 @@ function fmtAge(iso: string | null | undefined): string {
 }
 
 function StorageOverviewSection() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const storageQuery = useQuery({
     queryKey: ['data-lab', 'storage'],
@@ -589,8 +595,8 @@ function StorageOverviewSection() {
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
           <HardDrive className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-          <span className="text-xs font-semibold">Storage overview</span>
-          <span className="text-[10px] text-muted-foreground">all datasets, on-disk</span>
+          <span className="text-xs font-semibold">{t('dataLab.storageOverview')}</span>
+          <span className="text-[10px] text-muted-foreground">{t('dataLab.storageOverviewSub')}</span>
         </div>
         <Button
           size="sm"
@@ -600,22 +606,22 @@ function StorageOverviewSection() {
           disabled={storageQuery.isFetching}
         >
           <RefreshCw className={cn('h-3 w-3', storageQuery.isFetching && 'animate-spin')} />
-          Refresh
+          {t('dataLab.refresh')}
         </Button>
       </div>
       <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-3">
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
-          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Total rows</div>
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.totalRows')}</div>
           <div className="font-mono text-sm tabular-nums">
             {data?.total_rows != null ? data.total_rows.toLocaleString() : '—'}
           </div>
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
-          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">On disk</div>
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.onDisk')}</div>
           <div className="font-mono text-sm tabular-nums">{fmtBytes(data?.total_bytes)}</div>
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
-          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Tables</div>
+          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.tables')}</div>
           <div className="font-mono text-sm tabular-nums">{data?.tables.length ?? 0}</div>
         </div>
       </div>
@@ -623,11 +629,11 @@ function StorageOverviewSection() {
         <table className="w-full text-[11px]">
           <thead>
             <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              <th className="py-1 pr-3 text-left">Dataset</th>
-              <th className="py-1 pr-3 text-right">Rows</th>
-              <th className="py-1 pr-3 text-right">Size</th>
-              <th className="py-1 pr-3 text-left">Oldest</th>
-              <th className="py-1 pr-3 text-left">Newest</th>
+              <th className="py-1 pr-3 text-left">{t('dataLab.colDataset')}</th>
+              <th className="py-1 pr-3 text-right">{t('dataLab.colRows')}</th>
+              <th className="py-1 pr-3 text-right">{t('dataLab.colSize')}</th>
+              <th className="py-1 pr-3 text-left">{t('dataLab.colOldest')}</th>
+              <th className="py-1 pr-3 text-left">{t('dataLab.colNewest')}</th>
             </tr>
           </thead>
           <tbody>
@@ -661,6 +667,7 @@ function StorageOverviewSection() {
 }
 
 function MicrostructureRecorderSection() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const statusQuery = useQuery<MicrostructureRecorderStatus>({
     queryKey: ['data-lab', 'recorder-microstructure'],
@@ -684,9 +691,9 @@ function MicrostructureRecorderSection() {
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2 flex-wrap">
           <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-          <span className="text-xs font-semibold">Live market-data ingestor</span>
+          <span className="text-xs font-semibold">{t('dataLab.ingestorTitle')}</span>
           <span className="text-[10px] text-muted-foreground">
-            unified · snapshots + deltas · single hot-path call · persists off-thread
+            {t('dataLab.ingestorSub')}
           </span>
           <Badge
             variant="outline"
@@ -697,7 +704,7 @@ function MicrostructureRecorderSection() {
                 : 'border-border/40 text-muted-foreground',
             )}
           >
-            {running ? 'capturing' : 'idle'}
+            {running ? t('dataLab.capturing') : t('dataLab.idle')}
           </Badge>
         </div>
         <Button
@@ -712,13 +719,13 @@ function MicrostructureRecorderSection() {
           disabled={statusQuery.isFetching}
         >
           <RefreshCw className={cn('h-3 w-3', statusQuery.isFetching && 'animate-spin')} />
-          Refresh
+          {t('dataLab.refresh')}
         </Button>
       </div>
       <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-3 lg:grid-cols-6">
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Tokens tracked
+            {t('dataLab.tokensTracked')}
           </div>
           <div className="font-mono text-sm tabular-nums">
             {s?.tokens_tracked != null ? s.tokens_tracked.toLocaleString() : '—'}
@@ -726,7 +733,7 @@ function MicrostructureRecorderSection() {
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Accept rate
+            {t('dataLab.acceptRate')}
           </div>
           <div
             className={cn(
@@ -746,7 +753,7 @@ function MicrostructureRecorderSection() {
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Sequence gaps
+            {t('dataLab.sequenceGaps')}
           </div>
           <div className="font-mono text-sm tabular-nums">
             {s?.sequence_gaps_observed != null
@@ -756,7 +763,7 @@ function MicrostructureRecorderSection() {
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Queue drops · snap / delta
+            {t('dataLab.queueDropsLabel')}
           </div>
           <div className="font-mono text-sm tabular-nums">
             {(s?.snapshot_queue_dropped ?? 0).toLocaleString()}
@@ -764,12 +771,12 @@ function MicrostructureRecorderSection() {
             {(s?.delta_queue_dropped ?? 0).toLocaleString()}
           </div>
           <div className="text-[9px] text-muted-foreground">
-            backpressure (drop oldest)
+            {t('dataLab.queueDropsSub')}
           </div>
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Flush latency p50
+            {t('dataLab.flushP50')}
           </div>
           <div className="font-mono text-sm tabular-nums">
             {s?.flush_latency_ms_p50 != null
@@ -777,12 +784,12 @@ function MicrostructureRecorderSection() {
               : '—'}
           </div>
           <div className="text-[9px] text-muted-foreground">
-            persistence-task batch insert
+            {t('dataLab.flushP50Sub')}
           </div>
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Flush latency p95
+            {t('dataLab.flushP95')}
           </div>
           <div
             className={cn(
@@ -799,14 +806,14 @@ function MicrostructureRecorderSection() {
               : '—'}
           </div>
           <div className="text-[9px] text-muted-foreground">
-            target &lt; 100 ms
+            {t('dataLab.flushP95Sub')}
           </div>
         </div>
       </div>
       {rejectsTotal > 0 ? (
         <div className="border-t border-border/30 px-3 py-2">
           <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-            Validation rejects ({rejectsTotal.toLocaleString()})
+            {t('dataLab.validationRejects', { n: rejectsTotal.toLocaleString() })}
           </div>
           <div className="flex flex-wrap gap-1">
             {visibleRejects.map(([reason, n]) => (
@@ -821,10 +828,7 @@ function MicrostructureRecorderSection() {
         </div>
       ) : null}
       <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground">
-        Always-on capture from the WebSocket feed.  No per-asset config —
-        captures whatever the orchestrator subscribes to.  For targeted
-        captures (specific markets, specific windows, specific tick
-        intervals), use the on-demand sessions panel below.
+        {t('dataLab.ingestorFootnote')}
       </div>
     </div>
   )
@@ -832,6 +836,7 @@ function MicrostructureRecorderSection() {
 
 
 function ProactiveCoverageSection() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const statusQuery = useQuery<ProactiveSubscriptionStatus>({
     queryKey: ['data-lab', 'proactive-subscription'],
@@ -851,9 +856,9 @@ function ProactiveCoverageSection() {
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
           <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-          <span className="text-xs font-semibold">Proactive coverage</span>
+          <span className="text-xs font-semibold">{t('dataLab.proactiveCoverage')}</span>
           <span className="text-[10px] text-muted-foreground">
-            keeps the WS feed subscribed to liquid catalog markets so backtests have data
+            {t('dataLab.proactiveCoverageSub')}
           </span>
           <Badge
             variant="outline"
@@ -866,7 +871,7 @@ function ProactiveCoverageSection() {
                 : 'border-border/40 text-muted-foreground',
             )}
           >
-            {hasRun ? (s?.last_error ? 'error' : 'active') : 'idle'}
+            {hasRun ? (s?.last_error ? t('dataLab.errorBadge') : t('dataLab.active')) : t('dataLab.idle')}
           </Badge>
         </div>
         <Button
@@ -881,75 +886,75 @@ function ProactiveCoverageSection() {
           disabled={statusQuery.isFetching}
         >
           <RefreshCw className={cn('h-3 w-3', statusQuery.isFetching && 'animate-spin')} />
-          Refresh
+          {t('dataLab.refresh')}
         </Button>
       </div>
 
       <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-4">
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Subscribed
+            {t('dataLab.subscribed')}
           </div>
           <div className="font-mono text-sm tabular-nums">
             {subscribed.toLocaleString()}
           </div>
           <div className="text-[9px] text-muted-foreground">
-            of {target.toLocaleString()} target ({coveragePct.toFixed(0)}%)
+            {t('dataLab.subscribedSub', { target: target.toLocaleString(), pct: coveragePct.toFixed(0) })}
           </div>
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Catalog markets
+            {t('dataLab.catalogMarkets')}
           </div>
           <div className="font-mono text-sm tabular-nums">
             {(s?.last_run_catalog_market_count ?? 0).toLocaleString()}
           </div>
           <div className="text-[9px] text-muted-foreground">
-            {(s?.last_run_catalog_token_count ?? 0).toLocaleString()} tokens
+            {t('dataLab.catalogMarketsSub', { n: (s?.last_run_catalog_token_count ?? 0).toLocaleString() })}
           </div>
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Cap
+            {t('dataLab.cap')}
           </div>
           <div className="font-mono text-sm tabular-nums">
             {(s?.max_tokens ?? 0).toLocaleString()}
           </div>
           <div className="text-[9px] text-muted-foreground">
-            min liq ${s?.min_liquidity_usd ?? 0}
+            {t('dataLab.minLiquidity', { value: s?.min_liquidity_usd ?? 0 })}
           </div>
         </div>
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
           <div className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Last run
+            {t('dataLab.lastRun')}
           </div>
           <div className="font-mono text-sm tabular-nums">
-            {ageSec != null ? `${Math.round(ageSec)}s ago` : '—'}
+            {ageSec != null ? t('dataLab.lastRunAgo', { n: Math.round(ageSec) }) : '—'}
           </div>
           <div className="text-[9px] text-muted-foreground">
-            {(s?.last_run_duration_ms ?? 0).toFixed(0)}ms · {s?.total_runs ?? 0} runs
+            {t('dataLab.lastRunSub', { ms: (s?.last_run_duration_ms ?? 0).toFixed(0), n: s?.total_runs ?? 0 })}
           </div>
         </div>
       </div>
 
       {hasRun ? (
         <div className="border-t border-border/30 px-3 py-2 text-[10px]">
-          <div className="mb-1 uppercase tracking-wide text-muted-foreground">Funnel</div>
+          <div className="mb-1 uppercase tracking-wide text-muted-foreground">{t('dataLab.funnel')}</div>
           <div className="flex flex-wrap gap-1">
             <span className="rounded-sm bg-muted/40 px-2 py-0.5 font-mono">
-              catalog: {(s?.last_run_catalog_token_count ?? 0).toLocaleString()}
+              {t('dataLab.funnelCatalog', { n: (s?.last_run_catalog_token_count ?? 0).toLocaleString() })}
             </span>
             <span className="rounded-sm bg-muted/40 px-2 py-0.5 font-mono">
-              dropped low-liq: {(s?.last_run_dropped_low_liquidity ?? 0).toLocaleString()}
+              {t('dataLab.funnelDroppedLowLiq', { n: (s?.last_run_dropped_low_liquidity ?? 0).toLocaleString() })}
             </span>
             <span className="rounded-sm bg-muted/40 px-2 py-0.5 font-mono">
-              dropped over-cap: {(s?.last_run_dropped_over_cap ?? 0).toLocaleString()}
+              {t('dataLab.funnelDroppedOverCap', { n: (s?.last_run_dropped_over_cap ?? 0).toLocaleString() })}
             </span>
             <span className="rounded-sm bg-violet-500/15 px-2 py-0.5 font-mono text-violet-700 dark:text-violet-200">
-              target: {target.toLocaleString()}
+              {t('dataLab.funnelTarget', { n: target.toLocaleString() })}
             </span>
             <span className="rounded-sm bg-emerald-500/15 px-2 py-0.5 font-mono text-emerald-200">
-              subscribed: {subscribed.toLocaleString()}
+              {t('dataLab.funnelSubscribed', { n: subscribed.toLocaleString() })}
             </span>
           </div>
         </div>
@@ -957,20 +962,11 @@ function ProactiveCoverageSection() {
 
       {s?.last_error ? (
         <div className="border-t border-border/30 px-3 py-2 text-[10px] text-rose-300">
-          last error: {s.last_error}
+          {t('dataLab.lastError', { msg: s.last_error })}
         </div>
       ) : null}
 
-      <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground">
-        Pulls top liquid markets from MarketCatalog every {s?.loop_interval_seconds ?? 60}s and
-        subscribes the WS feed proactively — every market the ingestor sees writes
-        snapshots (mms) AND deltas (book_delta_events).  Without this loop, the ingestor
-        only captures markets the orchestrator/scanner actively touches, leaving
-        strategy opportunity tokens with no historical book data when the backtest runs.
-        Cap ({s?.max_tokens ?? 8000}) and floor (${s?.min_liquidity_usd ?? 10}) tunable via{' '}
-        <code className="font-mono">HOMERUN_RECORDER_MAX_TOKENS</code> / {' '}
-        <code className="font-mono">HOMERUN_RECORDER_MIN_LIQUIDITY</code>.
-      </div>
+      <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground" dangerouslySetInnerHTML={{ __html: t('dataLab.proactiveFootnote', { interval: s?.loop_interval_seconds ?? 60, cap: s?.max_tokens ?? 8000, floor: s?.min_liquidity_usd ?? 10 }) }} />
     </div>
   )
 }
@@ -979,6 +975,7 @@ function ProactiveCoverageSection() {
 
 
 function CryptoOhlcRecorderSection() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const cfgQuery = useQuery({
     queryKey: ['data-lab', 'recorder-config'],
@@ -1037,9 +1034,9 @@ function CryptoOhlcRecorderSection() {
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
         <div className="flex items-center gap-2">
           <Clock className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-          <span className="text-xs font-semibold">Crypto OHLC recorder</span>
+          <span className="text-xs font-semibold">{t('dataLab.cryptoOhlcTitle')}</span>
           <span className="text-[10px] text-muted-foreground">
-            crypto bars (BTC / ETH / SOL / ...) at fixed timeframes — feeds the crypto ML adapters
+            {t('dataLab.cryptoOhlcSub')}
           </span>
           <Badge
             variant="outline"
@@ -1050,7 +1047,7 @@ function CryptoOhlcRecorderSection() {
                 : 'border-border/40 text-muted-foreground',
             )}
           >
-            {isRecording ? 'recording' : 'idle'}
+            {isRecording ? t('dataLab.recording') : t('dataLab.idle')}
           </Badge>
         </div>
         <Switch
@@ -1063,7 +1060,7 @@ function CryptoOhlcRecorderSection() {
       <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-4">
         <div className="space-y-1">
           <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Tick interval (sec)
+            {t('dataLab.tickInterval')}
           </Label>
           <div className="flex gap-1">
             <Input
@@ -1081,13 +1078,13 @@ function CryptoOhlcRecorderSection() {
               onClick={() => updateField({ interval_seconds: Number(intervalSeconds) })}
               disabled={updateMutation.isPending}
             >
-              Set
+              {t('dataLab.set')}
             </Button>
           </div>
         </div>
         <div className="space-y-1">
           <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Retention (days)
+            {t('dataLab.retentionDays')}
           </Label>
           <div className="flex gap-1">
             <Input
@@ -1105,13 +1102,13 @@ function CryptoOhlcRecorderSection() {
               onClick={() => updateField({ retention_days: Number(retentionDays) })}
               disabled={updateMutation.isPending}
             >
-              Set
+              {t('dataLab.set')}
             </Button>
           </div>
         </div>
         <div className="space-y-1">
           <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Assets (csv)
+            {t('dataLab.assetsCsv')}
           </Label>
           <div className="flex gap-1">
             <Input
@@ -1127,13 +1124,13 @@ function CryptoOhlcRecorderSection() {
               onClick={() => updateField({ assets: parseList(assets) })}
               disabled={updateMutation.isPending}
             >
-              Set
+              {t('dataLab.set')}
             </Button>
           </div>
         </div>
         <div className="space-y-1">
           <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            Timeframes (csv)
+            {t('dataLab.timeframesCsv')}
           </Label>
           <div className="flex gap-1">
             <Input
@@ -1149,7 +1146,7 @@ function CryptoOhlcRecorderSection() {
               onClick={() => updateField({ timeframes: parseList(timeframes) })}
               disabled={updateMutation.isPending}
             >
-              Set
+              {t('dataLab.set')}
             </Button>
           </div>
         </div>
@@ -1158,7 +1155,7 @@ function CryptoOhlcRecorderSection() {
       {stats && stats.groups && stats.groups.length > 0 ? (
         <div className="border-t border-border/30 px-3 py-2">
           <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-            Recorded scope
+            {t('dataLab.recordedScope')}
           </div>
           <div className="grid gap-1 md:grid-cols-2 xl:grid-cols-4">
             {stats.groups.map((g) => (
@@ -1170,7 +1167,7 @@ function CryptoOhlcRecorderSection() {
                   {g.asset}/{g.timeframe}
                 </div>
                 <div className="font-mono tabular-nums text-muted-foreground">
-                  {g.count.toLocaleString()} snapshots
+                  {t('dataLab.snapshotsCount', { n: g.count.toLocaleString() })}
                 </div>
               </div>
             ))}
@@ -1191,14 +1188,14 @@ function CryptoOhlcRecorderSection() {
           ) : (
             <Trash2 className="h-3 w-3" />
           )}
-          Prune older than retention
+          {t('dataLab.pruneOlderThanRetention')}
         </Button>
         <Button
           size="sm"
           variant="outline"
           className="h-7 gap-1 text-[10px] text-rose-300 hover:bg-rose-500/10"
           onClick={() => {
-            if (confirm('Delete ALL recorded ML data? This cannot be undone.')) {
+            if (confirm(t('dataLab.confirmDeleteAllMlData'))) {
               deleteMutation.mutate()
             }
           }}
@@ -1209,7 +1206,7 @@ function CryptoOhlcRecorderSection() {
           ) : (
             <Trash2 className="h-3 w-3" />
           )}
-          Delete all
+          {t('dataLab.deleteAll')}
         </Button>
       </div>
     </div>
@@ -1245,6 +1242,7 @@ function fmtDuration(ms: number): string {
 }
 
 function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [targetKind, setTargetKind] = useState<RecordingTargetKind>('token')
@@ -1269,7 +1267,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
       setError(null)
       onClose()
     },
-    onError: (err) => setError((err as Error).message || 'create failed'),
+    onError: (err) => setError((err as Error).message || t('dataLab.errCreateFailed')),
   })
 
   // Close on Escape, lock background scroll when open.
@@ -1289,15 +1287,15 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
       .map((s) => s.trim())
       .filter(Boolean)
     if (!name.trim()) {
-      setError('Name is required')
+      setError(t('dataLab.errNameRequired'))
       return
     }
     if (targets.length === 0) {
-      setError('At least one target value is required')
+      setError(t('dataLab.errAtLeastOneTarget'))
       return
     }
     if (captureTypes.size === 0) {
-      setError('Pick at least one capture type')
+      setError(t('dataLab.errAtLeastOneCapture'))
       return
     }
     const tick = Math.max(50, Math.min(60_000, parseInt(tickIntervalMs, 10) || 500))
@@ -1340,9 +1338,9 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
           <div className="flex items-center gap-2">
             <PlayCircle className="h-4 w-4 text-violet-700 dark:text-violet-300" />
             <div>
-              <div className="text-sm font-semibold leading-tight">New recording session</div>
+              <div className="text-sm font-semibold leading-tight">{t('dataLab.newSessionTitle')}</div>
               <div className="text-[10px] text-muted-foreground leading-tight">
-                Pick markets, capture types, and a window — backtester will replay this slice.
+                {t('dataLab.newSessionSub')}
               </div>
             </div>
           </div>
@@ -1359,23 +1357,23 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
             {/* Identity */}
             <div className="space-y-2">
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                Identity
+                {t('dataLab.identity')}
               </div>
               <div className="space-y-1">
-                <Label className="text-[10px]">Name</Label>
+                <Label className="text-[10px]">{t('dataLab.name')}</Label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="trump_2028_election_pre_debate"
+                  placeholder={t('dataLab.namePlaceholder')}
                   className="h-8 text-[12px]"
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-[10px]">Description (optional)</Label>
+                <Label className="text-[10px]">{t('dataLab.descriptionOptional')}</Label>
                 <Input
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="capturing book + trade for Trump-Vance debate window"
+                  placeholder={t('dataLab.descriptionPlaceholder')}
                   className="h-8 text-[12px]"
                 />
               </div>
@@ -1384,13 +1382,15 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
             {/* Targeting */}
             <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                What to capture
+                {t('dataLab.whatToCapture')}
               </div>
               <div className="space-y-1">
-                <Label className="text-[10px]">Target kind</Label>
+                <Label className="text-[10px]">{t('dataLab.targetKind')}</Label>
                 <div className="grid grid-cols-3 gap-1">
                   {TARGET_KIND_OPTIONS.map((o) => {
                     const active = targetKind === o.value
+                    const labelKey = o.value === 'token' ? 'targetKindToken' : o.value === 'condition' ? 'targetKindCondition' : 'targetKindEvent'
+                    const hintKey = o.value === 'token' ? 'targetKindTokenHint' : o.value === 'condition' ? 'targetKindConditionHint' : 'targetKindEventHint'
                     return (
                       <button
                         key={o.value}
@@ -1402,8 +1402,8 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
                             : 'border-border/40 bg-background/40 text-muted-foreground hover:text-foreground',
                         )}
                       >
-                        <div className="text-[11px] font-medium">{o.label}</div>
-                        <div className="text-[9px] text-muted-foreground/80">{o.hint}</div>
+                        <div className="text-[11px] font-medium">{t(`dataLab.${labelKey}`)}</div>
+                        <div className="text-[9px] text-muted-foreground/80">{t(`dataLab.${hintKey}`)}</div>
                       </button>
                     )
                   })}
@@ -1411,34 +1411,34 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
               </div>
               <div className="space-y-1">
                 <Label className="text-[10px]">
-                  Targets <span className="text-muted-foreground">(one per line, or comma-separated)</span>
+                  {t('dataLab.targets')} <span className="text-muted-foreground">{t('dataLab.targetsHint')}</span>
                 </Label>
                 <textarea
                   value={targetText}
                   onChange={(e) => setTargetText(e.target.value)}
                   placeholder={
                     targetKind === 'token'
-                      ? '0x1a2b3c… (clob token id)'
+                      ? t('dataLab.targetsTokenPlaceholder')
                       : targetKind === 'condition'
-                      ? '0xabc… (condition_id)'
-                      : 'who-wins-the-2028-election'
+                      ? t('dataLab.targetsConditionPlaceholder')
+                      : t('dataLab.targetsEventPlaceholder')
                   }
                   className="min-h-[80px] w-full rounded-sm border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-[11px]"
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-[10px]">Capture types</Label>
+                <Label className="text-[10px]">{t('dataLab.captureTypes')}</Label>
                 <div className="flex flex-wrap gap-1.5">
-                  {CAPTURE_TYPE_OPTIONS.map((t) => {
-                    const active = captureTypes.has(t)
+                  {CAPTURE_TYPE_OPTIONS.map((capType) => {
+                    const active = captureTypes.has(capType)
                     return (
                       <button
-                        key={t}
+                        key={capType}
                         onClick={() => {
                           setCaptureTypes((prev) => {
                             const next = new Set(prev)
-                            if (next.has(t)) next.delete(t)
-                            else next.add(t)
+                            if (next.has(capType)) next.delete(capType)
+                            else next.add(capType)
                             return next
                           })
                         }}
@@ -1449,13 +1449,13 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
                             : 'border-border/40 text-muted-foreground hover:text-foreground',
                         )}
                       >
-                        {t}
+                        {capType}
                       </button>
                     )
                   })}
                 </div>
                 <div className="text-[10px] text-muted-foreground">
-                  book = L2 snapshots · trade = print tape · delta = trade-vs-cancel events
+                  {t('dataLab.captureLegend')}
                 </div>
               </div>
             </div>
@@ -1463,11 +1463,11 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
             {/* Cadence + window */}
             <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                Cadence + window
+                {t('dataLab.cadenceWindow')}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Tick interval (ms)</Label>
+                  <Label className="text-[10px]">{t('dataLab.tickIntervalMs')}</Label>
                   <Input
                     type="number"
                     min={50}
@@ -1479,7 +1479,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Max duration (min)</Label>
+                  <Label className="text-[10px]">{t('dataLab.maxDurationMin')}</Label>
                   <Input
                     type="number"
                     min={1}
@@ -1487,11 +1487,11 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
                     value={maxDurationMin}
                     onChange={(e) => setMaxDurationMin(e.target.value)}
                     className="h-8 text-[12px]"
-                    placeholder="blank = unlimited"
+                    placeholder={t('dataLab.maxDurationMinPlaceholder')}
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Scheduled start (blank = on demand)</Label>
+                  <Label className="text-[10px]">{t('dataLab.scheduledStart')}</Label>
                   <Input
                     type="datetime-local"
                     value={scheduledStart}
@@ -1500,7 +1500,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Scheduled end (optional)</Label>
+                  <Label className="text-[10px]">{t('dataLab.scheduledEnd')}</Label>
                   <Input
                     type="datetime-local"
                     value={scheduledEnd}
@@ -1521,15 +1521,15 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
 
         <div className="flex items-center justify-between gap-2 border-t border-border/40 px-4 py-3">
           <span className="text-[10px] text-muted-foreground">
-            Will be created as{' '}
+            {t('dataLab.willBeCreatedAs')}{' '}
             <strong className="text-foreground">
-              {scheduledStart ? 'scheduled' : 'pending'}
+              {scheduledStart ? t('dataLab.scheduled') : t('dataLab.pending')}
             </strong>
-            {scheduledStart ? '' : ' — click Start on the row to activate'}.
+            {scheduledStart ? '' : ` ${t('dataLab.willBeCreatedHint')}`}.
           </span>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" className="h-8 text-[11px]" onClick={onClose}>
-              Cancel
+              {t('dataLab.cancel')}
             </Button>
             <Button
               size="sm"
@@ -1542,7 +1542,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
               ) : (
                 <PlayCircle className="h-3 w-3" />
               )}
-              Create session
+              {t('dataLab.createSession')}
             </Button>
           </div>
         </div>
@@ -1552,6 +1552,7 @@ function NewSessionFlyout({ open, onClose }: { open: boolean; onClose: () => voi
 }
 
 function SessionRow({ s }: { s: RecordingSession }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const startMutation = useMutation({
     mutationFn: () => startRecordingSession(s.id),
@@ -1610,12 +1611,11 @@ function SessionRow({ s }: { s: RecordingSession }) {
       </td>
       <td className="px-2 py-1.5 text-[10px]">
         <div className="text-muted-foreground">
-          {s.target_kind} · {s.target_values.length} target
-          {s.target_values.length === 1 ? '' : 's'}
+          {s.target_kind} · {s.target_values.length === 1 ? t('dataLab.targetCount', { n: s.target_values.length }) : t('dataLab.targetCountPlural', { n: s.target_values.length })}
         </div>
         {s.target_token_ids.length > 0 ? (
           <div className="font-mono text-[9px] text-muted-foreground/70">
-            → {s.target_token_ids.length} token{s.target_token_ids.length === 1 ? '' : 's'} resolved
+            {s.target_token_ids.length === 1 ? t('dataLab.tokenResolved', { n: s.target_token_ids.length }) : t('dataLab.tokensResolved', { n: s.target_token_ids.length })}
           </div>
         ) : null}
       </td>
@@ -1643,7 +1643,7 @@ function SessionRow({ s }: { s: RecordingSession }) {
               className="rounded-sm border border-emerald-500/40 px-1.5 py-0.5 text-[9px] text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
               disabled={startMutation.isPending}
             >
-              Start
+              {t('dataLab.start')}
             </button>
           ) : null}
           {isStoppable ? (
@@ -1652,7 +1652,7 @@ function SessionRow({ s }: { s: RecordingSession }) {
               className="rounded-sm border border-amber-500/40 px-1.5 py-0.5 text-[9px] text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
               disabled={stopMutation.isPending}
             >
-              Stop
+              {t('dataLab.stop')}
             </button>
           ) : null}
           {!isTerminal ? (
@@ -1661,20 +1661,20 @@ function SessionRow({ s }: { s: RecordingSession }) {
               className="rounded-sm border border-rose-500/40 px-1.5 py-0.5 text-[9px] text-rose-300 hover:bg-rose-500/10 disabled:opacity-50"
               disabled={cancelMutation.isPending}
             >
-              Cancel
+              {t('dataLab.cancel')}
             </button>
           ) : null}
           {isTerminal ? (
             <button
               onClick={() => {
-                if (confirm(`Delete session '${s.name}'?  Captured rows stay in DB.`)) {
+                if (confirm(t('dataLab.confirmDeleteSession', { name: s.name }))) {
                   deleteMutation.mutate()
                 }
               }}
               className="rounded-sm border border-border/40 px-1.5 py-0.5 text-[9px] text-muted-foreground hover:bg-muted/40 disabled:opacity-50"
               disabled={deleteMutation.isPending}
             >
-              Delete
+              {t('dataLab.delete')}
             </button>
           ) : null}
         </div>
@@ -1684,6 +1684,7 @@ function SessionRow({ s }: { s: RecordingSession }) {
 }
 
 function OnDemandSessionsSection() {
+  const { t } = useTranslation()
   const sessionsQuery = useQuery({
     queryKey: ['data-lab', 'recording-sessions'],
     queryFn: () => listRecordingSessions(undefined, 100),
@@ -1698,12 +1699,12 @@ function OnDemandSessionsSection() {
         <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
           <div className="flex items-center gap-2">
             <PlayCircle className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-            <span className="text-xs font-semibold">On-demand sessions</span>
+            <span className="text-xs font-semibold">{t('dataLab.onDemandSessions')}</span>
             <span className="text-[10px] text-muted-foreground">
-              targeted captures · backtester-consumable
+              {t('dataLab.onDemandSessionsSub')}
             </span>
             <Badge variant="outline" className="text-[9px]">
-              {sessions.length} session{sessions.length === 1 ? '' : 's'}
+              {sessions.length === 1 ? t('dataLab.sessionCount', { n: sessions.length }) : t('dataLab.sessionCountPlural', { n: sessions.length })}
             </Badge>
           </div>
           <Button
@@ -1713,7 +1714,7 @@ function OnDemandSessionsSection() {
             onClick={() => setFlyoutOpen(true)}
           >
             <PlayCircle className="h-3 w-3" />
-            New session
+            {t('dataLab.newSession')}
           </Button>
         </div>
 
@@ -1721,13 +1722,13 @@ function OnDemandSessionsSection() {
           <table className="w-full text-[11px]">
             <thead className="sticky top-0 bg-card/95 text-[9px] uppercase tracking-wide text-muted-foreground backdrop-blur">
               <tr>
-                <th className="px-2 py-1.5 text-left">Session</th>
-                <th className="px-2 py-1.5 text-left">Status</th>
-                <th className="px-2 py-1.5 text-left">Targets</th>
-                <th className="px-2 py-1.5 text-left">Capture</th>
-                <th className="px-2 py-1.5 text-right">Rows</th>
-                <th className="px-2 py-1.5 text-left">Duration</th>
-                <th className="px-2 py-1.5 text-left">Actions</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLab.colSession')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLab.colStatus')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLab.colTargets')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLab.colCapture')}</th>
+                <th className="px-2 py-1.5 text-right">{t('dataLab.colRowsRight')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLab.colDuration')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLab.colActions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -1735,8 +1736,7 @@ function OnDemandSessionsSection() {
                 <tr>
                   <td colSpan={7} className="px-2 py-6 text-center text-[11px] text-muted-foreground">
                     <PlayCircle className="mx-auto mb-1 h-4 w-4 opacity-40" />
-                    No sessions yet. Click <strong>New session</strong> to capture a slice of
-                    market data on demand.
+                    <span dangerouslySetInnerHTML={{ __html: t('dataLab.noSessionsYet') }} />
                   </td>
                 </tr>
               ) : (
@@ -1746,12 +1746,7 @@ function OnDemandSessionsSection() {
           </table>
         </div>
 
-        <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground">
-          Each completed session is replayable through the unified backtester — pass
-          <code className="mx-1 rounded-sm bg-muted/40 px-1 py-0 font-mono">session_id</code>
-          on POST /backtest/run and the backtester scopes its replay to the session's
-          target tokens × time window.
-        </div>
+        <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground" dangerouslySetInnerHTML={{ __html: t('dataLab.sessionsFootnote') }} />
       </div>
 
       <NewSessionFlyout open={flyoutOpen} onClose={() => setFlyoutOpen(false)} />
@@ -1761,14 +1756,15 @@ function OnDemandSessionsSection() {
 
 type RecordTab = 'microstructure' | 'coverage' | 'crypto' | 'sessions'
 
-const RECORD_TABS: { key: RecordTab; label: string; icon: typeof Layers3 }[] = [
-  { key: 'microstructure', label: 'Microstructure', icon: Layers3 },
-  { key: 'coverage', label: 'Proactive coverage', icon: Layers3 },
-  { key: 'crypto', label: 'Crypto OHLC', icon: Clock },
-  { key: 'sessions', label: 'On-demand sessions', icon: PlayCircle },
+const RECORD_TABS: { key: RecordTab; labelKey: string; icon: typeof Layers3 }[] = [
+  { key: 'microstructure', labelKey: 'subTabMicrostructure', icon: Layers3 },
+  { key: 'coverage', labelKey: 'subTabCoverage', icon: Layers3 },
+  { key: 'crypto', labelKey: 'subTabCrypto', icon: Clock },
+  { key: 'sessions', labelKey: 'subTabSessions', icon: PlayCircle },
 ]
 
 function RecordView() {
+  const { t } = useTranslation()
   const [tab, setTab] = useState<RecordTab>('microstructure')
   return (
     <div className="flex flex-col gap-3 p-3">
@@ -1778,25 +1774,14 @@ function RecordView() {
           subscription manager that feeds it). */}
       <div className="rounded-md border border-border/40 bg-card/30 px-3 py-2 text-[11px] text-muted-foreground">
         <div className="font-medium text-foreground">
-          Live market-data architecture
+          {t('dataLab.architectureBanner')}
         </div>
-        <div className="mt-1 leading-relaxed">
-          A single in-process <code className="font-mono">LiveMarketDataIngestor</code> is
-          always on whenever the WebSocket feed is alive.  It validates each book
-          update once, classifies depth changes as trade vs cancel, and persists{' '}
-          <strong>both</strong> full snapshots (
-          <code className="font-mono">market_microstructure_snapshots</code>) and per-level
-          deltas (<code className="font-mono">book_delta_events</code>) off the hot path.
-          The backtester reads <strong>deltas first</strong> (live-parity replay) and
-          falls back to snapshots when delta coverage is sparse.  No separate recorder
-          process to start; coverage is governed by which markets the WS is subscribed
-          to (see <em>Proactive coverage</em>).
-        </div>
+        <div className="mt-1 leading-relaxed" dangerouslySetInnerHTML={{ __html: t('dataLab.architectureBody') }} />
       </div>
       {/* Sub-tabs — one per data source so each section gets the
           full vertical real estate instead of stacking. */}
       <div className="flex items-center gap-1 border-b border-border/30">
-        {RECORD_TABS.map(({ key, label, icon: Icon }) => (
+        {RECORD_TABS.map(({ key, labelKey, icon: Icon }) => (
           <button
             key={key}
             type="button"
@@ -1809,7 +1794,7 @@ function RecordView() {
             )}
           >
             <Icon className="h-3 w-3" />
-            {label}
+            {t(`dataLab.${labelKey}`)}
           </button>
         ))}
       </div>
@@ -1833,6 +1818,7 @@ function StorageView() {
 type DataLabMode = 'browse' | 'record' | 'storage' | 'providers'
 
 export default function DataLab() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   // Top-level mode: Browse passively-recorded data vs. Record new data
@@ -1972,22 +1958,22 @@ export default function DataLab() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 shrink-0 text-violet-400" />
-            <span className="text-sm font-semibold leading-tight">Data Lab</span>
+            <span className="text-sm font-semibold leading-tight">{t('dataLab.title')}</span>
             {mode === 'browse' && activeSpec ? (
               <Badge variant="outline" className="text-[10px]">
-                {activeSpec.row_count.toLocaleString()} rows
+                {t('dataLab.rowsCount', { n: activeSpec.row_count.toLocaleString() })}
               </Badge>
             ) : null}
           </div>
           <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
             {mode === 'browse'
               ? (activeSpec?.description
-                ?? 'Browse data the orchestrator + scanner have already captured. Filter, preview, export, or hand it to the agent.')
+                ?? t('dataLab.subtitleBrowse'))
               : mode === 'record'
-              ? 'Live market-data ingestor status, proactive WS coverage, and on-demand capture sessions.'
+              ? t('dataLab.subtitleRecord')
               : mode === 'storage'
-              ? 'Per-dataset row counts, on-disk sizes, and age windows for everything the system has captured.'
-              : 'Pull historical market data on demand from third-party providers (polybacktest etc.) into your Data Lab.'}
+              ? t('dataLab.subtitleStorage')
+              : t('dataLab.subtitleProviders')}
           </p>
         </div>
         <div className="flex items-center gap-1.5">
@@ -2003,7 +1989,7 @@ export default function DataLab() {
               )}
             >
               <Search className="h-3 w-3" />
-              Browse
+              {t('dataLab.modeBrowse')}
             </button>
             <button
               onClick={() => setMode('record')}
@@ -2015,7 +2001,7 @@ export default function DataLab() {
               )}
             >
               <PlayCircle className="h-3 w-3" />
-              Record
+              {t('dataLab.modeRecord')}
             </button>
             <button
               onClick={() => setMode('storage')}
@@ -2027,7 +2013,7 @@ export default function DataLab() {
               )}
             >
               <HardDrive className="h-3 w-3" />
-              Storage
+              {t('dataLab.modeStorage')}
             </button>
             <button
               onClick={() => setMode('providers')}
@@ -2039,7 +2025,7 @@ export default function DataLab() {
               )}
             >
               <Download className="h-3 w-3" />
-              Providers
+              {t('dataLab.modeProviders')}
             </button>
           </div>
           <Button
@@ -2050,7 +2036,7 @@ export default function DataLab() {
             disabled={query.isFetching}
           >
             <RefreshCw className={cn('h-3 w-3', query.isFetching && 'animate-spin')} />
-            Refresh
+            {t('dataLab.refresh')}
           </Button>
         </div>
       </div>
@@ -2116,22 +2102,22 @@ export default function DataLab() {
       <div className="flex flex-wrap items-center gap-2 text-[10px]">
         <span className="flex items-center gap-1 text-muted-foreground">
           {total > 0 ? (
-            `Showing ${pageStart.toLocaleString()}–${pageEnd.toLocaleString()} of ${total.toLocaleString()}`
+            t('dataLab.showing', { start: pageStart.toLocaleString(), end: pageEnd.toLocaleString(), total: total.toLocaleString() })
           ) : isLoadingRows ? (
             <>
               <Loader2 className="h-3 w-3 animate-spin" />
-              Loading…
+              {t('dataLab.loading')}
             </>
           ) : (
-            'No rows match'
+            t('dataLab.noRowsMatchShort')
           )}
         </span>
         <span className="text-muted-foreground">·</span>
         <span className="font-mono text-muted-foreground">
-          sort: {orderBy} {orderDir}
+          {t('dataLab.sortLabel', { by: orderBy, dir: orderDir })}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
-          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">Per page</Label>
+          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.perPage')}</Label>
           <select
             value={perPage}
             onChange={(e) => {
@@ -2169,7 +2155,7 @@ export default function DataLab() {
             )}
           >
             <Download className="h-3 w-3" />
-            CSV
+            {t('dataLab.csv')}
           </a>
         </div>
       </div>
@@ -2233,7 +2219,7 @@ export default function DataLab() {
                     className="px-2 py-10 text-center text-[11px] text-muted-foreground"
                   >
                     <Loader2 className="mx-auto mb-1.5 h-4 w-4 animate-spin opacity-60" />
-                    Loading…
+                    {t('dataLab.loading')}
                   </td>
                 </tr>
               ) : query.isError ? (
@@ -2242,7 +2228,7 @@ export default function DataLab() {
                     colSpan={renderedCols.length || 1}
                     className="px-2 py-6 text-center text-[11px] text-rose-300"
                   >
-                    {(query.error as Error).message || 'Query failed'}
+                    {(query.error as Error).message || t('dataLab.queryFailed')}
                   </td>
                 </tr>
               ) : rows.length === 0 ? (
@@ -2252,7 +2238,7 @@ export default function DataLab() {
                     className="px-2 py-6 text-center text-[11px] text-muted-foreground"
                   >
                     <Filter className="mx-auto mb-1 h-4 w-4 opacity-40" />
-                    No rows match the current filters.
+                    {t('dataLab.noRowsMatch')}
                   </td>
                 </tr>
               ) : (
@@ -2306,9 +2292,7 @@ export default function DataLab() {
         <div className="text-muted-foreground">
           {total === 0
             ? '—'
-            : `Page ${Math.floor(offset / perPage) + 1} of ${
-                Math.floor(lastOffset / perPage) + 1
-              }`}
+            : t('dataLab.page', { cur: Math.floor(offset / perPage) + 1, total: Math.floor(lastOffset / perPage) + 1 })}
         </div>
         <div className="flex items-center gap-1">
           <Button

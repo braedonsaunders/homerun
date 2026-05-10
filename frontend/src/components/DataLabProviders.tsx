@@ -18,6 +18,7 @@
  * Settings → Providers (per the no-hidden-defaults policy).
  */
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -82,6 +83,7 @@ const TIME_PRESETS: Array<{ label: string; hours: number }> = [
 const POLYMARKET_TAB_KEY = '__polymarket__'
 
 export default function DataLabProviders() {
+  const { t } = useTranslation()
   // ── Providers list ───────────────────────────────────────────────
   const providersQuery = useQuery({
     queryKey: ['providers', 'list'],
@@ -105,19 +107,17 @@ export default function DataLabProviders() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <Server className="h-4 w-4 text-violet-400" />
-            <span className="text-sm font-semibold">External data providers</span>
+            <span className="text-sm font-semibold">{t('dataLabProviders.title')}</span>
           </div>
           <p className="mt-0.5 text-[10px] text-muted-foreground">
-            Pull historical market data on demand from third-party vendors into
-            your Data Lab. Imports land in the same microstructure tables
-            backtests already read from.
+            {t('dataLabProviders.subtitle')}
           </p>
         </div>
       </div>
 
       {providersQuery.isLoading ? (
         <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
-          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading providers…
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {t('dataLabProviders.loadingProviders')}
         </div>
       ) : null}
 
@@ -153,7 +153,7 @@ export default function DataLabProviders() {
           )}
         >
           <Download className="h-3 w-3 rotate-180" />
-          Polymarket
+          {t('dataLabProviders.polymarketLabel')}
         </button>
       </div>
 
@@ -163,7 +163,7 @@ export default function DataLabProviders() {
         <PolybacktestSection provider={selected} />
       ) : selected ? (
         <div className="rounded-md border border-border/40 bg-card/40 p-4 text-[11px] text-muted-foreground">
-          {selected.label} integration not yet implemented in this build.
+          {t('dataLabProviders.notImplemented', { label: selected.label })}
         </div>
       ) : null}
     </div>
@@ -183,11 +183,12 @@ function ProviderHealthDot({ provider }: { provider: ProviderInfo }) {
 
 
 function ProviderHealthBadge({ provider }: { provider: ProviderInfo }) {
+  const { t } = useTranslation()
   if (!provider.configured) {
     return (
       <Badge variant="outline" className="gap-1 border-amber-500/40 text-amber-700 dark:text-amber-300">
         <CircleAlert className="h-3 w-3" />
-        Needs API key
+        {t('dataLabProviders.needsApiKey')}
       </Badge>
     )
   }
@@ -195,20 +196,21 @@ function ProviderHealthBadge({ provider }: { provider: ProviderInfo }) {
     return (
       <Badge variant="outline" className="gap-1 border-rose-500/40 text-rose-700 dark:text-rose-300">
         <AlertTriangle className="h-3 w-3" />
-        Unreachable
+        {t('dataLabProviders.unreachable')}
       </Badge>
     )
   }
   return (
     <Badge variant="outline" className="gap-1 border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
       <CheckCircle2 className="h-3 w-3" />
-      Healthy
+      {t('dataLabProviders.healthy')}
     </Badge>
   )
 }
 
 
 function PolybacktestSection({ provider }: { provider: ProviderInfo }) {
+  const { t } = useTranslation()
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* Provider summary strip — health, links, coin support. */}
@@ -227,7 +229,7 @@ function PolybacktestSection({ provider }: { provider: ProviderInfo }) {
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 hover:text-foreground"
               >
-                Homepage <ExternalLink className="h-3 w-3" />
+                {t('dataLabProviders.homepage')} <ExternalLink className="h-3 w-3" />
               </a>
               <a
                 href={provider.docs_url}
@@ -235,16 +237,14 @@ function PolybacktestSection({ provider }: { provider: ProviderInfo }) {
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 hover:text-foreground"
               >
-                API docs <ExternalLink className="h-3 w-3" />
+                {t('dataLabProviders.apiDocs')} <ExternalLink className="h-3 w-3" />
               </a>
-              <span>Coins: {provider.supported_coins.join(', ')}</span>
+              <span>{t('dataLabProviders.coins', { list: provider.supported_coins.join(', ') })}</span>
             </div>
           </div>
         </div>
         {!provider.configured ? (
-          <div className="mt-2 rounded-sm border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-200">
-            Add your polybacktest API key in <strong>Settings → Data Providers</strong> to enable import.
-          </div>
+          <div className="mt-2 rounded-sm border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-200" dangerouslySetInnerHTML={{ __html: t('dataLabProviders.addApiKeyHint') }} />
         ) : null}
       </div>
 
@@ -272,6 +272,7 @@ function PolybacktestSection({ provider }: { provider: ProviderInfo }) {
  * every other per-purpose model override.
  */
 function ProviderSettingsCard({ providerKey: _providerKey }: { providerKey: string }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const settingsQuery = useQuery({
     queryKey: ['providers', 'settings'],
@@ -318,23 +319,23 @@ function ProviderSettingsCard({ providerKey: _providerKey }: { providerKey: stri
     <details className="rounded-md border border-border/40 bg-card/40 p-3">
       <summary className="cursor-pointer text-xs font-semibold flex items-center gap-1.5">
         <Server className="h-3.5 w-3.5 text-violet-400" />
-        Provider settings
+        {t('dataLabProviders.providerSettings')}
         <span className="ml-auto text-[10px] font-normal text-muted-foreground">
-          {settings?.polybacktest_api_key_set ? 'configured' : 'not configured'}
+          {settings?.polybacktest_api_key_set ? t('dataLabProviders.configured') : t('dataLabProviders.notConfigured')}
         </span>
       </summary>
       <div className="mt-3 space-y-3">
         {/* API key */}
         <div>
           <Label className="text-[10px] uppercase text-muted-foreground">
-            Polybacktest API key
+            {t('dataLabProviders.polybacktestApiKey')}
           </Label>
           <div className="flex items-center gap-1">
             <Input
               type={showKey ? 'text' : 'password'}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder={settings?.polybacktest_api_key_set ? '(set — leave to keep)' : 'Paste API key'}
+              placeholder={settings?.polybacktest_api_key_set ? t('dataLabProviders.apiKeyPlaceholderSet') : t('dataLabProviders.apiKeyPlaceholder')}
               className="h-8 font-mono text-xs"
             />
             <Button
@@ -342,36 +343,30 @@ function ProviderSettingsCard({ providerKey: _providerKey }: { providerKey: stri
               variant="ghost"
               className="h-8 w-8 p-0"
               onClick={() => setShowKey((v) => !v)}
-              title={showKey ? 'Hide' : 'Show'}
+              title={showKey ? t('dataLabProviders.hideKey') : t('dataLabProviders.showKey')}
             >
               {showKey ? '🙈' : '👁'}
             </Button>
           </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
-            Get a key at <a href="https://polybacktest.com/dashboard" target="_blank" rel="noreferrer" className="underline">polybacktest.com/dashboard</a>.
-            Empty value clears the key.
-          </p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground" dangerouslySetInnerHTML={{ __html: t('dataLabProviders.apiKeyHelp', { interpolation: { escapeValue: false } }).replace('<a>', '<a href="https://polybacktest.com/dashboard" target="_blank" rel="noreferrer" class="underline">') }} />
         </div>
 
         <div>
-          <Label className="text-[10px] uppercase text-muted-foreground">Base URL (optional)</Label>
+          <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.baseUrl')}</Label>
           <Input
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.polybacktest.com"
+            placeholder={t('dataLabProviders.baseUrlPlaceholder')}
             className="h-8 font-mono text-xs"
           />
         </div>
 
         <div className="border-t border-border/30 pt-3">
-          <div className="text-[11px] font-semibold mb-1">Reverse-engineer defaults</div>
-          <p className="mb-2 text-[10px] text-muted-foreground">
-            Default LLM model is set in <strong>AI → Models</strong> (under
-            "Strategy Reverse-Engineer").
-          </p>
+          <div className="text-[11px] font-semibold mb-1">{t('dataLabProviders.reverseEngineerDefaults')}</div>
+          <p className="mb-2 text-[10px] text-muted-foreground" dangerouslySetInnerHTML={{ __html: t('dataLabProviders.reverseEngineerDefaultsHelp') }} />
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <Label className="text-[10px] uppercase text-muted-foreground">Max iterations</Label>
+              <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.maxIterations')}</Label>
               <Input
                 value={maxIter}
                 onChange={(e) => setMaxIter(e.target.value)}
@@ -380,7 +375,7 @@ function ProviderSettingsCard({ providerKey: _providerKey }: { providerKey: stri
               />
             </div>
             <div>
-              <Label className="text-[10px] uppercase text-muted-foreground">Target score</Label>
+              <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.targetScore')}</Label>
               <Input
                 value={targetScore}
                 onChange={(e) => setTargetScore(e.target.value)}
@@ -389,16 +384,16 @@ function ProviderSettingsCard({ providerKey: _providerKey }: { providerKey: stri
               />
             </div>
             <div>
-              <Label className="text-[10px] uppercase text-muted-foreground">Max cost (USD)</Label>
+              <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.maxCostUsd')}</Label>
               <Input
                 value={maxCost}
                 onChange={(e) => setMaxCost(e.target.value)}
-                placeholder="(no cap)"
+                placeholder={t('dataLabProviders.maxCostPlaceholder')}
                 className="h-8 text-xs"
               />
             </div>
             <div className="col-span-2">
-              <Label className="text-[10px] uppercase text-muted-foreground">Max wallet trades pulled</Label>
+              <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.maxWalletTrades')}</Label>
               <Input
                 value={maxTrades}
                 onChange={(e) => setMaxTrades(e.target.value)}
@@ -407,20 +402,17 @@ function ProviderSettingsCard({ providerKey: _providerKey }: { providerKey: stri
               />
             </div>
           </div>
-          <p className="mt-1 text-[10px] text-muted-foreground">
-            Empty fields fall back to <code className="font-mono">ai_default_model</code> + the
-            service-level guards. No defaults baked into code.
-          </p>
+          <p className="mt-1 text-[10px] text-muted-foreground" dangerouslySetInnerHTML={{ __html: t('dataLabProviders.fallbackHelp') }} />
         </div>
 
         <div className="flex items-center justify-end gap-2">
           {saveMutation.isError ? (
             <span className="text-[10px] text-rose-700 dark:text-rose-300">
-              {(saveMutation.error as Error)?.message || 'Save failed'}
+              {(saveMutation.error as Error)?.message || t('dataLabProviders.saveFailed')}
             </span>
           ) : null}
           {saveMutation.isSuccess ? (
-            <span className="text-[10px] text-emerald-700 dark:text-emerald-300">Saved</span>
+            <span className="text-[10px] text-emerald-700 dark:text-emerald-300">{t('dataLabProviders.saved')}</span>
           ) : null}
           <Button
             size="sm"
@@ -428,7 +420,7 @@ function ProviderSettingsCard({ providerKey: _providerKey }: { providerKey: stri
             onClick={() => saveMutation.mutate()}
             disabled={saveMutation.isPending}
           >
-            {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Save'}
+            {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : t('dataLabProviders.save')}
           </Button>
         </div>
       </div>
@@ -443,6 +435,7 @@ type MarketTypeFilter = 'all' | '5m' | '15m' | '1h' | '4h' | '24h'
 type ResolvedFilter = 'all' | 'resolved' | 'open'
 
 function PolybacktestImportPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [coin, setCoin] = useState<(typeof COINS)[number]>('btc')
   const [search, setSearch] = useState('')
@@ -510,13 +503,13 @@ function PolybacktestImportPanel() {
   return (
     <div className="flex min-h-0 flex-col rounded-md border border-border/40 bg-card/40 p-3">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-xs font-semibold">Import historical data</div>
-        <Badge variant="outline" className="text-[10px]">{selected.size} selected</Badge>
+        <div className="text-xs font-semibold">{t('dataLabProviders.importHistorical')}</div>
+        <Badge variant="outline" className="text-[10px]">{t('dataLabProviders.selectedCount', { n: selected.size })}</Badge>
       </div>
 
       <div className="mt-2 grid grid-cols-2 gap-2">
         <div>
-          <Label className="text-[10px] uppercase text-muted-foreground">Coin</Label>
+          <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.coin')}</Label>
           <Select value={coin} onValueChange={(v) => setCoin(v as (typeof COINS)[number])}>
             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -527,11 +520,11 @@ function PolybacktestImportPanel() {
           </Select>
         </div>
         <div>
-          <Label className="text-[10px] uppercase text-muted-foreground">Horizon</Label>
+          <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.horizon')}</Label>
           <Select value={marketType} onValueChange={(v) => setMarketType(v as MarketTypeFilter)}>
             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all" className="text-xs">All horizons</SelectItem>
+              <SelectItem value="all" className="text-xs">{t('dataLabProviders.allHorizons')}</SelectItem>
               {(['5m', '15m', '1h', '4h', '24h'] as const).map((mt) => (
                 <SelectItem key={mt} value={mt} className="text-xs">{mt}</SelectItem>
               ))}
@@ -539,26 +532,26 @@ function PolybacktestImportPanel() {
           </Select>
         </div>
         <div>
-          <Label className="text-[10px] uppercase text-muted-foreground">Status</Label>
+          <Label className="text-[10px] uppercase text-muted-foreground">{t('dataLabProviders.status')}</Label>
           <Select value={resolvedFilter} onValueChange={(v) => setResolvedFilter(v as ResolvedFilter)}>
             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all" className="text-xs">All</SelectItem>
-              <SelectItem value="resolved" className="text-xs">Resolved only</SelectItem>
-              <SelectItem value="open" className="text-xs">Open only</SelectItem>
+              <SelectItem value="all" className="text-xs">{t('dataLabProviders.all')}</SelectItem>
+              <SelectItem value="resolved" className="text-xs">{t('dataLabProviders.resolvedOnly')}</SelectItem>
+              <SelectItem value="open" className="text-xs">{t('dataLabProviders.openOnly')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <div>
           <Label className="text-[10px] uppercase text-muted-foreground">
-            Fallback window (open markets only)
+            {t('dataLabProviders.fallbackWindow')}
           </Label>
           <Select value={String(hours)} onValueChange={(v) => setHours(Number(v))}>
             <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               {TIME_PRESETS.map((p) => (
                 <SelectItem key={p.hours} value={String(p.hours)} className="text-xs">
-                  Last {p.label}
+                  {t('dataLabProviders.lastRange', { label: p.label })}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -573,7 +566,7 @@ function PolybacktestImportPanel() {
           onKeyDown={(e) => {
             if (e.key === 'Enter') setAppliedSearch(search)
           }}
-          placeholder="Search markets…"
+          placeholder={t('dataLabProviders.searchMarkets')}
           className="h-8 text-xs"
         />
         <Button
@@ -583,21 +576,21 @@ function PolybacktestImportPanel() {
           onClick={() => setAppliedSearch(search)}
           disabled={marketsQuery.isFetching}
         >
-          <Search className="h-3 w-3" /> Search
+          <Search className="h-3 w-3" /> {t('dataLabProviders.search')}
         </Button>
       </div>
 
       <ScrollArea className="mt-2 h-56 rounded-sm border border-border/30 bg-background/40">
         {marketsQuery.isLoading ? (
           <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
-            <Loader2 className="mr-2 h-3 w-3 animate-spin" /> Loading…
+            <Loader2 className="mr-2 h-3 w-3 animate-spin" /> {t('dataLabProviders.loading')}
           </div>
         ) : marketsQuery.isError ? (
           <div className="p-3 text-[11px] text-rose-700 dark:text-rose-300">
-            {String((marketsQuery.error as Error)?.message || 'Failed to load')}
+            {String((marketsQuery.error as Error)?.message || t('dataLabProviders.failedToLoad'))}
           </div>
         ) : markets.length === 0 ? (
-          <div className="p-3 text-[11px] text-muted-foreground">No markets found.</div>
+          <div className="p-3 text-[11px] text-muted-foreground">{t('dataLabProviders.noMarketsFound')}</div>
         ) : (
           <div className="divide-y divide-border/20">
             {markets.map((m) => {
@@ -657,7 +650,7 @@ function PolybacktestImportPanel() {
 
       <div className="mt-2 flex items-center justify-between gap-2">
         <span className="text-[10px] text-muted-foreground">
-          Always pulls full L2 depth (15 levels per side · UP + DOWN)
+          {t('dataLabProviders.depthDescription')}
         </span>
         <Button
           size="sm"
@@ -670,19 +663,17 @@ function PolybacktestImportPanel() {
           ) : (
             <Download className="h-3 w-3" />
           )}
-          Import {selected.size} market{selected.size !== 1 ? 's' : ''}
+          {selected.size === 1 ? t('dataLabProviders.importNMarkets', { n: selected.size }) : t('dataLabProviders.importNMarketsPlural', { n: selected.size })}
         </Button>
       </div>
 
       {importMutation.isError ? (
         <div className="mt-2 rounded-sm border border-rose-500/30 bg-rose-500/5 p-2 text-[10px] text-rose-700 dark:text-rose-300">
-          {String((importMutation.error as Error)?.message || 'Import failed')}
+          {String((importMutation.error as Error)?.message || t('dataLabProviders.importFailed'))}
         </div>
       ) : null}
       {importMutation.isSuccess ? (
-        <div className="mt-2 rounded-sm border border-emerald-500/30 bg-emerald-500/5 p-2 text-[10px] text-emerald-700 dark:text-emerald-300">
-          Job <span className="font-mono">{importMutation.data.id}</span> queued — watch progress in the Active jobs panel.
-        </div>
+        <div className="mt-2 rounded-sm border border-emerald-500/30 bg-emerald-500/5 p-2 text-[10px] text-emerald-700 dark:text-emerald-300" dangerouslySetInnerHTML={{ __html: t('dataLabProviders.jobQueued', { id: importMutation.data.id }) }} />
       ) : null}
     </div>
   )
@@ -692,6 +683,7 @@ function PolybacktestImportPanel() {
 // ─── Active import jobs panel (auto-polling) ─────────────────────────
 
 function PolybacktestActiveJobsPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const jobsQuery = useQuery({
     queryKey: ['providers', 'import-jobs'],
@@ -714,13 +706,13 @@ function PolybacktestActiveJobsPanel() {
   return (
     <div className="flex min-h-0 flex-col rounded-md border border-border/40 bg-card/40 p-3">
       <div className="flex items-center justify-between">
-        <div className="text-xs font-semibold">Active import jobs</div>
+        <div className="text-xs font-semibold">{t('dataLabProviders.activeImportJobs')}</div>
         <Badge variant="outline" className="text-[10px]">{jobs.length}</Badge>
       </div>
       <ScrollArea className="mt-2 max-h-72">
         {jobs.length === 0 ? (
           <div className="px-1 py-4 text-center text-[11px] text-muted-foreground">
-            No imports yet — pick markets on the left to start.
+            {t('dataLabProviders.noImportsYet')}
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -756,6 +748,7 @@ function statusColor(status: ImportJobStatus): string {
 
 
 function ImportJobRow({ job, onCancel }: { job: ImportJob; onCancel: () => void }) {
+  const { t } = useTranslation()
   const payload = job.payload as { coin?: string; market_ids?: string[] } | null
   const coin = payload?.coin ?? '?'
   const marketCount = payload?.market_ids?.length ?? 0
@@ -773,10 +766,10 @@ function ImportJobRow({ job, onCancel }: { job: ImportJob; onCancel: () => void 
             <span className="font-mono text-[10px] text-muted-foreground">{job.id}</span>
           </div>
           <div className="mt-0.5 truncate text-[11px]">
-            {coin.toUpperCase()} · {marketCount} market{marketCount !== 1 ? 's' : ''}
+            {marketCount === 1 ? t('dataLabProviders.marketCount', { coin: coin.toUpperCase(), n: marketCount }) : t('dataLabProviders.marketCountPlural', { coin: coin.toUpperCase(), n: marketCount })}
           </div>
           <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
-            {job.message || job.error || `${job.snapshots_inserted.toLocaleString()} snapshots`}
+            {job.message || job.error || t('dataLabProviders.snapshotsInsertedShort', { n: job.snapshots_inserted.toLocaleString() })}
           </div>
         </div>
         {isActive ? (
@@ -785,7 +778,7 @@ function ImportJobRow({ job, onCancel }: { job: ImportJob; onCancel: () => void 
             variant="ghost"
             className="h-6 w-6 p-0 text-rose-700 dark:text-rose-300 hover:bg-rose-500/10"
             onClick={onCancel}
-            title="Cancel"
+            title={t('dataLabProviders.cancel')}
           >
             <X className="h-3 w-3" />
           </Button>
@@ -801,11 +794,11 @@ function ImportJobRow({ job, onCancel }: { job: ImportJob; onCancel: () => void 
       ) : null}
       {job.snapshots_inserted > 0 || job.api_calls > 0 ? (
         <div className="mt-1 flex flex-wrap gap-2 text-[9px] text-muted-foreground">
-          <span>API calls: {job.api_calls.toLocaleString()}</span>
-          <span>Snapshots inserted: {job.snapshots_inserted.toLocaleString()}</span>
-          <span>Trades fetched: {job.trades_fetched.toLocaleString()}</span>
+          <span>{t('dataLabProviders.apiCalls', { n: job.api_calls.toLocaleString() })}</span>
+          <span>{t('dataLabProviders.snapshotsInserted', { n: job.snapshots_inserted.toLocaleString() })}</span>
+          <span>{t('dataLabProviders.tradesFetched', { n: job.trades_fetched.toLocaleString() })}</span>
           {job.bytes_downloaded ? (
-            <span>{(job.bytes_downloaded / 1024).toFixed(0)} KB</span>
+            <span>{t('dataLabProviders.kbDownloaded', { n: (job.bytes_downloaded / 1024).toFixed(0) })}</span>
           ) : null}
         </div>
       ) : null}
@@ -817,6 +810,7 @@ function ImportJobRow({ job, onCancel }: { job: ImportJob; onCancel: () => void 
 // ─── Imported datasets panel ─────────────────────────────────────────
 
 function PolybacktestDatasetsPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const datasetsQuery = useQuery({
     queryKey: ['providers', 'datasets'],
@@ -835,12 +829,9 @@ function PolybacktestDatasetsPanel() {
         <div>
           <div className="flex items-center gap-1.5 text-xs font-semibold">
             <Database className="h-3.5 w-3.5 text-violet-400" />
-            Imported datasets
+            {t('dataLabProviders.importedDatasets')}
           </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
-            Available in the Backtest Studio dataset picker. Snapshot rows live
-            in <span className="font-mono">market_microstructure_snapshots</span>.
-          </p>
+          <p className="mt-0.5 text-[10px] text-muted-foreground" dangerouslySetInnerHTML={{ __html: t('dataLabProviders.importedDatasetsHint') }} />
         </div>
         <Badge variant="outline" className="text-[10px]">{rows.length}</Badge>
       </div>
@@ -848,18 +839,18 @@ function PolybacktestDatasetsPanel() {
       <ScrollArea className="max-h-80">
         {rows.length === 0 ? (
           <div className="py-4 text-center text-[11px] text-muted-foreground">
-            No datasets yet.
+            {t('dataLabProviders.noDatasetsYet')}
           </div>
         ) : (
           <table className="w-full text-[11px]">
             <thead className="text-[10px] uppercase text-muted-foreground">
               <tr className="border-b border-border/30">
-                <th className="px-2 py-1.5 text-left">Provider</th>
-                <th className="px-2 py-1.5 text-left">Coin</th>
-                <th className="px-2 py-1.5 text-left">Market</th>
-                <th className="px-2 py-1.5 text-right">Snapshots</th>
-                <th className="px-2 py-1.5 text-right">Trades</th>
-                <th className="px-2 py-1.5 text-left">Window</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLabProviders.colProvider')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLabProviders.colCoin')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLabProviders.colMarket')}</th>
+                <th className="px-2 py-1.5 text-right">{t('dataLabProviders.colSnapshots')}</th>
+                <th className="px-2 py-1.5 text-right">{t('dataLabProviders.colTrades')}</th>
+                <th className="px-2 py-1.5 text-left">{t('dataLabProviders.colWindow')}</th>
                 <th className="px-2 py-1.5"></th>
               </tr>
             </thead>
@@ -886,11 +877,11 @@ function PolybacktestDatasetsPanel() {
                       variant="ghost"
                       className="h-6 w-6 p-0 text-rose-700 dark:text-rose-300 hover:bg-rose-500/10"
                       onClick={() => {
-                        if (confirm(`Delete dataset "${row.title || row.external_id}" and ${row.snapshot_count.toLocaleString()} snapshots?`)) {
+                        if (confirm(t('dataLabProviders.confirmDeleteDataset', { title: row.title || row.external_id, n: row.snapshot_count.toLocaleString() }))) {
                           deleteMutation.mutate(row.id)
                         }
                       }}
-                      title="Delete"
+                      title={t('dataLabProviders.delete')}
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
@@ -914,22 +905,23 @@ function PolybacktestDatasetsPanel() {
 // table the recorder writes to (tagged synthetic = true so the
 // backtester can downweight).
 
-const BACKFILL_INTERVALS: { value: string; label: string }[] = [
-  { value: '1m', label: '1 minute' },
-  { value: '1h', label: '1 hour' },
-  { value: '6h', label: '6 hours' },
-  { value: '1d', label: '1 day' },
-  { value: 'max', label: 'max (full history)' },
+const BACKFILL_INTERVAL_KEYS: { value: string; labelKey: string }[] = [
+  { value: '1m', labelKey: 'interval1m' },
+  { value: '1h', labelKey: 'interval1h' },
+  { value: '6h', labelKey: 'interval6h' },
+  { value: '1d', labelKey: 'interval1d' },
+  { value: 'max', labelKey: 'intervalMax' },
 ]
 
-const BACKFILL_SCOPE_OPTIONS: { value: BackfillScope; label: string; hint: string }[] = [
-  { value: 'token', label: 'Specific tokens', hint: 'paste clob_token_ids' },
-  { value: 'strategy', label: 'Strategy', hint: 'all tokens this strategy fired on' },
-  { value: 'session', label: 'Recording session', hint: 'a session\'s target tokens' },
-  { value: 'catalog_top_liquid', label: 'Top liquid catalog', hint: 'top N most-liquid markets' },
+const BACKFILL_SCOPE_KEYS: { value: BackfillScope; labelKey: string; hintKey: string }[] = [
+  { value: 'token', labelKey: 'scopeToken', hintKey: 'scopeTokenHint' },
+  { value: 'strategy', labelKey: 'scopeStrategy', hintKey: 'scopeStrategyHint' },
+  { value: 'session', labelKey: 'scopeSession', hintKey: 'scopeSessionHint' },
+  { value: 'catalog_top_liquid', labelKey: 'scopeCatalog', hintKey: 'scopeCatalogHint' },
 ]
 
 function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { t } = useTranslation()
   const [scope, setScope] = useState<BackfillScope>('strategy')
   const [tokenText, setTokenText] = useState('')
   const [strategySlug, setStrategySlug] = useState('')
@@ -961,7 +953,7 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
       queryClient.invalidateQueries({ queryKey: ['data-lab', 'storage'] })
       queryClient.invalidateQueries({ queryKey: ['data-lab', 'query'] })
     },
-    onError: (err) => setError((err as Error).message || 'backfill failed'),
+    onError: (err) => setError((err as Error).message || t('dataLabProviders.errBackfillFailed')),
   })
 
   useEffect(() => {
@@ -1001,13 +993,13 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
     }
     if (scope === 'token') {
       const tokens = tokenText.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
-      if (tokens.length === 0) { setError('Provide at least one token'); return }
+      if (tokens.length === 0) { setError(t('dataLabProviders.errProvideToken')); return }
       payload.target_values = tokens
     } else if (scope === 'strategy') {
-      if (!strategySlug.trim()) { setError('Provide a strategy slug'); return }
+      if (!strategySlug.trim()) { setError(t('dataLabProviders.errProvideStrategy')); return }
       payload.strategy_slug = strategySlug.trim()
     } else if (scope === 'session') {
-      if (!sessionId) { setError('Pick a session'); return }
+      if (!sessionId) { setError(t('dataLabProviders.errPickSession')); return }
       payload.session_id = sessionId
     }
     backfillMutation.mutate(payload)
@@ -1032,9 +1024,9 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
           <div className="flex items-center gap-2">
             <Download className="h-4 w-4 text-violet-700 dark:text-violet-300 rotate-180" />
             <div>
-              <div className="text-sm font-semibold leading-tight">REST backfill</div>
+              <div className="text-sm font-semibold leading-tight">{t('dataLabProviders.backfillTitle')}</div>
               <div className="text-[10px] text-muted-foreground leading-tight">
-                Synthesize book snapshots from Polymarket /prices-history (mid only).
+                {t('dataLabProviders.backfillSub')}
               </div>
             </div>
           </div>
@@ -1050,20 +1042,15 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
           <div className="space-y-4 p-4">
             {/* Caveat banner */}
             <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
-              <div className="font-medium">Synthetic data caveat</div>
-              <div className="mt-1 text-amber-700/90 dark:text-amber-300/90">
-                REST gives mid prices only — best_bid/best_ask are reconstructed by centering on
-                the mid with a configurable spread.  Sizes are zero (no depth).  Each row is
-                tagged <code className="font-mono">payload_json.synthetic = true</code> so the
-                backtester / Cox PH trainer can filter or downweight.
-              </div>
+              <div className="font-medium">{t('dataLabProviders.syntheticDataCaveat')}</div>
+              <div className="mt-1 text-amber-700/90 dark:text-amber-300/90" dangerouslySetInnerHTML={{ __html: t('dataLabProviders.syntheticDataCaveatBody') }} />
             </div>
 
             {/* Scope */}
             <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
-              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Scope</div>
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('dataLabProviders.scope')}</div>
               <div className="grid grid-cols-2 gap-1.5">
-                {BACKFILL_SCOPE_OPTIONS.map((o) => {
+                {BACKFILL_SCOPE_KEYS.map((o) => {
                   const active = scope === o.value
                   return (
                     <button
@@ -1076,8 +1063,8 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
                           : 'border-border/40 text-muted-foreground hover:text-foreground',
                       )}
                     >
-                      <div className="text-[11px] font-medium">{o.label}</div>
-                      <div className="text-[9px] text-muted-foreground/80">{o.hint}</div>
+                      <div className="text-[11px] font-medium">{t(`dataLabProviders.${o.labelKey}`)}</div>
+                      <div className="text-[9px] text-muted-foreground/80">{t(`dataLabProviders.${o.hintKey}`)}</div>
                     </button>
                   )
                 })}
@@ -1085,11 +1072,11 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
 
               {scope === 'token' ? (
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Token IDs (one per line / comma-separated)</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.tokenIdsLabel')}</Label>
                   <textarea
                     value={tokenText}
                     onChange={(e) => setTokenText(e.target.value)}
-                    placeholder="0x..."
+                    placeholder={t('dataLabProviders.tokenIdsPlaceholder')}
                     className="min-h-[80px] w-full rounded-sm border border-border/40 bg-background/60 px-2 py-1.5 font-mono text-[11px]"
                   />
                 </div>
@@ -1097,32 +1084,31 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
 
               {scope === 'strategy' ? (
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Strategy slug</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.strategySlug')}</Label>
                   <Input
                     value={strategySlug}
                     onChange={(e) => setStrategySlug(e.target.value)}
-                    placeholder="tail_end_carry"
+                    placeholder={t('dataLabProviders.strategySlugPlaceholder')}
                     className="h-8 text-[12px]"
                   />
                   <div className="text-[10px] text-muted-foreground">
-                    Pulls every distinct token from this strategy's OpportunityHistory rows in
-                    the time window.
+                    {t('dataLabProviders.strategySlugHint')}
                   </div>
                 </div>
               ) : null}
 
               {scope === 'session' ? (
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Recording session</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.recordingSession')}</Label>
                   <select
                     value={sessionId}
                     onChange={(e) => setSessionId(e.target.value)}
                     className="h-8 w-full rounded-md border border-input bg-background px-3 text-[11px]"
                   >
-                    <option value="">— pick a session —</option>
+                    <option value="">{t('dataLabProviders.pickSession')}</option>
                     {(sessionsQuery.data ?? []).map((s) => (
                       <option key={s.id} value={s.id}>
-                        {s.name} · {s.status} · {s.target_token_ids.length} tokens
+                        {t('dataLabProviders.sessionOptionLabel', { name: s.name, status: s.status, n: s.target_token_ids.length })}
                       </option>
                     ))}
                   </select>
@@ -1132,7 +1118,7 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
               {scope === 'catalog_top_liquid' ? (
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
-                    <Label className="text-[10px]">Cap (tokens)</Label>
+                    <Label className="text-[10px]">{t('dataLabProviders.capTokens')}</Label>
                     <Input
                       type="number"
                       min={10}
@@ -1143,7 +1129,7 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-[10px]">Min liquidity ($)</Label>
+                    <Label className="text-[10px]">{t('dataLabProviders.minLiquidityUsd')}</Label>
                     <Input
                       type="number"
                       min={0}
@@ -1159,11 +1145,11 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
             {/* Window + cadence */}
             <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                Window + cadence
+                {t('dataLabProviders.windowCadence')}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Lookback (days, blank = use range)</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.lookbackDays')}</Label>
                   <Input
                     type="number"
                     min={1}
@@ -1174,19 +1160,19 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Interval (fidelity)</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.intervalFidelity')}</Label>
                   <select
                     value={interval}
                     onChange={(e) => setInterval(e.target.value)}
                     className="h-8 w-full rounded-md border border-input bg-background px-3 text-[11px]"
                   >
-                    {BACKFILL_INTERVALS.map((i) => (
-                      <option key={i.value} value={i.value}>{i.label}</option>
+                    {BACKFILL_INTERVAL_KEYS.map((i) => (
+                      <option key={i.value} value={i.value}>{t(`dataLabProviders.${i.labelKey}`)}</option>
                     ))}
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Start (overrides lookback)</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.startOverridesLookback')}</Label>
                   <Input
                     type="datetime-local"
                     value={startInput}
@@ -1195,7 +1181,7 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px]">End</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.endLabel')}</Label>
                   <Input
                     type="datetime-local"
                     value={endInput}
@@ -1209,11 +1195,11 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
             {/* Synth + caps */}
             <div className="space-y-2 rounded-md border border-border/40 bg-card/30 p-3">
               <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                Synth + caps
+                {t('dataLabProviders.synthCaps')}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Synthetic spread (bps)</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.syntheticSpreadBps')}</Label>
                   <Input
                     type="number"
                     min={1}
@@ -1224,7 +1210,7 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px]">Max tokens (cap)</Label>
+                  <Label className="text-[10px]">{t('dataLabProviders.maxTokensCap')}</Label>
                   <Input
                     type="number"
                     min={10}
@@ -1243,26 +1229,26 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
 
             {result ? (
               <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-[11px]">
-                <div className="font-medium text-emerald-700 dark:text-emerald-300">Backfill complete</div>
+                <div className="font-medium text-emerald-700 dark:text-emerald-300">{t('dataLabProviders.backfillComplete')}</div>
                 <div className="mt-1 grid grid-cols-2 gap-1 text-emerald-700 dark:text-emerald-300">
-                  <div>job: <span className="font-mono">{result.job_id}</span></div>
-                  <div>duration: {result.duration_seconds.toFixed(1)}s</div>
-                  <div>tokens targeted: <strong>{result.target_token_count.toLocaleString()}</strong></div>
-                  <div>tokens with data: {result.tokens_with_data.toLocaleString()}</div>
-                  <div>rows inserted: <strong>{result.rows_inserted_total.toLocaleString()}</strong></div>
-                  <div>points fetched: {result.points_fetched_total.toLocaleString()}</div>
-                  <div>existing skipped: {result.skipped_existing_total.toLocaleString()}</div>
-                  <div>errors: {result.tokens_with_errors}</div>
+                  <div>{t('dataLabProviders.backfillJob')} <span className="font-mono">{result.job_id}</span></div>
+                  <div>{t('dataLabProviders.backfillDuration', { n: result.duration_seconds.toFixed(1) })}</div>
+                  <div>{t('dataLabProviders.backfillTokensTargeted')} <strong>{result.target_token_count.toLocaleString()}</strong></div>
+                  <div>{t('dataLabProviders.backfillTokensWithData', { n: result.tokens_with_data.toLocaleString() })}</div>
+                  <div>{t('dataLabProviders.backfillRowsInserted')} <strong>{result.rows_inserted_total.toLocaleString()}</strong></div>
+                  <div>{t('dataLabProviders.backfillPointsFetched', { n: result.points_fetched_total.toLocaleString() })}</div>
+                  <div>{t('dataLabProviders.backfillExistingSkipped', { n: result.skipped_existing_total.toLocaleString() })}</div>
+                  <div>{t('dataLabProviders.backfillErrorsCount', { n: result.tokens_with_errors })}</div>
                 </div>
                 {result.tokens_with_errors > 0 ? (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-rose-700 dark:text-rose-300">
-                      Failed tokens ({result.tokens_with_errors})
+                      {t('dataLabProviders.backfillFailedTokens', { n: result.tokens_with_errors })}
                     </summary>
                     <div className="mt-1 max-h-[140px] space-y-0.5 overflow-y-auto">
-                      {result.per_token.filter((t) => t.error).slice(0, 50).map((t) => (
-                        <div key={t.token_id} className="font-mono text-[10px] text-rose-700 dark:text-rose-300/90">
-                          {t.token_id.slice(0, 14)} — {t.error}
+                      {result.per_token.filter((tk) => tk.error).slice(0, 50).map((tk) => (
+                        <div key={tk.token_id} className="font-mono text-[10px] text-rose-700 dark:text-rose-300/90">
+                          {tk.token_id.slice(0, 14)} — {tk.error}
                         </div>
                       ))}
                     </div>
@@ -1275,11 +1261,11 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
 
         <div className="flex items-center justify-between gap-2 border-t border-border/40 px-4 py-3">
           <span className="text-[10px] text-muted-foreground">
-            Idempotent — already-recorded seconds are skipped.
+            {t('dataLabProviders.backfillIdempotent')}
           </span>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" className="h-8 text-[11px]" onClick={onClose}>
-              Close
+              {t('dataLabProviders.close')}
             </Button>
             <Button
               size="sm"
@@ -1292,7 +1278,7 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
               ) : (
                 <Download className="h-3 w-3 rotate-180" />
               )}
-              Run backfill
+              {t('dataLabProviders.runBackfill')}
             </Button>
           </div>
         </div>
@@ -1302,6 +1288,7 @@ function PolymarketBackfillFlyout({ open, onClose }: { open: boolean; onClose: (
 }
 
 function PolymarketSection() {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -1309,17 +1296,14 @@ function PolymarketSection() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold">Polymarket</span>
+              <span className="text-sm font-semibold">{t('dataLabProviders.polymarketLabel')}</span>
               <Badge variant="outline" className="gap-1 border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
                 <CheckCircle2 className="h-3 w-3" />
-                Built-in
+                {t('dataLabProviders.polymarketBuiltIn')}
               </Badge>
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              Synthesize historical book snapshots from Polymarket's /prices-history
-              endpoint to fill gaps the live WebSocket recorder didn't reach.  Inserts
-              into the same MarketMicrostructureSnapshot table the recorder writes to,
-              tagged synthetic so the backtester can downweight.
+              {t('dataLabProviders.polymarketDescription')}
             </p>
           </div>
         </div>
@@ -1329,9 +1313,9 @@ function PolymarketSection() {
         <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
           <div className="flex items-center gap-2">
             <Download className="h-3.5 w-3.5 rotate-180 text-violet-700 dark:text-violet-300" />
-            <span className="text-xs font-semibold">REST backfill</span>
+            <span className="text-xs font-semibold">{t('dataLabProviders.restBackfill')}</span>
             <span className="text-[10px] text-muted-foreground">
-              fill historical gaps via Polymarket /prices-history
+              {t('dataLabProviders.restBackfillSub')}
             </span>
           </div>
           <Button
@@ -1341,15 +1325,11 @@ function PolymarketSection() {
             onClick={() => setOpen(true)}
           >
             <Download className="h-3 w-3 rotate-180" />
-            New backfill
+            {t('dataLabProviders.newBackfill')}
           </Button>
         </div>
         <div className="px-3 py-2 text-[10px] text-muted-foreground">
-          Use when WS coverage doesn't reach back far enough.  Pick a scope (token /
-          strategy / recording session / top-liquid catalog), a window, and a fidelity —
-          the service synthesizes book snapshots centered on each mid price and inserts
-          them into the same MarketMicrostructureSnapshot table the live recorder writes
-          to.  Synthetic rows carry a flag the backtester can read.
+          {t('dataLabProviders.restBackfillBody')}
         </div>
       </div>
       <PolymarketBackfillFlyout open={open} onClose={() => setOpen(false)} />

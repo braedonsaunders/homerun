@@ -15,6 +15,7 @@
  * like one product.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
@@ -213,10 +214,11 @@ function MetricRow({ label, m, tone }: { label: string; m: { value: number; ci_l
 }
 
 function EquityCurveChart({ points }: { points: Array<{ timestamp?: string; equity_usd?: number }> }) {
+  const { t } = useTranslation()
   if (!points || points.length < 2) {
     return (
       <div className="rounded-md border border-dashed border-border/50 bg-card/30 px-3 py-6 text-center text-xs text-muted-foreground">
-        Equity curve will appear after the first run.
+        {t('backtestStudio.equityCurveEmpty')}
       </div>
     )
   }
@@ -237,8 +239,8 @@ function EquityCurveChart({ points }: { points: Array<{ timestamp?: string; equi
   return (
     <div className="rounded-md border border-border/50 bg-card/40 p-2">
       <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{`equity ${fmtUsd(initial)} → ${fmtUsd(ending)}`}</span>
-        <span>{`${points.length} samples`}</span>
+        <span>{`${t('backtestStudio.equityLabel')} ${fmtUsd(initial)} → ${fmtUsd(ending)}`}</span>
+        <span>{t('backtestStudio.samplesCount', { n: points.length })}</span>
       </div>
       <svg width={w} height={h} className="mt-1">
         <line x1={8} y1={yBaseline} x2={w - 8} y2={yBaseline} stroke="rgb(120,120,120)" strokeOpacity={0.35} strokeDasharray="3,3" strokeWidth={0.5} />
@@ -249,12 +251,12 @@ function EquityCurveChart({ points }: { points: Array<{ timestamp?: string; equi
 }
 
 function CorrelationHeatmap({ result }: { result: PortfolioCorrelationResult }) {
+  const { t } = useTranslation()
   const { strategies, correlation_matrix, summary } = result
   if (!strategies || strategies.length === 0) {
     return (
       <div className="text-[11px] text-muted-foreground italic">
-        No strategies have ≥ 5 terminal trades in the last {result.window_days} days. Cross-strategy
-        correlation needs daily PnL series to compute.
+        {t('backtestStudio.correlationNoStrategies', { days: result.window_days })}
       </div>
     )
   }
@@ -276,21 +278,21 @@ function CorrelationHeatmap({ result }: { result: PortfolioCorrelationResult }) 
     <div>
       <div className="grid grid-cols-3 gap-2">
         <StatTile
-          label="Diversification"
+          label={t('backtestStudio.diversification')}
           value={`${(summary.diversification_ratio * 100).toFixed(0)}%`}
-          hint="1 - mean(|ρ|), higher = better"
+          hint={t('backtestStudio.diversificationHint')}
           tone={summary.diversification_ratio >= 0.7 ? 'good' : summary.diversification_ratio >= 0.4 ? 'warn' : 'bad'}
         />
         <StatTile
-          label="Mean |ρ|"
+          label={t('backtestStudio.meanAbsRho')}
           value={summary.mean_abs_pairwise_correlation.toFixed(2)}
-          hint={`min ${summary.min_pairwise_correlation.toFixed(2)} · max ${summary.max_pairwise_correlation.toFixed(2)}`}
+          hint={`${t('backtestStudio.min')} ${summary.min_pairwise_correlation.toFixed(2)} · ${t('backtestStudio.max')} ${summary.max_pairwise_correlation.toFixed(2)}`}
           tone={summary.mean_abs_pairwise_correlation >= 0.5 ? 'bad' : summary.mean_abs_pairwise_correlation >= 0.3 ? 'warn' : 'good'}
         />
         <StatTile
-          label="Strategies"
+          label={t('backtestStudio.strategiesLabel')}
           value={`${summary.n_strategies}`}
-          hint={`${summary.n_days} days of PnL`}
+          hint={t('backtestStudio.daysOfPnl', { n: summary.n_days })}
         />
       </div>
       <div className="mt-3 overflow-x-auto">
@@ -346,8 +348,7 @@ function CorrelationHeatmap({ result }: { result: PortfolioCorrelationResult }) 
         </table>
       </div>
       <div className="mt-2 text-[10px] text-muted-foreground">
-        Red cells (ρ &gt; 0.4) ⇒ strategies that drew down together. Green (ρ &lt; -0.4) ⇒ natural
-        hedge pair. Diversification ratio above 70% = healthy portfolio.
+        {t('backtestStudio.correlationLegend')}
       </div>
     </div>
   )
@@ -361,12 +362,13 @@ function RegimeBlock({
   title: string
   rows: Array<{ bucket: string; n: number; wins: number; total_pnl_usd: number; win_rate: number; mean_pnl_usd: number }>
 }) {
+  const { t } = useTranslation()
   const maxN = rows.reduce((m, r) => Math.max(m, r.n), 1)
   return (
     <div className="rounded-sm border border-border/40 bg-background/40 p-2">
       <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">{title}</div>
       {rows.length === 0 ? (
-        <div className="text-[10px] text-muted-foreground italic">no data</div>
+        <div className="text-[10px] text-muted-foreground italic">{t('backtestStudio.noData')}</div>
       ) : (
         <div className="space-y-0.5">
           {rows
@@ -406,6 +408,7 @@ function RegimeBlock({
 
 
 function CalibrationPlot({ bins }: { bins: Array<{ predicted_mean: number; observed_rate: number; n: number }> }) {
+  const { t } = useTranslation()
   if (!bins || bins.length === 0) return null
   const w = 220
   const h = 110
@@ -453,8 +456,8 @@ function CalibrationPlot({ bins }: { bins: Array<{ predicted_mean: number; obser
         })}
       </svg>
       <div className="flex items-center justify-between text-[9px] text-muted-foreground">
-        <span>0 predicted</span>
-        <span>diagonal = perfect</span>
+        <span>{t('backtestStudio.calibration0')}</span>
+        <span>{t('backtestStudio.calibrationDiag')}</span>
         <span>1</span>
       </div>
     </div>
@@ -521,6 +524,7 @@ function RunningBacktestSkeleton({
   /** Operator cancel handler.  Renders a stop button when set. */
   onCancel?: () => void
 }) {
+  const { t } = useTranslation()
   // Real progress comes from the worker's debounced writes to the
   // BacktestRun row.  ``progress`` is 0-1 when an estimate is set;
   // otherwise we fall back to an indeterminate-style snapshots-
@@ -542,7 +546,7 @@ function RunningBacktestSkeleton({
           <span className="flex-1">{status?.message || caption}</span>
           {status && pct !== null ? (
             <span className="font-mono tabular-nums text-[10px] opacity-80">
-              {determinate ? `${pct}%` : `${(status.snapshots_processed || 0).toLocaleString()} snaps`}
+              {determinate ? `${pct}%` : t('backtestStudio.snapsCount', { n: (status.snapshots_processed || 0).toLocaleString() })}
             </span>
           ) : null}
           {onCancel && status && ['queued', 'running'].includes(status.status) && !status.cancel_requested ? (
@@ -551,12 +555,12 @@ function RunningBacktestSkeleton({
               onClick={onCancel}
               className="rounded-sm border border-amber-400 bg-white/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 hover:bg-white/80 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:bg-amber-500/20"
             >
-              Cancel
+              {t('backtestStudio.cancel')}
             </button>
           ) : null}
           {status?.cancel_requested ? (
             <span className="rounded-sm bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-900 dark:text-amber-200">
-              Cancelling…
+              {t('backtestStudio.cancelling')}
             </span>
           ) : null}
         </div>
@@ -634,14 +638,15 @@ function RunningBacktestSkeleton({
  * not full backtest".
  */
 function DiscoveryModePill({ mode }: { mode?: string }) {
+  const { t } = useTranslation()
   if (!mode) return null
   const label =
     mode === 'historical_synthesis'
-      ? 'replay+detect'
+      ? t('backtestStudio.discoveryReplayDetect')
       : mode === 'hybrid'
-      ? 'live+replay'
+      ? t('backtestStudio.discoveryLiveReplay')
       : mode === 'live_opps'
-      ? 'live cache only'
+      ? t('backtestStudio.discoveryLiveCacheOnly')
       : mode
   const live_only = mode === 'live_opps'
   return (
@@ -654,18 +659,19 @@ function DiscoveryModePill({ mode }: { mode?: string }) {
       )}
       title={
         mode === 'hybrid'
-          ? 'Discovery: strategy.detect ran against historical market state at sampled time intervals AND we cached opportunities the live system already saw.  This is the default backtest mode.'
+          ? t('backtestStudio.discoveryHybridTip')
           : mode === 'historical_synthesis'
-          ? 'Discovery: strategy.detect ran against historical market state.  No live opportunity history existed for this strategy in the window — the backtest is entirely replay-driven.'
-          : 'Discovery: ONLY OpportunityHistory rows the live system already produced.  This is fill-counterfactual mode (testing fill-model / risk gates), not full backtest.  Set discover_from_history=True to run discovery against recorded data.'
+          ? t('backtestStudio.discoveryHistoricalTip')
+          : t('backtestStudio.discoveryLiveOppsTip')
       }
     >
-      discovery: {label}
+      {t('backtestStudio.discoveryPrefix')} {label}
     </span>
   )
 }
 
 function ReplaySourcePill({ source }: { source?: string }) {
+  const { t } = useTranslation()
   if (!source) return null
   const isDelta = source.startsWith('deltas')
   return (
@@ -676,13 +682,9 @@ function ReplaySourcePill({ source }: { source?: string }) {
           ? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-500/30'
           : 'bg-muted text-muted-foreground',
       )}
-      title={
-        isDelta
-          ? 'Engine replayed book_delta_events — same data source as the live system (live-parity).'
-          : 'Engine replayed market_microstructure_snapshots.  Switch to the delta path by populating book_delta_events (it does so automatically once the live system runs).'
-      }
+      title={isDelta ? t('backtestStudio.replayDeltaTip') : t('backtestStudio.replaySnapshotsTip')}
     >
-      replay: {source}
+      {t('backtestStudio.replayPrefix')} {source}
     </span>
   )
 }
@@ -712,6 +714,7 @@ function DataCoverageBanner({
   replaySource?: string
   discoveryMode?: string
 }) {
+  const { t } = useTranslation()
   if (!coverage || !coverage.fidelity_rating) return null
   const rating = coverage.fidelity_rating
   const median = coverage.median_snaps_per_token_per_hour ?? 0
@@ -728,10 +731,9 @@ function DataCoverageBanner({
     return (
       <div className="flex items-center justify-between rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/5 dark:text-emerald-200">
         <div>
-          <span className="font-semibold">LIVE-PARITY REPLAY</span>
+          <span className="font-semibold">{t('backtestStudio.liveParityReplay')}</span>
           <span className="ml-2 text-emerald-800/90 dark:text-emerald-300/80">
-            engine ran against book_delta_events — same source as live
-            ({tokensWithDeltas}/{oppTokens} tokens · median {deltasMedian.toFixed(1)} deltas/hr)
+            {t('backtestStudio.liveParityDetails', { withDeltas: tokensWithDeltas, total: oppTokens, deltasMedian: deltasMedian.toFixed(1) })}
           </span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -746,9 +748,9 @@ function DataCoverageBanner({
     return (
       <div className="flex items-center justify-between rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/5 dark:text-emerald-200">
         <div>
-          <span className="font-semibold">DATA FIDELITY: high</span>
+          <span className="font-semibold">{t('backtestStudio.fidelityHigh')}</span>
           <span className="ml-2 text-emerald-800/90 dark:text-emerald-300/80">
-            median {median.toFixed(1)} snaps/token/hr · {tokensWithSnaps}/{oppTokens} tokens covered
+            {t('backtestStudio.fidelityHighDetails', { median: median.toFixed(1), withSnaps: tokensWithSnaps, total: oppTokens })}
           </span>
         </div>
         <div className="flex items-center gap-1.5">
@@ -763,15 +765,14 @@ function DataCoverageBanner({
     return (
       <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
         <div className="flex items-center justify-between">
-          <span className="font-semibold">⚠ DATA FIDELITY: medium</span>
+          <span className="font-semibold">{t('backtestStudio.fidelityMedium')}</span>
           <div className="flex items-center gap-1.5">
           <DiscoveryModePill mode={discoveryMode} />
           <ReplaySourcePill source={replaySource} />
         </div>
         </div>
         <div className="mt-1 text-amber-900/90 dark:text-amber-300/90">
-          median {median.toFixed(1)} snaps/token/hr · {tokensWithSnaps}/{oppTokens} tokens.
-          Taker-mode strategies replay accurately; passive resting GTC limits may underfill.
+          {t('backtestStudio.fidelityMediumDetails', { median: median.toFixed(1), withSnaps: tokensWithSnaps, total: oppTokens })}
         </div>
         {rec ? <div className="mt-1 text-amber-900/80 dark:text-amber-200/80">{rec}</div> : null}
       </div>
@@ -784,7 +785,7 @@ function DataCoverageBanner({
     <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900 dark:border-red-500/50 dark:bg-red-500/10 dark:text-red-100">
       <div className="flex items-center justify-between">
         <span className="font-semibold text-red-900 dark:text-red-200">
-          ⚠ DATA FIDELITY: {rating.toUpperCase()} — backtest fills NOT representative of live
+          {t('backtestStudio.fidelityLowHeader', { rating: rating.toUpperCase() })}
         </span>
         <div className="flex items-center gap-1.5">
           <DiscoveryModePill mode={discoveryMode} />
@@ -793,15 +794,15 @@ function DataCoverageBanner({
       </div>
       <div className="mt-1 grid grid-cols-2 gap-2 text-[11px] text-red-900/90 dark:text-red-100/90">
         <div className="rounded-sm bg-red-100 px-2 py-1 dark:bg-red-500/10">
-          <div className="text-red-800/80 dark:text-red-200/70">market_microstructure_snapshots (engine)</div>
+          <div className="text-red-800/80 dark:text-red-200/70">{t('backtestStudio.fidelitySnapshotsLabel')}</div>
           <div className="font-mono">
-            {tokensWithSnaps}/{oppTokens} tokens · median {median.toFixed(1)}/hr
+            {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithSnaps, total: oppTokens, median: median.toFixed(1) })}
           </div>
         </div>
         <div className="rounded-sm bg-red-100 px-2 py-1 dark:bg-red-500/10">
-          <div className="text-red-800/80 dark:text-red-200/70">book_delta_events (live source)</div>
+          <div className="text-red-800/80 dark:text-red-200/70">{t('backtestStudio.fidelityDeltasLabel')}</div>
           <div className="font-mono">
-            {tokensWithDeltas}/{oppTokens} tokens · median {deltasMedian.toFixed(1)}/hr
+            {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithDeltas, total: oppTokens, median: deltasMedian.toFixed(1) })}
           </div>
         </div>
       </div>
@@ -811,10 +812,11 @@ function DataCoverageBanner({
 }
 
 function EnsembleBand({ band }: { band: UnifiedBacktestResult['ensemble_band'] }) {
+  const { t } = useTranslation()
   if (!band || band.length === 0) {
     return (
       <div className="text-xs text-muted-foreground italic">
-        No ensemble samples for this run (no fills had captured book context).
+        {t('backtestStudio.ensembleEmpty')}
       </div>
     )
   }
@@ -823,8 +825,8 @@ function EnsembleBand({ band }: { band: UnifiedBacktestResult['ensemble_band'] }
       {band.map((b, i) => (
         <div key={`${b.fill_id || i}-${i}`} className="rounded-sm border border-border/40 bg-background/40 px-2 py-1.5">
           <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-            <span>fill #{i + 1}</span>
-            {b.cox_loaded ? <Badge className="bg-emerald-500/10 text-emerald-300 text-[9px]">cox</Badge> : <Badge variant="outline" className="text-[9px]">heuristic</Badge>}
+            <span>{t('backtestStudio.ensembleFillNumber', { n: i + 1 })}</span>
+            {b.cox_loaded ? <Badge className="bg-emerald-500/10 text-emerald-300 text-[9px]">{t('backtestStudio.ensembleCox')}</Badge> : <Badge variant="outline" className="text-[9px]">{t('backtestStudio.ensembleHeuristic')}</Badge>}
           </div>
           <div className="mt-1 grid grid-cols-3 gap-1 text-[11px]">
             <div className="rounded-sm bg-red-500/5 px-1.5 py-0.5 text-red-300">
@@ -844,10 +846,11 @@ function EnsembleBand({ band }: { band: UnifiedBacktestResult['ensemble_band'] }
 }
 
 function CounterfactualList({ rows }: { rows: UnifiedBacktestResult['counterfactuals'] }) {
+  const { t } = useTranslation()
   if (!rows || rows.length === 0) {
     return (
       <div className="text-xs text-muted-foreground italic">
-        No counterfactual replays available for this run (no recorded book deltas in the fill window).
+        {t('backtestStudio.counterfactualEmpty')}
       </div>
     )
   }
@@ -873,14 +876,14 @@ function CounterfactualList({ rows }: { rows: UnifiedBacktestResult['counterfact
                 {row.fill.side.toUpperCase()} ${fmtNum(row.fill.price, 4)} × {fmtNum(row.fill.size, 1)}
               </span>
               <span className={cn('text-[10px]', tone === 'good' && 'text-emerald-300', tone === 'warn' && 'text-amber-300')}>
-                {r.expired ? 'expired' : `filled ${(fillRatio * 100).toFixed(0)}%`}
+                {r.expired ? t('backtestStudio.counterfactualExpired') : t('backtestStudio.counterfactualFilled', { pct: (fillRatio * 100).toFixed(0) })}
               </span>
             </div>
             <div className="mt-0.5 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
-              <span>queue {fmtNum(r.final_queue_ahead, 0)}</span>
-              <span>trades-ahead {fmtNum(r.trades_ahead_observed, 0)}</span>
-              <span>cancels-ahead {fmtNum(r.cancels_ahead_observed, 0)}</span>
-              {r.time_to_fill_seconds != null ? <span>ttf {fmtNum(r.time_to_fill_seconds, 1)}s</span> : null}
+              <span>{t('backtestStudio.counterfactualQueue', { n: fmtNum(r.final_queue_ahead, 0) })}</span>
+              <span>{t('backtestStudio.counterfactualTradesAhead', { n: fmtNum(r.trades_ahead_observed, 0) })}</span>
+              <span>{t('backtestStudio.counterfactualCancelsAhead', { n: fmtNum(r.cancels_ahead_observed, 0) })}</span>
+              {r.time_to_fill_seconds != null ? <span>{t('backtestStudio.counterfactualTtf', { n: fmtNum(r.time_to_fill_seconds, 1) })}</span> : null}
             </div>
           </div>
         )
@@ -938,11 +941,10 @@ function RunHistory({
   activeId: string | null
   onSelect: (run: BacktestRunSummary) => void
 }) {
+  const { t } = useTranslation()
   if (runs.length === 0) {
     return (
-      <div className="px-3 py-3 text-[11px] text-muted-foreground italic">
-        No runs yet. Click <strong>Run backtest</strong> to start.
-      </div>
+      <div className="px-3 py-3 text-[11px] text-muted-foreground italic" dangerouslySetInnerHTML={{ __html: t('backtestStudio.runHistoryEmpty') }} />
     )
   }
   return (
@@ -980,11 +982,11 @@ function RunHistory({
               </span>
             </div>
             <div className="truncate text-[10px] text-muted-foreground">
-              {run.strategy_name || run.strategy_slug || 'unknown strategy'}
+              {run.strategy_name || run.strategy_slug || t('backtestStudio.unknownStrategy')}
             </div>
             <div className="flex items-center justify-between text-[10px] text-muted-foreground">
               <span>
-                {run.trade_count} trades · {fmtMs(run.total_time_ms)}
+                {t('backtestStudio.tradesCountShort', { n: run.trade_count })} · {fmtMs(run.total_time_ms)}
               </span>
               <span>{new Date(run.started_at).toLocaleTimeString()}</span>
             </div>
@@ -1003,6 +1005,7 @@ export default function BacktestStudio({
   initialParamSchema,
   strategyLabel,
 }: BacktestStudioProps) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   // Run controls.  Internal state is initialized from props once at
@@ -1053,8 +1056,8 @@ export default function BacktestStudio({
     setParamGroupTab('')
     if (nextSlug && nextSlug !== '_backtest_unified') {
       setJustLoadedSlug(nextSlug)
-      const t = window.setTimeout(() => setJustLoadedSlug(null), 1600)
-      return () => window.clearTimeout(t)
+      const handle = window.setTimeout(() => setJustLoadedSlug(null), 1600)
+      return () => window.clearTimeout(handle)
     }
     return undefined
   }, [initialSourceCode, initialSlug, initialConfig])
@@ -1155,7 +1158,7 @@ export default function BacktestStudio({
 
   const handleStartIteration = () => {
     if (!initialStrategyId) {
-      setIterError('Strategy ID missing — pick a real strategy from the dropdown')
+      setIterError(t('backtestStudio.iteratePickStrategy'))
       return
     }
     // Reset run state.
@@ -1243,7 +1246,7 @@ export default function BacktestStudio({
             iterAbortRef.current = null
             break
           case 'error':
-            setIterError(String(data.error || 'unknown error'))
+            setIterError(String(data.error || t('autoresearch.unknownError')))
             setIterRunning(false)
             iterAbortRef.current = null
             break
@@ -1657,8 +1660,8 @@ export default function BacktestStudio({
   const errorMessage = useMemo(() => {
     const err = runMutation.error as { response?: { data?: { detail?: string } }; message?: string } | undefined
     if (!err) return null
-    return err.response?.data?.detail || err.message || 'unknown error'
-  }, [runMutation.error])
+    return err.response?.data?.detail || err.message || t('autoresearch.unknownError')
+  }, [runMutation.error, t])
 
   const handleRun = () => {
     if (!sourceCode.trim() || sourceCode.trim().length < 10) return
@@ -1762,9 +1765,9 @@ export default function BacktestStudio({
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-amber-300" />
             <div>
-              <div className="text-sm font-semibold">Backtest Studio</div>
+              <div className="text-sm font-semibold">{t('backtestStudio.studioTitle')}</div>
               <div className="text-[11px] text-muted-foreground">
-                L2 replay · Cox PH fill model · ensemble PnL bands · counterfactual queue replay
+                {t('backtestStudio.studioSubtitle')}
               </div>
             </div>
           </div>
@@ -1778,25 +1781,25 @@ export default function BacktestStudio({
                     : 'bg-amber-500/10 text-amber-300',
                 )}
               >
-                {fillModel.family} · {fillModel.n_events?.toLocaleString()} events
+                {t('backtestStudio.fillModelEvents', { family: fillModel.family, n: fillModel.n_events?.toLocaleString() })}
               </Badge>
             ) : (
               <Badge variant="outline" className="text-[10px]">
-                no fill model loaded
+                {t('backtestStudio.noFillModelLoaded')}
               </Badge>
             )}
             {latency ? (
               <Badge variant="outline" className="text-[10px] font-mono">
-                p50 {Math.round(latency.p50_ms)}ms · p95 {Math.round(latency.p95_ms)}ms
+                {t('backtestStudio.latencyP50P95', { p50: Math.round(latency.p50_ms), p95: Math.round(latency.p95_ms) })}
               </Badge>
             ) : null}
             {constants?.measured ? (
               <Badge className="bg-emerald-500/10 text-emerald-300 text-[10px]">
-                empirical constants live
+                {t('backtestStudio.empiricalConstantsLive')}
               </Badge>
             ) : (
               <Badge variant="outline" className="text-[10px]">
-                empirical constants default
+                {t('backtestStudio.empiricalConstantsDefault')}
               </Badge>
             )}
           </div>
@@ -1824,25 +1827,25 @@ export default function BacktestStudio({
                   ? 'border-amber-400/60 bg-amber-500/10'
                   : 'border-border/40 bg-background/40',
               )}
-              title="Source loaded from the selected strategy. Edit it in Code Experiments."
+              title={t('backtestStudio.strategySourceTooltip')}
             >
               <div className="min-w-0 flex-1">
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Strategy source
+                  {t('backtestStudio.strategySource')}
                 </div>
                 <div className="truncate font-mono text-[11px] text-foreground">
-                  {strategyLabel || slug || 'no strategy'}
+                  {strategyLabel || slug || t('backtestStudio.noStrategy')}
                 </div>
               </div>
               <div className="shrink-0 text-right">
                 <div className="font-mono text-[10px] text-muted-foreground">
                   {sourceCode.length > 0
-                    ? `${sourceCode.length.toLocaleString()} chars`
-                    : 'no source'}
+                    ? t('backtestStudio.charsCount', { n: sourceCode.length.toLocaleString() })
+                    : t('backtestStudio.noSource')}
                 </div>
                 {justLoadedSlug ? (
                   <div className="text-[9px] uppercase tracking-wide text-amber-300">
-                    just loaded
+                    {t('backtestStudio.justLoaded')}
                   </div>
                 ) : null}
               </div>
@@ -1866,30 +1869,30 @@ export default function BacktestStudio({
                 value="setup"
                 className="flex-1 h-8 rounded-none data-[state=active]:bg-background/70 data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-cyan-500 text-[11px]"
               >
-                Setup
+                {t('backtestStudio.tabSetup')}
               </TabsTrigger>
               <TabsTrigger
                 value="parameters"
                 className="flex-1 h-8 rounded-none data-[state=active]:bg-background/70 data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-cyan-500 text-[11px] gap-1"
               >
-                <span>Parameters</span>
+                <span>{t('backtestStudio.tabParameters')}</span>
                 {paramFieldGroups.length > 0 ? (
                   <span className="text-[9px] text-muted-foreground">
                     {paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0)}
                   </span>
                 ) : null}
                 {paramsDirty ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="Overrides modified" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title={t('backtestStudio.overridesModified')} />
                 ) : null}
                 {iterRunning ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" title="Iteration running" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" title={t('backtestStudio.iterationRunning')} />
                 ) : null}
               </TabsTrigger>
               <TabsTrigger
                 value="runs"
                 className="flex-1 h-8 rounded-none data-[state=active]:bg-background/70 data-[state=active]:shadow-none border-b-2 border-transparent data-[state=active]:border-cyan-500 text-[11px] gap-1"
               >
-                <span>Runs</span>
+                <span>{t('backtestStudio.tabRuns')}</span>
                 {runsQuery.data && runsQuery.data.length > 0 ? (
                   <span className="text-[9px] text-muted-foreground">{runsQuery.data.length}</span>
                 ) : null}
@@ -1912,7 +1915,7 @@ export default function BacktestStudio({
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        Capital
+                        {t('backtestStudio.labelCapital')}
                       </Label>
                       <Input
                         value={initialCapital}
@@ -1922,43 +1925,43 @@ export default function BacktestStudio({
                     </div>
                     <div>
                       <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        Seed
+                        {t('backtestStudio.labelSeed')}
                       </Label>
                       <Input
                         value={seed}
                         onChange={(e) => setSeed(e.target.value)}
-                        placeholder="auto"
+                        placeholder={t('backtestStudio.labelSeedAuto')}
                         className="h-7 text-xs"
                       />
                     </div>
                     <div>
                       <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        Latency p50 (ms)
+                        {t('backtestStudio.labelLatencyP50')}
                       </Label>
                       <Input
                         value={submitP50}
                         onChange={(e) => setSubmitP50(e.target.value)}
-                        placeholder="measured"
+                        placeholder={t('backtestStudio.labelMeasured')}
                         className="h-7 text-xs"
                       />
                     </div>
                     <div>
                       <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        Latency p95 (ms)
+                        {t('backtestStudio.labelLatencyP95')}
                       </Label>
                       <Input
                         value={submitP95}
                         onChange={(e) => setSubmitP95(e.target.value)}
-                        placeholder="measured"
+                        placeholder={t('backtestStudio.labelMeasured')}
                         className="h-7 text-xs"
                       />
                     </div>
                     <div>
                       <Label
                         className="text-[10px] uppercase tracking-wide text-muted-foreground"
-                        title="How many days of history to backtest against. Quick = fast iteration (~10-30s); Standard = thicker samples for confidence (~1-2min); Thorough = max statistical power (3-5min)."
+                        title={t('backtestStudio.windowTooltip')}
                       >
-                        Window (days)
+                        {t('backtestStudio.labelWindowDays')}
                       </Label>
                       <Input
                         value={windowDays}
@@ -1973,15 +1976,15 @@ export default function BacktestStudio({
                           a final pre-production sanity check. */}
                       <div className="mt-1 flex items-center gap-1">
                         {([
-                          ['1', 'Quick', '10-30s'],
-                          ['7', 'Standard', '1-2m'],
-                          ['30', 'Thorough', '3-5m'],
+                          ['1', t('backtestStudio.presetQuick'), t('backtestStudio.presetQuickEta')],
+                          ['7', t('backtestStudio.presetStandard'), t('backtestStudio.presetStandardEta')],
+                          ['30', t('backtestStudio.presetThorough'), t('backtestStudio.presetThoroughEta')],
                         ] as const).map(([val, label, eta]) => (
                           <button
                             key={val}
                             type="button"
                             onClick={() => setWindowDays(val)}
-                            title={`${label} — ${val}-day window, expect ~${eta} wall-clock at typical scale`}
+                            title={t('backtestStudio.presetTitle', { label, val, eta })}
                             className={cn(
                               'rounded-sm border px-1.5 py-0.5 text-[9px] font-medium transition-colors',
                               windowDays === val
@@ -1996,24 +1999,24 @@ export default function BacktestStudio({
                       </div>
                     </div>
                     <div>
-                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Square-root impact: bps adverse adjustment when consuming 100% of side depth. 5-10 = deep crypto books; 25-50 = thin event markets. 0 = disabled.">
-                        Impact (bps)
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title={t('backtestStudio.impactTooltip')}>
+                        {t('backtestStudio.labelImpactBps')}
                       </Label>
                       <Input
                         value={impactBps}
                         onChange={(e) => setImpactBps(e.target.value)}
-                        placeholder="0 (off)"
+                        placeholder={t('backtestStudio.placeholderOff')}
                         className="h-7 text-xs"
                       />
                     </div>
                     <div>
-                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title="Polymarket maker LP-rewards approximation. ~1-3 bps realistic on top crypto markets; >5 bps optimistic. Only paid on inside-band fills.">
-                        Maker rebate (bps)
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title={t('backtestStudio.makerRebateTooltip')}>
+                        {t('backtestStudio.labelMakerRebate')}
                       </Label>
                       <Input
                         value={makerRebateBps}
                         onChange={(e) => setMakerRebateBps(e.target.value)}
-                        placeholder="0 (off)"
+                        placeholder={t('backtestStudio.placeholderOff')}
                         className="h-7 text-xs"
                       />
                     </div>
@@ -2030,9 +2033,9 @@ export default function BacktestStudio({
                     >
                       <span className="flex items-center gap-1.5">
                         <Sliders className="h-3 w-3" />
-                        {paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0)} strategy params available
+                        {t('backtestStudio.paramsAvailable', { n: paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0) })}
                       </span>
-                      <span className="text-cyan-300">→ Parameters</span>
+                      <span className="text-cyan-300">{t('backtestStudio.goToParameters')}</span>
                     </button>
                   ) : null}
                 </div>
@@ -2046,8 +2049,8 @@ export default function BacktestStudio({
                   <div className="px-3 py-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[10px] text-muted-foreground">
-                        Edits apply to this run only · backend merges over the
-                        strategy's <code className="font-mono text-foreground">default_config</code>.
+                        {t('backtestStudio.paramsHint')}{' '}
+                        <code className="font-mono text-foreground">{t('backtestStudio.defaultConfig')}</code>.
                       </span>
                       <Button
                         type="button"
@@ -2056,10 +2059,10 @@ export default function BacktestStudio({
                         disabled={!paramsDirty}
                         onClick={handleResetParams}
                         className="h-6 gap-1 px-1.5 text-[10px]"
-                        title="Restore the strategy's declared default values"
+                        title={t('backtestStudio.resetTooltip')}
                       >
                         <RotateCcw className="h-3 w-3" />
-                        Reset
+                        {t('backtestStudio.reset')}
                       </Button>
                     </div>
 
@@ -2125,28 +2128,28 @@ export default function BacktestStudio({
                         <div className="flex items-center justify-between gap-2">
                           <span className="flex items-center gap-1.5 text-[10px] font-medium text-cyan-300">
                             <Wand2 className="h-3 w-3" />
-                            Iteration log
+                            {t('backtestStudio.iterationLog')}
                           </span>
                           {iterRunning ? (
                             <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-cyan-300 border-cyan-400/40 animate-pulse">
-                              running · iter {iterIteration}/{iterMaxIterations}
+                              {t('backtestStudio.iterRunningStatus', { cur: iterIteration, max: iterMaxIterations })}
                             </Badge>
                           ) : iterDoneSummary ? (
                             <Badge variant="outline" className="h-4 px-1.5 text-[9px] uppercase tracking-wide text-emerald-300 border-emerald-400/40">
-                              done · {iterDoneSummary.target_reached ? 'target' : 'completed'}
+                              {iterDoneSummary.target_reached ? t('backtestStudio.iterDoneTarget') : t('backtestStudio.iterDoneCompleted')}
                             </Badge>
                           ) : null}
                         </div>
 
                         <div className="grid grid-cols-3 gap-1.5 text-[10px]">
                           <div>
-                            <div className="text-muted-foreground">Baseline</div>
+                            <div className="text-muted-foreground">{t('backtestStudio.baseline')}</div>
                             <div className="font-mono">
                               {iterBaselineScore !== null ? iterBaselineScore.toFixed(4) : '—'}
                             </div>
                           </div>
                           <div>
-                            <div className="text-muted-foreground">Best</div>
+                            <div className="text-muted-foreground">{t('backtestStudio.best')}</div>
                             <div className="font-mono text-emerald-400">
                               {iterBestScore !== null ? iterBestScore.toFixed(4) : '—'}
                             </div>
@@ -2154,7 +2157,7 @@ export default function BacktestStudio({
                           <div>
                             <div className="text-muted-foreground flex items-center gap-1">
                               <Target className="h-2.5 w-2.5" />
-                              Target
+                              {t('backtestStudio.target')}
                             </div>
                             <div className="font-mono">
                               {iterTargetScore || '—'}
@@ -2165,10 +2168,10 @@ export default function BacktestStudio({
                         {iterLastProposal ? (
                           <div className="text-[10px] border-t border-border/30 pt-1">
                             <div className="text-muted-foreground">
-                              Last proposal · iter {iterLastProposal.iteration} · conf {iterLastProposal.confidence.toFixed(2)}
+                              {t('backtestStudio.lastProposal', { n: iterLastProposal.iteration, conf: iterLastProposal.confidence.toFixed(2) })}
                             </div>
                             <div className="text-foreground italic line-clamp-2">
-                              {iterLastProposal.reasoning || '<no reasoning>'}
+                              {iterLastProposal.reasoning || t('backtestStudio.noReasoning')}
                             </div>
                           </div>
                         ) : null}
@@ -2210,7 +2213,7 @@ export default function BacktestStudio({
                             <div className="flex items-center gap-2">
                               <CheckCircle2 className="h-3 w-3 text-emerald-400" />
                               <span className="text-foreground">
-                                {iterDoneSummary.total_iterations} iterations · improvement{' '}
+                                {t('backtestStudio.iterationsImprovement', { n: iterDoneSummary.total_iterations })}{' '}
                                 <span className={iterDoneSummary.improvement > 0 ? 'text-emerald-400' : 'text-muted-foreground'}>
                                   {iterDoneSummary.improvement >= 0 ? '+' : ''}
                                   {iterDoneSummary.improvement.toFixed(4)}
@@ -2219,7 +2222,7 @@ export default function BacktestStudio({
                             </div>
                             {iterEarlyStopReason ? (
                               <div className="text-muted-foreground italic mt-0.5">
-                                early stop: {iterEarlyStopReason}
+                                {t('backtestStudio.earlyStop', { reason: iterEarlyStopReason })}
                               </div>
                             ) : null}
                           </div>
@@ -2233,11 +2236,9 @@ export default function BacktestStudio({
                   <div className="space-y-1.5">
                     <Sliders className="h-5 w-5 mx-auto text-muted-foreground/50" />
                     <div className="text-[11px] text-muted-foreground">
-                      Strategy declares no dynamic params
+                      {t('backtestStudio.noDynamicParams')}
                     </div>
-                    <div className="text-[10px] text-muted-foreground/70">
-                      Add fields to the strategy's <code className="font-mono">config_schema.param_fields</code> to enable iteration.
-                    </div>
+                    <div className="text-[10px] text-muted-foreground/70" dangerouslySetInnerHTML={{ __html: t('backtestStudio.noDynamicParamsHint') }} />
                   </div>
                 </div>
               )}
@@ -2288,16 +2289,16 @@ export default function BacktestStudio({
                     <CheckCircle2 className="h-3 w-3 text-muted-foreground" />
                   )}
                   <span className="font-mono">
-                    best <span className="text-emerald-400">
+                    {t('backtestStudio.iterStatusBest')} <span className="text-emerald-400">
                       {iterBestScore !== null ? iterBestScore.toFixed(4) : '—'}
                     </span>
                   </span>
                 </span>
                 <span className="font-mono text-muted-foreground">
                   {iterRunning
-                    ? `iter ${iterIteration}/${iterMaxIterations}`
+                    ? t('backtestStudio.iterStatusIter', { cur: iterIteration, max: iterMaxIterations })
                     : iterDoneSummary
-                      ? `${iterDoneSummary.total_iterations} iters · ${iterDoneSummary.improvement >= 0 ? '+' : ''}${iterDoneSummary.improvement.toFixed(4)}`
+                      ? t('backtestStudio.iterStatusIterFinished', { n: iterDoneSummary.total_iterations, improvement: `${iterDoneSummary.improvement >= 0 ? '+' : ''}${iterDoneSummary.improvement.toFixed(4)}` })
                       : ''}
                 </span>
                 {iterTargetScore ? (
@@ -2320,19 +2321,19 @@ export default function BacktestStudio({
                 <div className="grid grid-cols-2 gap-1.5">
                   <div>
                     <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                      Target score
+                      {t('backtestStudio.labelTargetScore')}
                     </Label>
                     <Input
                       value={iterTargetScore}
                       onChange={(e) => setIterTargetScore(e.target.value)}
-                      placeholder="e.g. 1.5"
+                      placeholder={t('backtestStudio.targetScorePlaceholder')}
                       className="h-6 text-[11px] font-mono"
-                      title="Stop when best_score (Sharpe × DSR × WF − DD penalty) reaches this. Empty = no target, runs until max_iterations."
+                      title={t('backtestStudio.targetScoreTooltip')}
                     />
                   </div>
                   <div>
                     <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                      Max iters
+                      {t('backtestStudio.labelMaxIters')}
                     </Label>
                     <Input
                       type="number"
@@ -2345,14 +2346,14 @@ export default function BacktestStudio({
                   </div>
                   <div>
                     <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                      Stop after N no-improve
+                      {t('backtestStudio.labelStopAfterNoImprove')}
                     </Label>
                     <Input
                       value={iterMaxNoImprove}
                       onChange={(e) => setIterMaxNoImprove(e.target.value)}
                       placeholder="10"
                       className="h-6 text-[11px] font-mono"
-                      title="Exit early after this many consecutive non-improving iterations"
+                      title={t('backtestStudio.stopNoImproveTooltip')}
                     />
                   </div>
                   <div className="flex items-end pb-0.5">
@@ -2363,20 +2364,20 @@ export default function BacktestStudio({
                         onChange={(e) => setIterAutoApply(e.target.checked)}
                         className="h-3 w-3"
                       />
-                      <span title="Persist kept overrides to Strategy.config so future runs use them by default">
-                        Auto-apply kept
+                      <span title={t('backtestStudio.autoApplyTooltip')}>
+                        {t('backtestStudio.autoApplyKept')}
                       </span>
                     </label>
                   </div>
                 </div>
                 <div>
                   <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-                    Mandate (optional)
+                    {t('backtestStudio.labelMandate')}
                   </Label>
                   <Input
                     value={iterMandate}
                     onChange={(e) => setIterMandate(e.target.value)}
-                    placeholder="e.g. minimize drawdown without sacrificing Sharpe"
+                    placeholder={t('backtestStudio.mandatePlaceholder')}
                     className="h-6 text-[11px]"
                   />
                 </div>
@@ -2387,7 +2388,7 @@ export default function BacktestStudio({
                   disabled={!initialStrategyId}
                 >
                   <Wand2 className="h-3 w-3" />
-                  {iterDoneSummary ? 'Iterate again' : 'Start iteration'}
+                  {iterDoneSummary ? t('backtestStudio.iterateAgain') : t('backtestStudio.startIteration')}
                 </Button>
               </div>
             ) : null}
@@ -2411,17 +2412,17 @@ export default function BacktestStudio({
                 ) : (
                   <Play className="mr-1 h-3.5 w-3.5" />
                 )}
-                Run backtest
+                {t('backtestStudio.runBacktest')}
               </Button>
               {iterRunning ? (
                 <Button
                   variant="destructive"
                   onClick={handleStopIteration}
                   className="flex-1 gap-1"
-                  title="Stop the running iteration; the in-flight backtest still finishes."
+                  title={t('backtestStudio.stopIterationTooltip')}
                 >
                   <Square className="h-3.5 w-3.5" />
-                  Stop
+                  {t('backtestStudio.stop')}
                 </Button>
               ) : (
                 <Button
@@ -2436,15 +2437,15 @@ export default function BacktestStudio({
                   title={
                     !iterAvailable
                       ? (paramFieldGroups.length === 0
-                          ? "Strategy declares no params to iterate"
-                          : "Pick a strategy from the dropdown to enable iteration")
+                          ? t('backtestStudio.iterateNoParams')
+                          : t('backtestStudio.iteratePickStrategy'))
                       : iterConfigOpen
-                        ? "Hide iterate config"
-                        : "Set target score + start an LLM-driven param search"
+                        ? t('backtestStudio.iterateHide')
+                        : t('backtestStudio.iterateOpen')
                   }
                 >
                   <Wand2 className="h-3.5 w-3.5" />
-                  Iterate
+                  {t('backtestStudio.iterateButton')}
                   {iterConfigOpen ? '▴' : '▾'}
                 </Button>
               )}
@@ -2454,13 +2455,13 @@ export default function BacktestStudio({
             {errorMessage ? (
               <div className="flex items-start gap-1 text-[10px] text-red-300">
                 <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
-                <span>run: {errorMessage}</span>
+                <span>{t('backtestStudio.runErrorPrefix', { msg: errorMessage })}</span>
               </div>
             ) : null}
             {iterError ? (
               <div className="flex items-start gap-1 text-[10px] text-red-300">
                 <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
-                <span>iter: {iterError}</span>
+                <span>{t('backtestStudio.iterErrorPrefix', { msg: iterError })}</span>
               </div>
             ) : null}
           </div>
@@ -2478,11 +2479,11 @@ export default function BacktestStudio({
             {activeRun ? (
               <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-1.5 text-[11px]">
                 <Activity className="h-3.5 w-3.5 shrink-0 text-amber-300" />
-                <span className="text-muted-foreground">Viewing run</span>
+                <span className="text-muted-foreground">{t('backtestStudio.viewingRun')}</span>
                 <span className="font-mono text-amber-200">{activeRun.run_id.slice(0, 8)}</span>
                 <span className="text-muted-foreground">·</span>
                 <span className="truncate font-medium text-foreground">
-                  {activeRun.strategy_name || activeRun.strategy_slug || 'unknown'}
+                  {activeRun.strategy_name || activeRun.strategy_slug || t('backtestStudio.unknown')}
                 </span>
                 <span
                   className={cn(
@@ -2499,7 +2500,7 @@ export default function BacktestStudio({
             ) : loadRunMutation.isPending ? (
               <div className="flex items-center gap-2 rounded-md border border-border/40 bg-card/40 px-3 py-1.5 text-[11px] text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-                Loading run data…
+                {t('backtestStudio.loadingRunData')}
               </div>
             ) : runMutation.isPending || readPendingRun() ? (
               // Run is in flight on the backend.  Either we're holding
@@ -2509,7 +2510,7 @@ export default function BacktestStudio({
               // (every 5s) will reconcile the row when it lands.
               <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-200 dark:text-amber-300">
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                <span className="text-muted-foreground">Backtest running on the backend — results will appear here when complete.  Safe to switch tabs.</span>
+                <span className="text-muted-foreground">{t('backtestStudio.backtestRunningBackend')}</span>
               </div>
             ) : null}
 
@@ -2519,10 +2520,10 @@ export default function BacktestStudio({
                 correlation) and renders the same regardless. */}
             <div className="flex items-center gap-1 border-b border-border/40 pb-1.5">
               {([
-                ['performance', 'Performance', TrendingUp],
-                ['fill_quality', 'Fill quality', Zap],
-                ['robustness', 'Robustness', Activity],
-                ['portfolio', 'Portfolio', Layers3],
+                ['performance', t('backtestStudio.tabPerformance'), TrendingUp],
+                ['fill_quality', t('backtestStudio.tabFillQuality'), Zap],
+                ['robustness', t('backtestStudio.tabRobustness'), Activity],
+                ['portfolio', t('backtestStudio.tabPortfolio'), Layers3],
               ] as Array<[
                 'performance' | 'fill_quality' | 'robustness' | 'portfolio',
                 string,
@@ -2558,10 +2559,10 @@ export default function BacktestStudio({
                 variant={pendingRunId ? 'running' : (runMutation.isPending ? 'running' : 'loading')}
                 caption={
                   pendingRunId
-                    ? 'Backtest running on the dedicated worker process. Backend stays responsive; safe to switch tabs.'
+                    ? t('backtestStudio.skeletonRunning')
                     : runMutation.isPending
-                      ? 'Enqueueing backtest…'
-                      : 'Loading run data…'
+                      ? t('backtestStudio.skeletonEnqueueing')
+                      : t('backtestStudio.skeletonLoading')
                 }
                 status={runStatusQuery.data ?? null}
                 onCancel={
@@ -2587,17 +2588,17 @@ export default function BacktestStudio({
                 <Flame className="h-7 w-7 text-amber-300/50" />
                 <div className="text-sm font-medium">
                   {centerTab === 'performance'
-                    ? 'No run loaded'
+                    ? t('backtestStudio.emptyNoRun')
                     : centerTab === 'fill_quality'
-                      ? 'No fill data'
-                      : 'No robustness data'}
+                      ? t('backtestStudio.emptyNoFill')
+                      : t('backtestStudio.emptyNoRobustness')}
                 </div>
                 <div className="max-w-[420px] text-xs text-muted-foreground">
                   {centerTab === 'performance'
-                    ? 'Pick a strategy and click Run backtest. Headline KPIs, risk-adjusted metrics with deflated Sharpe, and the equity curve appear here.'
+                    ? t('backtestStudio.emptyPerformanceHint')
                     : centerTab === 'fill_quality'
-                      ? 'Run a backtest to populate ensemble PnL bands, counterfactual queue replay, and partial-fill aggregation against the live trade tape.'
-                      : 'Run a backtest to populate triangulation, regime decomposition, and walk-forward cross-validation.'}
+                      ? t('backtestStudio.emptyFillHint')
+                      : t('backtestStudio.emptyRobustnessHint')}
                 </div>
               </div>
             ) : null}
@@ -2609,9 +2610,9 @@ export default function BacktestStudio({
                   <div className="rounded-md border border-border/50 bg-card/40 p-3">
                     <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                       <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
-                      Portfolio correlation (live, last 30 days)
+                      {t('backtestStudio.portfolioCorrelationTitle')}
                       <span className="ml-auto text-[10px] text-muted-foreground">
-                        cross-strategy daily PnL
+                        {t('backtestStudio.portfolioCorrelationSub')}
                       </span>
                     </div>
                     <CorrelationHeatmap result={portfolioCorrelationQuery.data} />
@@ -2619,11 +2620,9 @@ export default function BacktestStudio({
                 ) : (
                   <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-8 text-center">
                     <Layers3 className="h-7 w-7 text-emerald-300/40" />
-                    <div className="text-sm font-medium">No portfolio data yet</div>
+                    <div className="text-sm font-medium">{t('backtestStudio.noPortfolioData')}</div>
                     <div className="max-w-[420px] text-xs text-muted-foreground">
-                      The portfolio correlation matrix needs at least 2 strategies with ≥ 5
-                      terminal trades each in the last 30 days. As trades resolve, this view
-                      populates automatically.
+                      {t('backtestStudio.noPortfolioDataHint')}
                     </div>
                   </div>
                 )}
@@ -2633,37 +2632,37 @@ export default function BacktestStudio({
                   <div className="mt-2 rounded-md border border-border/50 bg-card/40 p-3">
                     <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                       <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-                      Outcome-token netting + capital lockup
+                      {t('backtestStudio.outcomeNetting')}
                       <span className="ml-auto text-[10px] text-muted-foreground">
-                        multi-outcome aware
+                        {t('backtestStudio.outcomeNettingSub')}
                       </span>
                     </div>
                     <div className="grid grid-cols-4 gap-2">
                       <StatTile
-                        label="Gross exposure"
+                        label={t('backtestStudio.grossExposure')}
                         value={fmtUsd(activeRun.outcome_netting.gross_exposure_usd)}
-                        hint="sum of cost basis"
+                        hint={t('backtestStudio.grossExposureHint')}
                       />
                       <StatTile
-                        label="Net exposure"
+                        label={t('backtestStudio.netExposure')}
                         value={fmtUsd(activeRun.outcome_netting.net_exposure_usd)}
                         hint={
                           activeRun.outcome_netting.rebate_estimate_usd > 0
-                            ? `${fmtUsd(activeRun.outcome_netting.rebate_estimate_usd)} redemption rebate`
-                            : 'no netting available'
+                            ? t('backtestStudio.netExposureRebate', { value: fmtUsd(activeRun.outcome_netting.rebate_estimate_usd) })
+                            : t('backtestStudio.netExposureNone')
                         }
                         tone={
                           activeRun.outcome_netting.rebate_estimate_usd > 0 ? 'good' : 'neutral'
                         }
                       />
                       <StatTile
-                        label="Capital efficiency"
+                        label={t('backtestStudio.capitalEfficiency')}
                         value={
                           activeRun.outcome_netting.capital_efficiency_pct != null
                             ? `${fmtNum(activeRun.outcome_netting.capital_efficiency_pct, 1)}%`
                             : '—'
                         }
-                        hint="freed by netting"
+                        hint={t('backtestStudio.capitalEfficiencyHint')}
                         tone={
                           (activeRun.outcome_netting.capital_efficiency_pct ?? 0) >= 20 ? 'good'
                             : (activeRun.outcome_netting.capital_efficiency_pct ?? 0) >= 5 ? 'warn'
@@ -2671,57 +2670,54 @@ export default function BacktestStudio({
                         }
                       />
                       <StatTile
-                        label="Locked capital"
+                        label={t('backtestStudio.lockedCapital')}
                         value={fmtUsd(activeRun.outcome_netting.locked_capital_usd)}
-                        hint={`${activeRun.outcome_netting.open_positions} open positions`}
+                        hint={t('backtestStudio.lockedCapitalHint', { n: activeRun.outcome_netting.open_positions })}
                       />
                     </div>
                     <div className="mt-2 grid grid-cols-3 gap-2">
                       <div className="rounded-sm bg-emerald-500/10 px-2 py-1 text-[11px]">
-                        <div className="text-[9px] uppercase tracking-wide text-emerald-300">Full coverage</div>
+                        <div className="text-[9px] uppercase tracking-wide text-emerald-300">{t('backtestStudio.fullCoverage')}</div>
                         <div className="font-mono tabular-nums text-emerald-200">
                           {activeRun.outcome_netting.outcome_groups.full_coverage}
                         </div>
-                        <div className="text-[9px] text-muted-foreground">all sibling outcomes held</div>
+                        <div className="text-[9px] text-muted-foreground">{t('backtestStudio.fullCoverageHint')}</div>
                       </div>
                       <div className="rounded-sm bg-amber-500/10 px-2 py-1 text-[11px]">
-                        <div className="text-[9px] uppercase tracking-wide text-amber-300">Partial</div>
+                        <div className="text-[9px] uppercase tracking-wide text-amber-300">{t('backtestStudio.partialOutcome')}</div>
                         <div className="font-mono tabular-nums text-amber-200">
                           {activeRun.outcome_netting.outcome_groups.partial}
                         </div>
-                        <div className="text-[9px] text-muted-foreground">some siblings held</div>
+                        <div className="text-[9px] text-muted-foreground">{t('backtestStudio.partialOutcomeHint')}</div>
                       </div>
                       <div className="rounded-sm bg-muted/40 px-2 py-1 text-[11px]">
-                        <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Single</div>
+                        <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('backtestStudio.singleOutcome')}</div>
                         <div className="font-mono tabular-nums">
                           {activeRun.outcome_netting.outcome_groups.single}
                         </div>
-                        <div className="text-[9px] text-muted-foreground">one outcome only</div>
+                        <div className="text-[9px] text-muted-foreground">{t('backtestStudio.singleOutcomeHint')}</div>
                       </div>
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
                       <div className="rounded-sm bg-muted/30 px-2 py-1">
-                        <span className="text-muted-foreground">Avg lockup: </span>
+                        <span className="text-muted-foreground">{t('backtestStudio.avgLockup')} </span>
                         <span className="font-mono tabular-nums">
                           {activeRun.outcome_netting.avg_lockup_seconds != null
-                            ? `${(activeRun.outcome_netting.avg_lockup_seconds / 86400).toFixed(1)} days`
+                            ? t('backtestStudio.lockupDays', { n: (activeRun.outcome_netting.avg_lockup_seconds / 86400).toFixed(1) })
                             : '—'}
                         </span>
                       </div>
                       <div className="rounded-sm bg-muted/30 px-2 py-1">
-                        <span className="text-muted-foreground">Max lockup: </span>
+                        <span className="text-muted-foreground">{t('backtestStudio.maxLockup')} </span>
                         <span className="font-mono tabular-nums">
                           {activeRun.outcome_netting.max_lockup_seconds != null
-                            ? `${(activeRun.outcome_netting.max_lockup_seconds / 86400).toFixed(1)} days`
+                            ? t('backtestStudio.lockupDays', { n: (activeRun.outcome_netting.max_lockup_seconds / 86400).toFixed(1) })
                             : '—'}
                         </span>
                       </div>
                     </div>
                     <div className="mt-2 text-[10px] text-muted-foreground">
-                      Polymarket markets sum to ~$1 per share at resolution; holding all sibling outcomes of a
-                      market caps worst-case loss at the redemption guarantee.  Rebate shown is conservative
-                      (50% of gross of fully-covered groups). Increasing &quot;full coverage&quot; via outcome-aware
-                      sizing is how multi-leg strategies scale capital efficiency.
+                      {t('backtestStudio.outcomeNettingFootnote')}
                     </div>
                   </div>
                 ) : null}
@@ -2731,9 +2727,9 @@ export default function BacktestStudio({
                   <div className="mt-2 rounded-md border border-border/50 bg-card/40 p-3">
                     <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                       <Activity className="h-3.5 w-3.5 text-rose-300" />
-                      Live-vs-backtest drift (last {driftQuery.data.window_days} days)
+                      {t('backtestStudio.driftTitle', { days: driftQuery.data.window_days })}
                       <span className="ml-auto text-[10px] text-muted-foreground">
-                        {driftQuery.data.summary.n_strategies} strategies tracked
+                        {t('backtestStudio.driftStrategiesTracked', { n: driftQuery.data.summary.n_strategies })}
                       </span>
                     </div>
                     <div className="grid grid-cols-4 gap-2">
@@ -2751,7 +2747,7 @@ export default function BacktestStudio({
                               : 'bg-muted/40 text-muted-foreground',
                           )}
                         >
-                          <div className="text-[9px] uppercase tracking-wide">{sev}</div>
+                          <div className="text-[9px] uppercase tracking-wide">{t(`backtestStudio.drift${sev.charAt(0).toUpperCase()}${sev.slice(1)}`)}</div>
                           <div className="font-mono tabular-nums text-base">
                             {driftQuery.data.summary.by_severity[sev] ?? 0}
                           </div>
@@ -2760,7 +2756,7 @@ export default function BacktestStudio({
                     </div>
                     {driftQuery.data.summary.worst_offender ? (
                       <div className="mt-2 rounded-sm bg-rose-500/10 px-2 py-1.5 text-[11px] text-rose-100">
-                        <span className="font-semibold">Worst offender: </span>
+                        <span className="font-semibold">{t('backtestStudio.worstOffender')} </span>
                         <span className="font-mono">{driftQuery.data.summary.worst_offender.strategy_slug}</span>
                         <span className="ml-2 text-rose-200/80">{driftQuery.data.summary.worst_offender.reason}</span>
                       </div>
@@ -2769,13 +2765,13 @@ export default function BacktestStudio({
                       <table className="w-full text-[10px]">
                         <thead className="sticky top-0 bg-card/95 text-muted-foreground">
                           <tr>
-                            <th className="text-left">Strategy</th>
-                            <th className="text-right">BT Sharpe</th>
-                            <th className="text-right">Live Sharpe</th>
-                            <th className="text-right">Δ</th>
-                            <th className="text-right">Live PnL</th>
-                            <th className="text-right">Live trades</th>
-                            <th className="text-left">Severity</th>
+                            <th className="text-left">{t('backtestStudio.colStrategy')}</th>
+                            <th className="text-right">{t('backtestStudio.colBtSharpe')}</th>
+                            <th className="text-right">{t('backtestStudio.colLiveSharpe')}</th>
+                            <th className="text-right">{t('backtestStudio.colDelta')}</th>
+                            <th className="text-right">{t('backtestStudio.colLivePnl')}</th>
+                            <th className="text-right">{t('backtestStudio.colLiveTrades')}</th>
+                            <th className="text-left">{t('backtestStudio.colSeverity')}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -2819,8 +2815,7 @@ export default function BacktestStudio({
                       </table>
                     </div>
                     <div className="mt-2 text-[10px] text-muted-foreground">
-                      Drift = live realized minus backtest expectation.  Degraded strategies should be
-                      re-backtested or paused; improved strategies suggest the simulator is conservative.
+                      {t('backtestStudio.driftFootnote')}
                     </div>
                   </div>
                 ) : null}
@@ -2845,34 +2840,34 @@ export default function BacktestStudio({
               />
               <div className="grid grid-cols-4 gap-2">
                 <StatTile
-                  label="Return"
+                  label={t('backtestStudio.kpiReturn')}
                   value={fmtPct(exec?.total_return_pct, 2)}
-                  hint={fmtUsd((exec?.final_equity_usd ?? 0) - (exec?.initial_capital_usd ?? 0)) + ' net'}
+                  hint={t('backtestStudio.kpiReturnHint', { value: fmtUsd((exec?.final_equity_usd ?? 0) - (exec?.initial_capital_usd ?? 0)) })}
                   tone={totalReturnTone}
                   icon={exec && exec.total_return_pct >= 0 ? TrendingUp : TrendingDown}
                 />
                 <StatTile
-                  label="Sharpe"
+                  label={t('backtestStudio.kpiSharpe')}
                   value={fmtNum(exec?.sharpe?.value, 2)}
                   hint={
                     exec?.sharpe?.ci_low != null && exec?.sharpe?.ci_high != null
-                      ? `ci [${fmtNum(exec.sharpe.ci_low, 2)}, ${fmtNum(exec.sharpe.ci_high, 2)}]`
+                      ? t('backtestStudio.kpiSharpeCi', { lo: fmtNum(exec.sharpe.ci_low, 2), hi: fmtNum(exec.sharpe.ci_high, 2) })
                       : undefined
                   }
                   tone={sharpeTone}
                   icon={Activity}
                 />
                 <StatTile
-                  label="Max drawdown"
+                  label={t('backtestStudio.kpiMaxDrawdown')}
                   value={fmtPct(exec?.max_drawdown_pct, 2)}
-                  hint={`${fmtMs((exec?.drawdown_duration_seconds ?? 0) * 1000)} duration`}
+                  hint={t('backtestStudio.kpiDrawdownDuration', { value: fmtMs((exec?.drawdown_duration_seconds ?? 0) * 1000) })}
                   tone={ddTone}
                   icon={TrendingDown}
                 />
                 <StatTile
-                  label="Trades"
+                  label={t('backtestStudio.kpiTrades')}
                   value={(exec?.trade_count ?? 0).toLocaleString()}
-                  hint={`${exec?.total_fills ?? 0} fills · ${exec?.cancelled_orders ?? 0} cancels · ${exec?.rejected_orders ?? 0} rejects`}
+                  hint={t('backtestStudio.kpiTradesHint', { fills: exec?.total_fills ?? 0, cancels: exec?.cancelled_orders ?? 0, rejects: exec?.rejected_orders ?? 0 })}
                   icon={Zap}
                 />
               </div>
@@ -2882,24 +2877,24 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                     <Activity className="h-3.5 w-3.5 text-amber-300" />
-                    Risk-adjusted metrics (bootstrap CIs)
+                    {t('backtestStudio.riskAdjustedTitle')}
                   </div>
-                  <MetricRow label="Sharpe" m={exec?.sharpe} tone={sharpeTone === 'bad' ? 'bad' : sharpeTone === 'good' ? 'good' : undefined} />
-                  <MetricRow label="Sortino" m={exec?.sortino} />
-                  <MetricRow label="Calmar" m={exec?.calmar} />
-                  <MetricRow label="Hit rate" m={exec?.hit_rate} />
-                  <MetricRow label="Profit factor" m={exec?.profit_factor} />
-                  <MetricRow label="Expectancy ($)" m={exec?.expectancy_usd} />
+                  <MetricRow label={t('backtestStudio.metricSharpe')} m={exec?.sharpe} tone={sharpeTone === 'bad' ? 'bad' : sharpeTone === 'good' ? 'good' : undefined} />
+                  <MetricRow label={t('backtestStudio.metricSortino')} m={exec?.sortino} />
+                  <MetricRow label={t('backtestStudio.metricCalmar')} m={exec?.calmar} />
+                  <MetricRow label={t('backtestStudio.metricHitRate')} m={exec?.hit_rate} />
+                  <MetricRow label={t('backtestStudio.metricProfitFactor')} m={exec?.profit_factor} />
+                  <MetricRow label={t('backtestStudio.metricExpectancyUsd')} m={exec?.expectancy_usd} />
                   {(exec?.expected_shortfall_5pct || exec?.tail_ratio || exec?.gain_to_pain) ? (
                     <div className="mt-2 border-t border-border/40 pt-2">
                       <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-                        <span>Tail risk (equity returns)</span>
-                        <span>worst 5% / 1% periods</span>
+                        <span>{t('backtestStudio.tailRiskTitle')}</span>
+                        <span>{t('backtestStudio.tailRiskSub')}</span>
                       </div>
-                      <MetricRow label="ES 5% (CVaR)" m={exec?.expected_shortfall_5pct} tone={(exec?.expected_shortfall_5pct?.value ?? 0) < -0.05 ? 'bad' : undefined} />
-                      <MetricRow label="ES 1% (CVaR)" m={exec?.expected_shortfall_1pct} />
+                      <MetricRow label={t('backtestStudio.metricEs5')} m={exec?.expected_shortfall_5pct} tone={(exec?.expected_shortfall_5pct?.value ?? 0) < -0.05 ? 'bad' : undefined} />
+                      <MetricRow label={t('backtestStudio.metricEs1')} m={exec?.expected_shortfall_1pct} />
                       <MetricRow
-                        label="Tail ratio"
+                        label={t('backtestStudio.metricTailRatio')}
                         m={exec?.tail_ratio}
                         tone={
                           (exec?.tail_ratio?.value ?? 0) >= 1.5 ? 'good'
@@ -2907,21 +2902,21 @@ export default function BacktestStudio({
                             : undefined
                         }
                       />
-                      <MetricRow label="Gain-to-pain" m={exec?.gain_to_pain} tone={(exec?.gain_to_pain?.value ?? 0) >= 1.5 ? 'good' : undefined} />
+                      <MetricRow label={t('backtestStudio.metricGainToPain')} m={exec?.gain_to_pain} tone={(exec?.gain_to_pain?.value ?? 0) >= 1.5 ? 'good' : undefined} />
                       <div className="mt-1 text-[10px] text-muted-foreground">
-                        ES = mean of worst-tail returns; tail ratio &lt; 1 ⇒ downside-heavy payouts.
+                        {t('backtestStudio.tailRiskFootnote')}
                       </div>
                     </div>
                   ) : null}
                   {activeRun?.deflated_sharpe ? (
                     <div className="mt-2 border-t border-border/40 pt-2">
                       <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-                        <span>Deflated Sharpe (López de Prado)</span>
-                        <span>{activeRun.deflated_sharpe.n_trials} trial{activeRun.deflated_sharpe.n_trials === 1 ? '' : 's'}</span>
+                        <span>{t('backtestStudio.deflatedSharpeTitle')}</span>
+                        <span>{activeRun.deflated_sharpe.n_trials === 1 ? t('backtestStudio.deflatedSharpeTrials', { n: activeRun.deflated_sharpe.n_trials }) : t('backtestStudio.deflatedSharpeTrialsPlural', { n: activeRun.deflated_sharpe.n_trials })}</span>
                       </div>
                       <div className="mt-1 grid grid-cols-2 gap-1 text-[11px]">
                         <div className="flex items-center justify-between rounded-sm bg-muted/40 px-1.5 py-0.5">
-                          <span className="text-muted-foreground">P(true SR &gt; 0)</span>
+                          <span className="text-muted-foreground">{t('backtestStudio.deflatedPTrueSr')}</span>
                           <span className={cn(
                             'font-mono tabular-nums',
                             activeRun.deflated_sharpe.probabilistic_sharpe >= 0.95 ? 'text-emerald-300'
@@ -2932,7 +2927,7 @@ export default function BacktestStudio({
                           </span>
                         </div>
                         <div className="flex items-center justify-between rounded-sm bg-muted/40 px-1.5 py-0.5">
-                          <span className="text-muted-foreground">P(SR &gt; SR₀ overfit)</span>
+                          <span className="text-muted-foreground">{t('backtestStudio.deflatedPSrOverfit')}</span>
                           <span className={cn(
                             'font-mono tabular-nums',
                             activeRun.deflated_sharpe.deflated_sharpe >= 0.95 ? 'text-emerald-300'
@@ -2944,11 +2939,13 @@ export default function BacktestStudio({
                         </div>
                       </div>
                       <div className="mt-1 text-[10px] text-muted-foreground">
-                        SR₀ {activeRun.deflated_sharpe.sr_zero.toFixed(2)} (max-of-N noise floor) ·
-                        observed {activeRun.deflated_sharpe.observed_sharpe.toFixed(2)} ·
-                        {activeRun.deflated_sharpe.deflated_sharpe < 0.95 && activeRun.deflated_sharpe.n_trials > 1
-                          ? ' likely overfit ⇒ run holdout'
-                          : ' overfit-aware OK'}
+                        {t('backtestStudio.deflatedFootnote', {
+                          sr0: activeRun.deflated_sharpe.sr_zero.toFixed(2),
+                          obs: activeRun.deflated_sharpe.observed_sharpe.toFixed(2),
+                          verdict: activeRun.deflated_sharpe.deflated_sharpe < 0.95 && activeRun.deflated_sharpe.n_trials > 1
+                            ? t('backtestStudio.deflatedLikelyOverfit')
+                            : t('backtestStudio.deflatedOk'),
+                        })}
                       </div>
                     </div>
                   ) : null}
@@ -2957,24 +2954,24 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                     <LineChartIcon className="h-3.5 w-3.5 text-emerald-300" />
-                    Equity curve
+                    {t('backtestStudio.equityCurveTitle')}
                   </div>
                   <EquityCurveChart points={exec?.equity_curve_sample ?? []} />
                   <div className="mt-2 grid grid-cols-3 gap-2">
                     <StatTile
-                      label="Avg win"
+                      label={t('backtestStudio.avgWin')}
                       value={fmtUsd(exec?.avg_win_usd)}
                       tone="good"
                     />
                     <StatTile
-                      label="Avg loss"
+                      label={t('backtestStudio.avgLoss')}
                       value={fmtUsd(exec?.avg_loss_usd)}
                       tone="bad"
                     />
                     <StatTile
-                      label="Fees / fill"
+                      label={t('backtestStudio.feesPerFill')}
                       value={fmtUsd(exec?.fees_per_fill_usd)}
-                      hint={fmtUsd(exec?.fees_paid_usd) + ' total'}
+                      hint={t('backtestStudio.feesTotal', { value: fmtUsd(exec?.fees_paid_usd) })}
                     />
                   </div>
                 </div>
@@ -2988,9 +2985,9 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-                    Ensemble fill probability (p10 / p50 / p90)
+                    {t('backtestStudio.ensembleTitle')}
                     <span className="ml-auto text-[10px] text-muted-foreground">
-                      {activeRun.ensemble_band.length} sample fills
+                      {t('backtestStudio.ensembleSampleFills', { n: activeRun.ensemble_band.length })}
                     </span>
                   </div>
                   <EnsembleBand band={activeRun.ensemble_band} />
@@ -2999,9 +2996,9 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Clock className="h-3.5 w-3.5 text-sky-300" />
-                    Counterfactual queue replay
+                    {t('backtestStudio.counterfactualTitle')}
                     <span className="ml-auto text-[10px] text-muted-foreground">
-                      {activeRun.counterfactuals.length} sample fills
+                      {t('backtestStudio.ensembleSampleFills', { n: activeRun.counterfactuals.length })}
                     </span>
                   </div>
                   <CounterfactualList rows={activeRun.counterfactuals} />
@@ -3014,9 +3011,9 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Activity className="h-3.5 w-3.5 text-amber-300" />
-                    Triangulation — backtest vs shadow vs live (last 30 days)
+                    {t('backtestStudio.triangulationTitle')}
                     <span className="ml-auto text-[10px] text-muted-foreground">
-                      same strategy across regimes
+                      {t('backtestStudio.triangulationSub')}
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-2">
@@ -3038,33 +3035,29 @@ export default function BacktestStudio({
                       return (
                         <>
                           <StatTile
-                            label="Backtest PnL"
+                            label={t('backtestStudio.tileBacktestPnl')}
                             value={fmtUsd(btPnl)}
-                            hint={`${exec?.trade_count ?? 0} trades · ${fmtPct(exec?.total_return_pct, 1)}`}
+                            hint={t('backtestStudio.tileBacktestPnlHint', { trades: exec?.trade_count ?? 0, ret: fmtPct(exec?.total_return_pct, 1) })}
                             tone={btPnl >= 0 ? 'good' : 'bad'}
                             icon={Flame}
                           />
                           <StatTile
-                            label="Shadow PnL"
+                            label={t('backtestStudio.tileShadowPnl')}
                             value={fmtUsd(shadowPnl)}
                             hint={
                               shadowMode
-                                ? `${shadowMode.orders} orders · ${shadowMode.filled} filled · ${
-                                    btPnl !== 0 ? `Δ ${fmtPct(shadowDeltaPct, 0)}` : 'no backtest'
-                                  }`
-                                : 'no shadow data'
+                                ? t('backtestStudio.shadowOrders', { orders: shadowMode.orders, filled: shadowMode.filled, delta: btPnl !== 0 ? t('backtestStudio.deltaPctLabel', { pct: fmtPct(shadowDeltaPct, 0) }) : t('backtestStudio.noBacktest') })
+                                : t('backtestStudio.noShadowData')
                             }
                             tone={shadowPnl >= 0 ? 'good' : 'bad'}
                           />
                           <StatTile
-                            label="Live PnL"
+                            label={t('backtestStudio.tileLivePnl')}
                             value={fmtUsd(livePnl)}
                             hint={
                               liveMode
-                                ? `${liveMode.orders} orders · ${liveMode.filled} filled · ${
-                                    btPnl !== 0 ? `Δ ${fmtPct(liveDeltaPct, 0)}` : 'no backtest'
-                                  }`
-                                : 'no live data'
+                                ? t('backtestStudio.shadowOrders', { orders: liveMode.orders, filled: liveMode.filled, delta: btPnl !== 0 ? t('backtestStudio.deltaPctLabel', { pct: fmtPct(liveDeltaPct, 0) }) : t('backtestStudio.noBacktest') })
+                                : t('backtestStudio.noLiveData')
                             }
                             tone={
                               divergent ? 'warn' : livePnl >= 0 ? 'good' : 'bad'
@@ -3075,8 +3068,7 @@ export default function BacktestStudio({
                     })()}
                   </div>
                   <div className="mt-2 text-[10px] text-muted-foreground">
-                    Δ &gt; 30% between any two regimes ⇒ the fill model is likely the suspect (latency or queue
-                    assumptions). Δ &lt; 10% means the simulator is well-calibrated for this strategy.
+                    {t('backtestStudio.triangulationFootnote')}
                   </div>
                 </div>
               ) : null}
@@ -3086,39 +3078,39 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Zap className="h-3.5 w-3.5 text-sky-300" />
-                    Partial-fill aggregation
+                    {t('backtestStudio.partialFillTitle')}
                     <span className="ml-auto text-[10px] text-muted-foreground">
-                      child fills per parent order
+                      {t('backtestStudio.partialFillSub')}
                     </span>
                   </div>
                   <div className="grid grid-cols-4 gap-2">
                     <StatTile
-                      label="Instant fills"
+                      label={t('backtestStudio.instantFills')}
                       value={`${(activeRun.partial_fills.instant_fill_rate * 100).toFixed(0)}%`}
-                      hint={`${activeRun.partial_fills.n_instant_fills}/${activeRun.partial_fills.n_orders}`}
+                      hint={t('backtestStudio.instantFillsHint', { instant: activeRun.partial_fills.n_instant_fills, orders: activeRun.partial_fills.n_orders })}
                       tone={activeRun.partial_fills.instant_fill_rate >= 0.7 ? 'good' : activeRun.partial_fills.instant_fill_rate >= 0.4 ? 'warn' : 'bad'}
                     />
                     <StatTile
-                      label="Avg children"
+                      label={t('backtestStudio.avgChildren')}
                       value={fmtNum(activeRun.partial_fills.mean_children_per_order, 2)}
-                      hint={`max ${activeRun.partial_fills.max_children_per_order}`}
+                      hint={t('backtestStudio.avgChildrenHint', { n: activeRun.partial_fills.max_children_per_order })}
                     />
                     <StatTile
-                      label="Intra-order span"
+                      label={t('backtestStudio.intraOrderSpan')}
                       value={activeRun.partial_fills.mean_intra_order_seconds > 0 ? fmtMs(activeRun.partial_fills.mean_intra_order_seconds * 1000) : '—'}
-                      hint="mean across partials"
+                      hint={t('backtestStudio.intraOrderSpanHint')}
                     />
                     <StatTile
-                      label="VWAP dispersion"
-                      value={`${fmtNum(activeRun.partial_fills.mean_vwap_dispersion_bps, 1)} bps`}
-                      hint="price std / VWAP"
+                      label={t('backtestStudio.vwapDispersion')}
+                      value={t('backtestStudio.vwapDispersionUnit', { n: fmtNum(activeRun.partial_fills.mean_vwap_dispersion_bps, 1) })}
+                      hint={t('backtestStudio.vwapDispersionHint')}
                       tone={activeRun.partial_fills.mean_vwap_dispersion_bps > 50 ? 'warn' : 'neutral'}
                     />
                   </div>
                   {activeRun.partial_fills.child_count_distribution.length > 1 ? (
                     <div className="mt-2">
                       <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                        child-count distribution
+                        {t('backtestStudio.childCountDist')}
                       </div>
                       <div className="flex flex-wrap gap-1">
                         {activeRun.partial_fills.child_count_distribution.map((d) => {
@@ -3135,7 +3127,7 @@ export default function BacktestStudio({
                                 'border-red-500/30 text-red-300',
                               )}
                             >
-                              {d.children}× → {d.n_orders} ord ({pct.toFixed(0)}%)
+                              {t('backtestStudio.childCountEntry', { children: d.children, orders: d.n_orders, pct: pct.toFixed(0) })}
                             </div>
                           )
                         })}
@@ -3143,9 +3135,7 @@ export default function BacktestStudio({
                     </div>
                   ) : null}
                   <div className="mt-2 text-[10px] text-muted-foreground">
-                    Low instant-fill rate ⇒ orders walk the book or queue-decay before completing.
-                    High VWAP dispersion ⇒ price moved during the partial fill (slippage cost beyond
-                    the headline number).
+                    {t('backtestStudio.partialFillFootnote')}
                   </div>
                 </div>
               ) : null}
@@ -3155,21 +3145,19 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Layers3 className="h-3.5 w-3.5 text-amber-300" />
-                    Regime decomposition
+                    {t('backtestStudio.regimeTitle')}
                     <span className="ml-auto text-[10px] text-muted-foreground">
-                      win-rate by slice
+                      {t('backtestStudio.regimeSub')}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                    <RegimeBlock title="Hour of day" rows={activeRun.regime_breakdown.by_hour} />
-                    <RegimeBlock title="Day of week" rows={activeRun.regime_breakdown.by_dow} />
-                    <RegimeBlock title="Time to resolution" rows={activeRun.regime_breakdown.by_ttr} />
-                    <RegimeBlock title="Order size" rows={activeRun.regime_breakdown.by_size} />
+                    <RegimeBlock title={t('backtestStudio.regimeHour')} rows={activeRun.regime_breakdown.by_hour} />
+                    <RegimeBlock title={t('backtestStudio.regimeDow')} rows={activeRun.regime_breakdown.by_dow} />
+                    <RegimeBlock title={t('backtestStudio.regimeTtr')} rows={activeRun.regime_breakdown.by_ttr} />
+                    <RegimeBlock title={t('backtestStudio.regimeSize')} rows={activeRun.regime_breakdown.by_size} />
                   </div>
                   <div className="mt-2 text-[10px] text-muted-foreground">
-                    Lopsided win-rate across one slice (e.g. 80% on Tue but 30% Mon-Fri-Sat) ⇒ strategy
-                    works only in one regime. Healthy strategies have flat-ish bars across all four
-                    decompositions.
+                    {t('backtestStudio.regimeFootnote')}
                   </div>
                 </div>
               ) : null}
@@ -3179,15 +3167,15 @@ export default function BacktestStudio({
               <div className="rounded-md border border-border/50 bg-card/40 p-3">
                 <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                   <Activity className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-                  Walk-forward analysis
+                  {t('backtestStudio.walkForwardTitle')}
                   <div className="ml-auto flex items-center gap-1.5">
                     <select
                       value={walkForwardMode}
                       onChange={(e) => setWalkForwardMode(e.target.value as 'anchored' | 'rolling')}
                       className="h-6 rounded-sm border border-border/40 bg-background/60 px-1.5 text-[10px]"
                     >
-                      <option value="anchored">anchored</option>
-                      <option value="rolling">rolling</option>
+                      <option value="anchored">{t('backtestStudio.wfModeAnchored')}</option>
+                      <option value="rolling">{t('backtestStudio.wfModeRolling')}</option>
                     </select>
                     <select
                       value={walkForwardFolds}
@@ -3196,7 +3184,7 @@ export default function BacktestStudio({
                     >
                       {[3, 4, 6, 8, 10, 12].map((n) => (
                         <option key={n} value={n}>
-                          {n} folds
+                          {t('backtestStudio.wfFolds', { n })}
                         </option>
                       ))}
                     </select>
@@ -3212,7 +3200,7 @@ export default function BacktestStudio({
                       ) : (
                         <Play className="mr-1 h-3 w-3" />
                       )}
-                      Run
+                      {t('backtestStudio.wfRun')}
                     </Button>
                   </div>
                 </div>
@@ -3220,31 +3208,31 @@ export default function BacktestStudio({
                   <>
                     <div className="grid grid-cols-4 gap-2">
                       <StatTile
-                        label="Stable folds"
+                        label={t('backtestStudio.wfStableFolds')}
                         value={`${walkForwardResult.summary.stable_window_pct.toFixed(0)}%`}
-                        hint={`${walkForwardResult.summary.n_windows_succeeded}/${walkForwardResult.summary.n_windows_run} succeeded`}
+                        hint={t('backtestStudio.wfStableFoldsHint', { ok: walkForwardResult.summary.n_windows_succeeded, total: walkForwardResult.summary.n_windows_run })}
                         tone={walkForwardResult.summary.stable_window_pct >= 70 ? 'good' : walkForwardResult.summary.stable_window_pct >= 50 ? 'warn' : 'bad'}
                       />
                       <StatTile
-                        label="Mean return"
+                        label={t('backtestStudio.wfMeanReturn')}
                         value={fmtPct(walkForwardResult.summary.mean_return_pct, 2)}
-                        hint={`min ${fmtPct(walkForwardResult.summary.min_return_pct, 1)} · max ${fmtPct(walkForwardResult.summary.max_return_pct, 1)}`}
+                        hint={t('backtestStudio.wfMeanReturnHint', { min: fmtPct(walkForwardResult.summary.min_return_pct, 1), max: fmtPct(walkForwardResult.summary.max_return_pct, 1) })}
                         tone={walkForwardResult.summary.mean_return_pct >= 0 ? 'good' : 'bad'}
                       />
                       <StatTile
-                        label="Mean Sharpe"
+                        label={t('backtestStudio.wfMeanSharpe')}
                         value={walkForwardResult.summary.mean_sharpe != null ? fmtNum(walkForwardResult.summary.mean_sharpe, 2) : '—'}
                         hint={
                           walkForwardResult.summary.min_sharpe != null && walkForwardResult.summary.max_sharpe != null
-                            ? `min ${fmtNum(walkForwardResult.summary.min_sharpe, 2)} · max ${fmtNum(walkForwardResult.summary.max_sharpe, 2)}`
+                            ? t('backtestStudio.wfMeanSharpeHint', { min: fmtNum(walkForwardResult.summary.min_sharpe, 2), max: fmtNum(walkForwardResult.summary.max_sharpe, 2) })
                             : undefined
                         }
                         tone={walkForwardResult.summary.mean_sharpe != null && walkForwardResult.summary.mean_sharpe > 1.0 ? 'good' : 'neutral'}
                       />
                       <StatTile
-                        label="Mode"
+                        label={t('backtestStudio.wfMode')}
                         value={walkForwardResult.mode}
-                        hint={`${walkForwardResult.n_windows_run} folds`}
+                        hint={t('backtestStudio.wfModeHint', { n: walkForwardResult.n_windows_run })}
                       />
                     </div>
                     <div className="mt-2 space-y-1">
@@ -3260,7 +3248,7 @@ export default function BacktestStudio({
                                 : 'border-amber-500/20 bg-amber-500/5',
                           )}
                         >
-                          <span className="font-mono text-muted-foreground">fold {w.index}</span>
+                          <span className="font-mono text-muted-foreground">{t('backtestStudio.wfFold', { n: w.index })}</span>
                           <span className="truncate text-muted-foreground">
                             {new Date(w.test_start_iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' })} →{' '}
                             {new Date(w.test_end_iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' })}
@@ -3277,7 +3265,7 @@ export default function BacktestStudio({
                             SR {w.sharpe != null ? fmtNum(w.sharpe, 2) : '—'}
                           </span>
                           <span className="text-right font-mono tabular-nums text-muted-foreground">
-                            {w.trade_count}t
+                            {t('backtestStudio.wfTrades', { n: w.trade_count })}
                           </span>
                           <span className="text-right font-mono tabular-nums text-muted-foreground">
                             {fmtUsd(w.final_equity_usd)}
@@ -3287,10 +3275,7 @@ export default function BacktestStudio({
                     </div>
                   </>
                 ) : (
-                  <div className="text-[11px] text-muted-foreground italic">
-                    Click <strong>Run</strong> to split the last 14 days into {walkForwardFolds} {walkForwardMode} folds and
-                    backtest each separately. Stable returns across folds = real edge; high variance = overfit.
-                  </div>
+                  <div className="text-[11px] text-muted-foreground italic" dangerouslySetInnerHTML={{ __html: t('backtestStudio.wfEmpty', { folds: walkForwardFolds, mode: walkForwardMode }) }} />
                 )}
               </div>
               )}
@@ -3300,9 +3285,9 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Activity className="h-3.5 w-3.5 text-amber-300" />
-                    Trade-order Monte Carlo
+                    {t('backtestStudio.tomTitle')}
                     <span className="ml-auto text-[10px] text-muted-foreground">
-                      sequence sensitivity
+                      {t('backtestStudio.tomSub')}
                     </span>
                   </div>
                   {activeRun.trade_order_monte_carlo.skipped_reason ? (
@@ -3313,22 +3298,22 @@ export default function BacktestStudio({
                     <>
                       <div className="grid grid-cols-4 gap-2">
                         <StatTile
-                          label="Realized Sharpe"
+                          label={t('backtestStudio.tomRealizedSharpe')}
                           value={fmtNum(activeRun.trade_order_monte_carlo.realized_sharpe, 2)}
-                          hint={`${activeRun.trade_order_monte_carlo.n_trades} closed trades`}
+                          hint={t('backtestStudio.tomRealizedSharpeHint', { n: activeRun.trade_order_monte_carlo.n_trades })}
                         />
                         <StatTile
-                          label="Shuffle median"
+                          label={t('backtestStudio.tomShuffleMedian')}
                           value={fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p50 ?? 0, 2)}
-                          hint={`p5 ${fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p5 ?? 0, 2)} · p95 ${fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p95 ?? 0, 2)}`}
+                          hint={t('backtestStudio.tomShuffleMedianHint', { p5: fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p5 ?? 0, 2), p95: fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.p95 ?? 0, 2) })}
                         />
                         <StatTile
-                          label="Shuffle stdev"
+                          label={t('backtestStudio.tomShuffleStdev')}
                           value={fmtNum(activeRun.trade_order_monte_carlo.sharpe_distribution.stdev ?? 0, 2)}
-                          hint={`${activeRun.trade_order_monte_carlo.n_resamples} shuffles`}
+                          hint={t('backtestStudio.tomShuffleStdevHint', { n: activeRun.trade_order_monte_carlo.n_resamples })}
                         />
                         <StatTile
-                          label="Position percentile"
+                          label={t('backtestStudio.tomPositionPct')}
                           value={
                             activeRun.trade_order_monte_carlo.observed_vs_distribution
                               ? `${activeRun.trade_order_monte_carlo.observed_vs_distribution.position_pct.toFixed(0)}%`
@@ -3346,8 +3331,7 @@ export default function BacktestStudio({
                         />
                       </div>
                       <div className="mt-2 text-[10px] text-muted-foreground">
-                        Same trade set, randomized ordering.  Realized Sharpe at p99+ ⇒ a few well-placed trades did
-                        all the work; near p50 ⇒ the edge is robust to sequence.
+                        {t('backtestStudio.tomFootnote')}
                       </div>
                     </>
                   )}
@@ -3359,9 +3343,9 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Activity className="h-3.5 w-3.5 text-emerald-300" />
-                    CPCV — combinatorial purged cross-validation
+                    {t('backtestStudio.cpcvTitle')}
                     <div className="ml-auto flex items-center gap-1.5">
-                      <Label className="text-[10px] text-muted-foreground">N folds</Label>
+                      <Label className="text-[10px] text-muted-foreground">{t('backtestStudio.cpcvNFolds')}</Label>
                       <Input
                         type="number"
                         min={3}
@@ -3370,7 +3354,7 @@ export default function BacktestStudio({
                         onChange={(e) => setCpcvNFolds(parseInt(e.target.value, 10))}
                         className="h-6 w-14 text-[10px]"
                       />
-                      <Label className="text-[10px] text-muted-foreground">K test</Label>
+                      <Label className="text-[10px] text-muted-foreground">{t('backtestStudio.cpcvKTest')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -3398,7 +3382,7 @@ export default function BacktestStudio({
                         }}
                         disabled={cpcvMutation.isPending || sourceCode.trim().length < 10}
                       >
-                        {cpcvMutation.isPending ? 'Running…' : 'Run CPCV'}
+                        {cpcvMutation.isPending ? t('backtestStudio.cpcvRunning') : t('backtestStudio.cpcvRun')}
                       </Button>
                     </div>
                   </div>
@@ -3406,9 +3390,9 @@ export default function BacktestStudio({
                     <>
                       <div className="grid grid-cols-4 gap-2">
                         <StatTile
-                          label="Stable paths"
+                          label={t('backtestStudio.cpcvStablePaths')}
                           value={`${cpcvResult.summary.stable_path_pct.toFixed(0)}%`}
-                          hint={`${cpcvResult.summary.n_paths_succeeded}/${cpcvResult.summary.n_paths_run} paths`}
+                          hint={t('backtestStudio.cpcvStablePathsHint', { ok: cpcvResult.summary.n_paths_succeeded, total: cpcvResult.summary.n_paths_run })}
                           tone={
                             cpcvResult.summary.stable_path_pct >= 70 ? 'good'
                               : cpcvResult.summary.stable_path_pct >= 50 ? 'warn'
@@ -3416,23 +3400,23 @@ export default function BacktestStudio({
                           }
                         />
                         <StatTile
-                          label="Sharpe median"
+                          label={t('backtestStudio.cpcvSharpeMedian')}
                           value={fmtNum(cpcvResult.summary.sharpe_median ?? 0, 2)}
                           hint={
                             cpcvResult.summary.sharpe_p10 != null && cpcvResult.summary.sharpe_p90 != null
-                              ? `p10 ${cpcvResult.summary.sharpe_p10.toFixed(2)} · p90 ${cpcvResult.summary.sharpe_p90.toFixed(2)}`
+                              ? t('backtestStudio.cpcvSharpeHint', { p10: cpcvResult.summary.sharpe_p10.toFixed(2), p90: cpcvResult.summary.sharpe_p90.toFixed(2) })
                               : ''
                           }
                         />
                         <StatTile
-                          label="Mean return"
+                          label={t('backtestStudio.cpcvMeanReturn')}
                           value={fmtPct(cpcvResult.summary.return_mean_pct ?? 0, 2)}
-                          hint={`min ${fmtPct(cpcvResult.summary.return_min_pct ?? 0, 1)} · max ${fmtPct(cpcvResult.summary.return_max_pct ?? 0, 1)}`}
+                          hint={t('backtestStudio.cpcvMeanReturnHint', { min: fmtPct(cpcvResult.summary.return_min_pct ?? 0, 1), max: fmtPct(cpcvResult.summary.return_max_pct ?? 0, 1) })}
                         />
                         <StatTile
-                          label="PBO"
+                          label={t('backtestStudio.cpcvPbo')}
                           value={cpcvResult.summary.pbo != null ? `${(cpcvResult.summary.pbo * 100).toFixed(0)}%` : '—'}
-                          hint="overfit prob"
+                          hint={t('backtestStudio.cpcvPboHint')}
                           tone={
                             cpcvResult.summary.pbo == null ? 'neutral'
                               : cpcvResult.summary.pbo > 0.5 ? 'bad'
@@ -3445,12 +3429,12 @@ export default function BacktestStudio({
                         <table className="w-full text-[10px]">
                           <thead className="sticky top-0 bg-card/95 text-muted-foreground">
                             <tr>
-                              <th className="text-left">Path</th>
-                              <th className="text-left">Test folds</th>
-                              <th className="text-right">Trades</th>
-                              <th className="text-right">Return</th>
-                              <th className="text-right">Sharpe</th>
-                              <th className="text-right">Max DD</th>
+                              <th className="text-left">{t('backtestStudio.cpcvColPath')}</th>
+                              <th className="text-left">{t('backtestStudio.cpcvColTestFolds')}</th>
+                              <th className="text-right">{t('backtestStudio.cpcvColTrades')}</th>
+                              <th className="text-right">{t('backtestStudio.cpcvColReturn')}</th>
+                              <th className="text-right">{t('backtestStudio.cpcvColSharpe')}</th>
+                              <th className="text-right">{t('backtestStudio.cpcvColMaxDd')}</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -3474,20 +3458,14 @@ export default function BacktestStudio({
                         </table>
                       </div>
                       <div className="mt-2 text-[10px] text-muted-foreground">
-                        PBO &gt; 50% ⇒ observed Sharpe likely overfit; PBO &lt; 30% ⇒ edge generalizes across path
-                        permutations.  Embargo {cpcvResult.embargo_seconds.toFixed(0)}s.
+                        {t('backtestStudio.cpcvFootnote', { seconds: cpcvResult.embargo_seconds.toFixed(0) })}
                       </div>
                     </>
                   ) : (
-                    <div className="text-[11px] text-muted-foreground italic">
-                      Click <strong>Run CPCV</strong> to evaluate every C({cpcvNFolds},{cpcvKTest}) ={' '}
-                      {(() => {
-                        const f = (n: number): number => (n <= 1 ? 1 : n * f(n - 1))
-                        return Math.round(f(cpcvNFolds) / (f(cpcvKTest) * f(cpcvNFolds - cpcvKTest)))
-                      })()}{' '}
-                      combination of test folds.  More rigorous than walk-forward — catches edges that hold up
-                      against arbitrary subsets of history, not just one chronological path.
-                    </div>
+                    <div className="text-[11px] text-muted-foreground italic" dangerouslySetInnerHTML={{ __html: t('backtestStudio.cpcvEmpty', { folds: cpcvNFolds, kTest: cpcvKTest, combinations: (() => {
+                      const f = (n: number): number => (n <= 1 ? 1 : n * f(n - 1))
+                      return Math.round(f(cpcvNFolds) / (f(cpcvKTest) * f(cpcvNFolds - cpcvKTest)))
+                    })() }) }} />
                   )}
                 </div>
               )}
@@ -3497,7 +3475,7 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <Clock className="h-3.5 w-3.5 text-sky-300" />
-                    Latency Monte Carlo
+                    {t('backtestStudio.latencyMcTitle')}
                     <Button
                       size="sm"
                       className="ml-auto h-6 text-[10px]"
@@ -3515,36 +3493,36 @@ export default function BacktestStudio({
                       }}
                       disabled={latencyMcMutation.isPending || sourceCode.trim().length < 10}
                     >
-                      {latencyMcMutation.isPending ? 'Running…' : 'Run latency MC'}
+                      {latencyMcMutation.isPending ? t('backtestStudio.cpcvRunning') : t('backtestStudio.latencyMcRun')}
                     </Button>
                   </div>
                   {latencyMcResult ? (
                     <>
                       <div className="grid grid-cols-4 gap-2">
                         <StatTile
-                          label="Sharpe @ baseline"
+                          label={t('backtestStudio.latencyMcSharpeBaseline')}
                           value={fmtNum(latencyMcResult.summary.sharpe_at_baseline ?? 0, 2)}
-                          hint="1.0× p50/p95"
+                          hint={t('backtestStudio.latencyMcSharpeBaselineHint')}
                         />
                         <StatTile
-                          label="Sharpe @ best"
+                          label={t('backtestStudio.latencyMcSharpeBest')}
                           value={fmtNum(latencyMcResult.summary.sharpe_at_best_latency ?? 0, 2)}
-                          hint="0.5× latency"
+                          hint={t('backtestStudio.latencyMcSharpeBestHint')}
                           tone="good"
                         />
                         <StatTile
-                          label="Sharpe @ worst"
+                          label={t('backtestStudio.latencyMcSharpeWorst')}
                           value={fmtNum(latencyMcResult.summary.sharpe_at_worst_latency ?? 0, 2)}
-                          hint="2.0× latency"
+                          hint={t('backtestStudio.latencyMcSharpeWorstHint')}
                           tone="warn"
                         />
                         <StatTile
-                          label="Slope per ×"
+                          label={t('backtestStudio.latencyMcSlope')}
                           value={fmtNum(latencyMcResult.summary.sharpe_slope_per_x_latency ?? 0, 2)}
                           hint={
                             (latencyMcResult.summary.sharpe_slope_per_x_latency ?? 0) < -0.3
-                              ? 'latency-sensitive'
-                              : 'latency-robust'
+                              ? t('backtestStudio.latencyMcLatencySensitive')
+                              : t('backtestStudio.latencyMcLatencyRobust')
                           }
                           tone={
                             (latencyMcResult.summary.sharpe_slope_per_x_latency ?? 0) < -0.5 ? 'bad'
@@ -3557,12 +3535,12 @@ export default function BacktestStudio({
                         <table className="w-full text-[10px]">
                           <thead className="sticky top-0 bg-card/95 text-muted-foreground">
                             <tr>
-                              <th className="text-left">×</th>
-                              <th className="text-right">Submit p95</th>
-                              <th className="text-right">Trades</th>
-                              <th className="text-right">Return</th>
-                              <th className="text-right">Sharpe</th>
-                              <th className="text-right">Max DD</th>
+                              <th className="text-left">{t('backtestStudio.latencyMcColMult')}</th>
+                              <th className="text-right">{t('backtestStudio.latencyMcColSubmitP95')}</th>
+                              <th className="text-right">{t('backtestStudio.latencyMcColTrades')}</th>
+                              <th className="text-right">{t('backtestStudio.latencyMcColReturn')}</th>
+                              <th className="text-right">{t('backtestStudio.latencyMcColSharpe')}</th>
+                              <th className="text-right">{t('backtestStudio.latencyMcColMaxDd')}</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -3584,16 +3562,11 @@ export default function BacktestStudio({
                         </table>
                       </div>
                       <div className="mt-2 text-[10px] text-muted-foreground">
-                        Negative slope = edge erodes under worse latency (typical maker behavior).  Slope ≈ 0 = strategy is
-                        latency-insensitive.
+                        {t('backtestStudio.latencyMcFootnote')}
                       </div>
                     </>
                   ) : (
-                    <div className="text-[11px] text-muted-foreground italic">
-                      Click <strong>Run latency MC</strong> to backtest at 0.5×, 0.75×, 1×, 1.5×, 2× latency multipliers.
-                      Reveals how much your edge depends on the latency assumption — and how a network regression in
-                      production would erode it.
-                    </div>
+                    <div className="text-[11px] text-muted-foreground italic" dangerouslySetInnerHTML={{ __html: t('backtestStudio.latencyMcEmpty') }} />
                   )}
                 </div>
               )}
@@ -3603,20 +3576,20 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                     <AlertTriangle className="h-3.5 w-3.5 text-rose-300" />
-                    Data quality (microstructure recorder)
+                    {t('backtestStudio.dataQualityTitle')}
                     <span className="ml-auto text-[10px] text-muted-foreground">
-                      validation gate before persistence
+                      {t('backtestStudio.dataQualitySub')}
                     </span>
                   </div>
                   <div className="grid grid-cols-4 gap-2">
                     <StatTile
-                      label="Accept rate"
+                      label={t('backtestStudio.dqAcceptRate')}
                       value={
                         activeRun.data_quality.accept_rate != null
                           ? `${(activeRun.data_quality.accept_rate * 100).toFixed(1)}%`
                           : '—'
                       }
-                      hint={`${activeRun.data_quality.accepted_books.toLocaleString()}/${activeRun.data_quality.total_attempts.toLocaleString()} books`}
+                      hint={t('backtestStudio.dqAcceptRateHint', { accepted: activeRun.data_quality.accepted_books.toLocaleString(), total: activeRun.data_quality.total_attempts.toLocaleString() })}
                       tone={
                         (activeRun.data_quality.accept_rate ?? 1) >= 0.99 ? 'good'
                           : (activeRun.data_quality.accept_rate ?? 1) >= 0.95 ? 'warn'
@@ -3624,23 +3597,23 @@ export default function BacktestStudio({
                       }
                     />
                     <StatTile
-                      label="Sequence gaps"
+                      label={t('backtestStudio.dqSeqGaps')}
                       value={activeRun.data_quality.sequence_gaps_observed.toLocaleString()}
-                      hint={`${activeRun.data_quality.tokens_tracked} tokens tracked`}
+                      hint={t('backtestStudio.dqSeqGapsHint', { n: activeRun.data_quality.tokens_tracked })}
                       tone={activeRun.data_quality.sequence_gaps_observed > 100 ? 'warn' : 'neutral'}
                     />
                     <StatTile
-                      label="Queue dropped"
+                      label={t('backtestStudio.dqQueueDropped')}
                       value={activeRun.data_quality.queue_dropped.toLocaleString()}
-                      hint="recorder backpressure"
+                      hint={t('backtestStudio.dqQueueDroppedHint')}
                       tone={activeRun.data_quality.queue_dropped > 0 ? 'warn' : 'good'}
                     />
                     <StatTile
-                      label="Total rejects"
+                      label={t('backtestStudio.dqTotalRejects')}
                       value={Object.values(activeRun.data_quality.rejects_by_reason || {})
                         .reduce((a, b) => a + b, 0)
                         .toLocaleString()}
-                      hint="across all reasons"
+                      hint={t('backtestStudio.dqTotalRejectsHint')}
                     />
                   </div>
                   {Object.entries(activeRun.data_quality.rejects_by_reason || {}).some(([, n]) => n > 0) ? (
@@ -3656,7 +3629,7 @@ export default function BacktestStudio({
                     </div>
                   ) : (
                     <div className="mt-2 rounded-sm bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200">
-                      ✓ no structural rejects — books pass price-bound, ordering, and sequence checks
+                      {t('backtestStudio.dqNoRejects')}
                     </div>
                   )}
                 </div>
@@ -3667,7 +3640,7 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-xs text-red-300">
                   <div className="flex items-center gap-1.5 font-medium">
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    Runtime error
+                    {t('backtestStudio.runtimeError')}
                   </div>
                   <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px]">
                     {exec.runtime_error}
@@ -3687,13 +3660,13 @@ export default function BacktestStudio({
               <div className="rounded-md border border-border/50 bg-card/40 p-3">
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                   <Sparkles className="h-3.5 w-3.5 text-amber-300" />
-                  Fill probability model
+                  {t('backtestStudio.fillModelTitle')}
                 </div>
                 {fillModel?.loaded ? (
                   <>
                     <div className="grid grid-cols-2 gap-1.5">
                       <StatTile
-                        label="C-index"
+                        label={t('backtestStudio.cIndex')}
                         value={fillModel.concordance_index != null ? fmtNum(fillModel.concordance_index, 3) : '—'}
                         tone={
                           fillModel.concordance_index != null
@@ -3706,14 +3679,14 @@ export default function BacktestStudio({
                         }
                       />
                       <StatTile
-                        label="Events"
+                        label={t('backtestStudio.events')}
                         value={(fillModel.n_events ?? 0).toLocaleString()}
                       />
                     </div>
                     {fillModel.coefficients && Object.keys(fillModel.coefficients).length > 0 ? (
                       <div className="mt-2">
                         <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                          hazard ratios (per 1 σ)
+                          {t('backtestStudio.hazardRatios')}
                         </div>
                         <div className="space-y-0">
                           {Object.entries(fillModel.coefficients)
@@ -3726,15 +3699,14 @@ export default function BacktestStudio({
                       </div>
                     ) : (
                       <div className="mt-2 text-[10px] text-muted-foreground italic">
-                        KM baseline — no covariate ratios. Cox will train once new orders accumulate
-                        with full survival_features.
+                        {t('backtestStudio.kmBaselineNote')}
                       </div>
                     )}
                     {fillModel.calibration_bins && fillModel.calibration_bins.length >= 3 ? (
                       <div className="mt-2">
                         <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-                          <span>calibration (predicted vs observed)</span>
-                          <span>{fillModel.calibration_bins.length} bins</span>
+                          <span>{t('backtestStudio.calibrationTitle')}</span>
+                          <span>{t('backtestStudio.calibrationBins', { n: fillModel.calibration_bins.length })}</span>
                         </div>
                         <CalibrationPlot bins={fillModel.calibration_bins} />
                       </div>
@@ -3742,7 +3714,7 @@ export default function BacktestStudio({
                   </>
                 ) : (
                   <div className="text-[11px] text-muted-foreground italic">
-                    No active model. Trigger a retrain in Strategies → Machine Learning → Fill Model.
+                    {t('backtestStudio.noActiveModel')}
                   </div>
                 )}
               </div>
@@ -3752,22 +3724,22 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                     <Clock className="h-3.5 w-3.5 text-sky-300" />
-                    {latency.sample_count > 0 ? 'Measured latency' : 'Latency (defaults)'}
+                    {latency.sample_count > 0 ? t('backtestStudio.measuredLatency') : t('backtestStudio.latencyDefaults')}
                     {latency.sample_count === 0 ? (
                       <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-300">
-                        no samples
+                        {t('backtestStudio.noSamples')}
                       </span>
                     ) : null}
                   </div>
                   <div className={`grid grid-cols-3 gap-1.5 ${latency.sample_count === 0 ? 'opacity-60' : ''}`}>
-                    <StatTile label="p50" value={`${Math.round(latency.p50_ms)}ms`} />
-                    <StatTile label="p95" value={`${Math.round(latency.p95_ms)}ms`} tone={latency.sample_count > 0 && latency.p95_ms > 800 ? 'warn' : 'neutral'} />
-                    <StatTile label="p99" value={`${Math.round(latency.p99_ms)}ms`} tone={latency.sample_count > 0 && latency.p99_ms > 1500 ? 'bad' : 'neutral'} />
+                    <StatTile label={t('backtestStudio.p50')} value={`${Math.round(latency.p50_ms)}ms`} />
+                    <StatTile label={t('backtestStudio.p95')} value={`${Math.round(latency.p95_ms)}ms`} tone={latency.sample_count > 0 && latency.p95_ms > 800 ? 'warn' : 'neutral'} />
+                    <StatTile label={t('backtestStudio.p99')} value={`${Math.round(latency.p99_ms)}ms`} tone={latency.sample_count > 0 && latency.p99_ms > 1500 ? 'bad' : 'neutral'} />
                   </div>
                   <div className="mt-1 text-[10px] text-muted-foreground">
                     {latency.sample_count > 0
-                      ? `${latency.sample_count.toLocaleString()} samples · ensemble uses pessimistic=${Math.round(latency.pessimistic_ms)}ms / realistic=${Math.round(latency.realistic_ms)}ms / optimistic=${Math.round(latency.optimistic_ms)}ms`
-                      : `No measured fills yet — values shown are hardcoded fallbacks. Run a strategy long enough to capture submit/cancel timestamps to replace these.`}
+                      ? t('backtestStudio.latencyDetails', { n: latency.sample_count.toLocaleString(), pess: Math.round(latency.pessimistic_ms), real: Math.round(latency.realistic_ms), opt: Math.round(latency.optimistic_ms) })
+                      : t('backtestStudio.latencyDefaultsNote')}
                   </div>
                 </div>
               ) : null}
@@ -3777,25 +3749,24 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                     <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-                    Trade vs cancel ({decomp.window_hours}h)
+                    {t('backtestStudio.tradeVsCancel', { hours: decomp.window_hours })}
                   </div>
                   <div className="grid grid-cols-2 gap-1.5">
                     <StatTile
-                      label="Trades"
+                      label={t('backtestStudio.trades')}
                       value={decomp.trade_count.toLocaleString()}
                       hint={decomp.trade_count_pct != null ? `${fmtNum(decomp.trade_count_pct, 1)}%` : undefined}
                       tone="good"
                     />
                     <StatTile
-                      label="Cancels"
+                      label={t('backtestStudio.cancels')}
                       value={decomp.cancel_count.toLocaleString()}
                       hint={decomp.trade_count_pct != null ? `${fmtNum(100 - decomp.trade_count_pct, 1)}%` : undefined}
                       tone={decomp.trade_count_pct != null && decomp.trade_count_pct < 30 ? 'warn' : 'neutral'}
                     />
                   </div>
                   <div className="mt-1 text-[10px] text-muted-foreground">
-                    high cancel rate ⇒ spoofy book ⇒ lower effective displayed depth (auto-applied to
-                    ensemble)
+                    {t('backtestStudio.cancelRateNote')}
                   </div>
                 </div>
               ) : null}
@@ -3805,7 +3776,7 @@ export default function BacktestStudio({
                 <div className="rounded-md border border-border/50 bg-card/40 p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                     <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300" />
-                    Empirical constants
+                    {t('backtestStudio.empiricalConstants')}
                     <Badge
                       className={cn(
                         'ml-auto text-[9px]',
@@ -3814,7 +3785,7 @@ export default function BacktestStudio({
                           : 'bg-amber-500/10 text-amber-300',
                       )}
                     >
-                      {constants.measured ? 'measured' : 'defaults'}
+                      {constants.measured ? t('backtestStudio.measured') : t('backtestStudio.defaults')}
                     </Badge>
                   </div>
                   <div className="space-y-0.5 text-[11px]">
@@ -3852,6 +3823,7 @@ function ProviderDatasetSelector({
   selected: string[]
   onChange: (ids: string[]) => void
 }) {
+  const { t } = useTranslation()
   const datasetsQuery = useQuery({
     queryKey: ['providers', 'datasets', 'backtest-picker'],
     queryFn: () => listProviderDatasets({ limit: 200 }),
@@ -3862,19 +3834,19 @@ function ProviderDatasetSelector({
 
   const selectedSet = useMemo(() => new Set(selected), [selected])
   const summary = useMemo(() => {
-    if (selected.length === 0) return 'None — using Window below'
+    if (selected.length === 0) return t('backtestStudio.providerDatasetNone')
     if (selected.length === 1) {
       const d = datasets.find((x) => x.id === selected[0])
-      return d ? (d.title || d.external_slug || d.external_id) : `${selected.length} dataset`
+      return d ? (d.title || d.external_slug || d.external_id) : t('backtestStudio.providerDatasetCount', { n: selected.length })
     }
-    return `${selected.length} datasets selected`
-  }, [selected, datasets])
+    return t('backtestStudio.providerDatasetCount', { n: selected.length })
+  }, [selected, datasets, t])
 
   return (
     <div className="rounded-md border border-violet-500/20 bg-violet-500/5 p-2">
       <div className="flex items-center justify-between gap-2">
         <Label className="text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
-          Provider dataset
+          {t('backtestStudio.providerDataset')}
         </Label>
         {selected.length > 0 ? (
           <button
@@ -3882,7 +3854,7 @@ function ProviderDatasetSelector({
             className="text-[10px] text-muted-foreground hover:text-foreground"
             onClick={() => onChange([])}
           >
-            clear
+            {t('backtestStudio.clearAll')}
           </button>
         ) : null}
       </div>
@@ -3897,10 +3869,10 @@ function ProviderDatasetSelector({
       {open ? (
         <div className="mt-1 max-h-44 overflow-auto rounded-sm border border-border/30 bg-background/40 p-1">
           {datasetsQuery.isLoading ? (
-            <div className="px-2 py-1 text-[10px] text-muted-foreground">Loading…</div>
+            <div className="px-2 py-1 text-[10px] text-muted-foreground">{t('backtestStudio.providerDatasetLoading')}</div>
           ) : datasets.length === 0 ? (
             <div className="px-2 py-1 text-[10px] text-muted-foreground">
-              No imported datasets — go to Data Lab → Providers to add some.
+              {t('backtestStudio.providerDatasetEmpty')}
             </div>
           ) : (
             datasets.map((d) => {
