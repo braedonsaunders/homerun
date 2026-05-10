@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Key,
@@ -68,6 +69,7 @@ function SecretInput({
 }
 
 export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+  const { t } = useTranslation()
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -111,11 +113,11 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
     mutationFn: updateSettings,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
-      setSaveMessage({ type: 'success', text: 'Account settings saved' })
+      setSaveMessage({ type: 'success', text: t('accountSettingsFlyout.toastSaved') })
       setTimeout(() => setSaveMessage(null), 3000)
     },
     onError: (error: any) => {
-      setSaveMessage({ type: 'error', text: error.message || 'Failed to save settings' })
+      setSaveMessage({ type: 'error', text: error.message || t('accountSettingsFlyout.toastFailed') })
       setTimeout(() => setSaveMessage(null), 5000)
     }
   })
@@ -175,7 +177,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-background border-b border-border/40">
           <div className="flex items-center gap-2">
             <Key className="w-4 h-4 text-green-500" />
-            <h3 className="text-sm font-semibold">Account Settings</h3>
+            <h3 className="text-sm font-semibold">{t('accountSettingsFlyout.title')}</h3>
           </div>
           <Button
             variant="ghost"
@@ -183,7 +185,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
             className="text-xs h-auto px-2.5 py-1 hover:bg-card"
           >
             <X className="w-3.5 h-3.5 mr-1" />
-            Close
+            {t('accountSettingsFlyout.close')}
           </Button>
         </div>
 
@@ -205,7 +207,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 md:col-span-2">
             <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
               <Key className="w-3.5 h-3.5 text-emerald-500" />
-              Polymarket Account
+              {t('accountSettingsFlyout.polymarketAccount')}
               <Badge variant="outline" className={cn(
                 "ml-auto text-[10px] px-2 py-0.5 border-0 shrink-0",
                 (() => {
@@ -225,43 +227,43 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
                     settings?.polymarket?.api_passphrase,
                     settings?.polymarket?.private_key,
                   ].filter(Boolean).length
-                  return keysSet > 0 ? `${keysSet} key${keysSet !== 1 ? 's' : ''} set` : 'Not configured'
+                  return keysSet > 0 ? t('accountSettingsFlyout.keysSet', { n: keysSet }) : t('accountSettingsFlyout.notConfigured')
                 })()}
               </Badge>
             </h4>
             <div className="space-y-3">
               <SecretInput
-                label="API Key"
+                label={t('accountSettingsFlyout.apiKey')}
                 value={polymarketForm.api_key}
-                placeholder={settings?.polymarket.api_key || 'Enter API key'}
+                placeholder={settings?.polymarket.api_key || t('accountSettingsFlyout.enterApiKey')}
                 onChange={(v) => setPolymarketForm(p => ({ ...p, api_key: v }))}
                 showSecret={showSecrets['pm_key']}
                 onToggle={() => toggleSecret('pm_key')}
               />
               <SecretInput
-                label="API Secret"
+                label={t('accountSettingsFlyout.apiSecret')}
                 value={polymarketForm.api_secret}
-                placeholder={settings?.polymarket.api_secret || 'Enter API secret'}
+                placeholder={settings?.polymarket.api_secret || t('accountSettingsFlyout.enterApiSecret')}
                 onChange={(v) => setPolymarketForm(p => ({ ...p, api_secret: v }))}
                 showSecret={showSecrets['pm_secret']}
                 onToggle={() => toggleSecret('pm_secret')}
               />
               <SecretInput
-                label="API Passphrase"
+                label={t('accountSettingsFlyout.apiPassphrase')}
                 value={polymarketForm.api_passphrase}
-                placeholder={settings?.polymarket.api_passphrase || 'Enter API passphrase'}
+                placeholder={settings?.polymarket.api_passphrase || t('accountSettingsFlyout.enterApiPassphrase')}
                 onChange={(v) => setPolymarketForm(p => ({ ...p, api_passphrase: v }))}
                 showSecret={showSecrets['pm_pass']}
                 onToggle={() => toggleSecret('pm_pass')}
               />
               <SecretInput
-                label="Private Key"
+                label={t('accountSettingsFlyout.privateKey')}
                 value={polymarketForm.private_key}
-                placeholder={settings?.polymarket.private_key || 'Enter wallet private key'}
+                placeholder={settings?.polymarket.private_key || t('accountSettingsFlyout.enterPrivateKey')}
                 onChange={(v) => setPolymarketForm(p => ({ ...p, private_key: v }))}
                 showSecret={showSecrets['pm_pk']}
                 onToggle={() => toggleSecret('pm_pk')}
-                description="Your wallet private key for signing transactions"
+                description={t('accountSettingsFlyout.privateKeyDescription')}
               />
 
               <Separator className="opacity-30" />
@@ -269,7 +271,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
               <div className="flex items-center gap-2 flex-wrap">
                 <Button size="sm" onClick={handleSavePolymarket} disabled={saveMutation.isPending}>
                   <Save className="w-3.5 h-3.5 mr-1.5" />
-                  Save
+                  {t('accountSettingsFlyout.save')}
                 </Button>
                 <Button
                   variant="secondary"
@@ -278,7 +280,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
                   disabled={testPolymarketMutation.isPending}
                 >
                   <Zap className="w-3.5 h-3.5 mr-1.5" />
-                  Test Connection
+                  {t('accountSettingsFlyout.testConnection')}
                 </Button>
                 {testPolymarketMutation.data && (
                   <Badge variant={testPolymarketMutation.data.status === 'success' ? "default" : "outline"} className={cn(
@@ -296,53 +298,53 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 md:col-span-2">
             <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
               <BarChart3 className="w-3.5 h-3.5 text-indigo-500" />
-              Kalshi Account
+              {t('accountSettingsFlyout.kalshiAccount')}
               <Badge variant="outline" className={cn(
                 "ml-auto text-[10px] px-2 py-0.5 border-0 shrink-0",
                 (!!settings?.kalshi?.email || !!settings?.kalshi?.api_key) ? 'text-emerald-400 bg-emerald-500/10' : 'text-muted-foreground bg-muted'
               )}>
-                {(!!settings?.kalshi?.email || !!settings?.kalshi?.api_key) ? 'Configured' : 'Not configured'}
+                {(!!settings?.kalshi?.email || !!settings?.kalshi?.api_key) ? t('accountSettingsFlyout.configured') : t('accountSettingsFlyout.notConfigured')}
               </Badge>
             </h4>
             <div className="space-y-3">
               <div>
-                <Label className="text-xs text-muted-foreground">Kalshi Email</Label>
+                <Label className="text-xs text-muted-foreground">{t('accountSettingsFlyout.kalshiEmail')}</Label>
                 <Input
                   type="email"
                   value={kalshiForm.email}
                   onChange={(e) => setKalshiForm(p => ({ ...p, email: e.target.value }))}
-                  placeholder={settings?.kalshi?.email || 'Enter Kalshi account email'}
+                  placeholder={settings?.kalshi?.email || t('accountSettingsFlyout.enterKalshiEmail')}
                   className="mt-1 text-sm"
                 />
-                <p className="text-[11px] text-muted-foreground/70 mt-1">Your Kalshi account email address</p>
+                <p className="text-[11px] text-muted-foreground/70 mt-1">{t('accountSettingsFlyout.kalshiEmailHelp')}</p>
               </div>
 
               <SecretInput
-                label="Kalshi Password"
+                label={t('accountSettingsFlyout.kalshiPassword')}
                 value={kalshiForm.password}
-                placeholder={settings?.kalshi?.password || 'Enter Kalshi password'}
+                placeholder={settings?.kalshi?.password || t('accountSettingsFlyout.enterKalshiPassword')}
                 onChange={(v) => setKalshiForm(p => ({ ...p, password: v }))}
                 showSecret={showSecrets['kalshi_pass']}
                 onToggle={() => toggleSecret('kalshi_pass')}
-                description="Used for email/password authentication to Kalshi API"
+                description={t('accountSettingsFlyout.kalshiPasswordHelp')}
               />
 
               <Separator className="opacity-30" />
 
               <SecretInput
-                label="API Key (Alternative)"
+                label={t('accountSettingsFlyout.apiKeyAlternative')}
                 value={kalshiForm.api_key}
-                placeholder={settings?.kalshi?.api_key || 'Enter Kalshi API key'}
+                placeholder={settings?.kalshi?.api_key || t('accountSettingsFlyout.enterKalshiApiKey')}
                 onChange={(v) => setKalshiForm(p => ({ ...p, api_key: v }))}
                 showSecret={showSecrets['kalshi_key']}
                 onToggle={() => toggleSecret('kalshi_key')}
-                description="Alternative to email/password. If set, API key is preferred for authentication."
+                description={t('accountSettingsFlyout.kalshiApiKeyHelp')}
               />
 
               <div className="flex items-start gap-2 p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-lg">
                 <Activity className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
                 <p className="text-xs text-muted-foreground">
-                  Kalshi credentials enable cross-platform arbitrage trading. The scanner will automatically detect price differences between Polymarket and Kalshi for the same events. You can use either email/password or an API key for authentication.
+                  {t('accountSettingsFlyout.kalshiInfo')}
                 </p>
               </div>
 
@@ -351,7 +353,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
               <div className="flex items-center gap-2">
                 <Button size="sm" onClick={handleSaveKalshi} disabled={saveMutation.isPending}>
                   <Save className="w-3.5 h-3.5 mr-1.5" />
-                  Save
+                  {t('accountSettingsFlyout.save')}
                 </Button>
                 <Button
                   variant="secondary"
@@ -360,7 +362,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
                   disabled={testKalshiMutation.isPending}
                 >
                   <Zap className="w-3.5 h-3.5 mr-1.5" />
-                  Test Connection
+                  {t('accountSettingsFlyout.testConnection')}
                 </Button>
                 {testKalshiMutation.data && (
                   <Badge variant={testKalshiMutation.data.status === 'success' ? "default" : "outline"} className={cn(
@@ -378,7 +380,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 md:col-span-2">
             <h4 className="text-[10px] uppercase tracking-widest font-semibold flex items-center gap-1.5 mb-3">
               <Activity className="w-3.5 h-3.5 text-amber-500" />
-              Oracle &mdash; Chainlink Data Streams
+              {t('accountSettingsFlyout.oracleTitle')}
               <Badge variant="outline" className={cn(
                 "ml-auto text-[10px] px-2 py-0.5 border-0 shrink-0",
                 (settings?.oracle?.chainlink_direct_api_key && settings?.oracle?.chainlink_direct_user_secret)
@@ -388,39 +390,36 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
                   : 'text-muted-foreground bg-muted'
               )}>
                 {(settings?.oracle?.chainlink_direct_api_key && settings?.oracle?.chainlink_direct_user_secret)
-                  ? 'Configured'
+                  ? t('accountSettingsFlyout.configured')
                   : (settings?.oracle?.chainlink_direct_api_key || settings?.oracle?.chainlink_direct_user_secret)
-                  ? 'Partial'
-                  : 'Not configured'}
+                  ? t('accountSettingsFlyout.partial')
+                  : t('accountSettingsFlyout.notConfigured')}
               </Badge>
             </h4>
             <div className="space-y-3">
               <SecretInput
-                label="Chainlink API Key"
+                label={t('accountSettingsFlyout.chainlinkApiKey')}
                 value={oracleForm.chainlink_direct_api_key}
-                placeholder={settings?.oracle?.chainlink_direct_api_key || 'Enter Chainlink Data Streams API key'}
+                placeholder={settings?.oracle?.chainlink_direct_api_key || t('accountSettingsFlyout.enterChainlinkApiKey')}
                 onChange={(v) => setOracleForm(p => ({ ...p, chainlink_direct_api_key: v }))}
                 showSecret={showSecrets['cl_key']}
                 onToggle={() => toggleSecret('cl_key')}
-                description="Free-tier credentials at chain.link/data-streams"
+                description={t('accountSettingsFlyout.chainlinkApiKeyHelp')}
               />
               <SecretInput
-                label="Chainlink User Secret"
+                label={t('accountSettingsFlyout.chainlinkUserSecret')}
                 value={oracleForm.chainlink_direct_user_secret}
-                placeholder={settings?.oracle?.chainlink_direct_user_secret || 'Enter paired user secret'}
+                placeholder={settings?.oracle?.chainlink_direct_user_secret || t('accountSettingsFlyout.enterChainlinkUserSecret')}
                 onChange={(v) => setOracleForm(p => ({ ...p, chainlink_direct_user_secret: v }))}
                 showSecret={showSecrets['cl_secret']}
                 onToggle={() => toggleSecret('cl_secret')}
-                description="Used to HMAC-sign requests against the Data Streams REST API"
+                description={t('accountSettingsFlyout.chainlinkUserSecretHelp')}
               />
 
               <div className="flex items-start gap-2 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
                 <Activity className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
                 <p className="text-xs text-muted-foreground">
-                  Optional second oracle source. When configured, prices are polled directly from Chainlink&apos;s
-                  REST endpoint alongside Polymarket&apos;s RTDS-relayed Chainlink feed &mdash; the source-comparison
-                  panel surfaces the relay-vs-direct delta so you can see when the relay lags. Without
-                  credentials the feed stays disabled and never connects.
+                  {t('accountSettingsFlyout.oracleInfo')}
                 </p>
               </div>
 
@@ -429,7 +428,7 @@ export default function AccountSettingsFlyout({ isOpen, onClose }: { isOpen: boo
               <div className="flex items-center gap-2">
                 <Button size="sm" onClick={handleSaveOracle} disabled={saveMutation.isPending}>
                   <Save className="w-3.5 h-3.5 mr-1.5" />
-                  Save
+                  {t('accountSettingsFlyout.save')}
                 </Button>
               </div>
             </div>

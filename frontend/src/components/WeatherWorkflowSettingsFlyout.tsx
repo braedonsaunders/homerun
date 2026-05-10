@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   SlidersHorizontal,
@@ -83,6 +84,7 @@ export default function WeatherWorkflowSettingsFlyout({
   isOpen: boolean
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<WeatherWorkflowSettings>(DEFAULTS)
   const [saveMessage, setSaveMessage] = useState<{
@@ -114,14 +116,14 @@ export default function WeatherWorkflowSettingsFlyout({
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-settings'] })
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-status'] })
       queryClient.invalidateQueries({ queryKey: ['weather-workflow-opportunities'] })
-      setSaveMessage({ type: 'success', text: 'Weather settings saved' })
+      setSaveMessage({ type: 'success', text: t('weatherWorkflowSettingsFlyout.toastSaved') })
       setTimeout(() => setSaveMessage(null), 2500)
     },
     onError: (error: unknown) => {
       const message =
         error && typeof error === 'object' && 'message' in error
-          ? String((error as { message?: string }).message || 'Save failed')
-          : 'Save failed'
+          ? String((error as { message?: string }).message || t('weatherWorkflowSettingsFlyout.toastFailed'))
+          : t('weatherWorkflowSettingsFlyout.toastFailed')
       setSaveMessage({ type: 'error', text: message })
       setTimeout(() => setSaveMessage(null), 4000)
     },
@@ -140,7 +142,7 @@ export default function WeatherWorkflowSettingsFlyout({
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
-            <h3 className="text-sm font-semibold">Weather Workflow Settings</h3>
+            <h3 className="text-sm font-semibold">{t('weatherWorkflowSettingsFlyout.title')}</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -150,7 +152,7 @@ export default function WeatherWorkflowSettingsFlyout({
               className="gap-1 text-[10px] h-auto px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white"
             >
               <Save className="w-3 h-3" />
-              {saveMutation.isPending ? 'Saving...' : 'Save'}
+              {saveMutation.isPending ? t('weatherWorkflowSettingsFlyout.saving') : t('weatherWorkflowSettingsFlyout.save')}
             </Button>
             <Button
               variant="ghost"
@@ -158,7 +160,7 @@ export default function WeatherWorkflowSettingsFlyout({
               className="text-xs h-auto px-2.5 py-1 hover:bg-card"
             >
               <X className="w-3.5 h-3.5 mr-1" />
-              Close
+              {t('weatherWorkflowSettingsFlyout.close')}
             </Button>
           </div>
         </div>
@@ -185,19 +187,19 @@ export default function WeatherWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <CloudRain className="w-3.5 h-3.5 text-cyan-600 dark:text-cyan-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Pipeline</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('weatherWorkflowSettingsFlyout.sectionPipeline')}</h4>
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Enable Workflow</p>
-                <p className="text-[10px] text-muted-foreground">Turn weather discovery and intent generation on/off</p>
+                <p className="text-xs font-medium">{t('weatherWorkflowSettingsFlyout.enableWorkflow')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('weatherWorkflowSettingsFlyout.enableWorkflowHelp')}</p>
               </div>
               <Switch checked={form.enabled} onCheckedChange={(v) => set('enabled', v)} className="scale-75" />
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Auto-Run</p>
-                <p className="text-[10px] text-muted-foreground">Run scans on interval without manual trigger</p>
+                <p className="text-xs font-medium">{t('weatherWorkflowSettingsFlyout.autoRun')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('weatherWorkflowSettingsFlyout.autoRunHelp')}</p>
               </div>
               <Switch
                 checked={form.auto_run}
@@ -207,7 +209,7 @@ export default function WeatherWorkflowSettingsFlyout({
               />
             </div>
             <NumericField
-              label="Scan Interval Seconds"
+              label={t('weatherWorkflowSettingsFlyout.scanIntervalSeconds')}
               value={form.scan_interval_seconds}
               onChange={(v) => set('scan_interval_seconds', Math.max(300, Math.min(86400, Math.round(v))))}
               min={300}
@@ -220,19 +222,19 @@ export default function WeatherWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <CloudRain className="w-3.5 h-3.5 text-blue-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Signal Thresholds</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('weatherWorkflowSettingsFlyout.sectionSignal')}</h4>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
-              <NumericField label="Entry Max Price" value={form.entry_max_price} onChange={(v) => set('entry_max_price', v)} min={0.01} max={0.99} step={0.01} disabled={!form.enabled} />
-              <NumericField label="Take Profit Price" value={form.take_profit_price} onChange={(v) => set('take_profit_price', v)} min={0.01} max={0.99} step={0.01} disabled={!form.enabled} />
-              <NumericField label="Stop Loss %" value={form.stop_loss_pct} onChange={(v) => set('stop_loss_pct', v)} min={0} max={100} step={1} disabled={!form.enabled} />
-              <NumericField label="Min Edge %" value={form.min_edge_percent} onChange={(v) => set('min_edge_percent', v)} min={0} max={100} step={0.5} disabled={!form.enabled} />
-              <NumericField label="Min Confidence" value={form.min_confidence} onChange={(v) => set('min_confidence', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
-              <NumericField label="Min Model Agreement" value={form.min_model_agreement} onChange={(v) => set('min_model_agreement', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
-              <NumericField label="Min Liquidity ($)" value={form.min_liquidity} onChange={(v) => set('min_liquidity', v)} min={0} max={1000000} step={10} disabled={!form.enabled} />
-              <NumericField label="Max Markets/Scan" value={form.max_markets_per_scan} onChange={(v) => set('max_markets_per_scan', Math.max(10, Math.round(v)))} min={10} max={5000} step={10} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.entryMaxPrice')} value={form.entry_max_price} onChange={(v) => set('entry_max_price', v)} min={0.01} max={0.99} step={0.01} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.takeProfitPrice')} value={form.take_profit_price} onChange={(v) => set('take_profit_price', v)} min={0.01} max={0.99} step={0.01} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.stopLossPct')} value={form.stop_loss_pct} onChange={(v) => set('stop_loss_pct', v)} min={0} max={100} step={1} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.minEdgePct')} value={form.min_edge_percent} onChange={(v) => set('min_edge_percent', v)} min={0} max={100} step={0.5} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.minConfidence')} value={form.min_confidence} onChange={(v) => set('min_confidence', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.minModelAgreement')} value={form.min_model_agreement} onChange={(v) => set('min_model_agreement', v)} min={0} max={1} step={0.05} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.minLiquidity')} value={form.min_liquidity} onChange={(v) => set('min_liquidity', v)} min={0} max={1000000} step={10} disabled={!form.enabled} />
+              <NumericField label={t('weatherWorkflowSettingsFlyout.maxMarketsScan')} value={form.max_markets_per_scan} onChange={(v) => set('max_markets_per_scan', Math.max(10, Math.round(v)))} min={10} max={5000} step={10} disabled={!form.enabled} />
               <NumericField
-                label="Default Size ($)"
+                label={t('weatherWorkflowSettingsFlyout.defaultSize')}
                 value={form.default_size_usd}
                 onChange={(v) => set('default_size_usd', v)}
                 min={1}
@@ -241,7 +243,7 @@ export default function WeatherWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Max Size ($)"
+                label={t('weatherWorkflowSettingsFlyout.maxSize')}
                 value={form.max_size_usd}
                 onChange={(v) => set('max_size_usd', v)}
                 min={1}
@@ -255,15 +257,15 @@ export default function WeatherWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <Brain className="w-3.5 h-3.5 text-indigo-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Model Override</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('weatherWorkflowSettingsFlyout.sectionModelOverride')}</h4>
             </div>
             <div>
-              <Label className="text-[11px] text-muted-foreground">Model</Label>
+              <Label className="text-[11px] text-muted-foreground">{t('weatherWorkflowSettingsFlyout.modelLabel')}</Label>
               <Input
                 type="text"
                 value={form.model || ''}
                 onChange={(e) => set('model', e.target.value.trim() || null)}
-                placeholder="Default provider adapter model"
+                placeholder={t('weatherWorkflowSettingsFlyout.modelPlaceholder')}
                 className="mt-1 h-8 text-xs font-mono"
                 disabled={!form.enabled}
               />
@@ -273,10 +275,10 @@ export default function WeatherWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <Thermometer className="w-3.5 h-3.5 text-orange-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Display</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('weatherWorkflowSettingsFlyout.sectionDisplay')}</h4>
             </div>
             <div>
-              <Label className="text-[11px] text-muted-foreground">Temperature Unit</Label>
+              <Label className="text-[11px] text-muted-foreground">{t('weatherWorkflowSettingsFlyout.temperatureUnit')}</Label>
               <div className="flex gap-1 mt-1">
                 <Button
                   variant={form.temperature_unit === 'F' ? 'default' : 'outline'}
@@ -289,7 +291,7 @@ export default function WeatherWorkflowSettingsFlyout({
                       : ''
                   )}
                 >
-                  Fahrenheit
+                  {t('weatherWorkflowSettingsFlyout.fahrenheit')}
                 </Button>
                 <Button
                   variant={form.temperature_unit === 'C' ? 'default' : 'outline'}
@@ -302,7 +304,7 @@ export default function WeatherWorkflowSettingsFlyout({
                       : ''
                   )}
                 >
-                  Celsius
+                  {t('weatherWorkflowSettingsFlyout.celsius')}
                 </Button>
               </div>
             </div>
@@ -314,8 +316,8 @@ export default function WeatherWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Strategy Code</p>
-                <p className="text-[10px] text-muted-foreground">Edit the Weather Edge opportunity strategy source code</p>
+                <p className="text-xs font-medium">{t('weatherWorkflowSettingsFlyout.strategyCode')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('weatherWorkflowSettingsFlyout.strategyCodeHelp')}</p>
               </div>
               <Button
                 variant="outline"
@@ -330,7 +332,7 @@ export default function WeatherWorkflowSettingsFlyout({
                 className="gap-1.5 text-[10px] h-7"
               >
                 <ExternalLink className="w-3 h-3" />
-                Edit Strategy Code
+                {t('weatherWorkflowSettingsFlyout.editStrategyCode')}
               </Button>
             </div>
           </Card>

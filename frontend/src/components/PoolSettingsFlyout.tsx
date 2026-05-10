@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { AlertCircle, CheckCircle, Save, Settings, X } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
@@ -84,6 +85,7 @@ export default function PoolSettingsFlyout({
   savePending?: boolean
   saveMessage?: { type: 'success' | 'error'; text: string } | null
 }) {
+  const { t } = useTranslation()
   const [form, setForm] = useState<PoolSettingsForm>(initial)
 
   useEffect(() => {
@@ -100,7 +102,7 @@ export default function PoolSettingsFlyout({
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-amber-300" />
-            <h3 className="text-sm font-semibold">Pool Settings</h3>
+            <h3 className="text-sm font-semibold">{t('poolSettingsFlyout.title')}</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -110,7 +112,7 @@ export default function PoolSettingsFlyout({
               className="gap-1 text-[10px] h-auto px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white"
             >
               <Save className="w-3 h-3" />
-              {savePending ? 'Saving...' : 'Save'}
+              {savePending ? t('poolSettingsFlyout.saving') : t('poolSettingsFlyout.save')}
             </Button>
             <Button
               variant="ghost"
@@ -118,7 +120,7 @@ export default function PoolSettingsFlyout({
               className="text-xs h-auto px-2.5 py-1 hover:bg-card"
             >
               <X className="w-3.5 h-3.5 mr-1" />
-              Close
+              {t('poolSettingsFlyout.close')}
             </Button>
           </div>
         </div>
@@ -143,14 +145,13 @@ export default function PoolSettingsFlyout({
 
         <div className="p-3 space-y-3 pb-6">
           <p className="text-[11px] text-muted-foreground/70">
-            Full runtime configuration for smart-wallet pool selection. Values are persisted and applied by the
-            tracked-traders worker.
+            {t('poolSettingsFlyout.intro')}
           </p>
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
-            <h4 className="text-[10px] uppercase tracking-widest font-semibold">Mode and Sizing</h4>
+            <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('poolSettingsFlyout.sectionModeSizing')}</h4>
             <div>
-              <Label className="text-[11px] text-muted-foreground leading-tight">Recompute Mode</Label>
+              <Label className="text-[11px] text-muted-foreground leading-tight">{t('poolSettingsFlyout.recomputeMode')}</Label>
               <select
                 value={form.pool_recompute_mode}
                 onChange={(e) =>
@@ -161,13 +162,13 @@ export default function PoolSettingsFlyout({
                 }
                 className="mt-0.5 h-8 w-full rounded-md border border-border bg-muted px-2 text-xs"
               >
-                <option value="quality_only">Quality only (strict)</option>
-                <option value="balanced">Balanced (fill-focused)</option>
+                <option value="quality_only">{t('poolSettingsFlyout.recomputeModeQuality')}</option>
+                <option value="balanced">{t('poolSettingsFlyout.recomputeModeBalanced')}</option>
               </select>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Target Pool Size"
+                label={t('poolSettingsFlyout.targetPoolSize')}
                 value={form.pool_target_size}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_target_size: v }))}
                 min={10}
@@ -175,7 +176,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Min Pool Size"
+                label={t('poolSettingsFlyout.minPoolSize')}
                 value={form.pool_min_size}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_min_size: v }))}
                 min={0}
@@ -183,7 +184,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Max Pool Size"
+                label={t('poolSettingsFlyout.maxPoolSize')}
                 value={form.pool_max_size}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_max_size: v }))}
                 min={1}
@@ -191,7 +192,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Active Window (hours)"
+                label={t('poolSettingsFlyout.activeWindow')}
                 value={form.pool_active_window_hours}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_active_window_hours: v }))}
                 min={1}
@@ -199,7 +200,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Rising Retention (hours)"
+                label={t('poolSettingsFlyout.risingRetention')}
                 value={form.pool_inactive_rising_retention_hours}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_inactive_rising_retention_hours: v }))}
                 min={0}
@@ -210,10 +211,10 @@ export default function PoolSettingsFlyout({
           </Card>
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
-            <h4 className="text-[10px] uppercase tracking-widest font-semibold">Selection and Churn</h4>
+            <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('poolSettingsFlyout.sectionSelectionChurn')}</h4>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Selection Floor"
+                label={t('poolSettingsFlyout.selectionFloor')}
                 value={form.pool_selection_score_floor}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_selection_score_floor: v }))}
                 min={0}
@@ -221,7 +222,7 @@ export default function PoolSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="Max Hourly Replacement Rate"
+                label={t('poolSettingsFlyout.maxHourlyReplacementRate')}
                 value={form.pool_max_hourly_replacement_rate}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_max_hourly_replacement_rate: v }))}
                 min={0}
@@ -229,7 +230,7 @@ export default function PoolSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="Replacement Score Cutoff"
+                label={t('poolSettingsFlyout.replacementScoreCutoff')}
                 value={form.pool_replacement_score_cutoff}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_replacement_score_cutoff: v }))}
                 min={0}
@@ -237,7 +238,7 @@ export default function PoolSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="Max Cluster Share"
+                label={t('poolSettingsFlyout.maxClusterShare')}
                 value={form.pool_max_cluster_share}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_max_cluster_share: v }))}
                 min={0.01}
@@ -245,7 +246,7 @@ export default function PoolSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="High Conviction Threshold"
+                label={t('poolSettingsFlyout.highConvictionThreshold')}
                 value={form.pool_high_conviction_threshold}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_high_conviction_threshold: v }))}
                 min={0}
@@ -253,7 +254,7 @@ export default function PoolSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="Insider Priority Threshold"
+                label={t('poolSettingsFlyout.insiderPriorityThreshold')}
                 value={form.pool_insider_priority_threshold}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_insider_priority_threshold: v }))}
                 min={0}
@@ -264,10 +265,10 @@ export default function PoolSettingsFlyout({
           </Card>
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
-            <h4 className="text-[10px] uppercase tracking-widest font-semibold">Eligibility Gates</h4>
+            <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('poolSettingsFlyout.sectionEligibilityGates')}</h4>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Min Eligible Trades"
+                label={t('poolSettingsFlyout.minEligibleTrades')}
                 value={form.pool_min_eligible_trades}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_min_eligible_trades: v }))}
                 min={1}
@@ -275,7 +276,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Max Eligible Anomaly"
+                label={t('poolSettingsFlyout.maxEligibleAnomaly')}
                 value={form.pool_max_eligible_anomaly}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_max_eligible_anomaly: v }))}
                 min={0}
@@ -283,7 +284,7 @@ export default function PoolSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="Core Min Win Rate"
+                label={t('poolSettingsFlyout.coreMinWinRate')}
                 value={form.pool_core_min_win_rate}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_core_min_win_rate: v }))}
                 min={0}
@@ -291,7 +292,7 @@ export default function PoolSettingsFlyout({
                 step={0.01}
               />
               <NumericField
-                label="Core Min Sharpe"
+                label={t('poolSettingsFlyout.coreMinSharpe')}
                 value={form.pool_core_min_sharpe}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_core_min_sharpe: v }))}
                 min={-10}
@@ -299,7 +300,7 @@ export default function PoolSettingsFlyout({
                 step={0.1}
               />
               <NumericField
-                label="Core Min Profit Factor"
+                label={t('poolSettingsFlyout.coreMinProfitFactor')}
                 value={form.pool_core_min_profit_factor}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_core_min_profit_factor: v }))}
                 min={0}
@@ -307,7 +308,7 @@ export default function PoolSettingsFlyout({
                 step={0.1}
               />
               <NumericField
-                label="Rising Min Win Rate"
+                label={t('poolSettingsFlyout.risingMinWinRate')}
                 value={form.pool_rising_min_win_rate}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_rising_min_win_rate: v }))}
                 min={0}
@@ -318,10 +319,10 @@ export default function PoolSettingsFlyout({
           </Card>
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
-            <h4 className="text-[10px] uppercase tracking-widest font-semibold">Pool Health SLO</h4>
+            <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('poolSettingsFlyout.sectionPoolHealthSlo')}</h4>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Min Analyzed %"
+                label={t('poolSettingsFlyout.minAnalyzedPct')}
                 value={form.pool_slo_min_analyzed_pct}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_slo_min_analyzed_pct: v }))}
                 min={0}
@@ -329,7 +330,7 @@ export default function PoolSettingsFlyout({
                 step={0.1}
               />
               <NumericField
-                label="Min Profitable %"
+                label={t('poolSettingsFlyout.minProfitablePct')}
                 value={form.pool_slo_min_profitable_pct}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_slo_min_profitable_pct: v }))}
                 min={0}
@@ -340,10 +341,10 @@ export default function PoolSettingsFlyout({
           </Card>
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
-            <h4 className="text-[10px] uppercase tracking-widest font-semibold">Sampling and Cadence</h4>
+            <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('poolSettingsFlyout.sectionSamplingCadence')}</h4>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Leaderboard Wallet Trade Sample"
+                label={t('poolSettingsFlyout.leaderboardWalletTradeSample')}
                 value={form.pool_leaderboard_wallet_trade_sample}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_leaderboard_wallet_trade_sample: v }))}
                 min={1}
@@ -351,7 +352,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Incremental Wallet Trade Sample"
+                label={t('poolSettingsFlyout.incrementalWalletTradeSample')}
                 value={form.pool_incremental_wallet_trade_sample}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_incremental_wallet_trade_sample: v }))}
                 min={1}
@@ -359,7 +360,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Full Sweep Interval (sec)"
+                label={t('poolSettingsFlyout.fullSweepInterval')}
                 value={form.pool_full_sweep_interval_seconds}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_full_sweep_interval_seconds: v }))}
                 min={10}
@@ -367,7 +368,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Incremental Refresh Interval (sec)"
+                label={t('poolSettingsFlyout.incrementalRefreshInterval')}
                 value={form.pool_incremental_refresh_interval_seconds}
                 onChange={(v) =>
                   setForm((prev) => ({ ...prev, pool_incremental_refresh_interval_seconds: v }))
@@ -377,7 +378,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Activity Reconciliation Interval (sec)"
+                label={t('poolSettingsFlyout.activityReconciliationInterval')}
                 value={form.pool_activity_reconciliation_interval_seconds}
                 onChange={(v) =>
                   setForm((prev) => ({ ...prev, pool_activity_reconciliation_interval_seconds: v }))
@@ -387,7 +388,7 @@ export default function PoolSettingsFlyout({
                 step={1}
               />
               <NumericField
-                label="Pool Recompute Interval (sec)"
+                label={t('poolSettingsFlyout.poolRecomputeInterval')}
                 value={form.pool_recompute_interval_seconds}
                 onChange={(v) => setForm((prev) => ({ ...prev, pool_recompute_interval_seconds: v }))}
                 min={10}
