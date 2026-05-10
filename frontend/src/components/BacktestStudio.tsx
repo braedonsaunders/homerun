@@ -2598,29 +2598,11 @@ export default function BacktestStudio({
                   </div>
                 ) : activeRun ? (
                   <>
-                    {/* Run breadcrumb */}
-                    <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] dark:border-amber-500/40 dark:bg-amber-500/5">
-                      <Activity className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-300" />
-                      <span className="text-muted-foreground">{t('backtestStudio.viewingRun')}</span>
-                      <span className="font-mono text-amber-900 dark:text-amber-200">{activeRun.run_id.slice(0, 8)}</span>
-                      <span className="text-muted-foreground">·</span>
-                      <span className="truncate font-medium text-foreground">
-                        {activeRun.strategy_name || activeRun.strategy_slug || t('backtestStudio.unknown')}
-                      </span>
-                      <span
-                        className={cn(
-                          'shrink-0 font-mono tabular-nums',
-                          (activeRun.execution?.total_return_pct ?? 0) >= 0
-                            ? 'text-emerald-700 dark:text-emerald-300'
-                            : 'text-red-700 dark:text-red-300',
-                        )}
-                      >
-                        {fmtPct(activeRun.execution?.total_return_pct, 2)}
-                      </span>
-                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                        {new Date(activeRun.started_at).toLocaleString()}
-                      </span>
-                    </div>
+                    {/* (Run breadcrumb removed — the stepper's Inspect
+                        label already shows run id + return %, so a
+                        second strip with the same info was redundant.
+                        The run's started_at timestamp now lives only
+                        on the headline section's right edge below.) */}
 
                     {/* §1 HEADLINE */}
                     <section id="bts-section-headline" className="scroll-mt-4">
