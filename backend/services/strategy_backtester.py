@@ -98,6 +98,24 @@ def _has_custom_detect_sync(strategy) -> bool:
     return method is not base_method
 
 
+def _has_custom_detect_plain(strategy) -> bool:
+    """Check if strategy implements its own ``detect()`` (the
+    backwards-compatible name).  Most strategies in this codebase
+    override the plain method rather than ``detect_sync``/``detect_async``,
+    and ``_run_detect_once`` already knows how to route to it.  Replay
+    discovery must recognise this override too — historically it didn't,
+    which silently skipped 20+ scanner strategies (tail_end_carry,
+    stat_arb, news_edge, every BTC/ETH variant, etc.).
+    """
+    method = getattr(type(strategy), "detect", None)
+    if method is None:
+        return False
+    from services.strategies.base import BaseStrategy
+
+    base_method = getattr(BaseStrategy, "detect", None)
+    return method is not base_method
+
+
 def _timeframe_to_seconds(value: str | int | None, *, default_seconds: int = 1800) -> int:
     if isinstance(value, int):
         return max(60, int(value))
@@ -1656,38 +1674,139 @@ def _backtest_evaluate_opportunity(
     opp: Any,
     pdata: dict[str, Any],
     initial_capital_usd: float,
+    live_context: dict[str, Any] | None = None,
 ) -> tuple[Any, Any] | None:
     """Run ``strategy.evaluate()`` on a backtest opportunity row.
 
     Mirrors the live orchestrator's gate at trader_orchestrator_worker
     line 6474 — the strategy's own ``evaluate()`` decides whether the
     intent should fire RIGHT NOW given current portfolio + market
-    context.  Without this call, backtests run a fundamentally
-    different strategy variant: ``detect()`` only, no execution-time
-    re-validation, no adaptive sizing, no custom_checks.
+    context.
 
-    Returns ``(decision_obj, signal_view)`` so the caller can hand both
-    to ``apply_platform_decision_gates`` for the post-strategy
-    orchestrator gates (signal staleness, trading schedule, risk
-    evaluator, occupied market guard, demoted-strategies, etc.) — that
-    pipeline is what live runs at trader_orchestrator_worker:6474.
-    Returns None if evaluate() raised — fall back to "passthrough" so
-    a bug in evaluate() doesn't tank the entire backtest.  Caller
-    treats decision_obj.decision == "selected" as accept, anything
-    else as skip.
+    When ``opp`` carries a real TradeSignal at ``_underlying_signal``
+    (the canonical replay path), wrap it in the production
+    ``RuntimeTradeSignalView`` so evaluate() reads the EXACT same view
+    live does — including the ``live_edge_percent`` /
+    ``live_selected_price`` overlay derived from market context.
+    The ``live_context`` argument is the historically-reconstructed
+    market context for this signal at its detected_at time (built by
+    ``_build_replay_live_context``); without it, signals from worker-
+    driven pipelines (which often persist with null edge_percent) get
+    rejected by evaluate's edge-floor check even when their LIVE
+    counterparts were selected, because live's runtime overlays the
+    edge from current mid.
+
+    Returns ``(decision_obj, signal_view)`` for the caller to hand to
+    ``apply_platform_decision_gates``.  Returns None if evaluate()
+    raised — fall back to "passthrough" so a strategy bug doesn't tank
+    the whole backtest.
     """
     if not hasattr(strategy, "evaluate"):
         return None
     try:
-        # Synthesize a signal-view that quacks like a TradeSignal so
-        # the strategy's evaluate() reads the right fields.  Strategies
-        # reach into many TradeSignal columns (source, strategy_type,
-        # liquidity, edge_percent, confidence, entry_price, market_id,
-        # payload_json, strategy_context_json) — we populate every one
-        # of them faithfully from the OpportunityHistory row + the
-        # nested positions_to_take payload.  Missing fields cause
-        # evaluate() to silently reject, which the user hit with 1323
-        # of 1323 opps skipped on tail_end_carry.
+        # Institutional-grade replay path: when the opp carries a
+        # real TradeSignal ORM row, use the production
+        # RuntimeTradeSignalView with the historically-reconstructed
+        # live_context.  This is the same wrapper class the live
+        # worker uses — same column access, same overlay semantics,
+        # same evaluate input.  No synthesis required.
+        underlying = getattr(opp, "_underlying_signal", None)
+        if underlying is not None:
+            from services.trader_orchestrator.live_market_context import (
+                RuntimeTradeSignalView,
+            )
+
+            signal = RuntimeTradeSignalView(
+                underlying, live_context=live_context or {}
+            )
+            # Time-sensitive evaluate gates (resolution_window,
+            # signal_staleness, days_to_resolution) compute against
+            # ``datetime.now(utc)``.  In replay we're evaluating signals
+            # from days ago — their original resolution_date is now in
+            # the past relative to wall clock, so every dtr-based check
+            # rejects.  Synthesize a forward-shifted resolution_date
+            # such that ``(synthetic_res - now)`` reproduces the dtr the
+            # signal had at its original detect-time.  This is the same
+            # trick the legacy ``_SignalView`` path used; we replicate
+            # it on the production wrapper so evaluate sees byte-
+            # equivalent time semantics.
+            try:
+                detected_at_orig = getattr(underlying, "created_at", None)
+                if isinstance(detected_at_orig, datetime):
+                    if detected_at_orig.tzinfo is None:
+                        detected_at_orig = detected_at_orig.replace(tzinfo=timezone.utc)
+                    base_payload = signal.payload_json or {}
+                    if not isinstance(base_payload, dict):
+                        base_payload = {}
+                    original_res = base_payload.get("resolution_date")
+                    if isinstance(original_res, str):
+                        try:
+                            from datetime import datetime as _dt
+                            res_parsed = _dt.fromisoformat(original_res.replace("Z", "+00:00"))
+                            if res_parsed.tzinfo is None:
+                                res_parsed = res_parsed.replace(tzinfo=timezone.utc)
+                            original_dtr_seconds = (res_parsed - detected_at_orig).total_seconds()
+                            if original_dtr_seconds > 0:
+                                synthetic_res = (
+                                    datetime.now(timezone.utc)
+                                    + (res_parsed - detected_at_orig)
+                                )
+                                # Build a patched payload (don't mutate
+                                # the ORM row's underlying dict — other
+                                # paths may share the reference).
+                                signal.payload_json = {
+                                    **base_payload,
+                                    "resolution_date": synthetic_res.isoformat(),
+                                }
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            ctx_lm = (
+                dict(live_context) if isinstance(live_context, dict) else {}
+            )
+            ctx: dict[str, Any] = {
+                "params": dict(getattr(strategy, "config", {}) or {}),
+                "trader": {
+                    "id": "backtest",
+                    "mode": "shadow",
+                    "risk_limits": {
+                        "max_trade_notional_usd": float(initial_capital_usd) * 0.10,
+                        "max_open_positions": 50,
+                    },
+                },
+                "mode": "shadow",
+                "live_market": ctx_lm,
+                "source_config": {},
+            }
+            decision = strategy.evaluate(signal, ctx)
+            if hasattr(decision, "decision"):
+                return (decision, signal)
+            if isinstance(decision, dict):
+                class _DecisionView:
+                    __slots__ = ("decision", "reason", "score", "size_usd", "checks", "payload")
+
+                    def __init__(self, d: dict[str, Any]):
+                        self.decision = str(d.get("decision") or "selected")
+                        self.reason = str(d.get("reason") or "")
+                        self.score = d.get("score")
+                        self.size_usd = float(d.get("size_usd") or 0.0)
+                        self.checks = list(d.get("checks") or [])
+                        self.payload = dict(d.get("payload") or {})
+                return (_DecisionView(decision), signal)
+            return None
+
+        # ── Legacy path (OpportunityHistory rows without an underlying
+        # TradeSignal ORM): synthesize a TradeSignal-quack object.
+        # Used by the discovery synthesis flow which builds opps from
+        # detect() output rather than persisted signals.  Here we
+        # don't have a real ORM row to wrap, so we reconstruct the
+        # TradeSignal contract field by field from the opp's
+        # positions_data.
+        opp_strategy_type = str(getattr(opp, "strategy_type", "") or "").strip().lower()
+        first_pos = (pdata.get("positions_to_take") or [{}])[0]
+        if not isinstance(first_pos, dict):
+            first_pos = {}
         opp_strategy_type = str(getattr(opp, "strategy_type", "") or "").strip().lower()
         first_pos = (pdata.get("positions_to_take") or [{}])[0]
         if not isinstance(first_pos, dict):
@@ -1909,6 +2028,796 @@ class _SyntheticOpp:
         self._synthetic = True
 
 
+# ── Replay event sourcing ─────────────────────────────────────────────────
+#
+# Backtest discovery used to hard-code ``events=[]`` when calling
+# ``strategy.detect_async``.  That made event-driven strategies — copy
+# trading, news, insider detection — silently produce zero opportunities
+# in replay, even when their live counterparts had been firing all week.
+# The fix: for strategies whose ``detect`` reads ``events``, materialise
+# the same historical event stream the live system saw and feed it in
+# at the right tick.  Each strategy slug declares which event source it
+# consumes; the dispatcher below loads, shapes, and bins those events.
+#
+# Adding a new event-driven strategy:
+#   1. Implement a ``_load_<kind>_events_for_replay`` helper that
+#      returns rows in (start_dt, end_dt] sorted by timestamp.
+#   2. Implement a ``_<kind>_event_to_strategy_input`` helper that
+#      shapes one row into the dict the strategy iterates in detect().
+#   3. Add the slug to ``_REPLAY_EVENT_SOURCE_BY_SLUG``.
+#
+# The ``traders_copy_trade`` slug is wired to ``wallet_trade``: events
+# come from the ``WalletMonitorEvent`` table the live ws-monitor
+# persists, shaped to mirror exactly what ``TradersCopyTradeSignalService``
+# builds at runtime so the strategy can't tell replay from live.
+
+_REPLAY_EVENT_SOURCE_BY_SLUG: dict[str, str] = {
+    "traders_copy_trade": "wallet_trade",
+}
+
+
+def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
+    """Return the event source kind for a strategy, or None if its
+    detect() doesn't iterate events.  Looked up by slug; falls back to
+    inspecting ``accepted_signal_strategy_types`` for strategies that
+    declare their event channel that way.
+    """
+    norm = (slug or "").strip().lower()
+    if norm in _REPLAY_EVENT_SOURCE_BY_SLUG:
+        return _REPLAY_EVENT_SOURCE_BY_SLUG[norm]
+    accepted = getattr(strategy, "accepted_signal_strategy_types", None)
+    if isinstance(accepted, (list, tuple)):
+        for entry in accepted:
+            kind = _REPLAY_EVENT_SOURCE_BY_SLUG.get(
+                str(entry or "").strip().lower()
+            )
+            if kind:
+                return kind
+    return None
+
+
+def _extract_scope_wallets(strategy: Any) -> set[str] | None:
+    """Pull the wallet scope out of a copy-trade strategy's config so we
+    can filter ``WalletMonitorEvent`` to the wallets this strategy
+    cares about.  Returns ``None`` when no explicit individual-wallet
+    scope is configured (caller should fall back to all monitored
+    wallets — the table itself is naturally scope-limited because the
+    ws-monitor only persists events for tracked wallets).
+    """
+    cfg = getattr(strategy, "config", {}) or {}
+    if not isinstance(cfg, dict):
+        return None
+    scope = cfg.get("traders_scope")
+    if not isinstance(scope, dict):
+        return None
+    wallets = scope.get("individual_wallets")
+    if not isinstance(wallets, list) or not wallets:
+        return None
+    out: set[str] = set()
+    for w in wallets:
+        s = str(w or "").strip().lower()
+        if s:
+            out.add(s)
+    return out or None
+
+
+# Hard cap on wallet events loaded into a single replay.  Sized for the
+# ws-monitor's typical 7-day volume (~10k events across the tracked
+# wallet set) with headroom; if a window legitimately holds more we
+# warn rather than silently truncate.
+_REPLAY_WALLET_EVENT_CAP = 50000
+
+
+class _SignalAsOpp:
+    """Wrap a ``trade_signals`` row as an OpportunityHistory-quack object
+    for the execution-backtest loop.  TradeSignal is the canonical
+    record of what the live trader saw and decided on; the backtest
+    loop adapter exposes the ORM object plus the loop's expected
+    attribute surface (``id`` / ``strategy_type`` / ``detected_at`` /
+    ``positions_data``).
+
+    The original ORM row is preserved at ``_underlying_signal`` so the
+    evaluate path can build a ``RuntimeTradeSignalView`` from it —
+    same class live uses, ensuring evaluate() sees byte-identical
+    column access.  Without this, backtest would have to synthesise a
+    duplicate signal-shim that drifts from the live contract.
+    """
+
+    __slots__ = (
+        "id", "strategy_type", "detected_at", "positions_data",
+        "expected_roi", "risk_score", "title", "event_id",
+        "_synthetic_source", "_underlying_signal",
+    )
+
+    def __init__(
+        self,
+        *,
+        sid: str,
+        strategy_type: str,
+        detected_at: datetime,
+        positions_data: dict[str, Any],
+        expected_roi: float = 0.0,
+        risk_score: float = 0.0,
+        title: str = "",
+        event_id: str | None = None,
+        underlying_signal: Any = None,
+    ) -> None:
+        self.id = sid
+        self.strategy_type = strategy_type
+        self.detected_at = detected_at
+        self.positions_data = positions_data
+        self.expected_roi = expected_roi
+        self.risk_score = risk_score
+        self.title = title
+        self.event_id = event_id
+        self._synthetic_source = "trade_signals"
+        self._underlying_signal = underlying_signal
+
+
+async def _load_opps_from_trade_signals(
+    *,
+    session: Any,
+    slug: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    max_rows: int,
+) -> list[_SignalAsOpp]:
+    """Load trade_signals rows for ``slug`` in window and shape them
+    into OpportunityHistory-quack objects.  Used when opp_history has
+    no rows for a strategy (worker-driven flows like crypto_entropy_maker).
+    Filters to live-status signals only — ``filtered`` / ``failed`` /
+    ``skipped`` would have failed evaluate or risk gates in live and
+    would distort the backtest funnel by inflating ``opps_pulled``.
+    """
+    from sqlalchemy import select as _select
+    # The TradeSignal ORM model lives in models.database too.  Import
+    # locally to avoid circular import at module load.
+    from models.database import TradeSignal as _TS
+    import json as _json
+
+    stmt = (
+        _select(_TS)
+        .where(
+            _TS.created_at >= start_dt,
+            _TS.created_at <= end_dt,
+            _TS.strategy_type == slug,
+            # Signals the live trader actually considered actionable.
+            # ``expired`` is the dominant terminal status for many
+            # strategies (queue TTL ran out before execute) and IS a
+            # legitimate replay candidate — the backtest's matcher
+            # decides whether the resting order would have filled in
+            # the historical book.  Drop only the explicit-failure
+            # statuses where the live trader rejected the signal
+            # itself (filtered by quality-filter, failed during
+            # evaluate, skipped by deduplication).
+            _TS.status.notin_(["filtered", "failed", "skipped"]),
+        )
+        .order_by(_TS.created_at.asc())
+        .limit(max(1, int(max_rows)))
+    )
+    try:
+        rows = (await session.execute(stmt)).scalars().all()
+    except Exception:
+        return []
+
+    out: list[_SignalAsOpp] = []
+    for sig in rows:
+        payload = sig.payload_json
+        if isinstance(payload, str):
+            try:
+                payload = _json.loads(payload)
+            except Exception:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        ptt = payload.get("positions_to_take") or []
+        if not isinstance(ptt, list) or not ptt:
+            # Reconstruct a minimal single-position from top-level
+            # signal fields so worker-driven strategies that didn't
+            # serialize positions still produce a usable opp.
+            tok = (
+                str(payload.get("selected_token_id") or "").strip()
+                or str(payload.get("token_id") or "").strip()
+                or str(getattr(sig, "market_id", "") or "").strip()
+            )
+            side = "BUY"
+            direction = str(getattr(sig, "direction", "") or "").strip().upper()
+            if direction in {"SELL", "SHORT"}:
+                side = "SELL"
+            entry = float(getattr(sig, "entry_price", 0.0) or 0.0)
+            if not tok or entry <= 0.0:
+                continue
+            ptt = [
+                {
+                    "token_id": tok,
+                    "side": side,
+                    "action": side,
+                    "price": entry,
+                    "market_id": str(getattr(sig, "market_id", "") or ""),
+                    "market_question": str(getattr(sig, "market_question", "") or ""),
+                }
+            ]
+
+        positions_data = dict(payload)
+        positions_data["positions_to_take"] = ptt
+        # Ensure strategy_context lands in positions_data the same way
+        # OpportunityHistory rows carry it.
+        sc = getattr(sig, "strategy_context_json", None)
+        if isinstance(sc, dict) and sc and "strategy_context" not in positions_data:
+            positions_data["strategy_context"] = sc
+
+        out.append(
+            _SignalAsOpp(
+                sid=str(getattr(sig, "id", "") or ""),
+                strategy_type=str(getattr(sig, "strategy_type", "") or slug),
+                detected_at=sig.created_at,
+                positions_data=positions_data,
+                expected_roi=float(getattr(sig, "edge_percent", 0.0) or 0.0),
+                title=str(payload.get("title") or ""),
+                event_id=str(payload.get("event_id") or "") or None,
+                underlying_signal=sig,
+            )
+        )
+    return out
+
+
+class _BulkBookIndex:
+    """In-memory point-in-time book lookup for the eval loop.  Bulk-
+    pre-fetches every ``MarketMicrostructureSnapshot`` row for a token
+    universe over a window, then exposes ``snapshot_at(token, ts)``
+    backed by a binary search.  Avoids one DB round-trip per opp —
+    1500 opps × 1 query each at ~20ms is 30s of pure I/O versus a
+    single chunked bulk pull that finishes in seconds.
+
+    Quacks like ``BookReplay.snapshot_at`` (returns a ``BookSnapshot``
+    or ``None``) so ``_build_replay_live_context`` can use it
+    interchangeably with the streaming replays.
+    """
+
+    def __init__(self) -> None:
+        # token_id -> sorted list of (observed_at, BookSnapshot)
+        self._by_token: dict[str, list[tuple[datetime, Any]]] = {}
+
+    @classmethod
+    async def build(
+        cls,
+        *,
+        token_ids: list[str],
+        start_dt: datetime,
+        end_dt: datetime,
+        chunk: int = 50,
+    ) -> "_BulkBookIndex":
+        """Build the index using a SHORT-LIVED session per chunk.  The
+        production pool reaper force-invalidates any session held more
+        than 45s end-to-end (live's safety against checkout exhaustion);
+        a backtest that pulls a multi-day window across hundreds of
+        tokens will trip that ceiling on a single shared session.
+        Opening a fresh session per chunk keeps each checkout <1s
+        regardless of total wall-clock time.
+
+        Parquet-first: tokens covered by an operator-supplied parquet
+        dataset (HOMERUN_PARQUET_ROOT) are loaded straight from the
+        file with pyarrow — no SQL round-trip.  Remaining tokens fall
+        through to the chunked-session SQL path.  This matters for
+        live_context overlay: without parquet, evaluate sees the
+        token's edge_percent computed from a sparse mms snapshot;
+        with parquet, it sees the dense vendor data.
+        """
+        from sqlalchemy import select as _select, text as _text
+        from models.database import (
+            AsyncSessionLocal as _Sess,
+            MarketMicrostructureSnapshot,
+        )
+        from services.backtest.book_replay import BookSnapshot, PriceLevel
+
+        idx = cls()
+        if not token_ids:
+            return idx
+
+        # Phase A — parquet-covered tokens.
+        try:
+            from services.external_data import parquet_scanner as _pq_scanner
+            await _pq_scanner.ensure_recent_scan(max_age_seconds=60.0)
+            pq_paths = await _pq_scanner.find_parquet_coverage(
+                token_ids=token_ids, start=start_dt, end=end_dt,
+            )
+        except Exception as _exc:
+            logger.debug("_BulkBookIndex parquet lookup skipped: %s", _exc)
+            pq_paths = {}
+        if pq_paths:
+            import pyarrow.parquet as _pq
+            for tok, file_path in pq_paths.items():
+                try:
+                    table = _pq.read_table(
+                        str(file_path),
+                        columns=[
+                            "observed_at_us", "best_bid", "best_ask", "spread_bps",
+                        ],
+                    )
+                except Exception as _exc:
+                    logger.debug(
+                        "_BulkBookIndex parquet read failed for %s: %s", tok, _exc
+                    )
+                    continue
+                obs_us = table.column("observed_at_us").to_pylist()
+                best_bid = table.column("best_bid").to_pylist()
+                best_ask = table.column("best_ask").to_pylist()
+                spread_bps = table.column("spread_bps").to_pylist()
+                start_us = int(start_dt.replace(tzinfo=timezone.utc).timestamp() * 1_000_000) if start_dt.tzinfo is None else int(start_dt.timestamp() * 1_000_000)
+                end_us = int(end_dt.replace(tzinfo=timezone.utc).timestamp() * 1_000_000) if end_dt.tzinfo is None else int(end_dt.timestamp() * 1_000_000)
+                for i in range(len(obs_us)):
+                    us = int(obs_us[i] or 0)
+                    if us < start_us or us > end_us:
+                        continue
+                    bb_f = float(best_bid[i] or 0.0)
+                    ba_f = float(best_ask[i] or 0.0)
+                    observed = datetime.fromtimestamp(us / 1_000_000, tz=timezone.utc)
+                    snap = BookSnapshot(
+                        token_id=str(tok),
+                        observed_at=observed,
+                        bids=(PriceLevel(price=bb_f, size=0.0),) if bb_f > 0 else (),
+                        asks=(PriceLevel(price=ba_f, size=0.0),) if ba_f > 0 else (),
+                        spread_bps=(
+                            float(spread_bps[i]) if spread_bps[i] is not None else None
+                        ),
+                    )
+                    idx._by_token.setdefault(str(tok), []).append((observed, snap))
+
+        # Phase B — SQL fallback for everything not covered by parquet.
+        sql_tokens = [t for t in token_ids if t not in pq_paths]
+        if not sql_tokens:
+            return idx
+        for i in range(0, len(sql_tokens), chunk):
+            sub = sql_tokens[i : i + chunk]
+            async with _Sess() as session:
+                try:
+                    await session.execute(_text("SET statement_timeout = 60000"))
+                except Exception:
+                    pass
+                # Pull just the columns the live_context build needs
+                # (best_bid / best_ask / spread_bps / observed_at).
+                # Skipping bids_json / asks_json shaves row size by ~10x.
+                try:
+                    rows = (await session.execute(
+                        _select(
+                            MarketMicrostructureSnapshot.token_id,
+                            MarketMicrostructureSnapshot.observed_at,
+                            MarketMicrostructureSnapshot.best_bid,
+                            MarketMicrostructureSnapshot.best_ask,
+                            MarketMicrostructureSnapshot.spread_bps,
+                        )
+                        .where(
+                            MarketMicrostructureSnapshot.token_id.in_(sub),
+                            MarketMicrostructureSnapshot.observed_at >= start_dt,
+                            MarketMicrostructureSnapshot.observed_at <= end_dt,
+                            MarketMicrostructureSnapshot.snapshot_type == "book",
+                        )
+                        .order_by(
+                            MarketMicrostructureSnapshot.token_id.asc(),
+                            MarketMicrostructureSnapshot.observed_at.asc(),
+                        )
+                    )).all()
+                except Exception:
+                    continue
+            for tid, observed, bb, ba, sp in rows:
+                if observed is None:
+                    continue
+                if observed.tzinfo is None:
+                    observed = observed.replace(tzinfo=timezone.utc)
+                bb_f = float(bb) if bb is not None else 0.0
+                ba_f = float(ba) if ba is not None else 0.0
+                snap = BookSnapshot(
+                    token_id=str(tid or ""),
+                    observed_at=observed,
+                    bids=(PriceLevel(price=bb_f, size=0.0),) if bb_f > 0 else (),
+                    asks=(PriceLevel(price=ba_f, size=0.0),) if ba_f > 0 else (),
+                    spread_bps=float(sp) if sp is not None else None,
+                )
+                idx._by_token.setdefault(str(tid or ""), []).append(
+                    (observed, snap)
+                )
+        return idx
+
+    async def snapshot_at(self, *, token_id: str, ts: datetime) -> Any:
+        bucket = self._by_token.get(token_id)
+        if not bucket:
+            return None
+        target = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+        # bisect_right on observed_at (the first tuple slot)
+        import bisect as _bisect
+        keys = [t[0] for t in bucket]
+        i = _bisect.bisect_right(keys, target) - 1
+        if i < 0:
+            return None
+        return bucket[i][1]
+
+
+async def _build_replay_live_context(
+    *,
+    signal: Any,
+    pdata: dict[str, Any],
+    book_replay: Any,
+    detected_at: datetime,
+) -> dict[str, Any]:
+    """Reconstruct the ``live_context`` shape the live worker builds
+    when it pulls a signal off the queue.  ``RuntimeTradeSignalView``
+    overlays the context's ``live_selected_price`` and
+    ``live_edge_percent`` on top of the persisted signal — without
+    that overlay, evaluate() reads ``signal.edge_percent`` which is
+    often null on signals from worker-driven pipelines (the live
+    runtime computes it fresh from current mid).
+
+    Replay needs the same overlay sourced from HISTORICAL book state:
+    look up the mid for the signal's selected token at the signal's
+    detected_at via the book replay (snapshots OR delta-replay,
+    whichever the run is using), compute live_edge from
+    model_probability, and shape the dict identically.
+    """
+    from services.trader_orchestrator.live_market_context import (
+        _extract_model_probability,
+    )
+
+    # Determine the selected token for this signal.
+    first_pos = (pdata.get("positions_to_take") or [{}])[0]
+    if not isinstance(first_pos, dict):
+        first_pos = {}
+    selected_token = (
+        str(pdata.get("selected_token_id") or "").strip()
+        or str(first_pos.get("token_id") or "").strip()
+        or str(getattr(signal, "market_id", "") or "").strip()
+    )
+    direction = str(getattr(signal, "direction", "") or "").strip().lower()
+
+    selected_live: float | None = None
+    if selected_token and book_replay is not None:
+        try:
+            snap = await book_replay.snapshot_at(token_id=selected_token, ts=detected_at)
+        except Exception:
+            snap = None
+        if snap is not None:
+            mid = snap.mid
+            if mid is None:
+                mid = snap.best_bid or snap.best_ask
+            if mid is not None and mid > 0.0:
+                selected_live = float(mid)
+
+    # Model probability: derived from the persisted signal (live's
+    # ``_extract_model_probability`` reads the same fields).
+    model_probability = _extract_model_probability(signal, direction=direction)
+    live_edge = None
+    if model_probability is not None and selected_live is not None:
+        live_edge = (model_probability - selected_live) * 100.0
+
+    return {
+        "available": bool(selected_live is not None),
+        "market_id": str(getattr(signal, "market_id", "") or ""),
+        "direction": direction,
+        "selected_token_id": selected_token,
+        "live_selected_price": selected_live,
+        "live_edge_percent": live_edge,
+        "model_probability": model_probability,
+        "signal_entry_price": float(getattr(signal, "entry_price", 0.0) or 0.0),
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "live_market_fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _load_wallet_events_for_replay(
+    *,
+    session: Any,
+    start_dt: datetime,
+    end_dt: datetime,
+    scope_wallets: set[str] | None,
+) -> tuple[list[Any], bool]:
+    """Load ``WalletMonitorEvent`` rows in window, optionally scoped to
+    a set of wallet addresses.  Returns ``(rows, truncated)`` — the
+    ``truncated`` flag is True iff the cap was hit.
+    """
+    from sqlalchemy import select as _select
+    from services.wallet_ws_monitor import WalletMonitorEvent
+
+    stmt = (
+        _select(WalletMonitorEvent)
+        .where(
+            WalletMonitorEvent.detected_at >= start_dt,
+            WalletMonitorEvent.detected_at <= end_dt,
+        )
+        .order_by(WalletMonitorEvent.detected_at.asc())
+        .limit(_REPLAY_WALLET_EVENT_CAP + 1)
+    )
+    if scope_wallets:
+        stmt = stmt.where(WalletMonitorEvent.wallet_address.in_(list(scope_wallets)))
+    rows = list((await session.execute(stmt)).scalars().all())
+    truncated = len(rows) > _REPLAY_WALLET_EVENT_CAP
+    if truncated:
+        rows = rows[:_REPLAY_WALLET_EVENT_CAP]
+    return rows, truncated
+
+
+def _build_token_to_market_lookup(catalog_markets: list[Any]) -> dict[str, dict[str, Any]]:
+    """Walk the catalog once and produce a ``token_id → market_payload``
+    map matching the shape ``TradersCopyTradeSignalService`` builds via
+    ``_resolve_market_snapshot``.  Replay can resolve markets from the
+    catalog without an API call.
+    """
+    import json as _json
+
+    out: dict[str, dict[str, Any]] = {}
+    for m in catalog_markets or []:
+        if not isinstance(m, dict):
+            continue
+        market_id = str(m.get("condition_id") or m.get("id") or "").strip()
+        question = str(m.get("question") or "").strip()
+        slug = str(m.get("event_slug") or m.get("slug") or "").strip() or None
+        liquidity_raw = m.get("liquidity")
+        try:
+            liquidity = float(liquidity_raw) if liquidity_raw is not None else None
+        except (TypeError, ValueError):
+            liquidity = None
+
+        token_ids_raw = m.get("clob_token_ids")
+        if isinstance(token_ids_raw, str):
+            try:
+                token_ids_raw = _json.loads(token_ids_raw)
+            except (_json.JSONDecodeError, TypeError):
+                token_ids_raw = []
+        outcomes_raw = m.get("outcomes")
+        if isinstance(outcomes_raw, str):
+            try:
+                outcomes_raw = _json.loads(outcomes_raw)
+            except (_json.JSONDecodeError, TypeError):
+                outcomes_raw = []
+
+        token_ids_list = [str(t).strip() for t in (token_ids_raw or []) if t]
+        outcomes_list = [str(o).strip() for o in (outcomes_raw or [])]
+
+        for idx, token_id in enumerate(token_ids_list):
+            if not token_id:
+                continue
+            outcome = outcomes_list[idx] if idx < len(outcomes_list) else ""
+            out[token_id] = {
+                "market_id": market_id or f"token:{token_id}",
+                "market_question": question or f"Token {token_id}",
+                "market_slug": slug,
+                "outcome": outcome,
+                "liquidity": liquidity,
+                "token_id": token_id,
+            }
+    return out
+
+
+def _wallet_event_to_strategy_input(
+    event: Any, *, market_payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Shape one ``WalletMonitorEvent`` row into the dict the
+    ``traders_copy_trade`` strategy iterates in detect().  Mirrors
+    ``TradersCopyTradeSignalService._process_wallet_trade_event``
+    so the strategy receives the same payload it would in live.
+    """
+    side = str(getattr(event, "side", "") or "").strip().upper()
+    if side not in {"BUY", "SELL"}:
+        return None
+    token_id = str(getattr(event, "token_id", "") or "").strip()
+    if not token_id:
+        return None
+    try:
+        entry_price = float(getattr(event, "price", 0.0) or 0.0)
+        size = float(getattr(event, "size", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if entry_price <= 0.0 or size <= 0.0:
+        return None
+    source_wallet = str(getattr(event, "wallet_address", "") or "").strip().lower()
+
+    detected_at = getattr(event, "detected_at", None)
+    if isinstance(detected_at, datetime) and detected_at.tzinfo is None:
+        detected_at = detected_at.replace(tzinfo=timezone.utc)
+    detected_iso = detected_at.isoformat() if isinstance(detected_at, datetime) else None
+
+    tx_hash = str(getattr(event, "tx_hash", "") or "")
+    order_hash = str(getattr(event, "order_hash", "") or "")
+    log_index = int(getattr(event, "log_index", 0) or 0)
+    block_number = int(getattr(event, "block_number", 0) or 0)
+    latency_ms = float(getattr(event, "detection_latency_ms", 0.0) or 0.0)
+
+    copy_event_payload = {
+        "wallet_address": source_wallet,
+        "token_id": token_id,
+        "side": side,
+        "size": size,
+        "price": entry_price,
+        "tx_hash": tx_hash,
+        "order_hash": order_hash,
+        "log_index": log_index,
+        "block_number": block_number,
+        "timestamp": detected_iso,
+        "detected_at": detected_iso,
+        "latency_ms": latency_ms,
+        "confidence": 0.70,
+    }
+    source_trade_payload = {
+        "wallet_address": source_wallet,
+        "side": side,
+        "source_notional_usd": entry_price * size,
+        "size": size,
+        "price": entry_price,
+        "tx_hash": tx_hash,
+        "order_hash": order_hash,
+        "log_index": log_index,
+        "detected_at": detected_iso,
+    }
+    source_item_id = (
+        f"{tx_hash}:{source_wallet}:{token_id}:{side}:{log_index}:{order_hash}"
+    )
+    return {
+        "copy_event": copy_event_payload,
+        "source_trade": source_trade_payload,
+        "market": dict(market_payload),
+        "source_item_id": source_item_id,
+        "dedupe_key": "",
+    }
+
+
+# ── Per-tick price grid (book-driven strategies) ─────────────────────────
+#
+# The discovery loop needs ``prices_at_tick = {token_id: {best_bid,
+# best_ask, mid, ...}}`` for each tick.  Two replay sources can build
+# that grid:
+#
+#   * ``BookReplay``     — reads ``market_microstructure_snapshots``
+#     (throttled to 0.5s/token by the live ingestor; sparse on calm
+#     markets).
+#   * ``BookDeltaReplay`` — reads ``book_delta_events`` and replays them
+#     atop a snapshot anchor, so it surfaces every level change the
+#     live system saw.
+#
+# When deltas dominate the window the matcher already auto-selects
+# ``BookDeltaReplay``; we mirror that selection here so discovery sees
+# the same data the matcher will fill against.  The streaming approach
+# below visits each replay snapshot once and freezes per-token state
+# at every tick boundary, bounding memory at O(tokens × ticks).
+
+
+async def _probe_should_prefer_deltas(
+    *,
+    session: Any,
+    token_ids: list[str],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> bool:
+    """Decide whether ``BookDeltaReplay`` should drive the per-tick
+    price grid.  Mirrors the matcher's auto-selection threshold so
+    discovery and matching see the same source.  Probes a token
+    sample (capped at 50) to keep the check cheap.
+    """
+    if not token_ids:
+        return False
+    from sqlalchemy import select as _select, func as _func
+    from models.database import MarketMicrostructureSnapshot, BookDeltaEvent
+
+    sample = token_ids[: min(50, len(token_ids))]
+    window_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-6)
+    try:
+        snap_count = int(
+            (
+                await session.execute(
+                    _select(_func.count(MarketMicrostructureSnapshot.id)).where(
+                        MarketMicrostructureSnapshot.token_id.in_(sample),
+                        MarketMicrostructureSnapshot.observed_at >= start_dt,
+                        MarketMicrostructureSnapshot.observed_at <= end_dt,
+                        MarketMicrostructureSnapshot.snapshot_type == "book",
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        delta_count = int(
+            (
+                await session.execute(
+                    _select(_func.count(BookDeltaEvent.id)).where(
+                        BookDeltaEvent.token_id.in_(sample),
+                        BookDeltaEvent.observed_at >= start_dt,
+                        BookDeltaEvent.observed_at <= end_dt,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+    except Exception as exc:
+        logger.warning("delta-probe query failed; defaulting to snapshots: %s", exc)
+        return False
+
+    deltas_per_token_per_hour = delta_count / max(len(sample), 1) / window_hours
+    return delta_count > 5 * max(snap_count, 1) and deltas_per_token_per_hour >= 10.0
+
+
+async def _build_per_tick_prices_grid(
+    *,
+    session: Any,
+    token_ids: list[str],
+    ticks: list[datetime],
+    end_dt: datetime,
+    use_deltas: bool,
+) -> dict[str, list[dict[str, Any] | None]]:
+    """For each token, return per-tick price state lists (length =
+    len(ticks)).  Each entry is ``{best_bid, best_ask, mid, price,
+    spread_bps, observed_at}`` or ``None`` when no state was available
+    at-or-before that tick.
+
+    Streams the chosen source ONCE; bins into ticks at boundary
+    crossings.  Truncations on the underlying replay are ignored — the
+    grid simply reflects whatever state the replay was able to produce.
+    """
+    if not token_ids or not ticks:
+        return {}
+    from services.backtest.book_replay import BookDeltaReplay, BookReplay
+
+    if use_deltas:
+        replay: Any = BookDeltaReplay(
+            session=session,
+            token_ids=token_ids,
+            start=ticks[0],
+            end=end_dt,
+        )
+    else:
+        replay = BookReplay(
+            session=session,
+            token_ids=token_ids,
+            start=ticks[0],
+            end=end_dt,
+            snapshot_type="book",
+        )
+
+    cur_state: dict[str, dict[str, Any]] = {}
+    grid: dict[str, list[dict[str, Any] | None]] = {}
+    next_tick_idx = 0
+
+    def _freeze_tick(tick_idx: int) -> None:
+        for tid, st in cur_state.items():
+            bucket = grid.get(tid)
+            if bucket is None:
+                bucket = [None] * len(ticks)
+                grid[tid] = bucket
+            bucket[tick_idx] = dict(st)
+
+    async for snap in replay.iter_snapshots():
+        bb = snap.best_bid or 0.0
+        ba = snap.best_ask or 0.0
+        if bb <= 0 and ba <= 0:
+            continue
+
+        observed = snap.observed_at
+        if observed is not None and observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        # Freeze any tick whose boundary is in the past relative to this
+        # snap — the strategy at tick ``i`` sees state observed_at <=
+        # ticks[i], so we capture state BEFORE applying snaps that
+        # arrive after the boundary.
+        while (
+            next_tick_idx < len(ticks)
+            and observed is not None
+            and ticks[next_tick_idx] < observed
+        ):
+            _freeze_tick(next_tick_idx)
+            next_tick_idx += 1
+
+        mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else (bb or ba)
+        cur_state[snap.token_id] = {
+            "best_bid": bb,
+            "best_ask": ba,
+            "mid": mid,
+            "price": mid,
+            "spread_bps": snap.spread_bps,
+            "observed_at": observed,
+        }
+
+    while next_tick_idx < len(ticks):
+        _freeze_tick(next_tick_idx)
+        next_tick_idx += 1
+
+    return grid
+
+
 async def _replay_discover_opportunities(
     *,
     strategy: Any,
@@ -1918,53 +2827,66 @@ async def _replay_discover_opportunities(
     sample_interval_seconds: int,
     max_ticks: int,
     candidate_token_ids: list[str] | None = None,
+    use_deltas_for_prices: bool = False,
 ) -> list[_SyntheticOpp]:
     """Replay-discovery: walk historical market state at sampled time
     ticks across [start_dt, end_dt] and call strategy.detect_async at
     each tick, accumulating returned opportunities.
 
-    The (events, markets, prices) tuple at each tick is reconstructed
-    from:
+    Inputs reconstructed at each tick:
       * markets — current Polymarket market catalog filtered to
         active-during-window markets, optionally narrowed to
-        ``candidate_token_ids`` when caller provides a scope.  We use
-        the CURRENT catalog (not historical) for the metadata since
-        Polymarket markets are short-lived and metadata rarely
-        changes during a market's life — only the prices do.
+        ``candidate_token_ids`` when caller provides a scope (book-
+        driven strategies).  Event-driven strategies bypass that
+        narrowing — events drive the universe.
       * prices — best_bid / best_ask / mid reconstructed per token
-        from the most-recent ``MarketMicrostructureSnapshot`` at-or-
-        before the tick.  This is what we backfilled from polybacktest
-        and the live ingestor.
-      * events — empty for now.  Few strategies use the events list;
-        crypto / news strategies that do will surface that as a
-        validation warning rather than fail.
+        from either ``MarketMicrostructureSnapshot`` (default) or
+        ``BookDeltaReplay`` (when ``use_deltas_for_prices=True``,
+        chosen by the caller when delta coverage materially dominates
+        snapshot coverage — same logic the matcher uses).
+      * events — for strategies whose ``detect`` reads events
+        (``traders_copy_trade``, etc.), the same historical event
+        stream the live system saw, loaded from the appropriate source
+        table and binned by tick so each detect() call sees the
+        events that arrived since the previous tick.  For book-only
+        strategies this remains an empty list.
 
     Returns a list of ``_SyntheticOpp`` instances that quack like
     ``OpportunityHistory`` rows — the existing evaluate /
     orchestrator-gate / matcher pipeline consumes them unchanged.
     """
     import json as _json
-    from sqlalchemy import select as _select, text as _text
-    from models.database import (
-        BacktestAsyncSessionLocal as _Sess,
-        MarketMicrostructureSnapshot as _MMS,
-    )
+    from sqlalchemy import text as _text
+    from models.database import BacktestAsyncSessionLocal as _Sess
 
-    if not _has_custom_detect_async(strategy) and not _has_custom_detect_sync(strategy):
-        # Strategy uses the default ``detect()`` which is usually a
-        # no-op — historical replay can't do anything for it.
+    if (
+        not _has_custom_detect_async(strategy)
+        and not _has_custom_detect_sync(strategy)
+        and not _has_custom_detect_plain(strategy)
+    ):
+        # Strategy uses none of the three detect methods — base class
+        # default ``detect()`` returns []; historical replay has nothing
+        # to do.  Hold-only / scheduler-driven strategies fall here.
         return []
+
+    event_kind = _replay_event_kind_for_strategy(slug, strategy)
 
     # Step 1: build the time grid.  Cap at ``max_ticks`` total samples
     # so a 30-day window doesn't blow up into 1500 detect() calls.
     total_seconds = max(60.0, (end_dt - start_dt).total_seconds())
     n_ticks = min(max_ticks, max(1, int(total_seconds / max(60, sample_interval_seconds))))
     actual_interval = total_seconds / n_ticks
+    from datetime import timedelta as _td_replay
+    ticks: list[datetime] = [
+        start_dt + _td_replay(seconds=actual_interval * i) for i in range(n_ticks)
+    ]
 
     # Step 2: load the current market catalog from the live scanner
-    # (in-memory cache, no API call).  Filter to markets with at least
-    # one mms book row in the window — anything else can't be price-
-    # reconstructed and would just produce stale prices in detect.
+    # (in-memory cache, no API call).  For book-driven strategies we
+    # narrow to markets with at least one token in scope.  For event-
+    # driven strategies the candidate filter is bypassed — events drive
+    # the universe, and the catalog is used only for token→market
+    # lookups.
     try:
         from services.shared_state import _read_market_catalog_file
         catalog = _read_market_catalog_file()
@@ -1972,7 +2894,7 @@ async def _replay_discover_opportunities(
         catalog = None
 
     candidate_set: set[str] | None = (
-        set(candidate_token_ids) if candidate_token_ids else None
+        set(candidate_token_ids) if (candidate_token_ids and event_kind is None) else None
     )
 
     catalog_markets: list[Any] = []
@@ -1999,11 +2921,12 @@ async def _replay_discover_opportunities(
             catalog_markets.append(m)
 
     if not catalog_markets:
+        # Without a catalog we can't even shape event payloads (the
+        # ``market`` field is required).  Bail out quietly — same
+        # behaviour as before for book-driven strategies.
         return []
 
-    # Step 3: pre-fetch every mms snapshot we'll need across all
-    # candidate tokens in one chunked query.  Index by token; within
-    # each token, sort by observed_at for fast bisect lookup.
+    # Step 3: derive the token universe from the catalog.
     all_token_ids: list[str] = []
     seen_t: set[str] = set()
     for m in catalog_markets:
@@ -2013,93 +2936,133 @@ async def _replay_discover_opportunities(
                 seen_t.add(ts)
                 all_token_ids.append(ts)
 
-    snaps_by_token: dict[str, list[Any]] = {}
-    CHUNK = 100
-    async with _Sess() as session:
-        await session.execute(_text("SET statement_timeout = 60000"))
-        for i in range(0, len(all_token_ids), CHUNK):
-            chunk = all_token_ids[i : i + CHUNK]
-            try:
-                rows = (await session.execute(
-                    _select(
-                        _MMS.token_id,
-                        _MMS.observed_at,
-                        _MMS.best_bid,
-                        _MMS.best_ask,
-                        _MMS.spread_bps,
-                    )
-                    .where(
-                        _MMS.token_id.in_(chunk),
-                        _MMS.observed_at >= start_dt,
-                        _MMS.observed_at <= end_dt,
-                        _MMS.snapshot_type == "book",
-                    )
-                    .order_by(_MMS.token_id, _MMS.observed_at)
-                )).all()
-            except Exception:
-                rows = []
-            for r in rows:
-                snaps_by_token.setdefault(str(r[0]), []).append(
-                    {"observed_at": r[1], "best_bid": r[2], "best_ask": r[3], "spread_bps": r[4]}
+    # Step 4: build the per-tick prices grid.  Book-driven strategies
+    # require this; event-driven ones don't read prices in detect()
+    # (the strategy reads the live mid from the embedded ``market``
+    # payload), so we skip the work for them.
+    grid: dict[str, list[dict[str, Any] | None]] = {}
+    if event_kind is None:
+        async with _Sess() as price_session:
+            await price_session.execute(
+                _text("SET statement_timeout = 60000")
+            )
+            # Auto-select source unless the caller has explicitly
+            # requested deltas.  Cheap probe (one count per source
+            # over a 50-token sample) — same threshold the matcher
+            # uses, so discovery and matching see the same data.
+            chosen_use_deltas = use_deltas_for_prices
+            if not chosen_use_deltas:
+                chosen_use_deltas = await _probe_should_prefer_deltas(
+                    session=price_session,
+                    token_ids=all_token_ids,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
                 )
+            try:
+                grid = await _build_per_tick_prices_grid(
+                    session=price_session,
+                    token_ids=all_token_ids,
+                    ticks=ticks,
+                    end_dt=end_dt,
+                    use_deltas=chosen_use_deltas,
+                )
+            except Exception as exc:
+                logger.warning("replay_discover: price grid build failed: %s", exc)
+                grid = {}
 
-    # Step 4: walk the time grid + run detect at each tick.
+    # Step 5: build the per-tick events grid.  Each tick's slice covers
+    # events whose timestamp lands in (prev_tick, this_tick] — same
+    # delivery cadence the live scanner sees.
+    events_by_tick: list[list[Any]] = [[] for _ in range(n_ticks)]
+    wallet_event_truncated = False
+    if event_kind == "wallet_trade":
+        market_lookup = _build_token_to_market_lookup(catalog_markets)
+        scope_wallets = _extract_scope_wallets(strategy)
+        async with _Sess() as ev_session:
+            await ev_session.execute(_text("SET statement_timeout = 60000"))
+            try:
+                wme_rows, wallet_event_truncated = await _load_wallet_events_for_replay(
+                    session=ev_session,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    scope_wallets=scope_wallets,
+                )
+            except Exception as exc:
+                logger.warning("replay_discover: wallet event load failed: %s", exc)
+                wme_rows = []
+        for ev in wme_rows:
+            ev_ts = getattr(ev, "detected_at", None)
+            if not isinstance(ev_ts, datetime):
+                continue
+            if ev_ts.tzinfo is None:
+                ev_ts = ev_ts.replace(tzinfo=timezone.utc)
+            offset = (ev_ts - start_dt).total_seconds()
+            if offset < 0:
+                continue
+            idx = min(n_ticks - 1, int(offset // actual_interval))
+            token_id = str(getattr(ev, "token_id", "") or "").strip()
+            market_payload = market_lookup.get(token_id)
+            if not market_payload:
+                # Token not in current catalog — same outcome live would
+                # produce: ``_resolve_market_snapshot`` would fail and
+                # ``_process_wallet_trade_event`` would skip the event.
+                continue
+            shaped = _wallet_event_to_strategy_input(ev, market_payload=market_payload)
+            if shaped is not None:
+                events_by_tick[idx].append(shaped)
+
+    # Step 6: walk the time grid + run detect at each tick.
     detected_total: list[_SyntheticOpp] = []
     detect_failures = 0
 
-    from datetime import timedelta as _td_replay
     for tick_i in range(n_ticks):
-        tick_t = start_dt + _td_replay(seconds=actual_interval * tick_i)
+        tick_t = ticks[tick_i]
 
-        # Build prices dict at this tick.  Strategies expect a dict
-        # keyed by token_id with at least best_bid/best_ask/mid.  We
-        # also include observed_at and spread_bps which some
-        # strategies inspect.
+        # Prices at this tick — built from the streaming grid for book-
+        # driven strategies, empty for event-driven ones.
         prices_at_tick: dict[str, dict[str, Any]] = {}
-        for token_id in all_token_ids:
-            snaps = snaps_by_token.get(token_id) or []
-            if not snaps:
-                continue
-            # Find the most recent snap at-or-before tick_t.
-            target_ts = tick_t
-            # Linear scan from end is fine — snaps sorted ASC, most
-            # ticks land late in the list.  For very large per-token
-            # lists we could bisect, but the typical density caps
-            # this naturally.
-            chosen = None
-            for snap in reversed(snaps):
-                if snap["observed_at"] <= target_ts:
-                    chosen = snap
-                    break
-            if chosen is None:
-                continue
-            bb = float(chosen["best_bid"]) if chosen["best_bid"] is not None else 0.0
-            ba = float(chosen["best_ask"]) if chosen["best_ask"] is not None else 0.0
-            if bb <= 0 and ba <= 0:
-                continue
-            mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else (bb or ba)
-            prices_at_tick[token_id] = {
-                "best_bid": bb,
-                "best_ask": ba,
-                "mid": mid,
-                "price": mid,
-                "spread_bps": (
-                    float(chosen["spread_bps"]) if chosen["spread_bps"] is not None else None
-                ),
-                "observed_at": chosen["observed_at"],
-            }
+        if grid:
+            for token_id, states in grid.items():
+                if tick_i < len(states):
+                    st = states[tick_i]
+                    if st is not None:
+                        prices_at_tick[token_id] = st
 
-        if not prices_at_tick:
-            continue
+        events_at_tick = events_by_tick[tick_i]
 
-        # Filter markets to those whose tokens have prices at this tick.
-        markets_at_tick: list[dict] = []
-        for m in catalog_markets:
-            tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
-            if any(t in prices_at_tick for t in tok_ids):
-                markets_at_tick.append(m)
-        if not markets_at_tick:
-            continue
+        # Decide which markets to surface to detect().  Event-driven
+        # strategies receive the catalog narrowed to the markets their
+        # events actually touch this tick (the strategy then reads the
+        # ``market`` payload from the event itself, but a non-empty
+        # markets list keeps any defensive ``if not markets`` guards
+        # in strategy code happy).  Book-driven strategies see markets
+        # whose tokens have reconstructable prices.
+        if event_kind is not None:
+            if not events_at_tick:
+                continue
+            event_token_ids: set[str] = set()
+            for item in events_at_tick:
+                if isinstance(item, dict):
+                    market_meta = item.get("market") or {}
+                    if isinstance(market_meta, dict):
+                        tid = str(market_meta.get("token_id") or "").strip()
+                        if tid:
+                            event_token_ids.add(tid)
+            markets_at_tick: list[dict] = []
+            for m in catalog_markets:
+                tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
+                if any(t in event_token_ids for t in tok_ids):
+                    markets_at_tick.append(m)
+        else:
+            if not prices_at_tick:
+                continue
+            markets_at_tick = []
+            for m in catalog_markets:
+                tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
+                if any(t in prices_at_tick for t in tok_ids):
+                    markets_at_tick.append(m)
+            if not markets_at_tick:
+                continue
 
         # Call strategy.detect_async with the reconstructed inputs.
         # Wrap dict-shaped catalog markets into Market pydantic models
@@ -2115,12 +3078,12 @@ async def _replay_discover_opportunities(
                 except Exception:
                     continue
         except Exception:
-            market_models = markets_at_tick
+            market_models = list(markets_at_tick)
 
         try:
             opps_at_tick = await _run_detect_once(
                 strategy,
-                events=[],
+                events=events_at_tick,
                 markets=market_models,
                 prices=prices_at_tick,
                 timeout_seconds=8.0,
@@ -2151,6 +3114,12 @@ async def _replay_discover_opportunities(
         logger.info(
             "replay_discover: %d detect() failures across %d ticks",
             detect_failures, n_ticks,
+        )
+    if wallet_event_truncated:
+        logger.warning(
+            "replay_discover: wallet event load truncated at cap=%d — widen the "
+            "time window granularity or raise the cap if this becomes load-bearing",
+            _REPLAY_WALLET_EVENT_CAP,
         )
 
     return detected_total
@@ -2224,13 +3193,21 @@ async def _measure_data_coverage(
     opp_tokens: list[str],
     start_dt: datetime,
     end_dt: datetime,
+    event_kind: str | None = None,
+    scope_wallets: set[str] | None = None,
 ) -> dict[str, Any]:
     """Compute per-window data-coverage stats for the opp_tokens universe.
 
     Returns a dict suitable for ``ExecutionBacktestResult.data_coverage``.
-    Cheap — two chunked aggregate queries (snapshots, deltas).  Failure
-    is non-fatal; we return a stub dict with ``error`` set so the caller
+    Cheap — two chunked aggregate queries (snapshots, deltas), plus an
+    optional event-source query when ``event_kind`` is set.  Failure is
+    non-fatal; we return a stub dict with ``error`` set so the caller
     surfaces a single warning rather than aborting the run.
+
+    For event-driven strategies (``event_kind="wallet_trade"``), the
+    fidelity rating is anchored on event count rather than snapshot
+    density — the live system fires opps on events, so "0 events in
+    window" is the right zero, not "0 snapshots/hr".
     """
     from sqlalchemy import select, func as sa_func
     from models.database import MarketMicrostructureSnapshot, BookDeltaEvent
@@ -2244,15 +3221,47 @@ async def _measure_data_coverage(
         "median_snaps_per_token_per_hour": 0.0,
         "p10_snaps_per_token_per_hour": 0.0,
         "median_deltas_per_token_per_hour": 0.0,
+        "event_kind": event_kind,
+        "events_total": 0,
+        "events_per_hour": 0.0,
         "fidelity_rating": "none",
         "recommended_action": "",
     }
-    if not opp_tokens or end_dt <= start_dt:
+    if (not opp_tokens and not event_kind) or end_dt <= start_dt:
         coverage["recommended_action"] = "No opp tokens in window — nothing to measure."
         return coverage
 
     window_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-6)
     CHUNK = 50
+
+    # Event-source coverage (event-driven strategies only).  Cheap one-
+    # query count of the relevant event table; the recommendation logic
+    # below uses this when ``event_kind`` is set.
+    if event_kind == "wallet_trade":
+        try:
+            from services.wallet_ws_monitor import WalletMonitorEvent
+
+            ev_stmt = (
+                select(sa_func.count(WalletMonitorEvent.id))
+                .where(
+                    WalletMonitorEvent.detected_at >= start_dt,
+                    WalletMonitorEvent.detected_at <= end_dt,
+                )
+            )
+            if scope_wallets:
+                ev_stmt = ev_stmt.where(
+                    WalletMonitorEvent.wallet_address.in_(list(scope_wallets))
+                )
+            events_total = int(
+                (await session.execute(ev_stmt)).scalar_one() or 0
+            )
+            coverage["events_total"] = events_total
+            coverage["events_per_hour"] = events_total / window_hours
+        except Exception as exc:
+            coverage["error"] = (
+                (coverage.get("error") + " | " if coverage.get("error") else "")
+                + f"event count query failed: {exc}"
+            )
 
     # Snapshot density per token
     snaps_per_token: dict[str, int] = {}
@@ -2328,20 +3337,66 @@ async def _measure_data_coverage(
     coverage["p10_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.1)
     coverage["median_deltas_per_token_per_hour"] = _percentile(rates_deltas, 0.5)
 
-    # Fidelity rating from snapshot density (the engine's data source).
-    median_rate = coverage["median_snaps_per_token_per_hour"]
-    if median_rate >= _FIDELITY_HIGH_SNAPS_PER_HOUR:
-        coverage["fidelity_rating"] = "high"
-    elif median_rate >= _FIDELITY_MEDIUM_SNAPS_PER_HOUR:
-        coverage["fidelity_rating"] = "medium"
-    elif median_rate > 0:
-        coverage["fidelity_rating"] = "low"
+    # Fidelity rating.  Event-driven strategies anchor on the event
+    # source — snapshot density is irrelevant when the strategy doesn't
+    # discover via books.  Book-driven strategies use snapshot density
+    # as the historical default.
+    if event_kind == "wallet_trade":
+        events_total = int(coverage["events_total"])
+        # Thresholds tuned against typical copy-trading workloads:
+        # >= 50 events / 7 days is "high" (multiple intents per day).
+        if events_total >= 50:
+            coverage["fidelity_rating"] = "high"
+        elif events_total >= 10:
+            coverage["fidelity_rating"] = "medium"
+        elif events_total > 0:
+            coverage["fidelity_rating"] = "low"
+        else:
+            coverage["fidelity_rating"] = "none"
     else:
-        coverage["fidelity_rating"] = "none"
+        median_rate = coverage["median_snaps_per_token_per_hour"]
+        if median_rate >= _FIDELITY_HIGH_SNAPS_PER_HOUR:
+            coverage["fidelity_rating"] = "high"
+        elif median_rate >= _FIDELITY_MEDIUM_SNAPS_PER_HOUR:
+            coverage["fidelity_rating"] = "medium"
+        elif median_rate > 0:
+            coverage["fidelity_rating"] = "low"
+        else:
+            coverage["fidelity_rating"] = "none"
 
-    # Recommendations — most useful when fidelity is bad but data is
-    # available in deltas (i.e. the live system has been ingesting but
-    # the snapshot table is sparse for the chosen window).
+    # Recommendations.
+    if event_kind == "wallet_trade":
+        events_total = int(coverage["events_total"])
+        events_per_hour = float(coverage["events_per_hour"])
+        scope_label = (
+            f"{len(scope_wallets)} scoped wallets" if scope_wallets
+            else "all monitored wallets"
+        )
+        if events_total == 0:
+            coverage["recommended_action"] = (
+                "No wallet trade events in window for this strategy's scope "
+                f"({scope_label}).  Either the tracked wallets weren't trading "
+                "in the chosen period, or wallet monitoring wasn't running.  "
+                "Check Data Lab → Traders → Wallet monitor for capture status."
+            )
+        elif events_total < 10:
+            coverage["recommended_action"] = (
+                f"Sparse events: {events_total} wallet trade(s) in window "
+                f"({events_per_hour:.2f}/hr, {scope_label}).  Backtest will "
+                "fire only a handful of intents — not statistically meaningful.  "
+                "Widen the time window or broaden the wallet scope for more samples."
+            )
+        else:
+            coverage["recommended_action"] = (
+                f"Event coverage OK: {events_total} wallet trade(s) in window "
+                f"({events_per_hour:.2f}/hr, {scope_label}). ✓"
+            )
+        return coverage
+
+    # Book-driven recommendations — most useful when fidelity is bad
+    # but data is available in deltas (i.e. the live system has been
+    # ingesting but the snapshot table is sparse for the chosen window).
+    median_rate = coverage["median_snaps_per_token_per_hour"]
     has_delta_coverage = (
         coverage["tokens_with_deltas"] > 0.5 * len(opp_tokens)
         and coverage["median_deltas_per_token_per_hour"] >= 5.0
@@ -2423,24 +3478,24 @@ async def run_execution_backtest(
     # can render a live progress bar.  Sync callers leave it at None
     # and the engine treats that as "no callback".
     progress_callback: Any = None,
-    # ── Historical discovery replay ─────────────────────────────────
-    # When True (default), the backtest runs strategy.detect_async
-    # against historical market state at sampled time intervals
-    # across the window — independent of whether the live system
-    # ever surfaced opportunities.  This is what "backtest" actually
-    # means: re-run the WHOLE strategy pipeline on recorded data,
-    # including discovery.
+    # ── Historical discovery synthesis (additive to TradeSignal replay) ──
+    # Two complementary signal sources flow into evaluate / gates /
+    # matcher, deduped at the (token, 30-min bucket) level:
     #
-    # When False, the legacy path runs (read OpportunityHistory rows
-    # for slug-in-window only).  Useful as a fast cache when you
-    # want to test fill-model / risk-gate changes against the same
-    # opps live saw.
+    #   1. TradeSignal replay (always on) — every signal the live
+    #      trader emitted in the window.  Faithful "would my CURRENT
+    #      strategy code accept what live actually saw".  Param
+    #      tweaks to evaluate-time gates show up here immediately.
     #
-    # Both paths produce the same OpportunityHistory-shaped objects
-    # the existing evaluate / orchestrator / matcher pipeline
-    # consumes — so all advanced features (Cox PH, ensemble bands,
-    # CPCV, drift, regime decomp, latency MC, walk-forward) sit
-    # downstream of fills and continue working unchanged.
+    #   2. Discovery synthesis (this flag, default True) — re-runs the
+    #      strategy's detect() against historical book state at
+    #      sampled ticks, surfacing opps the live trader DIDN'T see.
+    #      Required for testing detect-time param changes (the
+    #      historical TradeSignals were filtered by the OLD config;
+    #      tightening / loosening detect's filters has no effect on
+    #      the replay path because those signals don't exist in the
+    #      DB).  Set False to scope the backtest strictly to what
+    #      live did.
     discover_from_history: bool = True,
     # Time grid resolution for historical discovery.  The default
     # 30-min cadence is a good balance: tighter than 30 min gives
@@ -2480,14 +3535,6 @@ async def run_execution_backtest(
     from models.database import (
         BacktestAsyncSessionLocal,
         MarketMicrostructureSnapshot,
-        # Historical opportunities live in the OpportunityHistory ORM
-        # table.  Aliased as ``Opportunity`` here so the SQLAlchemy
-        # query syntax below stays readable; positions are nested in
-        # the ``positions_data`` JSON column rather than a top-level
-        # ``positions_to_take`` attribute.  See the row-shape sample
-        # at services/strategy_backtester.py:_extract_positions for
-        # the canonical key path.
-        OpportunityHistory as Opportunity,
     )
 
     result = ExecutionBacktestResult(
@@ -2507,8 +3554,35 @@ async def run_execution_backtest(
     loader = StrategyLoader()
     bt_slug = f"_bt_exec_{slug}_{int(time.time())}"
     load_start = time.monotonic()
+    # Layer config exactly the way live does:
+    #   1. ``strategy.default_config`` (file-level baseline) —
+    #      automatically applied by ``StrategyLoader.load``.
+    #   2. ``strategies`` table ``config`` column (the live runtime
+    #      config the worker loads via ``refresh_from_db``).  This is
+    #      the layer the backtest USED to skip — and the reason the
+    #      crypto_entropy_maker funnel rejected 99% of signals on
+    #      ``edge >= 1.0%`` even though live's edge floor is set to
+    #      0.0 in the DB.  Without this layer the backtest evaluates
+    #      a strictly-tighter strategy variant than live runs.
+    #   3. caller-supplied ``config`` (typically the trader's
+    #      ``strategy_params``) — overrides DB on conflict, just like
+    #      the live ``_merged_eval_params`` layering at
+    #      ``trader_orchestrator_worker:6809``.
+    db_config: dict[str, Any] = {}
     try:
-        loaded = loader.load(bt_slug, source_code, config)
+        from sqlalchemy import select as _sel
+        from models.database import Strategy as _Strategy
+        async with AsyncSessionLocal() as _cfg_session:
+            _row = (await _cfg_session.execute(
+                _sel(_Strategy).where(_Strategy.slug == slug)
+            )).scalar_one_or_none()
+            if _row is not None and isinstance(_row.config, dict):
+                db_config = dict(_row.config)
+    except Exception as _cfg_exc:
+        logger.warning("backtest could not load DB strategy config for %s: %s", slug, _cfg_exc)
+    merged_runtime_config = {**db_config, **(config or {})}
+    try:
+        loaded = loader.load(bt_slug, source_code, merged_runtime_config)
         strategy = loaded.instance
         result.strategy_name = getattr(strategy, "name", bt_slug)
     except Exception as e:
@@ -2590,14 +3664,34 @@ async def run_execution_backtest(
             # Funnel diagnostics — surface the count at each stage so
             # the operator can see where opps are lost (recorder
             # coverage gap vs matching-engine throughput vs cap).
+            # ── Canonical opp source: TradeSignal ─────────────────────
+            # TradeSignal is the system's authoritative record of "what
+            # the live trader saw and decided on" — every strategy that
+            # executed in production produced TradeSignal rows.  The
+            # earlier OpportunityHistory primary was a downstream
+            # cache that some strategies populate (scanner-driven) and
+            # others don't (crypto-worker, news, copy-trade), which
+            # forced a chain of fallbacks (loose-window broaden,
+            # discovery synthesis, events-feeders) just to handle the
+            # gap.  Replacing it with TradeSignal removes the gap by
+            # construction: a strategy that didn't fire a signal
+            # didn't trade live, and there's nothing to replay.
+            #
+            # Status filter: drop only the live-rejected statuses
+            # (``filtered`` quality-gate, ``failed`` evaluate-error,
+            # ``skipped`` deduplication).  ``expired`` IS replay-
+            # eligible — the live trader's queue just ran out of TTL,
+            # which the backtest matcher will independently re-decide.
+            from models.database import TradeSignal as _TS
             opps_total_in_window = 0
             try:
                 opps_total_in_window = int(
                     (await session.execute(
-                        select(sa_func.count(Opportunity.id)).where(
-                            Opportunity.detected_at >= start_dt,
-                            Opportunity.detected_at <= end_dt,
-                            Opportunity.strategy_type == slug,
+                        select(sa_func.count(_TS.id)).where(
+                            _TS.created_at >= start_dt,
+                            _TS.created_at <= end_dt,
+                            _TS.strategy_type == slug,
+                            _TS.status.notin_(["filtered", "failed", "skipped"]),
                         )
                     )).scalar_one() or 0
                 )
@@ -2605,31 +3699,13 @@ async def run_execution_backtest(
                 opps_total_in_window = 0
 
             try:
-                opp_stmt = (
-                    select(Opportunity)
-                    .where(
-                        Opportunity.detected_at >= start_dt,
-                        Opportunity.detected_at <= end_dt,
-                        Opportunity.strategy_type == slug,
-                    )
-                    .order_by(Opportunity.detected_at.asc())
-                    .limit(int(max_intents))
+                opps = await _load_opps_from_trade_signals(
+                    session=session,
+                    slug=slug,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    max_rows=int(max_intents),
                 )
-                opps = (await session.execute(opp_stmt)).scalars().all()
-                # Fallback: if the slug filter found nothing, broaden to
-                # window-only.  Covers strategy renames (slug changes
-                # don't backfill historical rows).
-                if not opps:
-                    opp_stmt_loose = (
-                        select(Opportunity)
-                        .where(
-                            Opportunity.detected_at >= start_dt,
-                            Opportunity.detected_at <= end_dt,
-                        )
-                        .order_by(Opportunity.detected_at.asc())
-                        .limit(int(max_intents))
-                    )
-                    opps = (await session.execute(opp_stmt_loose)).scalars().all()
             except Exception:
                 opps = []
 
@@ -2837,47 +3913,86 @@ async def run_execution_backtest(
 
                     # ── Pre-flight data-coverage measurement ─────────────
                     # Cheap (chunked aggregate queries).  Surfaces how
-                    # dense the historical book data is for THIS run's
+                    # dense the historical data is for THIS run's
                     # opp universe.  Operators see this BEFORE eating a
                     # 30s replay that ends in "0 trades because the book
                     # was sampled once every 3 hours".
+                    #
+                    # For event-driven strategies (copy-trade, news,
+                    # insider) the fidelity is anchored on event count
+                    # rather than book density — the strategy doesn't
+                    # discover via books and "low snapshots" is the
+                    # wrong signal.
+                    bt_event_kind = _replay_event_kind_for_strategy(slug, strategy)
+                    bt_scope_wallets = (
+                        _extract_scope_wallets(strategy)
+                        if bt_event_kind == "wallet_trade"
+                        else None
+                    )
                     coverage = await _measure_data_coverage(
                         session=session,
                         opp_tokens=candidate_tokens,
                         start_dt=start_dt,
                         end_dt=end_dt,
+                        event_kind=bt_event_kind,
+                        scope_wallets=bt_scope_wallets,
                     )
                     result.data_coverage = coverage
                     fidelity = coverage.get("fidelity_rating", "unknown")
                     rec = coverage.get("recommended_action") or ""
-                    median_rate = coverage.get("median_snaps_per_token_per_hour", 0.0)
-                    p10_rate = coverage.get("p10_snaps_per_token_per_hour", 0.0)
-                    n_with_deltas = coverage.get("tokens_with_deltas", 0)
-                    deltas_total = coverage.get("deltas_total", 0)
-                    # Loud, prominent warning when coverage is degraded.
-                    # The funnel line above tells the operator how many
-                    # tokens HAVE any data; this tells them whether that
-                    # data is dense enough to trust the fill simulation.
-                    if fidelity in ("low", "none"):
-                        result.validation_warnings.append(
-                            f"⚠ DATA FIDELITY: {fidelity.upper()} — median "
-                            f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}). "
-                            f"Backtest fills are NOT representative of live.  "
-                            f"book_delta_events has {deltas_total:,} rows across "
-                            f"{n_with_deltas} of {len(candidate_tokens)} tokens "
-                            f"(live system's data — not yet used by the matcher). "
-                            f"{rec}"
-                        )
-                    elif fidelity == "medium":
-                        result.validation_warnings.append(
-                            f"DATA FIDELITY: medium — median {median_rate:.1f} "
-                            f"snaps/token/hr.  {rec}"
-                        )
+                    if bt_event_kind:
+                        events_total = int(coverage.get("events_total", 0))
+                        events_per_hour = float(coverage.get("events_per_hour", 0.0))
+                        # Event-driven: report event coverage rather
+                        # than snapshot density.  Same severity gating
+                        # so the UI badge renders consistently.
+                        if fidelity in ("low", "none"):
+                            result.validation_warnings.append(
+                                f"⚠ EVENT COVERAGE: {fidelity.upper()} — "
+                                f"{events_total} {bt_event_kind} event(s) in window "
+                                f"({events_per_hour:.2f}/hr).  {rec}"
+                            )
+                        elif fidelity == "medium":
+                            result.validation_warnings.append(
+                                f"EVENT COVERAGE: medium — {events_total} "
+                                f"{bt_event_kind} event(s) in window "
+                                f"({events_per_hour:.2f}/hr).  {rec}"
+                            )
+                        else:
+                            result.validation_warnings.append(
+                                f"EVENT COVERAGE: high — {events_total} "
+                                f"{bt_event_kind} event(s) in window "
+                                f"({events_per_hour:.2f}/hr) ✓"
+                            )
                     else:
-                        result.validation_warnings.append(
-                            f"DATA FIDELITY: high — median {median_rate:.1f} "
-                            f"snaps/token/hr ✓"
-                        )
+                        median_rate = coverage.get("median_snaps_per_token_per_hour", 0.0)
+                        p10_rate = coverage.get("p10_snaps_per_token_per_hour", 0.0)
+                        n_with_deltas = coverage.get("tokens_with_deltas", 0)
+                        deltas_total = coverage.get("deltas_total", 0)
+                        # Loud, prominent warning when coverage is degraded.
+                        # The funnel line above tells the operator how many
+                        # tokens HAVE any data; this tells them whether that
+                        # data is dense enough to trust the fill simulation.
+                        if fidelity in ("low", "none"):
+                            result.validation_warnings.append(
+                                f"⚠ DATA FIDELITY: {fidelity.upper()} — median "
+                                f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}). "
+                                f"Backtest fills are NOT representative of live.  "
+                                f"book_delta_events has {deltas_total:,} rows across "
+                                f"{n_with_deltas} of {len(candidate_tokens)} tokens "
+                                f"(live system's data — not yet used by the matcher). "
+                                f"{rec}"
+                            )
+                        elif fidelity == "medium":
+                            result.validation_warnings.append(
+                                f"DATA FIDELITY: medium — median {median_rate:.1f} "
+                                f"snaps/token/hr.  {rec}"
+                            )
+                        else:
+                            result.validation_warnings.append(
+                                f"DATA FIDELITY: high — median {median_rate:.1f} "
+                                f"snaps/token/hr ✓"
+                            )
                 # If the strategy has zero opportunities (e.g. a fresh
                 # strategy), fall back to "top tokens by snapshot
                 # volume in window" so the engine still has something
@@ -2933,8 +4048,31 @@ async def run_execution_backtest(
             # already loaded by the StrategyLoader above (line 1701).
             # Same code path live uses; same custom_checks execute.
             evaluate_skips: dict[str, int] = {}
+            # Track WHY each non-selected decision rejected the opp.
+            # Strategies emit a free-form ``reason`` string on
+            # StrategyDecision; aggregating these is the cheapest way
+            # to see which custom_check is the dominant filter.  The
+            # top reasons surface in the funnel warning so the operator
+            # doesn't need to dig.
+            evaluate_skip_reasons: dict[str, int] = {}
+            # Per-check failure counts, harvested from
+            # ``StrategyDecision.checks``.  Most strategies set a
+            # generic ``reason="X filters not met"`` and put the real
+            # detail in the per-check list — without aggregating these,
+            # the operator just sees one opaque reason for thousands of
+            # rejections.  Strategies that don't populate checks
+            # contribute nothing here; the reasons map above still
+            # surfaces their reason strings.
+            evaluate_failed_checks: dict[str, int] = {}
             evaluate_total = 0
             evaluate_selected = 0
+            # Opps where evaluate() raised / returned an unknown shape
+            # (eval_pair is None).  Counted separately because they
+            # bypass the strategy-side gate but still hit the platform
+            # gates with decision_obj=None — a passthrough path that
+            # used to be silently lumped into "neither selected nor
+            # skipped" math, leaving the funnel arithmetic confusing.
+            evaluate_passthrough = 0
             # Platform gates funnel — accumulated from the orchestrator's
             # ``apply_platform_decision_gates`` (the canonical decision
             # pipeline live runs at trader_orchestrator_worker:6474).
@@ -2947,13 +4085,67 @@ async def run_execution_backtest(
             # risk evaluator + stacking guard.  Updated as intents
             # accumulate so each subsequent opp sees the realistic
             # gross exposure / occupied markets the previous intents
-            # consumed — same way live does cycle accounting before
-            # submission.
+            # consumed.
+            #
+            # CRITICAL: positions DECAY over time as they resolve.  Live
+            # gross_exposure / open_position counters drop when a
+            # position closes; the backtest must mirror that or the
+            # caps fire prematurely and we underfill the strategy by
+            # 10x+.  ``_bt_open_intents`` is a min-heap-style list of
+            # ``(close_at_dt, size_usd, market_id)`` records; before
+            # evaluating each opp's risk, we evict every record whose
+            # ``close_at_dt`` is <= the opp's ``detected_at`` and
+            # decrement the running aggregates by the evicted size.
+            # The close timestamp is detected_at + days_to_resolution
+            # (from the opp's _tail_end / strategy_context payload),
+            # falling back to a 24h default for strategies that don't
+            # publish a horizon.
             bt_gross_exposure_usd = 0.0
             bt_open_positions = 0
             bt_cycle_orders = 0
             bt_occupied_market_ids: set[str] = set()
             bt_per_market_exposure: dict[str, float] = {}
+            # Each entry: {"close_at": datetime, "size_usd": float, "market_id": str}
+            bt_open_intents: list[dict[str, Any]] = []
+            from datetime import timedelta as _td_decay
+            _DEFAULT_HOLDING_HOURS = 24.0  # safe default for strategies w/o resolution horizon
+
+            def _bt_release_resolved(opp_at: datetime) -> None:
+                """Decrement bt_* portfolio counters for any open intent
+                whose close_at <= ``opp_at``.  Mirrors how the live
+                trader's risk_manager sees gross_exposure decay as
+                positions resolve over the day.  O(open_count) per opp.
+                """
+                nonlocal bt_gross_exposure_usd, bt_open_positions
+                if not bt_open_intents:
+                    return
+                kept: list[dict[str, Any]] = []
+                for entry in bt_open_intents:
+                    close_at = entry.get("close_at")
+                    if isinstance(close_at, datetime) and close_at <= opp_at:
+                        # Position resolved.  Drop the size from the
+                        # gross + per-market accumulators; decrement
+                        # the open-position count.  Markets that fall
+                        # to zero exposure are removed from the
+                        # occupied-set so the stacking guard sees a
+                        # clean slate.
+                        bt_gross_exposure_usd = max(
+                            0.0, bt_gross_exposure_usd - float(entry.get("size_usd") or 0.0)
+                        )
+                        bt_open_positions = max(0, bt_open_positions - 1)
+                        market_id = str(entry.get("market_id") or "")
+                        if market_id:
+                            bt_per_market_exposure[market_id] = max(
+                                0.0,
+                                bt_per_market_exposure.get(market_id, 0.0)
+                                - float(entry.get("size_usd") or 0.0),
+                            )
+                            if bt_per_market_exposure[market_id] <= 1e-9:
+                                bt_per_market_exposure.pop(market_id, None)
+                                bt_occupied_market_ids.discard(market_id)
+                    else:
+                        kept.append(entry)
+                bt_open_intents[:] = kept
 
             global_limits = {
                 "max_gross_exposure_usd": (
@@ -2984,6 +4176,33 @@ async def run_execution_backtest(
                 else {}
             )
 
+            # Bulk-pre-fetch the per-opp historical book index used
+            # for evaluate-time live_context lookups.  Live's
+            # RuntimeTradeSignalView overlays ``live_selected_price``
+            # and ``live_edge_percent`` from current market state —
+            # without that overlay, evaluate rejects worker-driven
+            # signals (whose persisted ``edge_percent`` is null) on
+            # the edge floor.  We reconstruct the same overlay from
+            # the historical book at each signal's detected_at via
+            # an in-memory bisect (one bulk pull, O(log N) per opp),
+            # which is ~50× faster than constructing a streaming
+            # replay and calling snapshot_at per opp.
+            _eval_token_universe = list({
+                str(p.get("token_id") or "").strip()
+                for o in (opps or [])
+                for p in (
+                    (getattr(o, "positions_data", None) or {}).get("positions_to_take") or []
+                )
+                if isinstance(p, dict) and str(p.get("token_id") or "").strip()
+            })
+            _eval_book_replay: Any = None
+            if _eval_token_universe:
+                _eval_book_replay = await _BulkBookIndex.build(
+                    token_ids=_eval_token_universe,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                )
+
             for opp in opps or []:
                 # OpportunityHistory.positions_data is a JSON blob;
                 # positions_to_take lives under the "positions_to_take"
@@ -3012,12 +4231,46 @@ async def run_execution_backtest(
                 if detected.tzinfo is None:
                     detected = detected.replace(tzinfo=timezone.utc)
 
+                # Decay the running portfolio state by any positions
+                # that resolved BEFORE this opp's detected_at — keeps
+                # the gate's view of gross_exposure / open_positions
+                # honest as backtest time advances.
+                _bt_release_resolved(detected)
+
                 evaluate_total += 1
+                # Build the historically-reconstructed live_context for
+                # this signal — same shape live's worker passes to
+                # evaluate, but sourced from the historical book at the
+                # signal's detected_at instead of current mid.  This is
+                # the single change that takes evaluate() from
+                # synthetically-broken to byte-identical with live for
+                # worker-driven signals (crypto_*, news_edge, etc.)
+                # whose persisted ``edge_percent`` is null and gets
+                # overlaid at runtime.
+                _eval_live_context: dict[str, Any] = {}
+                if (
+                    _eval_book_replay is not None
+                    and getattr(opp, "_underlying_signal", None) is not None
+                ):
+                    try:
+                        _eval_live_context = await _build_replay_live_context(
+                            signal=opp._underlying_signal,
+                            pdata=pdata if isinstance(pdata, dict) else {},
+                            book_replay=_eval_book_replay,
+                            detected_at=detected,
+                        )
+                    except Exception as _ctx_exc:
+                        logger.debug(
+                            "live_context build failed for opp %s: %s",
+                            getattr(opp, "id", "?"),
+                            _ctx_exc,
+                        )
                 eval_pair = _backtest_evaluate_opportunity(
                     strategy=strategy,
                     opp=opp,
                     pdata=pdata if isinstance(pdata, dict) else {},
                     initial_capital_usd=initial_capital_usd,
+                    live_context=_eval_live_context,
                 )
                 # When evaluate() raised or produced an unknown shape,
                 # ``eval_pair`` is None — fall back to passthrough so
@@ -3025,11 +4278,60 @@ async def run_execution_backtest(
                 if eval_pair is None:
                     decision_obj = None
                     signal_view = None
+                    evaluate_passthrough += 1
                 else:
                     decision_obj, signal_view = eval_pair
                     eval_status = str(getattr(decision_obj, "decision", "selected") or "selected").lower()
                     if eval_status != "selected":
                         evaluate_skips[eval_status] = evaluate_skips.get(eval_status, 0) + 1
+                        # Aggregate the free-form reason so we can see
+                        # which custom_check is dominating rejections.
+                        # Trim long reason strings to keep the funnel
+                        # warning compact.
+                        reason = str(
+                            getattr(decision_obj, "reason", "") or ""
+                        ).strip() or "(no reason)"
+                        if len(reason) > 80:
+                            reason = reason[:77] + "..."
+                        evaluate_skip_reasons[reason] = (
+                            evaluate_skip_reasons.get(reason, 0) + 1
+                        )
+                        # Drill into the per-check list so a generic
+                        # reason like "Tail carry filters not met"
+                        # decomposes into ``edge=300 · confidence=200
+                        # · liquidity=173`` telling the operator which
+                        # individual filter is the dominant blocker.
+                        try:
+                            checks = getattr(decision_obj, "checks", None) or []
+                        except Exception:
+                            checks = []
+                        for chk in checks:
+                            try:
+                                passed = bool(getattr(chk, "passed", True))
+                                if passed:
+                                    continue
+                                # DecisionCheck.key is the canonical
+                                # identifier; fall back to label / name
+                                # for any non-standard check shape.
+                                name = (
+                                    str(
+                                        getattr(chk, "key", None)
+                                        or getattr(chk, "label", None)
+                                        or getattr(chk, "name", None)
+                                        or ""
+                                    ).strip()
+                                    or "(unnamed)"
+                                )
+                                detail = str(getattr(chk, "detail", "") or "").strip()
+                                if detail:
+                                    name = f"{name} [{detail}]"
+                                if len(name) > 80:
+                                    name = name[:77] + "..."
+                            except Exception:
+                                continue
+                            evaluate_failed_checks[name] = (
+                                evaluate_failed_checks.get(name, 0) + 1
+                            )
                         continue
 
                 # ----------------------------------------------------------
@@ -3157,11 +4459,32 @@ async def run_execution_backtest(
                             # tag matches what the operator would see in
                             # live's audit trail.
                             blocking_gate = "platform_gate"
+                            blocking_detail = ""
                             for g in gate_result.get("platform_gates") or []:
                                 if str(g.get("status") or "").lower() == "blocked":
                                     blocking_gate = str(g.get("gate") or "platform_gate")
+                                    blocking_detail = str(g.get("detail") or "")
                                     break
                             platform_skips[blocking_gate] = platform_skips.get(blocking_gate, 0) + 1
+                            # When the risk gate is the blocker, drill
+                            # into its sub-check key (cycle, notional,
+                            # gross_exposure, open_positions, market_
+                            # exposure...) so the operator sees WHICH
+                            # risk dimension is the bottleneck rather
+                            # than the catch-all "risk".  Detail looks
+                            # like "Risk blocked: trader_open_positions
+                            # (next=11 max=10)" — extract the sub-key.
+                            if blocking_gate == "risk" and blocking_detail:
+                                sub = blocking_detail
+                                if sub.startswith("Risk blocked: "):
+                                    sub = sub[len("Risk blocked: "):]
+                                # Trim trailing parenthetical detail to
+                                # keep the key small; full detail is in
+                                # the per-skip-reasons map below.
+                                sub_key = sub.split(" (", 1)[0].strip() or "(unknown)"
+                                platform_skips[f"risk:{sub_key}"] = (
+                                    platform_skips.get(f"risk:{sub_key}", 0) + 1
+                                )
                             gate_blocked = True
                         else:
                             size_after_gates = float(gate_result.get("size_usd") or opp_total_size_usd)
@@ -3176,19 +4499,59 @@ async def run_execution_backtest(
                     continue
                 evaluate_selected += 1
 
-                # Compute the proportional shrink factor when the gate
-                # capped the opp's economic notional.  Each position's
-                # original notional gets scaled by this so the relative
-                # mix the strategy emitted is preserved.
+                # Determine the per-intent USD size.  Two cases:
+                #
+                # 1. Positions carry their own ``notional_usd``: the
+                #    strategy emitted multi-position opps with explicit
+                #    weights.  Apply a proportional shrink so the gate-
+                #    capped total is distributed across positions in
+                #    the strategy's intended ratio.
+                #
+                # 2. Positions are sizeless (the common case for
+                #    single-position scanner strategies like
+                #    tail_end_carry — they emit ``action/outcome/price/
+                #    token_id`` and rely on the orchestrator to size).
+                #    Use the gate-determined ``size_after_gates`` (or
+                #    the strategy's ``decision.size_usd`` if the gates
+                #    didn't run).  Splitting across N positions equally
+                #    matches what live's orchestrator does at submit
+                #    time.  Previously the fallback was a hardcoded
+                #    ``$50`` which silently quadrupled live's actual
+                #    sizing (e.g. tail_end_carry's max_size_usd=$5),
+                #    inflating bt_gross_exposure_usd by 10x and
+                #    causing the global_gross_exposure cap to fire
+                #    after 10 intents instead of the realistic ~100.
+                positions_with_size = [
+                    p for p in positions_to_take
+                    if isinstance(p, dict) and float(p.get("notional_usd") or 0.0) > 0.0
+                ]
+                fallback_per_position_usd: float | None = None
                 shrink = 1.0
-                if size_after_gates is not None:
-                    opp_total_size_usd_check = sum(
-                        float(p.get("notional_usd") or 0.0)
-                        for p in positions_to_take
-                        if isinstance(p, dict)
+                if positions_with_size:
+                    if size_after_gates is not None:
+                        opp_total_size_usd_check = sum(
+                            float(p.get("notional_usd") or 0.0)
+                            for p in positions_with_size
+                        )
+                        if opp_total_size_usd_check > 0.0:
+                            shrink = max(0.0, min(1.0, size_after_gates / opp_total_size_usd_check))
+                else:
+                    # Strategy did not emit per-position notionals.
+                    # Source the size from the gate (preferred — already
+                    # respects per-trade caps + risk-evaluator clamps)
+                    # or from the strategy's decision.
+                    candidate_total = (
+                        float(size_after_gates)
+                        if size_after_gates is not None and size_after_gates > 0.0
+                        else float(getattr(decision_obj, "size_usd", 0.0) or 0.0)
+                        if decision_obj is not None
+                        else 0.0
                     )
-                    if opp_total_size_usd_check > 0.0:
-                        shrink = max(0.0, min(1.0, size_after_gates / opp_total_size_usd_check))
+                    sized_positions = [
+                        p for p in positions_to_take if isinstance(p, dict)
+                    ]
+                    if candidate_total > 0.0 and sized_positions:
+                        fallback_per_position_usd = candidate_total / len(sized_positions)
 
                 for idx, pos in enumerate(positions_to_take):
                     if not isinstance(pos, dict):
@@ -3200,7 +4563,18 @@ async def run_execution_backtest(
                     if side not in {"BUY", "SELL"}:
                         side = "BUY"
                     price = float(pos.get("price") or 0.5)
-                    size_usd = float(pos.get("notional_usd") or 50.0) * shrink
+                    pos_notional = float(pos.get("notional_usd") or 0.0)
+                    if pos_notional > 0.0:
+                        size_usd = pos_notional * shrink
+                    elif fallback_per_position_usd is not None:
+                        size_usd = fallback_per_position_usd
+                    else:
+                        # Last-resort guard — same conservative
+                        # default the orchestrator uses when it can't
+                        # determine a size.  Should be reached only
+                        # when strategy.evaluate didn't return a size
+                        # and the gates were skipped, which is rare.
+                        size_usd = 50.0
                     if size_usd <= 0.0:
                         continue
 
@@ -3271,6 +4645,65 @@ async def run_execution_backtest(
                         bt_per_market_exposure[market_id] = (
                             bt_per_market_exposure.get(market_id, 0.0) + size_usd
                         )
+                    # Compute the position's expected close timestamp
+                    # so the next opp sees this slot recycle when the
+                    # position resolves.  Sources, in priority order:
+                    #
+                    #  1. Underlying TradeSignal.expires_at — every
+                    #     signal carries the live trader's TTL; for
+                    #     short-horizon strategies (crypto 5-min binary
+                    #     options, news_edge minute decays) this is
+                    #     the right close time.  Without it, the 24h
+                    #     fallback pins crypto slots open forever and
+                    #     ``risk:trader_open_orders`` rejects every
+                    #     opp after the first ~50.
+                    #  2. tail_end_carry's ``_tail_end.days_to_resolution``
+                    #  3. crypto's ``_entropy.seconds_left`` (signal
+                    #     payload's hint for time-to-binary-resolution)
+                    #  4. strategy_context.exit_within_seconds variants
+                    #  5. 24h default — only as last resort
+                    horizon_seconds: float | None = None
+                    underlying_sig = getattr(opp, "_underlying_signal", None)
+                    if underlying_sig is not None:
+                        sig_expires = getattr(underlying_sig, "expires_at", None)
+                        if isinstance(sig_expires, datetime):
+                            sig_exp = sig_expires
+                            if sig_exp.tzinfo is None:
+                                sig_exp = sig_exp.replace(tzinfo=timezone.utc)
+                            ttl = (sig_exp - detected).total_seconds()
+                            if ttl > 0:
+                                horizon_seconds = float(ttl)
+                    tail_block = pos.get("_tail_end") if isinstance(pos.get("_tail_end"), dict) else None
+                    if horizon_seconds is None and isinstance(tail_block, dict):
+                        d = tail_block.get("days_to_resolution")
+                        if isinstance(d, (int, float)) and d > 0:
+                            horizon_seconds = float(d) * 86400.0
+                    entropy_block = pos.get("_entropy") if isinstance(pos.get("_entropy"), dict) else None
+                    if horizon_seconds is None and isinstance(entropy_block, dict):
+                        sl = entropy_block.get("seconds_left")
+                        if isinstance(sl, (int, float)) and sl > 0:
+                            horizon_seconds = float(sl)
+                    if horizon_seconds is None:
+                        sc = pdata.get("strategy_context") if isinstance(pdata, dict) else None
+                        if isinstance(sc, dict):
+                            for key in (
+                                "exit_within_seconds",
+                                "expected_holding_seconds",
+                                "expected_holding_minutes",
+                                "max_holding_seconds",
+                            ):
+                                v = sc.get(key)
+                                if isinstance(v, (int, float)) and v > 0:
+                                    horizon_seconds = (
+                                        float(v) * 60.0 if "minutes" in key else float(v)
+                                    )
+                                    break
+                    if horizon_seconds is None:
+                        horizon_seconds = _DEFAULT_HOLDING_HOURS * 3600.0
+                    close_at = detected + _td_decay(seconds=horizon_seconds)
+                    bt_open_intents.append(
+                        {"close_at": close_at, "size_usd": size_usd, "market_id": market_id}
+                    )
 
             if evaluate_total > 0:
                 # Surface the evaluate funnel so the operator can see
@@ -3282,7 +4715,44 @@ async def run_execution_backtest(
                 ]
                 for st, n in sorted(evaluate_skips.items(), key=lambda kv: -kv[1]):
                     eval_msg_parts.append(f"{st}={n}")
+                if evaluate_passthrough > 0:
+                    # eval_pair=None opps fall through to the gates with
+                    # decision_obj=None — surfaced separately so the
+                    # arithmetic ``selected + skipped + passthrough ==
+                    # total`` is always intact.
+                    eval_msg_parts.append(f"eval_raised_passthrough={evaluate_passthrough}")
                 result.validation_warnings.append(" · ".join(eval_msg_parts))
+
+                # Top reasons behind non-selected decisions.  Capped at
+                # 5 entries so the warning stays scannable; if a single
+                # reason dominates (the common case), it's the first
+                # one and tells the operator which custom_check or
+                # gate to relax.  Reasons are pulled directly from
+                # ``StrategyDecision.reason`` — same string the live
+                # audit trail records.
+                if evaluate_skip_reasons:
+                    top_reasons = sorted(
+                        evaluate_skip_reasons.items(), key=lambda kv: -kv[1]
+                    )[:5]
+                    parts = ["evaluate() top rejection reasons"]
+                    for reason, n in top_reasons:
+                        parts.append(f"  • {n}× {reason}")
+                    result.validation_warnings.append("\n".join(parts))
+
+                # Per-check failure breakdown — decomposes the generic
+                # reasons above into specific custom_check names so the
+                # operator can see whether ``edge``, ``confidence``,
+                # ``liquidity``, ``dtr_window``, etc. is the dominant
+                # blocker.  Top 10 keeps the warning useful without
+                # exploding for strategies with many checks.
+                if evaluate_failed_checks:
+                    top_checks = sorted(
+                        evaluate_failed_checks.items(), key=lambda kv: -kv[1]
+                    )[:10]
+                    parts = ["evaluate() failed-check breakdown"]
+                    for name, n in top_checks:
+                        parts.append(f"  • {n}× {name}")
+                    result.validation_warnings.append("\n".join(parts))
 
             if platform_skips:
                 # Platform-gate funnel — emitted directly from the
@@ -3417,50 +4887,120 @@ async def run_execution_backtest(
         and median_deltas_per_hr >= 10.0
     )
     # Import locally to avoid circular imports at module load.
-    from services.backtest.book_replay import BookDeltaReplay as _BookDeltaReplay
+    from services.backtest.book_replay import (
+        BookDeltaReplay as _BookDeltaReplay,
+        HybridBookSource as _HybridBookSource,
+    )
+    from services.backtest.parquet_replay import ParquetBookReplay as _ParquetBookReplay
+    from services.external_data import parquet_scanner as _parquet_scanner
 
     run_start = time.monotonic()
     replay_for_run: Any = None
     try:
-        async with BacktestAsyncSessionLocal() as run_session:
-            if use_delta_replay:
-                replay_for_run = _BookDeltaReplay(
-                    session=run_session,
-                    token_ids=tokens,
-                    start=start_dt,
-                    end=end_dt,
+        # The book replays manage their own short-lived sessions per
+        # chunk (see book_replay.py — production pool reaper would
+        # otherwise kill any single session held >45s on a multi-day
+        # replay).  We pass session=None to opt into that path; the
+        # outer ``async with`` is no longer needed but kept as a
+        # placeholder for any future per-run resources we want
+        # scoped to the matcher's lifetime.
+        async with BacktestAsyncSessionLocal() as _matcher_run_scope:  # noqa: F841 — reserved for future per-run resources
+            # ── Per-token source resolver ────────────────────────────
+            # Three potential book sources: parquet (operator-supplied
+            # files in HOMERUN_PARQUET_ROOT), book_delta_events (the
+            # live ingestor's authoritative stream), and
+            # market_microstructure_snapshots (throttled snapshots).
+            # Selection is per-token: parquet > deltas (when delta
+            # density dominates the window) > snapshots.  A
+            # HybridBookSource dispatches each ``snapshot_at`` /
+            # ``iter_snapshots`` to the right backend.
+            #
+            # Auto-discovery: ``ensure_recent_scan`` walks the parquet
+            # root iff the cached scan is >60s old, so newly-dropped
+            # files are picked up without an explicit rescan.
+            try:
+                await _parquet_scanner.ensure_recent_scan(max_age_seconds=60.0)
+                parquet_coverage = await _parquet_scanner.find_parquet_coverage(
+                    token_ids=tokens, start=start_dt, end=end_dt,
                 )
-                # Annotate which source was used.  "+anchor" if the
-                # delta replay had any tokens with usable mms anchors
-                # (we only know after iter_snapshots starts, but the
-                # presence of mms rows for the universe is a proxy).
-                result.replay_source = (
-                    "deltas+anchor"
-                    if int(cov.get("tokens_with_snapshots") or 0) > 0
-                    else "deltas"
+            except Exception as _pq_exc:
+                logger.warning("parquet coverage lookup failed: %s", _pq_exc)
+                parquet_coverage = {}
+
+            sql_tokens = [t for t in tokens if t not in parquet_coverage]
+            backends: dict[str, Any] = {}
+            routing: dict[str, str] = {}
+            source_label_parts: list[str] = []
+
+            if parquet_coverage:
+                backends["parquet"] = _ParquetBookReplay(
+                    per_token_files=parquet_coverage,
+                    start=start_dt, end=end_dt,
                 )
-                result.validation_warnings.append(
-                    f"Replay source: BOOK DELTAS (live-parity path) — "
-                    f"{deltas_total:,} delta events vs {snapshots_total:,} snapshots "
-                    f"in window.  This is the same data feed the live system uses."
+                for tok in parquet_coverage:
+                    routing[tok] = "parquet"
+                source_label_parts.append(
+                    f"PARQUET={len(parquet_coverage)} tokens"
                 )
-            else:
-                replay_for_run = BookReplay(
-                    session=run_session,
-                    token_ids=tokens,
-                    start=start_dt,
-                    end=end_dt,
-                    snapshot_type="book",
-                )
-                result.replay_source = "snapshots"
-                # Only mention source explicitly when the delta path
-                # was a near-miss; otherwise keep the warning list
-                # focused on actionable items.
-                if deltas_total > 0 and median_deltas_per_hr > 0:
-                    result.validation_warnings.append(
-                        f"Replay source: SNAPSHOTS — {snapshots_total:,} mms rows "
-                        f"vs {deltas_total:,} delta events in window."
+
+            sql_replay_label = None
+            if sql_tokens:
+                if use_delta_replay:
+                    backends["deltas"] = _BookDeltaReplay(
+                        session=None, token_ids=sql_tokens,
+                        start=start_dt, end=end_dt,
                     )
+                    for tok in sql_tokens:
+                        routing[tok] = "deltas"
+                    sql_replay_label = (
+                        "deltas+anchor"
+                        if int(cov.get("tokens_with_snapshots") or 0) > 0
+                        else "deltas"
+                    )
+                    source_label_parts.append(
+                        f"DELTAS={len(sql_tokens)} tokens "
+                        f"({deltas_total:,} events)"
+                    )
+                else:
+                    backends["snapshots"] = BookReplay(
+                        session=None, token_ids=sql_tokens,
+                        start=start_dt, end=end_dt, snapshot_type="book",
+                    )
+                    for tok in sql_tokens:
+                        routing[tok] = "snapshots"
+                    sql_replay_label = "snapshots"
+                    source_label_parts.append(
+                        f"SNAPSHOTS={len(sql_tokens)} tokens "
+                        f"({snapshots_total:,} rows)"
+                    )
+
+            if not backends:
+                # Defensive: shouldn't happen because the universe is
+                # non-empty by this point, but if every backend was
+                # somehow empty fall back to snapshots over the whole
+                # universe so the matcher doesn't crash.
+                backends["snapshots"] = BookReplay(
+                    session=None, token_ids=tokens,
+                    start=start_dt, end=end_dt, snapshot_type="book",
+                )
+                routing = {tok: "snapshots" for tok in tokens}
+                sql_replay_label = "snapshots"
+
+            replay_for_run = _HybridBookSource(
+                backends=backends, routing=routing,
+            )
+            # Surface which source(s) drove this run.  When parquet
+            # covers the entire universe label is just "parquet";
+            # otherwise we get e.g. "parquet+deltas" or "parquet+snapshots".
+            if "parquet" in backends and sql_replay_label is None:
+                result.replay_source = "parquet"
+            elif "parquet" in backends:
+                result.replay_source = f"parquet+{sql_replay_label}"
+            else:
+                result.replay_source = sql_replay_label or "snapshots"
+            result.validation_warnings.append(
+                "Replay source: " + " · ".join(source_label_parts)
+            )
             bt_result = await engine.run(
                 book_source=replay_for_run,
                 trade_intents=intents,

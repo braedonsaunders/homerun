@@ -1,11 +1,11 @@
 {
-  "runId": 1777963832691,
-  "workflowRunId": 25361777684,
+  "runId": 1778349518098,
+  "workflowRunId": 25607718629,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25361777684",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25607718629",
   "branch": "main",
-  "headSha": "b6fee8baad3a99e8724252fe33092bf2eb42967d",
+  "headSha": "2acea93302bf667dad15675f1e3e8bc1a85411cd",
   "prNumber": null,
   "passes": [
     {
@@ -13,120 +13,136 @@
       "cluster": {
         "type": "lint",
         "files": [
-          "backend/services/trader_orchestrator/fast_submit.py"
+          "backend/services/market_data_ingestor.py",
+          "backend/services/worker_state.py",
+          "backend/alembic/versions/202605090003_trade_signals_fillfactor_and_autovacuum.py",
+          "backend/models/database.py"
         ],
         "failures": [
           {
             "type": "lint",
-            "file": "backend/services/trader_orchestrator/fast_submit.py",
-            "line": 552,
+            "file": "backend/services/market_data_ingestor.py",
+            "line": 62,
             "column": 24,
-            "message": "Local variable `_asyncio` referenced before assignment",
-            "rule": "F823",
-            "rawLog": "F823 Local variable `_asyncio` referenced before assignment\n   --> services/trader_orchestrator/fast_submit.py:552:24",
+            "message": "[*] `contextlib.suppress` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `contextlib.suppress` imported but unused\n  --> services/market_data_ingestor.py:62:24",
             "confidence": 0.95
           },
           {
             "type": "lint",
-            "file": "backend/services/trader_orchestrator/fast_submit.py",
-            "line": 581,
-            "column": 17,
-            "message": "[*] f-string without any placeholders",
-            "rule": "F541",
-            "rawLog": "F541 [*] f-string without any placeholders\n   --> services/trader_orchestrator/fast_submit.py:581:17",
+            "file": "backend/services/worker_state.py",
+            "line": 34,
+            "column": 1,
+            "message": "Module level import not at top of file",
+            "rule": "E402",
+            "rawLog": "E402 Module level import not at top of file\n  --> services/worker_state.py:34:1",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/alembic/versions/202605090003_trade_signals_fillfactor_and_autovacuum.py",
+            "line": 63,
+            "column": 22,
+            "message": "[*] `sqlalchemy` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `sqlalchemy` imported but unused\n  --> alembic/versions/202605090003_trade_signals_fillfactor_and_autovacuum.py:63:22",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/models/database.py",
+            "line": 5402,
+            "column": 45,
+            "message": "Undefined name `Any`",
+            "rule": "F821",
+            "rawLog": "F821 Undefined name `Any`\n    --> models/database.py:5402:45",
             "confidence": 0.95
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "4fbae3abe073ce7805da3b741a63ded94dd906a8",
+      "commitSha": "1c2460b094e605b2e5d319520d7659835e41e35b",
       "filesChanged": [
-        "backend/services/trader_orchestrator/fast_submit.py"
+        "backend/alembic/versions/202605090003_trade_signals_fillfactor_and_autovacuum.py",
+        "backend/models/database.py",
+        "backend/services/market_data_ingestor.py",
+        "backend/services/worker_state.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 141826
+      "durationMs": 126874
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-05T06:50:32.691Z",
+  "startedAt": "2026-05-09T17:58:38.098Z",
   "result": null,
   "commits": [
-    "4fbae3abe073ce7805da3b741a63ded94dd906a8"
+    "1c2460b094e605b2e5d319520d7659835e41e35b"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_fast_trader_runtime.py",
+      "file": "backend/tests/test_execution_session_engine.py",
       "line": null,
       "column": null,
-      "message": "UnboundLocalError: cannot access local variable '_asyncio' where it is not associated with a value",
+      "message": "AssertionError: assert '92dd6f1377314406bae0e2a0d757d47d' in set()",
       "rule": null,
-      "rawLog": "FAILED tests/test_fast_trader_runtime.py::test_execute_fast_signal_keeps_lock_when_clob_raises_after_pre_submit - UnboundLocalError: cannot access local variable '_asyncio' where it is not associated with a value",
+      "rawLog": "FAILED tests/test_execution_session_engine.py::test_execute_signal_flushes_new_trader_orders_before_execution_orders - AssertionError: assert '92dd6f1377314406bae0e2a0d757d47d' in set()",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_trader_order_verification_table.py",
+      "file": "backend/tests/test_signal_bus_reactivation.py",
       "line": null,
       "column": null,
-      "message": "AssertionError: Guard must coerce actual_profit to None when status != wallet_activity",
+      "message": "assert 1.0 == 4.0 ± 4.0e-06",
       "rule": null,
-      "rawLog": "FAILED tests/test_trader_order_verification_table.py::test_guard_coerces_actual_profit_when_status_unverified - AssertionError: Guard must coerce actual_profit to None when status != wallet_activity",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_trader_order_verification_table.py",
-      "line": null,
-      "column": null,
-      "message": "AssertionError: guard fires on TraderOrder THEN mirrors to side table; side-table value must reflect the post-guard state",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trader_order_verification_table.py::test_listener_mirrors_trader_order_writes - AssertionError: guard fires on TraderOrder THEN mirrors to side table; side-table value must reflect the post-guard state",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_trader_position_lifecycle_resolution.py",
-      "line": null,
-      "column": null,
-      "message": "assert None == 1.0",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trader_position_lifecycle_resolution.py::test_extract_wallet_settlement_price_treats_non_open_redeemable_position_as_winner - assert None == 1.0",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_trader_position_lifecycle_resolution.py",
-      "line": null,
-      "column": null,
-      "message": "assert 0 == 1",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trader_position_lifecycle_resolution.py::test_live_reconcile_uses_redeemable_wallet_position_without_mark_price - assert 0 == 1",
+      "rawLog": "FAILED tests/test_signal_bus_reactivation.py::test_upsert_pending_scanner_signal_refreshes_volatile_payload_without_emission - assert 1.0 == 4.0 ± 4.0e-06",
       "confidence": 0.7
     },
     {
       "type": "lint",
-      "file": "backend/services/trader_orchestrator/fast_submit.py",
-      "line": 552,
-      "column": 24,
-      "message": "Local variable `_asyncio` referenced before assignment",
-      "rule": "F823",
-      "rawLog": "F823 Local variable `_asyncio` referenced before assignment\n   --> services/trader_orchestrator/fast_submit.py:552:24",
+      "file": "backend/alembic/versions/202605090003_trade_signals_fillfactor_and_autovacuum.py",
+      "line": 63,
+      "column": 22,
+      "message": "[*] `sqlalchemy` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `sqlalchemy` imported but unused\n  --> alembic/versions/202605090003_trade_signals_fillfactor_and_autovacuum.py:63:22",
       "confidence": 0.95
     },
     {
       "type": "lint",
-      "file": "backend/services/trader_orchestrator/fast_submit.py",
-      "line": 581,
-      "column": 17,
-      "message": "[*] f-string without any placeholders",
-      "rule": "F541",
-      "rawLog": "F541 [*] f-string without any placeholders\n   --> services/trader_orchestrator/fast_submit.py:581:17",
+      "file": "backend/models/database.py",
+      "line": 5402,
+      "column": 45,
+      "message": "Undefined name `Any`",
+      "rule": "F821",
+      "rawLog": "F821 Undefined name `Any`\n    --> models/database.py:5402:45",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/market_data_ingestor.py",
+      "line": 62,
+      "column": 24,
+      "message": "[*] `contextlib.suppress` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `contextlib.suppress` imported but unused\n  --> services/market_data_ingestor.py:62:24",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/worker_state.py",
+      "line": 34,
+      "column": 1,
+      "message": "Module level import not at top of file",
+      "rule": "E402",
+      "rawLog": "E402 Module level import not at top of file\n  --> services/worker_state.py:34:1",
       "confidence": 0.95
     }
   ],
   "latestParserUsed": "pytest, ruff",
-  "latestLogPath": ".greencheck/logs/workflow-run-25361777684.log"
+  "latestLogPath": ".greencheck/logs/workflow-run-25607718629.log"
 }

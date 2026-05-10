@@ -59,7 +59,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any

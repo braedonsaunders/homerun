@@ -426,3 +426,51 @@ def _serialize_dataset(row: Any, include_payload: bool = False) -> dict[str, Any
     if include_payload:
         out["payload"] = row.payload_json
     return out
+
+
+# ---------------------------------------------------------------------------
+# Parquet datasets (operator drops files into HOMERUN_PARQUET_ROOT;
+# auto-discovery scanner upserts provider_datasets rows so the
+# backtester's source resolver can find them).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/parquet/root")
+async def get_parquet_root() -> dict[str, Any]:
+    """Surface the storage root the operator should drop parquet files
+    into.  UI shows this so users know where to copy vendor data."""
+    from services.external_data.parquet_schema import parquet_root
+
+    root = parquet_root()
+    return {
+        "root": str(root),
+        "exists": root.exists(),
+        "env_var": "HOMERUN_PARQUET_ROOT",
+    }
+
+
+@router.get("/parquet/datasets")
+async def list_parquet_datasets_route() -> dict[str, Any]:
+    """List every parquet-backed dataset currently in the catalog.
+    These rows are written by the auto-discovery scanner; if a file
+    you just dropped doesn't appear, hit ``POST /parquet/rescan``."""
+    from services.external_data import parquet_scanner
+
+    rows = await parquet_scanner.list_parquet_datasets()
+    return {"count": len(rows), "datasets": rows}
+
+
+@router.post("/parquet/rescan")
+async def rescan_parquet_route() -> dict[str, Any]:
+    """Walk the parquet root and UPSERT a row per discovered group.
+    Idempotent.  Returns a per-group report so the UI can show what
+    was added / updated / errored.
+    """
+    from services.external_data import parquet_scanner
+
+    try:
+        report = await parquet_scanner.rescan_parquet_root()
+    except Exception as exc:
+        logger.exception("parquet rescan failed")
+        raise HTTPException(status_code=500, detail=f"rescan failed: {exc}") from exc
+    return report
