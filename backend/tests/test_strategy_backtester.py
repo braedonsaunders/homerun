@@ -1032,7 +1032,7 @@ async def test_replay_discover_skips_event_loading_for_book_strategies(monkeypat
             return _R()
 
     monkeypatch.setattr(
-        "models.database.AsyncSessionLocal",
+        "models.database.BacktestAsyncSessionLocal",
         lambda: _StubSession(),
     )
 
