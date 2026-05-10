@@ -4,6 +4,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from py_clob_client_v2.config import get_contract_config as _clob_v2_contract_config
+
 from config import settings
 from services.polymarket import polymarket_client
 from services.live_execution_service import live_execution_service
@@ -20,6 +22,32 @@ from utils.converters import safe_float
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _resolve_polymarket_clob_v2_exchanges() -> tuple[str, str]:
+    """Pin the Polymarket CLOB V2 exchange addresses sourced from the SDK.
+
+    Sourcing the addresses from ``py_clob_client_v2`` (rather than
+    hard-coding two more constants in this file) keeps a single source
+    of truth: when the SDK is upgraded for a future cutover, the
+    addresses move with it. The assert prevents a silent regression if
+    the SDK ever returns a stale or empty value.
+    """
+    cfg = _clob_v2_contract_config(137)  # Polygon mainnet
+    exchange_v2 = str(getattr(cfg, "exchange_v2", "") or "").strip()
+    neg_risk_v2 = str(getattr(cfg, "neg_risk_exchange_v2", "") or "").strip()
+    assert exchange_v2.lower() == "0xe111180000d2663c0091e4f400237545b87b996b", (
+        f"py_clob_client_v2 exchange_v2 unexpected: {exchange_v2!r}"
+    )
+    assert neg_risk_v2.lower() == "0xe2222d279d744050d28e00520010520000310f59", (
+        f"py_clob_client_v2 neg_risk_exchange_v2 unexpected: {neg_risk_v2!r}"
+    )
+    return exchange_v2, neg_risk_v2
+
+
+_POLYMARKET_EXCHANGE_V2, _POLYMARKET_NEG_RISK_EXCHANGE_V2 = (
+    _resolve_polymarket_clob_v2_exchanges()
+)
 
 _USDC_DECIMALS = 6
 _MAX_UINT256 = 2**256 - 1
@@ -68,10 +96,19 @@ class CTFExecutionResult:
 
 class CTFExecutionService:
     # Source of truth for canonical contract addresses lives in
-    # ``services.polymarket_collateral``. Re-exposed as class attrs so
-    # call sites and tests can patch them without having to re-import.
+    # ``services.polymarket_collateral`` (CTF) and ``py_clob_client_v2``
+    # (CLOB V2 exchanges). Re-exposed as class attrs so call sites and
+    # tests can patch them without having to re-import.
     CTF_ADDRESS = CTF_ADDRESS
-    CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+    # Polymarket cut over from CLOB V1 to V2 on 2026-04-28. The V1
+    # exchange (0x4bFb…982E) is dead — operator approvals against it
+    # are no-ops because no order routes through it. We must approve
+    # **both** V2 operators because negrisk markets execute on the
+    # NegRiskCtfExchangeV2 contract while normal markets execute on
+    # CtfExchangeV2; each operator must be able to pull the wallet's
+    # ERC-1155 outcome positions independently.
+    POLYMARKET_EXCHANGE_V2 = _POLYMARKET_EXCHANGE_V2
+    POLYMARKET_NEG_RISK_EXCHANGE_V2 = _POLYMARKET_NEG_RISK_EXCHANGE_V2
 
     _CTF_ABI = [
         {
@@ -660,9 +697,50 @@ class CTFExecutionService:
             )
 
     async def ensure_exchange_approval(self) -> CTFExecutionResult:
-        return await self._ensure_ctf_operator_approval(
-            operator_address=self.CTF_EXCHANGE,
+        """Approve **both** Polymarket CLOB V2 exchange operators on the CTF.
+
+        Returns a single ``CTFExecutionResult`` aggregating both
+        ``setApprovalForAll`` calls:
+
+        - ``status="executed"`` only if both operators end up approved
+          (whether they were already approved or freshly approved this
+          call). The payload carries ``approvals: [{operator, ...},
+          {operator, ...}]`` so callers can see which calls actually
+          submitted a tx.
+        - On the first failure, returns immediately with that
+          operator's failure result; the call is retryable end-to-end.
+        """
+        operators = (
+            self.POLYMARKET_EXCHANGE_V2,
+            self.POLYMARKET_NEG_RISK_EXCHANGE_V2,
+        )
+        approvals: list[dict[str, Any]] = []
+        last_tx_hash: str | None = None
+        for operator in operators:
+            sub_result = await self._ensure_ctf_operator_approval(
+                operator_address=operator,
+                action="approve_exchange",
+            )
+            if sub_result.status != "executed":
+                sub_result.payload.setdefault("operator", operator)
+                return sub_result
+            approvals.append(
+                {
+                    "operator": operator,
+                    "already_approved": bool(
+                        sub_result.payload.get("already_approved")
+                    ),
+                    "tx_hash": sub_result.tx_hash,
+                }
+            )
+            if sub_result.tx_hash:
+                last_tx_hash = sub_result.tx_hash
+        return CTFExecutionResult(
+            status="executed",
             action="approve_exchange",
+            tx_hash=last_tx_hash,
+            error_message=None,
+            payload={"approvals": approvals},
         )
 
     async def get_native_gas_affordability(self, *, gas_limit: int) -> dict[str, Any]:

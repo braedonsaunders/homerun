@@ -2082,6 +2082,31 @@ class LiveExecutionService:
         Initialize the trading client with API credentials.
 
         Returns True if successfully initialized, False otherwise.
+
+        CLOB V2 wiring (verified 2026-05-10, plan 0039):
+        ``ClobClient`` is constructed without an explicit ``version=`` arg;
+        on every ``create_order`` / ``create_market_order`` call the client
+        runs ``__resolve_version()`` which hits the CLOB ``GET /version``
+        endpoint and caches the result. Polymarket cut over to CLOB V2 on
+        2026-04-28 — the live API now returns ``version=2``, so
+        ``builder.build_order(... version=2)`` selects the V2 path and
+        signs EIP-712 with ``verifyingContract = contract_config.exchange_v2``
+        (``0xE111180000d2663C0091e4f400237545B87B996B``) or
+        ``neg_risk_exchange_v2`` (``0xe2222d279d744050d28e00520010520000310F59``)
+        for negrisk markets. No version override is required from this
+        service; the SDK handles the V1→V2 cutover transparently.
+
+        Reproduce::
+
+            docker compose exec worker-trading python -c "
+            from config import settings
+            from py_clob_client_v2.client import ClobClient
+            c = ClobClient(host=settings.CLOB_API_URL,
+                           key='0x' + '1'*64,
+                           chain_id=int(settings.CHAIN_ID),
+                           signature_type=0)
+            print(c.get_version())  # expect 2
+            "
         """
         init_lock = self._get_init_lock()
         async with init_lock:
