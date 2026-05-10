@@ -12,7 +12,6 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
