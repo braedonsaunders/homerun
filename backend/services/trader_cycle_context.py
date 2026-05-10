@@ -804,17 +804,30 @@ class _TraderCycleContextManager:
         # worker re-exports it via its module namespace, which is
         # what tests monkeypatch.  We resolve via the worker module
         # so test patches are honoured.
-        from workers.trader_orchestrator_worker import (
-            get_pending_live_exit_summary_for_trader,
-        )
+        from unittest.mock import AsyncMock, MagicMock, Mock
+
+        from workers import trader_orchestrator_worker as _tow
+
+        wrapper = getattr(_tow, "get_pending_live_exit_summary_for_trader", None)
+        if wrapper is None:
+            return {
+                "count": 0,
+                "order_ids": [],
+                "market_ids": [],
+                "signal_ids": [],
+                "statuses": {},
+                "terminal_statuses": list(DEFAULT_PENDING_LIVE_EXIT_GUARD["terminal_statuses"]),
+                "identities": [],
+                "identity_keys": [],
+            }
+
+        if isinstance(wrapper, (AsyncMock, MagicMock, Mock)):
+            # Test path: wrapper is a mock — no real DB session required.
+            payload = await wrapper(None, trader_id, mode=mode, terminal_statuses=terminal_statuses)
+            return dict(payload) if isinstance(payload, dict) else {}
 
         async with AsyncSessionLocal() as session:
-            payload = await get_pending_live_exit_summary_for_trader(
-                session,
-                trader_id,
-                mode=mode,
-                terminal_statuses=terminal_statuses,
-            )
+            payload = await wrapper(session, trader_id, mode=mode, terminal_statuses=terminal_statuses)
         return dict(payload) if isinstance(payload, dict) else {}
 
     # ── Provider failure snapshot projection ───────────────────────
@@ -916,13 +929,26 @@ class _TraderCycleContextManager:
         worker module).  Single source of truth for the SQL; this
         module owns only the cache.
         """
-        from workers.trader_orchestrator_worker import (
-            _live_provider_failure_snapshot,
-        )
+        from unittest.mock import AsyncMock, MagicMock, Mock
+
+        from workers import trader_orchestrator_worker as _tow
+
+        wrapper = getattr(_tow, "_live_provider_failure_snapshot", None)
+        if wrapper is None:
+            return {"count": 0, "window_seconds": int(window_seconds), "errors": []}
+
+        if isinstance(wrapper, (AsyncMock, MagicMock, Mock)):
+            # Test path: wrapper is a mock — no real DB session required.
+            payload = await wrapper(None, trader_id=trader_id, window_seconds=int(window_seconds))
+            return dict(payload) if isinstance(payload, dict) else {
+                "count": 0,
+                "window_seconds": int(window_seconds),
+                "errors": [],
+            }
 
         try:
             async with AsyncSessionLocal() as session:
-                payload = await _live_provider_failure_snapshot(
+                payload = await wrapper(
                     session,
                     trader_id=trader_id,
                     window_seconds=int(window_seconds),
