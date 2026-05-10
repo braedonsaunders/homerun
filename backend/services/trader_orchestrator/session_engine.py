@@ -1289,30 +1289,37 @@ class ExecutionSessionEngine:
                     execution_order_count=len(execution_orders),
                     leg_count=len(leg_rows),
                 )
-            try:
-                await event_bus.publish("execution_session", _serialize_execution_session(session_row))
-            except Exception:
-                pass
-            for leg_row in leg_rows.values():
-                try:
-                    await event_bus.publish("execution_leg", _serialize_execution_leg(leg_row))
-                except Exception:
-                    pass
-            for trader_order in trader_orders:
-                try:
-                    await event_bus.publish("trader_order", _serialize_order(trader_order))
-                except Exception:
-                    pass
-            for execution_order in execution_orders:
-                try:
-                    await event_bus.publish("execution_order", _serialize_execution_order(execution_order))
-                except Exception:
-                    pass
-            for execution_event in execution_events:
-                try:
-                    await event_bus.publish("execution_session_event", _serialize_execution_event(execution_event))
-                except Exception:
-                    pass
+            # 2026-05-10: parallelize the post-commit event_bus
+            # publishes.  Sequential awaits compound any Redis latency
+            # (the same path that emitted ``trader_event Redis publish
+            # batch failed ... Timeout writing to socket`` in the soak)
+            # — for a typical session with 1 session_row + 1 leg + 1
+            # trader_order + 1 execution_order + 2 events, that's 6
+            # sequential awaits inside the submit_round_trip_ms window.
+            # ``asyncio.gather(return_exceptions=True)`` fires them
+            # concurrently and preserves the per-publish ``except
+            # Exception: pass`` swallowing semantics — exceptions from
+            # any publish surface as elements in the results list and
+            # are then ignored, exactly like before.
+            _publish_tasks = [event_bus.publish("execution_session", _serialize_execution_session(session_row))]
+            _publish_tasks.extend(
+                event_bus.publish("execution_leg", _serialize_execution_leg(leg_row))
+                for leg_row in leg_rows.values()
+            )
+            _publish_tasks.extend(
+                event_bus.publish("trader_order", _serialize_order(trader_order))
+                for trader_order in trader_orders
+            )
+            _publish_tasks.extend(
+                event_bus.publish("execution_order", _serialize_execution_order(execution_order))
+                for execution_order in execution_orders
+            )
+            _publish_tasks.extend(
+                event_bus.publish("execution_session_event", _serialize_execution_event(execution_event))
+                for execution_event in execution_events
+            )
+            if _publish_tasks:
+                await asyncio.gather(*_publish_tasks, return_exceptions=True)
 
         async def _persist_execution_projection_safely(
             *,
