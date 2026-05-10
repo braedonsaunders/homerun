@@ -65,11 +65,21 @@ def _cache_run(run: dict[str, Any]) -> None:
 
 
 async def _persist_run_to_db(run: dict[str, Any]) -> None:
-    """Insert the run row into ``backtest_runs``.  Best-effort —
+    """Upsert the run row into ``backtest_runs``.  Best-effort —
     failures log but don't propagate (the cache still serves the run
-    in this process even if persistence fails)."""
+    in this process even if persistence fails).
+
+    Uses INSERT ... ON CONFLICT (id) DO UPDATE so the worker pre-queue
+    path (which inserts a row at status='queued' BEFORE this function
+    runs) and the unified-runner completion path don't fight over the
+    primary key.  Plain INSERT used to throw
+    ``duplicate key value violates unique constraint`` on every run
+    that was queued via the worker, leaving the cache and DB out of
+    sync until the worker's own UPDATE landed.
+    """
     from datetime import datetime as _dt
     from models.database import AsyncSessionLocal, BacktestRun
+    from sqlalchemy.dialects.postgresql import insert as _pg_insert
 
     def _parse_iso(value: Any) -> _dt | None:
         if not value:
@@ -81,25 +91,38 @@ async def _persist_run_to_db(run: dict[str, Any]) -> None:
 
     exec_dict = run.get("execution") or {}
     sparkline = _build_sparkline_pct(exec_dict)
-    row = BacktestRun(
-        id=str(run.get("run_id")),
-        strategy_slug=run.get("strategy_slug"),
-        strategy_name=run.get("strategy_name"),
-        started_at=_parse_iso(run.get("started_at")) or datetime.now(timezone.utc),
-        completed_at=_parse_iso(run.get("completed_at")),
-        total_time_ms=float(run.get("total_time_ms") or 0.0),
-        status="ok" if exec_dict.get("success") else "failed",
-        trade_count=int(exec_dict.get("trade_count") or 0),
-        total_return_pct=float(exec_dict.get("total_return_pct") or 0.0),
-        sparkline_pct_json=sparkline,
-        result_json=run,
-    )
+    run_id = str(run.get("run_id") or "")
+    if not run_id:
+        return
+    row_values = {
+        "id": run_id,
+        "strategy_slug": run.get("strategy_slug"),
+        "strategy_name": run.get("strategy_name"),
+        "started_at": _parse_iso(run.get("started_at")) or datetime.now(timezone.utc),
+        "completed_at": _parse_iso(run.get("completed_at")),
+        "total_time_ms": float(run.get("total_time_ms") or 0.0),
+        "status": "ok" if exec_dict.get("success") else "failed",
+        "trade_count": int(exec_dict.get("trade_count") or 0),
+        "total_return_pct": float(exec_dict.get("total_return_pct") or 0.0),
+        "sparkline_pct_json": sparkline,
+        "result_json": run,
+    }
+    # Skip the worker-managed cols (progress / claimed_at / payload_json
+    # / cancel_requested / worker_id) — they're owned by the queue
+    # lifecycle, not the runner.  The DO UPDATE only refreshes columns
+    # the runner actually computes.
+    update_cols = {k: v for k, v in row_values.items() if k != "id"}
     try:
         async with AsyncSessionLocal() as session:
-            session.add(row)
+            stmt = _pg_insert(BacktestRun).values(**row_values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["id"],
+                set_=update_cols,
+            )
+            await session.execute(stmt)
             await session.commit()
     except Exception as exc:
-        logger.warning("Failed to persist backtest run %s: %s", run.get("run_id"), exc)
+        logger.warning("Failed to persist backtest run %s: %s", run_id, exc)
 
 
 def _build_sparkline_pct(exec_dict: dict[str, Any]) -> list[float]:
