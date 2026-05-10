@@ -14,7 +14,7 @@ import math
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from services.backtest.unified_runner import (
@@ -293,6 +293,50 @@ async def cancel_run(run_id: str) -> dict[str, Any]:
             detail=f"Run '{run_id}' not found or already finished",
         )
     return {"run_id": run_id, "cancel_requested": True}
+
+
+@router.get("/runs/{run_id}/report.pdf")
+async def get_run_pdf(run_id: str) -> Response:
+    """Render an executive PDF for a completed backtest run.
+
+    Mirrors the reverse-engineer ``/jobs/{id}/report.pdf`` route —
+    same WeasyPrint pipeline, same Jinja env, separate template
+    (``backtest_run_report.html.j2``).  Returns 404 if the run
+    doesn't exist, 503 if WeasyPrint can't be loaded (with a
+    platform-specific install hint).
+    """
+    from sqlalchemy import select
+    from models.database import AsyncSessionLocal, BacktestRun
+
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(select(BacktestRun).where(BacktestRun.id == run_id))
+        ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    try:
+        from services.reports.wallet_strategy_report import (
+            ReportRenderError,
+            render_backtest_run_report,
+        )
+        result_blob = row.result_json or {}
+        pdf_bytes = render_backtest_run_report(run_row=row, result=result_blob)
+    except ReportRenderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("PDF report render failed for backtest run %s", run_id)
+        raise HTTPException(status_code=500, detail=f"PDF render failed: {exc}") from exc
+
+    short = run_id[:8]
+    slug = (row.strategy_slug or "backtest").replace(" ", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="backtest_{slug}_{short}.pdf"',
+        },
+    )
 
 
 @router.delete("/runs/{run_id}")

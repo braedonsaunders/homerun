@@ -349,3 +349,158 @@ def render_analytical_report(
     if not pdf_bytes:
         raise ReportRenderError("WeasyPrint produced an empty PDF")
     return pdf_bytes
+
+
+# ---------------------------------------------------------------------------
+# Backtest run report — separate template, same WeasyPrint pipeline.
+# ---------------------------------------------------------------------------
+
+_BACKTEST_TEMPLATE_NAME = "backtest_run_report.html.j2"
+
+
+def render_backtest_run_report(*, run_row: Any, result: dict[str, Any]) -> bytes:
+    """Render an executive PDF for a single completed backtest run.
+
+    ``run_row`` is the ORM ``BacktestRun`` row (provides id, strategy
+    metadata, started_at, status, etc.); ``result`` is the parsed
+    ``result_json`` blob (the rich UnifiedBacktestResult shape the
+    studio's Inspect tab consumes).  We pass both so the template can
+    fall back gracefully when the result blob is incomplete (e.g. a
+    failed run that wrote an error-only payload).
+    """
+    if platform.system() == "Windows":
+        _ensure_windows_gtk_runtime_on_path()
+
+    try:
+        from weasyprint import HTML  # type: ignore[import-not-found]
+    except (ImportError, OSError) as exc:
+        raise ReportRenderError(
+            f"PDF rendering unavailable: {exc}.\n\n"
+            "Install WeasyPrint + GTK runtime — same as the reverse-engineer report.\n"
+            f"  • Detected OS: {platform.system()}\n"
+            "  • Linux/Docker: apt-get install libpango-1.0-0 libpangoft2-1.0-0 "
+            "libharfbuzz0b libfreetype6 libffi-dev libgdk-pixbuf-2.0-0\n"
+            "  • macOS:        brew install pango cairo libffi gdk-pixbuf\n"
+            "  • Windows:      winget install --id tschoonj.GTKForWindows\n"
+            "Then `pip install weasyprint`."
+        ) from exc
+
+    env = _build_jinja_env()
+    template = env.get_template(_BACKTEST_TEMPLATE_NAME)
+    html_text = template.render(
+        run=_backtest_run_view(run_row, result),
+        generated_at=utcnow(),
+    )
+
+    try:
+        pdf_bytes = HTML(string=html_text, base_url=str(_TEMPLATE_DIR)).write_pdf()
+    except Exception as exc:
+        raise ReportRenderError(f"WeasyPrint render failed: {exc}") from exc
+    if not pdf_bytes:
+        raise ReportRenderError("WeasyPrint produced an empty PDF")
+    return pdf_bytes
+
+
+def _backtest_run_view(run_row: Any, result: dict[str, Any]) -> dict[str, Any]:
+    """Flatten the run row + result blob into a single template-friendly
+    dict.  All defensive: missing nested keys collapse to None / 0 so
+    the template never KeyErrors on partial payloads."""
+    exec_d = result.get("execution") or {}
+    coverage = result.get("data_coverage") or {}
+    deflated = result.get("deflated_sharpe") or {}
+    partial = result.get("partial_fills") or {}
+    outcome = result.get("outcome_netting") or {}
+    tom = result.get("trade_order_monte_carlo") or {}
+
+    def _ci(m: Any) -> dict[str, Any]:
+        if not isinstance(m, dict):
+            return {"value": None, "ci_low": None, "ci_high": None}
+        return {
+            "value": m.get("value"),
+            "ci_low": m.get("ci_low"),
+            "ci_high": m.get("ci_high"),
+        }
+
+    initial_cap = float(exec_d.get("initial_capital_usd") or 0.0)
+    final_eq = float(exec_d.get("final_equity_usd") or 0.0)
+    net_pnl = final_eq - initial_cap
+
+    # Build a downsampled equity curve for the embedded SVG (cap at
+    # 240 points so the inline SVG stays compact in the PDF).
+    raw_curve = exec_d.get("equity_curve_sample") or []
+    if isinstance(raw_curve, list) and len(raw_curve) > 240:
+        step = max(1, len(raw_curve) // 240)
+        sampled = raw_curve[::step]
+        # Always include the true final point (matches the studio fix).
+        if sampled and raw_curve and sampled[-1] is not raw_curve[-1]:
+            sampled.append(raw_curve[-1])
+    else:
+        sampled = list(raw_curve or [])
+
+    return {
+        "id": run_row.id,
+        "strategy_slug": run_row.strategy_slug,
+        "strategy_name": run_row.strategy_name,
+        "status": run_row.status,
+        "started_at": _iso(run_row.started_at),
+        "completed_at": _iso(run_row.completed_at),
+        "total_time_ms": float(run_row.total_time_ms or 0.0),
+        "trade_count": int(run_row.trade_count or 0),
+        "total_return_pct": float(run_row.total_return_pct or 0.0),
+        # Headline KPIs — duplicated for template convenience.
+        "initial_capital_usd": initial_cap,
+        "final_equity_usd": final_eq,
+        "net_pnl_usd": net_pnl,
+        # Risk-adjusted CIs.
+        "sharpe": _ci(exec_d.get("sharpe")),
+        "sortino": _ci(exec_d.get("sortino")),
+        "calmar": _ci(exec_d.get("calmar")),
+        "hit_rate": _ci(exec_d.get("hit_rate")),
+        "profit_factor": _ci(exec_d.get("profit_factor")),
+        "expectancy_usd": _ci(exec_d.get("expectancy_usd")),
+        # Tail risk.
+        "expected_shortfall_5pct": _ci(exec_d.get("expected_shortfall_5pct")),
+        "expected_shortfall_1pct": _ci(exec_d.get("expected_shortfall_1pct")),
+        "tail_ratio": _ci(exec_d.get("tail_ratio")),
+        "gain_to_pain": _ci(exec_d.get("gain_to_pain")),
+        # Singles.
+        "max_drawdown_pct": float(exec_d.get("max_drawdown_pct") or 0.0),
+        "max_drawdown_usd": float(exec_d.get("max_drawdown_usd") or 0.0),
+        "avg_win_usd": float(exec_d.get("avg_win_usd") or 0.0),
+        "avg_loss_usd": float(exec_d.get("avg_loss_usd") or 0.0),
+        "fees_paid_usd": float(exec_d.get("fees_paid_usd") or 0.0),
+        "total_fills": int(exec_d.get("total_fills") or 0),
+        "rejected_orders": int(exec_d.get("rejected_orders") or 0),
+        "cancelled_orders": int(exec_d.get("cancelled_orders") or 0),
+        "replay_source": exec_d.get("replay_source"),
+        "discovery_mode": exec_d.get("discovery_mode"),
+        "runtime_error": exec_d.get("runtime_error"),
+        # Curve for the embedded chart.
+        "equity_curve_sample": sampled,
+        # Coverage banner.
+        "fidelity_rating": coverage.get("fidelity_rating"),
+        "tokens_with_snapshots": coverage.get("tokens_with_snapshots"),
+        "tokens_with_deltas": coverage.get("tokens_with_deltas"),
+        "opp_tokens": coverage.get("opp_tokens"),
+        "median_snaps_per_token_per_hour": coverage.get("median_snaps_per_token_per_hour"),
+        "median_deltas_per_token_per_hour": coverage.get("median_deltas_per_token_per_hour"),
+        "fidelity_recommendation": coverage.get("recommended_action"),
+        # Deflated Sharpe.
+        "probabilistic_sharpe": deflated.get("probabilistic_sharpe"),
+        "deflated_sharpe": deflated.get("deflated_sharpe"),
+        "n_trials": deflated.get("n_trials"),
+        "observed_sharpe": deflated.get("observed_sharpe"),
+        "sr_zero": deflated.get("sr_zero"),
+        # Partial-fill aggregates.
+        "instant_fill_rate": partial.get("instant_fill_rate"),
+        "n_orders": partial.get("n_orders"),
+        "mean_children_per_order": partial.get("mean_children_per_order"),
+        # Outcome netting.
+        "gross_exposure_usd": outcome.get("gross_exposure_usd"),
+        "net_exposure_usd": outcome.get("net_exposure_usd"),
+        "capital_efficiency_pct": outcome.get("capital_efficiency_pct"),
+        # Trade-order MC.
+        "tom_realized_sharpe": tom.get("realized_sharpe"),
+        "tom_position_pct": (tom.get("observed_vs_distribution") or {}).get("position_pct"),
+        "tom_interpretation": (tom.get("observed_vs_distribution") or {}).get("interpretation"),
+    }

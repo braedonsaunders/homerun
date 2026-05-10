@@ -437,6 +437,18 @@ export async function deleteBacktestRun(
   return data
 }
 
+/** Download the executive PDF for a completed run.  Returns a Blob
+ *  the caller can wrap in object URL + anchor click to trigger
+ *  browser download.  Throws on 5xx (e.g. 503 if WeasyPrint isn't
+ *  installed) so the UI can surface a helpful message. */
+export async function downloadBacktestRunPdf(runId: string): Promise<Blob> {
+  const res = await api.get<Blob>(
+    `/backtest/runs/${encodeURIComponent(runId)}/report.pdf`,
+    { responseType: 'blob' },
+  )
+  return res.data
+}
+
 /** Bulk-delete terminal runs.  Active rows are skipped silently and
  *  reported in ``skipped_active`` so the UI can prompt the operator
  *  to cancel them first. */

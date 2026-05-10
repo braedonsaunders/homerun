@@ -1,0 +1,434 @@
+{# Executive PDF report for a single completed backtest run. #}
+{# Mirrors the analytical-report visual language so the two PDFs feel #}
+{# like one product. #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Backtest {{ run.id[:8] }} — {{ run.strategy_name or run.strategy_slug or 'unknown' }}</title>
+  <style>
+    @page {
+      size: Letter;
+      margin: 0.85in 0.75in 0.85in 0.75in;
+      @top-left {
+        content: "Homerun · Backtest Report";
+        font-size: 8.5pt;
+        color: #6b7280;
+      }
+      @top-right {
+        content: "Run {{ run.id[:8] }}";
+        font-size: 8.5pt;
+        color: #6b7280;
+      }
+      @bottom-right {
+        content: counter(page) " of " counter(pages);
+        font-size: 8.5pt;
+        color: #6b7280;
+      }
+    }
+
+    body {
+      font-family: "Iowan Old Style", "Palatino", Georgia, serif;
+      color: #111827;
+      font-size: 10pt;
+      line-height: 1.5;
+    }
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+    .mono { font-family: "SF Mono", "Cascadia Code", Consolas, monospace; font-size: 8.5pt; }
+
+    /* ── Hero ─────────────────────────────────────────── */
+    .hero { padding-bottom: 14pt; border-bottom: 2px solid #111827; }
+    .hero .label { font-family: -apple-system, sans-serif;
+                   font-size: 9pt; letter-spacing: 0.18em;
+                   text-transform: uppercase; color: #6b7280; }
+    .hero h1 { font-size: 26pt; line-height: 1.15; margin: 6pt 0 2pt;
+               font-weight: 700; }
+    .hero .strat { font-size: 14pt; line-height: 1.45; color: #1f2937;
+                   margin-top: 2pt; }
+    .hero .meta { margin-top: 8pt; font-size: 9pt; color: #6b7280;
+                  font-family: -apple-system, sans-serif; }
+    .hero .meta .pill { display: inline-block; padding: 1pt 6pt;
+                        background: #f3f4f6; border-radius: 9pt;
+                        margin-right: 6pt; }
+    .hero .meta .pill.ok { background: #ecfdf5; color: #065f46; }
+    .hero .meta .pill.warn { background: #fef3c7; color: #92400e; }
+    .hero .meta .pill.bad { background: #fee2e2; color: #991b1b; }
+
+    /* ── Headline metric grid ──────────────────────────── */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6pt;
+      margin: 10pt 0;
+    }
+    .metric {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 8pt 10pt;
+    }
+    .metric .l {
+      font-family: -apple-system, sans-serif;
+      font-size: 8pt;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #6b7280;
+    }
+    .metric .v { font-size: 16pt; font-weight: 700; line-height: 1.2;
+                 margin-top: 2pt; }
+    .metric .v.pos { color: #047857; }
+    .metric .v.neg { color: #b91c1c; }
+    .metric .sub { font-size: 9pt; color: #6b7280; margin-top: 1pt; }
+
+    /* ── Section headers ──────────────────────────────── */
+    h2 { font-family: -apple-system, sans-serif;
+         font-size: 9pt; letter-spacing: 0.18em;
+         text-transform: uppercase; color: #6b7280;
+         border-top: 1px solid #e5e7eb; padding-top: 14pt;
+         margin-top: 18pt; margin-bottom: 8pt; }
+
+    /* ── Tables / metric rows ──────────────────────────── */
+    .metric-rows { width: 100%; border-collapse: collapse; }
+    .metric-rows td { padding: 4pt 8pt; border-bottom: 1px solid #f3f4f6;
+                      font-size: 10pt; }
+    .metric-rows td.label { color: #6b7280; width: 40%;
+                            font-family: -apple-system, sans-serif; }
+    .metric-rows td.value { font-family: "SF Mono", monospace;
+                            font-size: 10pt; text-align: right; width: 22%; }
+    .metric-rows td.ci { color: #6b7280; font-family: "SF Mono", monospace;
+                         font-size: 8.5pt; }
+
+    /* Two-column layout for risk + tail blocks */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14pt;
+    }
+
+    /* ── Equity curve SVG container ───────────────────── */
+    .equity-curve {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 8pt;
+      background: #fafafa;
+    }
+    .equity-curve .header {
+      display: flex;
+      justify-content: space-between;
+      font-family: -apple-system, sans-serif;
+      font-size: 9pt;
+      color: #4b5563;
+      margin-bottom: 4pt;
+    }
+    .equity-curve .header .ret.pos { color: #047857; font-weight: 600; }
+    .equity-curve .header .ret.neg { color: #b91c1c; font-weight: 600; }
+
+    /* ── Coverage banner ──────────────────────────────── */
+    .coverage {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 8pt 10pt;
+      font-size: 9pt;
+      color: #4b5563;
+      font-family: -apple-system, sans-serif;
+      margin-bottom: 12pt;
+    }
+    .coverage.high { border-color: #a7f3d0; background: #ecfdf5; color: #065f46; }
+    .coverage.medium { border-color: #fcd34d; background: #fefce8; color: #92400e; }
+    .coverage.low { border-color: #fca5a5; background: #fef2f2; color: #991b1b; }
+    .coverage .heading { font-weight: 600; margin-right: 6pt; }
+    .coverage .rec { margin-top: 4pt; font-size: 8.5pt; }
+
+    /* ── Footer note ──────────────────────────────────── */
+    .footnote { font-size: 8pt; color: #9ca3af; margin-top: 18pt;
+                text-align: center; font-family: -apple-system, sans-serif; }
+
+    /* Avoid awkward page breaks in the metric grid + equity curve */
+    .metric-grid, .equity-curve, .two-col { page-break-inside: avoid; }
+  </style>
+</head>
+<body>
+
+{# ── Hero ─────────────────────────────────────────────────────── #}
+<div class="hero">
+  <div class="label">Backtest Run · {{ run.id[:8] }}</div>
+  <h1>{{ run.strategy_name or run.strategy_slug or 'Unknown strategy' }}</h1>
+  <div class="strat">
+    {% if run.total_return_pct >= 0 %}
+      Return <span style="color: #047857; font-weight: 700;">+{{ '%.2f' | format(run.total_return_pct) }}%</span>
+      ({{ run.net_pnl_usd | money_signed }} on {{ run.initial_capital_usd | money }})
+    {% else %}
+      Return <span style="color: #b91c1c; font-weight: 700;">{{ '%.2f' | format(run.total_return_pct) }}%</span>
+      ({{ run.net_pnl_usd | money_signed }} on {{ run.initial_capital_usd | money }})
+    {% endif %}
+  </div>
+  <div class="meta">
+    <span class="pill {{ 'ok' if run.status in ('completed','ok') else ('bad' if run.status == 'failed' else 'warn') }}">
+      {{ run.status }}
+    </span>
+    {% if run.replay_source %}<span class="pill mono">replay: {{ run.replay_source }}</span>{% endif %}
+    {% if run.discovery_mode %}<span class="pill mono">discovery: {{ run.discovery_mode }}</span>{% endif %}
+    <span>started {{ run.started_at | humanize_dt }}</span>
+    {% if run.completed_at %}<span>· completed {{ run.completed_at | humanize_dt }}</span>{% endif %}
+    {% if run.total_time_ms %}<span>· {{ '%.1f' | format(run.total_time_ms / 1000.0) }}s</span>{% endif %}
+  </div>
+</div>
+
+{# ── Data fidelity banner (when we have a rating) ──────────────── #}
+{% if run.fidelity_rating %}
+<div class="coverage
+  {% if run.replay_source and run.replay_source.startswith('deltas') -%}high
+  {%- elif run.fidelity_rating == 'high' -%}high
+  {%- elif run.fidelity_rating == 'medium' -%}medium
+  {%- else -%}low{%- endif %}">
+  <span class="heading">
+    {% if run.replay_source and run.replay_source.startswith('deltas') -%}
+      Live-parity replay (delta book)
+    {%- elif run.fidelity_rating == 'high' -%}
+      Data fidelity: HIGH
+    {%- elif run.fidelity_rating == 'medium' -%}
+      Data fidelity: MEDIUM
+    {%- else -%}
+      Data fidelity: {{ run.fidelity_rating | upper }}
+    {%- endif %}
+  </span>
+  {{ run.tokens_with_snapshots or 0 }}/{{ run.opp_tokens or 0 }} tokens with snapshots
+  · median {{ '%.1f' | format(run.median_snaps_per_token_per_hour or 0) }}/hr snapshots
+  · median {{ '%.1f' | format(run.median_deltas_per_token_per_hour or 0) }}/hr deltas
+  {% if run.fidelity_recommendation %}
+    <div class="rec">{{ run.fidelity_recommendation }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── Headline KPIs ─────────────────────────────────────────────── #}
+<h2>Headline</h2>
+<div class="metric-grid">
+  <div class="metric">
+    <div class="l">Return</div>
+    <div class="v {{ 'pos' if run.total_return_pct >= 0 else 'neg' }}">
+      {{ run.total_return_pct | pct_signed }}
+    </div>
+    <div class="sub">{{ run.net_pnl_usd | money_signed }} net</div>
+  </div>
+  <div class="metric">
+    <div class="l">Sharpe</div>
+    <div class="v {{ 'pos' if (run.sharpe.value or 0) >= 1.0 else ('neg' if (run.sharpe.value or 0) < 0 else '') }}">
+      {% if run.sharpe.value is not none %}{{ '%.2f' | format(run.sharpe.value) }}{% else %}—{% endif %}
+    </div>
+    {% if run.sharpe.ci_low is not none and run.sharpe.ci_high is not none %}
+    <div class="sub">ci [{{ '%.2f' | format(run.sharpe.ci_low) }}, {{ '%.2f' | format(run.sharpe.ci_high) }}]</div>
+    {% endif %}
+  </div>
+  <div class="metric">
+    <div class="l">Max drawdown</div>
+    <div class="v {{ 'neg' if run.max_drawdown_pct < -10 else '' }}">
+      {{ '%.2f' | format(run.max_drawdown_pct) }}%
+    </div>
+    <div class="sub">{{ run.max_drawdown_usd | money }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Trades</div>
+    <div class="v">{{ run.trade_count | int_thousands }}</div>
+    <div class="sub">
+      {{ run.total_fills | int_thousands }} fills · {{ run.cancelled_orders | int_thousands }} cancels
+    </div>
+  </div>
+</div>
+
+{# ── Equity curve (inline SVG so it's print-perfect) ──────────── #}
+{% if run.equity_curve_sample and (run.equity_curve_sample | length) >= 2 %}
+{% set _curve = run.equity_curve_sample %}
+{% set _equities = _curve | map(attribute='equity_usd') | list %}
+{% set _initial = _equities[0] %}
+{% set _final = _equities[-1] %}
+{% set _max_e = _equities | max %}
+{% set _min_e = _equities | min %}
+{% set _is_up = _final >= _initial %}
+<h2>Equity curve</h2>
+<div class="equity-curve">
+  <div class="header">
+    <span>{{ _initial | money }} → {{ _final | money }}</span>
+    <span class="ret {{ 'pos' if _is_up else 'neg' }}">
+      {{ ((_final - _initial) / _initial * 100) | pct_signed if _initial > 0 else '' }}
+    </span>
+    <span>{{ _curve | length }} samples</span>
+  </div>
+  {# Manual SVG renderer — geometry computed in template using a small #}
+  {# trick: scale equity values into a 600×140 box.  We loop the array #}
+  {# once to build the path string. #}
+  {% set _w = 600 %}
+  {% set _h = 140 %}
+  {% set _padL = 4 %}
+  {% set _padR = 4 %}
+  {% set _padT = 6 %}
+  {% set _padB = 6 %}
+  {% set _innerW = _w - _padL - _padR %}
+  {% set _innerH = _h - _padT - _padB %}
+  {% set _range = (_max_e - _min_e) if (_max_e - _min_e) > 0.000001 else 0.000001 %}
+  {% set _n = _curve | length %}
+  {% set _color = '#10b981' if _is_up else '#f43f5e' %}
+  {% set _pts = [] %}
+  {% for p in _curve %}
+    {% set _x = _padL + (loop.index0 / (_n - 1)) * _innerW %}
+    {% set _y = _padT + (1 - (p.equity_usd - _min_e) / _range) * _innerH %}
+    {% set _ = _pts.append('%s%.1f,%.1f' | format('M' if loop.first else 'L', _x, _y)) %}
+  {% endfor %}
+  {% set _baseline_y = _padT + (1 - (_initial - _min_e) / _range) * _innerH %}
+  <svg viewBox="0 0 {{ _w }} {{ _h }}" preserveAspectRatio="none"
+       width="100%" height="140" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="bt-eq-grad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="{{ _color }}" stop-opacity="0.32"/>
+        <stop offset="100%" stop-color="{{ _color }}" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    {# Baseline at initial capital #}
+    <line x1="{{ _padL }}" y1="{{ '%.1f' | format(_baseline_y) }}"
+          x2="{{ _w - _padR }}" y2="{{ '%.1f' | format(_baseline_y) }}"
+          stroke="#9ca3af" stroke-opacity="0.5" stroke-dasharray="4,3" stroke-width="0.8"/>
+    {# Filled area #}
+    <path d="{{ _pts | join(' ') }} L{{ '%.1f' | format(_padL + _innerW) }},{{ '%.1f' | format(_padT + _innerH) }} L{{ '%.1f' | format(_padL) }},{{ '%.1f' | format(_padT + _innerH) }} Z"
+          fill="url(#bt-eq-grad)"/>
+    {# Equity line #}
+    <path d="{{ _pts | join(' ') }}" fill="none" stroke="{{ _color }}"
+          stroke-width="1.5" stroke-linejoin="round"/>
+  </svg>
+</div>
+{% endif %}
+
+{# ── Risk + Tail risk side-by-side ────────────────────────────── #}
+<h2>Risk-adjusted &amp; Tail-risk metrics</h2>
+<div class="two-col">
+  <div>
+    <table class="metric-rows">
+      <tr><td class="label">Sharpe</td>
+          <td class="value">{% if run.sharpe.value is not none %}{{ '%.3f' | format(run.sharpe.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.sharpe.ci_low is not none %}ci [{{ '%.3f' | format(run.sharpe.ci_low) }}, {{ '%.3f' | format(run.sharpe.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">Sortino</td>
+          <td class="value">{% if run.sortino.value is not none %}{{ '%.3f' | format(run.sortino.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.sortino.ci_low is not none %}ci [{{ '%.3f' | format(run.sortino.ci_low) }}, {{ '%.3f' | format(run.sortino.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">Calmar</td>
+          <td class="value">{% if run.calmar.value is not none %}{{ '%.3f' | format(run.calmar.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.calmar.ci_low is not none %}ci [{{ '%.3f' | format(run.calmar.ci_low) }}, {{ '%.3f' | format(run.calmar.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">Hit rate</td>
+          <td class="value">{% if run.hit_rate.value is not none %}{{ '%.3f' | format(run.hit_rate.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.hit_rate.ci_low is not none %}ci [{{ '%.3f' | format(run.hit_rate.ci_low) }}, {{ '%.3f' | format(run.hit_rate.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">Profit factor</td>
+          <td class="value">{% if run.profit_factor.value is not none %}{{ '%.3f' | format(run.profit_factor.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.profit_factor.ci_low is not none %}ci [{{ '%.3f' | format(run.profit_factor.ci_low) }}, {{ '%.3f' | format(run.profit_factor.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">Expectancy ($)</td>
+          <td class="value">{% if run.expectancy_usd.value is not none %}{{ '%.3f' | format(run.expectancy_usd.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.expectancy_usd.ci_low is not none %}ci [{{ '%.3f' | format(run.expectancy_usd.ci_low) }}, {{ '%.3f' | format(run.expectancy_usd.ci_high) }}]{% endif %}</td></tr>
+    </table>
+  </div>
+  <div>
+    <table class="metric-rows">
+      <tr><td class="label">ES 5% (CVaR)</td>
+          <td class="value">{% if run.expected_shortfall_5pct.value is not none %}{{ '%.4f' | format(run.expected_shortfall_5pct.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.expected_shortfall_5pct.ci_low is not none %}ci [{{ '%.4f' | format(run.expected_shortfall_5pct.ci_low) }}, {{ '%.4f' | format(run.expected_shortfall_5pct.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">ES 1% (CVaR)</td>
+          <td class="value">{% if run.expected_shortfall_1pct.value is not none %}{{ '%.4f' | format(run.expected_shortfall_1pct.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.expected_shortfall_1pct.ci_low is not none %}ci [{{ '%.4f' | format(run.expected_shortfall_1pct.ci_low) }}, {{ '%.4f' | format(run.expected_shortfall_1pct.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">Tail ratio</td>
+          <td class="value">{% if run.tail_ratio.value is not none %}{{ '%.3f' | format(run.tail_ratio.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.tail_ratio.ci_low is not none %}ci [{{ '%.3f' | format(run.tail_ratio.ci_low) }}, {{ '%.3f' | format(run.tail_ratio.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label">Gain-to-pain</td>
+          <td class="value">{% if run.gain_to_pain.value is not none %}{{ '%.3f' | format(run.gain_to_pain.value) }}{% else %}—{% endif %}</td>
+          <td class="ci">{% if run.gain_to_pain.ci_low is not none %}ci [{{ '%.3f' | format(run.gain_to_pain.ci_low) }}, {{ '%.3f' | format(run.gain_to_pain.ci_high) }}]{% endif %}</td></tr>
+      <tr><td class="label" style="border-top: 1pt solid #e5e7eb; padding-top: 8pt;" colspan="3">
+        <span style="font-size: 8pt; color: #9ca3af;">
+          ES = mean of worst-tail returns. Tail ratio &lt; 1 ⇒ downside-heavy payouts.
+        </span>
+      </td></tr>
+    </table>
+  </div>
+</div>
+
+{# ── Deflated Sharpe (López de Prado) ──────────────────────────── #}
+{% if run.probabilistic_sharpe is not none %}
+<h2>Deflated Sharpe (López de Prado)</h2>
+<div class="two-col">
+  <div class="metric">
+    <div class="l">P(true SR &gt; 0)</div>
+    <div class="v {{ 'pos' if run.probabilistic_sharpe >= 0.95 else ('neg' if run.probabilistic_sharpe < 0.7 else '') }}">
+      {{ '%.1f' | format(run.probabilistic_sharpe * 100) }}%
+    </div>
+  </div>
+  <div class="metric">
+    <div class="l">P(SR &gt; SR₀ overfit)</div>
+    <div class="v {{ 'pos' if run.deflated_sharpe >= 0.95 else ('neg' if run.deflated_sharpe < 0.7 else '') }}">
+      {{ '%.1f' | format((run.deflated_sharpe or 0) * 100) }}%
+    </div>
+    <div class="sub">{{ run.n_trials or 1 }} trial(s) · SR₀ {{ '%.2f' | format(run.sr_zero or 0) }}</div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Trade economics ──────────────────────────────────────────── #}
+<h2>Trade economics</h2>
+<div class="metric-grid">
+  <div class="metric">
+    <div class="l">Avg win</div>
+    <div class="v pos">{{ run.avg_win_usd | money }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Avg loss</div>
+    <div class="v neg">{{ run.avg_loss_usd | money }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Total fees</div>
+    <div class="v">{{ run.fees_paid_usd | money }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Final equity</div>
+    <div class="v {{ 'pos' if run.net_pnl_usd >= 0 else 'neg' }}">
+      {{ run.final_equity_usd | money }}
+    </div>
+  </div>
+</div>
+
+{# ── Outcome netting + Trade-order MC (when present) ─────────── #}
+{% if run.gross_exposure_usd is not none or run.tom_realized_sharpe is not none %}
+<h2>Risk decomposition</h2>
+<table class="metric-rows">
+  {% if run.gross_exposure_usd is not none %}
+  <tr><td class="label">Gross exposure</td>
+      <td class="value">{{ run.gross_exposure_usd | money_compact }}</td>
+      <td class="ci">total contracts open</td></tr>
+  <tr><td class="label">Net exposure</td>
+      <td class="value">{{ run.net_exposure_usd | money_compact }}</td>
+      <td class="ci">after offsetting positions in same outcome group</td></tr>
+  {% if run.capital_efficiency_pct is not none %}
+  <tr><td class="label">Capital efficiency</td>
+      <td class="value">{{ '%.1f' | format(run.capital_efficiency_pct) }}%</td>
+      <td class="ci">savings vs naïve no-netting</td></tr>
+  {% endif %}
+  {% endif %}
+  {% if run.tom_realized_sharpe is not none %}
+  <tr><td class="label">Trade-order MC: realized SR</td>
+      <td class="value">{{ '%.2f' | format(run.tom_realized_sharpe) }}</td>
+      <td class="ci">vs shuffled-order distribution</td></tr>
+  {% if run.tom_position_pct is not none %}
+  <tr><td class="label">Position in distribution</td>
+      <td class="value">{{ '%.0f' | format(run.tom_position_pct) }}th pct</td>
+      <td class="ci">{{ run.tom_interpretation or '' }}</td></tr>
+  {% endif %}
+  {% endif %}
+</table>
+{% endif %}
+
+{# ── Runtime error (if any) ──────────────────────────────────── #}
+{% if run.runtime_error %}
+<h2>Runtime error</h2>
+<pre style="font-family: 'SF Mono', monospace; font-size: 8.5pt;
+            color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca;
+            border-radius: 4pt; padding: 8pt; white-space: pre-wrap;
+            word-wrap: break-word;">{{ run.runtime_error }}</pre>
+{% endif %}
+
+<div class="footnote">
+  Generated {{ generated_at | humanize_dt }} · Homerun Backtest Studio
+</div>
+
+</body>
+</html>

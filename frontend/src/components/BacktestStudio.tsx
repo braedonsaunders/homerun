@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Download,
   Flame,
   Layers3,
   LineChart as LineChartIcon,
@@ -67,6 +68,7 @@ import {
   bulkDeleteBacktestRuns,
   cancelBacktestRun,
   deleteBacktestRun,
+  downloadBacktestRunPdf,
   enqueueBacktest,
   getBacktestRun,
   getBacktestRunStatus,
@@ -230,38 +232,331 @@ function MetricRow({ label, m, tone }: { label: string; m: { value: number; ci_l
   )
 }
 
-function EquityCurveChart({ points }: { points: Array<{ timestamp?: string; equity_usd?: number }> }) {
+/**
+ * Interactive equity-curve chart.
+ *
+ * Renders a responsive SVG (full container width via viewBox) with:
+ *   - gradient area fill below the line (emerald when net up, rose
+ *     when net down)
+ *   - dashed baseline at initial capital
+ *   - dashed peak line + drawdown shading from peak to trough
+ *   - peak / trough / start / end markers with subtle outlines
+ *   - hover crosshair + tooltip showing equity, return %, and
+ *     timestamp at the cursor position
+ *   - horizontal y-axis tick labels at min / baseline / max
+ *
+ * Width is responsive (viewBox + 100% width); height is fixed at
+ * 200px for visual weight without dominating the report.  All
+ * interactivity is pure SVG + React state — no external chart lib.
+ */
+function EquityCurveChart({ points }: { points: Array<{ at?: string; timestamp?: string; equity_usd?: number }> }) {
   const { t } = useTranslation()
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+
   if (!points || points.length < 2) {
     return (
-      <div className="rounded-md border border-dashed border-border/50 bg-card/30 px-3 py-6 text-center text-xs text-muted-foreground">
+      <div className="rounded-md border border-dashed border-border/50 bg-card/30 px-3 py-8 text-center text-xs text-muted-foreground">
         {t('backtestStudio.equityCurveEmpty')}
       </div>
     )
   }
-  const w = 560
-  const h = 140
-  const xs = points.map((_, i) => (i / (points.length - 1)) * (w - 16) + 8)
+
+  // Geometry — viewBox-based so the SVG scales fluidly to the
+  // container.  Padding leaves room for tick labels on the right.
+  const W = 1000
+  const H = 240
+  const padL = 8
+  const padR = 56 // room for y-axis tick labels
+  const padT = 12
+  const padB = 28 // room for x-axis tick labels (start/end timestamps)
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+
   const equities = points.map((p) => Number(p.equity_usd ?? 0))
+  const timestamps = points.map((p) => p.at ?? p.timestamp ?? '')
   const maxE = Math.max(...equities)
   const minE = Math.min(...equities)
   const range = Math.max(1e-6, maxE - minE)
-  const ys = equities.map((e) => h - 10 - ((e - minE) / range) * (h - 24))
-  const path = xs.map((x, i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ')
-  // baseline (initial capital reference)
+
+  // Find peak (max) and trough-after-peak (max-drawdown low) indexes
+  // so we can mark them and shade the drawdown.
+  let peakIdx = 0
+  let troughIdx = 0
+  let maxDd = 0
+  let runningPeak = equities[0]
+  let runningPeakIdx = 0
+  for (let i = 0; i < equities.length; i++) {
+    if (equities[i] > runningPeak) {
+      runningPeak = equities[i]
+      runningPeakIdx = i
+    }
+    const dd = runningPeak - equities[i]
+    if (dd > maxDd) {
+      maxDd = dd
+      peakIdx = runningPeakIdx
+      troughIdx = i
+    }
+  }
+
+  const xAt = (i: number) => padL + (i / (points.length - 1)) * innerW
+  const yAt = (e: number) => padT + (1 - (e - minE) / range) * innerH
+
+  const xs = points.map((_, i) => xAt(i))
+  const ys = equities.map((e) => yAt(e))
+  const linePath = xs.map((x, i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ')
+  const areaPath = `${linePath} L${xs[xs.length - 1].toFixed(1)},${(padT + innerH).toFixed(1)} L${xs[0].toFixed(1)},${(padT + innerH).toFixed(1)} Z`
+
   const initial = equities[0]
-  const yBaseline = h - 10 - ((initial - minE) / range) * (h - 24)
   const ending = equities[equities.length - 1]
   const isUp = ending >= initial
+  const baselineY = yAt(initial)
+  const peakY = yAt(equities[peakIdx])
+  const troughY = yAt(equities[troughIdx])
+
+  // Color scheme — distinct for up/down so the operator's eye
+  // immediately registers profitability without reading numbers.
+  const lineColor = isUp ? 'rgb(16, 185, 129)' : 'rgb(244, 63, 94)' // emerald-500 / rose-500
+  const fillId = `eq-grad-${isUp ? 'up' : 'dn'}`
+
+  const fmtTs = (ts: string) => {
+    if (!ts) return ''
+    try {
+      const d = new Date(ts)
+      return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    } catch {
+      return ts
+    }
+  }
+
+  // Cursor → nearest sample index.  Pure clientX math against the
+  // SVG's bounding box so it works at any rendered size.
+  const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    const x = ((e.clientX - rect.left) / rect.width) * W
+    if (x < padL || x > W - padR) {
+      setHoverIdx(null)
+      return
+    }
+    const frac = (x - padL) / innerW
+    const idx = Math.max(0, Math.min(points.length - 1, Math.round(frac * (points.length - 1))))
+    setHoverIdx(idx)
+  }
+
+  const hoverEquity = hoverIdx !== null ? equities[hoverIdx] : null
+  const hoverPctReturn =
+    hoverIdx !== null && initial > 0
+      ? ((equities[hoverIdx] - initial) / initial) * 100
+      : null
+  const hoverX = hoverIdx !== null ? xAt(hoverIdx) : null
+  const hoverY = hoverIdx !== null ? yAt(equities[hoverIdx]) : null
+
+  // Tooltip box position — flips to left of crosshair when hovering
+  // the right half so it never gets clipped at the edge.
+  const tooltipW = 170
+  const tooltipH = 64
+  const tooltipX =
+    hoverX !== null
+      ? hoverX > W * 0.6
+        ? Math.max(padL, hoverX - tooltipW - 8)
+        : Math.min(W - padR - tooltipW, hoverX + 8)
+      : 0
+  const tooltipY =
+    hoverY !== null ? Math.max(padT + 4, Math.min(H - padB - tooltipH, hoverY - tooltipH / 2)) : 0
+
   return (
-    <div className="rounded-md border border-border/50 bg-card/40 p-2">
-      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>{`${t('backtestStudio.equityLabel')} ${fmtUsd(initial)} → ${fmtUsd(ending)}`}</span>
-        <span>{t('backtestStudio.samplesCount', { n: points.length })}</span>
+    <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
+      <div className="mb-1.5 flex items-center justify-between text-[10px]">
+        <div className="flex items-center gap-3">
+          <div>
+            <span className="text-muted-foreground">{t('backtestStudio.equityLabel')}</span>{' '}
+            <span className="font-mono tabular-nums">{fmtUsd(initial)}</span>
+            <span className="mx-1 text-muted-foreground">→</span>
+            <span className={cn(
+              'font-mono tabular-nums font-semibold',
+              isUp ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400',
+            )}>{fmtUsd(ending)}</span>
+          </div>
+          <div className={cn(
+            'rounded-sm px-1.5 py-0.5 font-mono tabular-nums text-[10px]',
+            isUp
+              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+              : 'bg-rose-500/10 text-rose-700 dark:text-rose-300',
+          )}>
+            {isUp ? '+' : ''}{fmtPct(((ending - initial) / Math.max(1e-9, initial)) * 100, 2)}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-muted-foreground">
+          {maxDd > 0 ? (
+            <span title={t('backtestStudio.equityMaxDdTip', { defaultValue: 'Maximum peak-to-trough decline' })}>
+              {t('backtestStudio.equityMaxDd', { defaultValue: 'Max DD' })}{' '}
+              <span className="font-mono tabular-nums text-rose-600 dark:text-rose-400">
+                {fmtUsd(-maxDd)} ({fmtPct((-maxDd / Math.max(1e-9, equities[peakIdx])) * 100, 1)})
+              </span>
+            </span>
+          ) : null}
+          <span>{t('backtestStudio.samplesCount', { n: points.length })}</span>
+        </div>
       </div>
-      <svg width={w} height={h} className="mt-1">
-        <line x1={8} y1={yBaseline} x2={w - 8} y2={yBaseline} stroke="rgb(120,120,120)" strokeOpacity={0.35} strokeDasharray="3,3" strokeWidth={0.5} />
-        <path d={path} fill="none" stroke={isUp ? 'hsl(150, 80%, 55%)' : 'hsl(0, 80%, 60%)'} strokeWidth={1.5} />
+
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        className="block w-full h-[240px] cursor-crosshair"
+        onMouseMove={onMouseMove}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        <defs>
+          <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={lineColor} stopOpacity="0.32" />
+            <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
+          </linearGradient>
+          <linearGradient id="eq-dd" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="rgb(244, 63, 94)" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="rgb(244, 63, 94)" stopOpacity="0.04" />
+          </linearGradient>
+        </defs>
+
+        {/* Drawdown shading — peak to trough rectangle.  Hidden when
+            no drawdown was recorded. */}
+        {maxDd > 0 ? (
+          <rect
+            x={xAt(peakIdx)}
+            y={padT}
+            width={Math.max(0, xAt(troughIdx) - xAt(peakIdx))}
+            height={innerH}
+            fill="url(#eq-dd)"
+          />
+        ) : null}
+
+        {/* Baseline (initial capital) — dashed grey */}
+        <line
+          x1={padL}
+          y1={baselineY}
+          x2={W - padR}
+          y2={baselineY}
+          stroke="rgb(120,120,120)"
+          strokeOpacity={0.35}
+          strokeDasharray="4,3"
+          strokeWidth={1}
+        />
+
+        {/* Peak line — subtle dashed line at running max */}
+        {maxDd > 0 ? (
+          <line
+            x1={padL}
+            y1={peakY}
+            x2={W - padR}
+            y2={peakY}
+            stroke="rgb(120,120,120)"
+            strokeOpacity={0.18}
+            strokeDasharray="2,3"
+            strokeWidth={0.5}
+          />
+        ) : null}
+
+        {/* Area fill under the curve */}
+        <path d={areaPath} fill={`url(#${fillId})`} />
+
+        {/* Equity line */}
+        <path
+          d={linePath}
+          fill="none"
+          stroke={lineColor}
+          strokeWidth={1.6}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+
+        {/* Start / end markers */}
+        <circle cx={xs[0]} cy={ys[0]} r={3.5} fill="rgb(120,120,120)" />
+        <circle cx={xs[xs.length - 1]} cy={ys[ys.length - 1]} r={4} fill={lineColor} stroke="white" strokeWidth={1.5} />
+
+        {/* Peak / trough markers (only meaningful when there's a real drawdown) */}
+        {maxDd > 0 ? (
+          <>
+            <circle cx={xAt(peakIdx)} cy={peakY} r={3} fill="rgb(16, 185, 129)" stroke="white" strokeWidth={1} />
+            <circle cx={xAt(troughIdx)} cy={troughY} r={3} fill="rgb(244, 63, 94)" stroke="white" strokeWidth={1} />
+          </>
+        ) : null}
+
+        {/* Y-axis tick labels — min / baseline / max */}
+        <text x={W - padR + 4} y={yAt(maxE) + 3} fontSize={9} fill="rgb(120,120,120)" fontFamily="monospace">
+          {fmtUsd(maxE)}
+        </text>
+        <text x={W - padR + 4} y={baselineY + 3} fontSize={9} fill="rgb(120,120,120)" fontFamily="monospace">
+          {fmtUsd(initial)}
+        </text>
+        <text x={W - padR + 4} y={yAt(minE) + 3} fontSize={9} fill="rgb(120,120,120)" fontFamily="monospace">
+          {fmtUsd(minE)}
+        </text>
+
+        {/* X-axis tick labels — start + end timestamps */}
+        {timestamps[0] ? (
+          <text x={xs[0]} y={H - padB + 14} fontSize={9} fill="rgb(120,120,120)" fontFamily="monospace">
+            {fmtTs(timestamps[0])}
+          </text>
+        ) : null}
+        {timestamps[timestamps.length - 1] ? (
+          <text
+            x={xs[xs.length - 1]}
+            y={H - padB + 14}
+            fontSize={9}
+            fill="rgb(120,120,120)"
+            fontFamily="monospace"
+            textAnchor="end"
+          >
+            {fmtTs(timestamps[timestamps.length - 1])}
+          </text>
+        ) : null}
+
+        {/* Hover crosshair + dot + tooltip */}
+        {hoverX !== null && hoverY !== null && hoverEquity !== null ? (
+          <>
+            <line
+              x1={hoverX}
+              y1={padT}
+              x2={hoverX}
+              y2={H - padB}
+              stroke="rgb(120,120,120)"
+              strokeOpacity={0.4}
+              strokeWidth={1}
+              strokeDasharray="3,2"
+            />
+            <circle cx={hoverX} cy={hoverY} r={5} fill={lineColor} stroke="white" strokeWidth={2} />
+            <g transform={`translate(${tooltipX}, ${tooltipY})`}>
+              <rect
+                width={tooltipW}
+                height={tooltipH}
+                rx={4}
+                fill="rgba(17, 24, 39, 0.92)"
+                stroke="rgba(255,255,255,0.2)"
+              />
+              <text x={8} y={16} fontSize={10} fill="rgb(229,231,235)" fontFamily="monospace">
+                {fmtUsd(hoverEquity)}
+              </text>
+              <text
+                x={8}
+                y={32}
+                fontSize={10}
+                fill={hoverPctReturn !== null && hoverPctReturn >= 0 ? 'rgb(16, 185, 129)' : 'rgb(244, 63, 94)'}
+                fontFamily="monospace"
+              >
+                {hoverPctReturn !== null
+                  ? `${hoverPctReturn >= 0 ? '+' : ''}${hoverPctReturn.toFixed(2)}%`
+                  : ''}
+              </text>
+              {hoverIdx !== null && timestamps[hoverIdx] ? (
+                <text x={8} y={52} fontSize={9} fill="rgb(156,163,175)" fontFamily="monospace">
+                  {fmtTs(timestamps[hoverIdx])}
+                </text>
+              ) : null}
+            </g>
+          </>
+        ) : null}
       </svg>
     </div>
   )
@@ -1919,6 +2214,45 @@ export default function BacktestStudio({
     deleteMutation.mutate(run.run_id)
   }
 
+  // PDF export — pulls the WeasyPrint-rendered report from the
+  // backend and triggers a browser download.  Errors (503 if
+  // WeasyPrint missing, 500 on render failure) surface inline so
+  // the operator sees the install hint without a blank-window UX.
+  const [pdfError, setPdfError] = useState<string | null>(null)
+  const pdfMutation = useMutation({
+    mutationFn: downloadBacktestRunPdf,
+    onMutate: () => setPdfError(null),
+    onSuccess: (blob: Blob, runId: string) => {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const slug = (activeRun?.strategy_slug || 'backtest').replace(/\s+/g, '_')
+      a.download = `backtest_${slug}_${runId.slice(0, 8)}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      // Revoke after a tick so Safari has time to start the download.
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    },
+    onError: async (err: unknown) => {
+      // The server uses application/json for error bodies but axios
+      // sees responseType: 'blob', so the error.response.data is a
+      // Blob containing JSON.  Read it as text, then parse.
+      let detail = (err instanceof Error ? err.message : 'PDF generation failed')
+      const blobBody = (err as { response?: { data?: unknown } })?.response?.data
+      if (blobBody instanceof Blob) {
+        try {
+          const text = await blobBody.text()
+          const parsed = JSON.parse(text)
+          if (parsed?.detail) detail = String(parsed.detail)
+        } catch {
+          /* leave detail as-is */
+        }
+      }
+      setPdfError(detail)
+    },
+  })
+
   const handleBulkDeleteAll = () => {
     const all = (runsQuery.data ?? []).filter(
       (r) => r.status !== 'queued' && r.status !== 'running',
@@ -2859,11 +3193,36 @@ export default function BacktestStudio({
                   </div>
                 ) : activeRun ? (
                   <>
-                    {/* (Run breadcrumb removed — the stepper's Inspect
-                        label already shows run id + return %, so a
-                        second strip with the same info was redundant.
-                        The run's started_at timestamp now lives only
-                        on the headline section's right edge below.) */}
+                    {/* Top action strip — Export PDF + delete-this-run.
+                        Lives at the top of the report so primary actions
+                        on the active run are always reachable without
+                        scrolling.  Delete here is the same handler the
+                        sidebar's per-row trash uses, just larger. */}
+                    <div className="flex items-center justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 text-[11px]"
+                        onClick={() => pdfMutation.mutate(activeRun.run_id)}
+                        disabled={pdfMutation.isPending}
+                        title={t('backtestStudio.exportPdfTip', { defaultValue: 'Render the executive PDF report for this run' })}
+                      >
+                        {pdfMutation.isPending ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Download className="h-3 w-3" />
+                        )}
+                        {t('backtestStudio.exportPdf', { defaultValue: 'Export PDF' })}
+                      </Button>
+                    </div>
+                    {pdfError ? (
+                      <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-[11px] text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                        <div className="flex items-start gap-1.5">
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                          <div className="whitespace-pre-wrap">{pdfError}</div>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {/* §1 HEADLINE */}
                     <section id="bts-section-headline" className="scroll-mt-4">
@@ -2922,42 +3281,52 @@ export default function BacktestStudio({
                       </div>
                     </section>
 
-                    {/* §3 RISK-ADJUSTED */}
-                    <section id="bts-section-risk" className="scroll-mt-4">
-                      <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
-                        <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
-                          <Activity className="h-3.5 w-3.5 text-amber-300" />
-                          {t('backtestStudio.riskAdjustedTitle')}
-                        </div>
-                        <MetricRow label={t('backtestStudio.metricSharpe')} m={exec?.sharpe} tone={sharpeTone === 'bad' ? 'bad' : sharpeTone === 'good' ? 'good' : undefined} />
-                        <MetricRow label={t('backtestStudio.metricSortino')} m={exec?.sortino} />
-                        <MetricRow label={t('backtestStudio.metricCalmar')} m={exec?.calmar} />
-                        <MetricRow label={t('backtestStudio.metricHitRate')} m={exec?.hit_rate} />
-                        <MetricRow label={t('backtestStudio.metricProfitFactor')} m={exec?.profit_factor} />
-                        <MetricRow label={t('backtestStudio.metricExpectancyUsd')} m={exec?.expectancy_usd} />
-                      </div>
-                    </section>
-
-                    {/* §4 TAIL RISK */}
-                    {(exec?.expected_shortfall_5pct || exec?.tail_ratio || exec?.gain_to_pain) ? (
-                      <section id="bts-section-tail" className="scroll-mt-4">
-                        <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
-                          <div className="mb-1 flex items-center justify-between text-xs font-medium">
-                            <span>{t('backtestStudio.tailRiskTitle')}</span>
-                            <span className="text-[10px] font-normal text-muted-foreground">{t('backtestStudio.tailRiskSub')}</span>
+                    {/* §3 + §4 RISK-ADJUSTED side-by-side with TAIL RISK
+                        These two metrics blocks are conceptually paired
+                        (risk you saw vs risk you might see) and each
+                        only has 4-6 rows — full-row each was wasteful.
+                        Side-by-side keeps them on one screen.  Anchors
+                        sit on the section wrappers so the TOC still
+                        navigates to each individually. */}
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                      <section id="bts-section-risk" className="scroll-mt-4">
+                        <div className="h-full rounded-md border border-border/50 bg-card/40 p-2.5">
+                          <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
+                            <Activity className="h-3.5 w-3.5 text-amber-600 dark:text-amber-300" />
+                            {t('backtestStudio.riskAdjustedTitle')}
                           </div>
-                          <MetricRow label={t('backtestStudio.metricEs5')} m={exec?.expected_shortfall_5pct} tone={(exec?.expected_shortfall_5pct?.value ?? 0) < -0.05 ? 'bad' : undefined} />
-                          <MetricRow label={t('backtestStudio.metricEs1')} m={exec?.expected_shortfall_1pct} />
-                          <MetricRow
-                            label={t('backtestStudio.metricTailRatio')}
-                            m={exec?.tail_ratio}
-                            tone={(exec?.tail_ratio?.value ?? 0) >= 1.5 ? 'good' : (exec?.tail_ratio?.value ?? 0) < 0.7 ? 'bad' : undefined}
-                          />
-                          <MetricRow label={t('backtestStudio.metricGainToPain')} m={exec?.gain_to_pain} tone={(exec?.gain_to_pain?.value ?? 0) >= 1.5 ? 'good' : undefined} />
-                          <div className="mt-1 text-[10px] text-muted-foreground">{t('backtestStudio.tailRiskFootnote')}</div>
+                          <MetricRow label={t('backtestStudio.metricSharpe')} m={exec?.sharpe} tone={sharpeTone === 'bad' ? 'bad' : sharpeTone === 'good' ? 'good' : undefined} />
+                          <MetricRow label={t('backtestStudio.metricSortino')} m={exec?.sortino} />
+                          <MetricRow label={t('backtestStudio.metricCalmar')} m={exec?.calmar} />
+                          <MetricRow label={t('backtestStudio.metricHitRate')} m={exec?.hit_rate} />
+                          <MetricRow label={t('backtestStudio.metricProfitFactor')} m={exec?.profit_factor} />
+                          <MetricRow label={t('backtestStudio.metricExpectancyUsd')} m={exec?.expectancy_usd} />
                         </div>
                       </section>
-                    ) : null}
+
+                      {(exec?.expected_shortfall_5pct || exec?.tail_ratio || exec?.gain_to_pain) ? (
+                        <section id="bts-section-tail" className="scroll-mt-4">
+                          <div className="h-full rounded-md border border-border/50 bg-card/40 p-2.5">
+                            <div className="mb-1 flex items-center justify-between text-xs font-medium">
+                              <span className="flex items-center gap-1.5">
+                                <TrendingDown className="h-3.5 w-3.5 text-rose-600 dark:text-rose-300" />
+                                {t('backtestStudio.tailRiskTitle')}
+                              </span>
+                              <span className="text-[10px] font-normal text-muted-foreground">{t('backtestStudio.tailRiskSub')}</span>
+                            </div>
+                            <MetricRow label={t('backtestStudio.metricEs5')} m={exec?.expected_shortfall_5pct} tone={(exec?.expected_shortfall_5pct?.value ?? 0) < -0.05 ? 'bad' : undefined} />
+                            <MetricRow label={t('backtestStudio.metricEs1')} m={exec?.expected_shortfall_1pct} />
+                            <MetricRow
+                              label={t('backtestStudio.metricTailRatio')}
+                              m={exec?.tail_ratio}
+                              tone={(exec?.tail_ratio?.value ?? 0) >= 1.5 ? 'good' : (exec?.tail_ratio?.value ?? 0) < 0.7 ? 'bad' : undefined}
+                            />
+                            <MetricRow label={t('backtestStudio.metricGainToPain')} m={exec?.gain_to_pain} tone={(exec?.gain_to_pain?.value ?? 0) >= 1.5 ? 'good' : undefined} />
+                            <div className="mt-1 text-[10px] text-muted-foreground">{t('backtestStudio.tailRiskFootnote')}</div>
+                          </div>
+                        </section>
+                      ) : null}
+                    </div>
 
                     {/* §5 DEFLATED SHARPE */}
                     {activeRun.deflated_sharpe ? (
