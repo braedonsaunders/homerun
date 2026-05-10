@@ -344,6 +344,9 @@ class ProviderSettings(BaseModel):
     reverse_engineer_target_score: Optional[float] = None
     reverse_engineer_max_cost_usd: Optional[float] = None
     reverse_engineer_max_wallet_trades: Optional[int] = None
+    # Parquet ingest root — UI-editable.  Empty/null means fall through
+    # to HOMERUN_PARQUET_ROOT env then default <repo>/data/parquet.
+    parquet_root_override: Optional[str] = None
 
 
 class ProviderSettingsUpdate(BaseModel):
@@ -354,6 +357,8 @@ class ProviderSettingsUpdate(BaseModel):
     reverse_engineer_target_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reverse_engineer_max_cost_usd: Optional[float] = Field(default=None, ge=0.0)
     reverse_engineer_max_wallet_trades: Optional[int] = Field(default=None, ge=10, le=250_000)
+    # Pass empty string to clear the override; null leaves unchanged.
+    parquet_root_override: Optional[str] = None
 
 
 @router.get("/settings", response_model=ProviderSettings)
@@ -369,6 +374,7 @@ async def get_provider_settings() -> ProviderSettings:
         reverse_engineer_target_score=getattr(row, "reverse_engineer_target_score", None),
         reverse_engineer_max_cost_usd=getattr(row, "reverse_engineer_max_cost_usd", None),
         reverse_engineer_max_wallet_trades=getattr(row, "reverse_engineer_max_wallet_trades", None),
+        parquet_root_override=getattr(row, "parquet_root_override", None),
     )
 
 
@@ -399,6 +405,14 @@ async def update_provider_settings(req: ProviderSettingsUpdate) -> dict[str, Any
             row.reverse_engineer_max_cost_usd = float(req.reverse_engineer_max_cost_usd)
         if req.reverse_engineer_max_wallet_trades is not None:
             row.reverse_engineer_max_wallet_trades = int(req.reverse_engineer_max_wallet_trades)
+        if req.parquet_root_override is not None:
+            cleaned = req.parquet_root_override.strip()
+            row.parquet_root_override = cleaned or None
+            # Push the new value into the in-process cache so the next
+            # ``parquet_root()`` call (e.g. from the Rescan button the
+            # operator is about to click) sees it without restarting.
+            from services.external_data.parquet_schema import set_parquet_root_override
+            set_parquet_root_override(cleaned or None)
 
         await session.commit()
     return {"ok": True}
@@ -438,14 +452,90 @@ def _serialize_dataset(row: Any, include_payload: bool = False) -> dict[str, Any
 @router.get("/parquet/root")
 async def get_parquet_root() -> dict[str, Any]:
     """Surface the storage root the operator should drop parquet files
-    into.  UI shows this so users know where to copy vendor data."""
-    from services.external_data.parquet_schema import parquet_root
+    into.  UI shows this so users know where to copy vendor data.
+
+    Also lazy-loads the persisted override from ``app_settings`` into
+    the in-process cache on first call (survives restarts without a
+    dedicated startup hook).
+    """
+    from services.external_data.parquet_schema import (
+        parquet_root,
+        parquet_root_source,
+        set_parquet_root_override,
+    )
+
+    # Lazy-hydrate the in-process override from DB on every GET — cheap
+    # (one indexed row read), survives backend restarts, and lets the
+    # UI immediately reflect a value set by another process / migration.
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(select(AppSettings))).scalar_one_or_none()
+    persisted = getattr(row, "parquet_root_override", None) if row is not None else None
+    set_parquet_root_override(persisted or None)
 
     root = parquet_root()
     return {
         "root": str(root),
         "exists": root.exists(),
         "env_var": "HOMERUN_PARQUET_ROOT",
+        # 'override' = UI-set in app_settings, 'env' = HOMERUN_PARQUET_ROOT,
+        # 'default' = <repo>/data/parquet
+        "source": parquet_root_source(),
+        "override": persisted or None,
+    }
+
+
+class ParquetRootUpdate(BaseModel):
+    # Pass empty string to clear the override and fall back to env/default.
+    root: Optional[str] = None
+
+
+@router.put("/parquet/root")
+async def set_parquet_root(req: ParquetRootUpdate) -> dict[str, Any]:
+    """Set / clear the UI-editable parquet ingest root.  Persists to
+    ``app_settings.parquet_root_override`` and primes the in-process
+    cache so the next Rescan picks up the new path immediately."""
+    from services.external_data.parquet_schema import (
+        parquet_root,
+        parquet_root_source,
+        set_parquet_root_override,
+    )
+
+    cleaned = (req.root or "").strip()
+    # Best-effort path validation: must be absolute, must exist OR be
+    # creatable.  We don't auto-create here — the operator should be
+    # explicit about where vendor data lives.
+    if cleaned:
+        from pathlib import Path as _P
+        try:
+            p = _P(cleaned).expanduser().resolve()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid path: {exc}") from exc
+        if not p.is_absolute():
+            raise HTTPException(status_code=400, detail="path must be absolute")
+        if not p.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"path does not exist: {p}.  Create the directory first, then save.",
+            )
+        if not p.is_dir():
+            raise HTTPException(status_code=400, detail=f"path is not a directory: {p}")
+
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(select(AppSettings))).scalar_one_or_none()
+        if row is None:
+            row = AppSettings(id="default")
+            session.add(row)
+        row.parquet_root_override = cleaned or None
+        await session.commit()
+
+    set_parquet_root_override(cleaned or None)
+    root = parquet_root()
+    return {
+        "ok": True,
+        "root": str(root),
+        "exists": root.exists(),
+        "source": parquet_root_source(),
+        "override": cleaned or None,
     }
 
 

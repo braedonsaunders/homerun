@@ -97,11 +97,53 @@ SCHEMA_VERSION = "1"
 # ── Path helpers ─────────────────────────────────────────────────────
 
 
-def parquet_root() -> Path:
-    """Storage root.  Defaults to ``<repo>/data/parquet`` so a fresh
-    install just works; operators can override via env to point at a
-    larger volume or shared mount.
+# Process-level cache of the UI-set override.  Populated by API
+# handlers (GET/PUT /providers/settings) and the parquet_root endpoint
+# so callers of ``parquet_root()`` (which is sync, called from many
+# places including the backtester hot path) don't have to await a DB
+# round-trip.  Setting to ``None`` means "fall through to env/default".
+_PARQUET_ROOT_OVERRIDE: str | None = None
+
+
+def set_parquet_root_override(value: str | None) -> None:
+    """Update the in-memory override.  Called by the settings PUT
+    handler immediately after persisting to ``app_settings`` so the
+    new path is live before the operator clicks Rescan.
+
+    Pass ``None`` (or empty string) to clear the override and fall
+    back to env / default resolution.
     """
+    global _PARQUET_ROOT_OVERRIDE
+    if value is None or not str(value).strip():
+        _PARQUET_ROOT_OVERRIDE = None
+    else:
+        _PARQUET_ROOT_OVERRIDE = str(value).strip()
+
+
+def parquet_root_source() -> str:
+    """Which layer of the resolution chain is currently winning.
+    Returned by the ``GET /providers/parquet/root`` endpoint so the
+    UI can show ``"override"`` / ``"env"`` / ``"default"`` next to
+    the path."""
+    if _PARQUET_ROOT_OVERRIDE:
+        return "override"
+    if os.environ.get("HOMERUN_PARQUET_ROOT"):
+        return "env"
+    return "default"
+
+
+def parquet_root() -> Path:
+    """Storage root.  Resolution order:
+      1. UI-set override (``app_settings.parquet_root_override``,
+         cached in-process via ``set_parquet_root_override``)
+      2. ``HOMERUN_PARQUET_ROOT`` env var
+      3. ``<repo>/data/parquet`` default for fresh installs
+
+    Sync function — called from every parquet path-builder.  The
+    in-process cache means no DB round-trip on the hot path.
+    """
+    if _PARQUET_ROOT_OVERRIDE:
+        return Path(_PARQUET_ROOT_OVERRIDE).expanduser().resolve()
     raw = os.environ.get("HOMERUN_PARQUET_ROOT")
     if raw:
         return Path(raw).expanduser().resolve()
@@ -202,6 +244,8 @@ __all__ = [
     "SCHEMA_VERSION",
     "ParquetPath",
     "parquet_root",
+    "parquet_root_source",
+    "set_parquet_root_override",
     "parquet_path_for",
     "schema_for",
 ]

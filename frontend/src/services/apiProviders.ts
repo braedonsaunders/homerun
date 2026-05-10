@@ -234,6 +234,14 @@ export interface ParquetRoot {
   root: string
   exists: boolean
   env_var: string
+  /** Which layer is providing the active path:
+   *  - 'override' = UI-set in app_settings (highest priority)
+   *  - 'env'      = HOMERUN_PARQUET_ROOT env var
+   *  - 'default'  = <repo>/data/parquet fallback
+   */
+  source: 'override' | 'env' | 'default'
+  /** Current persisted UI override, or null if none. */
+  override: string | null
 }
 
 export interface ParquetDataset {
@@ -288,5 +296,14 @@ export async function listParquetDatasets(): Promise<ParquetDataset[]> {
 
 export async function rescanParquetRoot(): Promise<ParquetRescanReport> {
   const { data } = await api.post<ParquetRescanReport>('/providers/parquet/rescan')
+  return data
+}
+
+/** Persist a new parquet ingest root (or pass empty string to clear
+ *  and fall back to env / default).  Backend validates the path is
+ *  absolute and exists; throws 400 otherwise.
+ */
+export async function setParquetRoot(root: string): Promise<ParquetRoot> {
+  const { data } = await api.put<ParquetRoot>('/providers/parquet/root', { root })
   return data
 }

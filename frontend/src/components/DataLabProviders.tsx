@@ -45,6 +45,7 @@ import {
   cancelImportJob,
   deleteProviderDataset,
   getParquetRoot,
+  setParquetRoot,
   getProviderSettings,
   importPolybacktest,
   listImportJobs,
@@ -1399,41 +1400,129 @@ function ParquetSection() {
       queryClient.invalidateQueries({ queryKey: ['providers', 'parquet', 'datasets'] })
     },
   })
+  // Edit-in-place state for the storage root.  ``draft`` is the value
+  // the operator is typing; we sync from server on first load and any
+  // time the server-side value changes.  Save / Reset buttons act on
+  // the draft.
+  const [draft, setDraft] = useState<string>('')
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const serverRoot = rootQuery.data?.root ?? ''
+  const serverOverride = rootQuery.data?.override ?? ''
+  const serverSource = rootQuery.data?.source ?? 'default'
+  useEffect(() => {
+    // Initialize the draft once the server value loads, and re-sync
+    // whenever the persisted value changes (e.g. another tab edited).
+    setDraft(serverRoot)
+  }, [serverRoot])
+
+  const saveMutation = useMutation({
+    mutationFn: async (root: string) => {
+      // Empty draft = clear override (fall back to env / default).
+      const cleared = root.trim() === '' || root.trim() === serverRoot
+      return setParquetRoot(cleared ? '' : root.trim())
+    },
+    onSuccess: (data) => {
+      setSaveError(null)
+      // Refresh root + datasets — the catalog table is keyed off the
+      // root path, so the displayed list might change immediately.
+      queryClient.setQueryData(['providers', 'parquet', 'root'], data)
+      queryClient.invalidateQueries({ queryKey: ['providers', 'parquet', 'datasets'] })
+    },
+    onError: (err: unknown) => {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        ?? (err instanceof Error ? err.message : 'failed to save')
+      setSaveError(msg)
+    },
+  })
+
   const datasets = datasetsQuery.data ?? []
   const lastReport: ParquetRescanReport | undefined = rescanMutation.data
+  const isDirty = draft.trim() !== serverRoot
+  const sourceLabel = (
+    serverSource === 'override' ? 'set in UI' :
+    serverSource === 'env' ? 'from HOMERUN_PARQUET_ROOT env' :
+    'default location'
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       {/* Storage root — operator copies files into this directory. */}
       <div className="rounded-md border border-border/40 bg-card/40 p-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <Database className="h-3.5 w-3.5 text-violet-400" />
               <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Parquet storage root
               </span>
+              <span className="text-[10px] text-muted-foreground">· {sourceLabel}</span>
             </div>
-            <p className="mt-1 break-all font-mono text-[11px] text-foreground">
-              {rootQuery.isLoading ? 'loading…' : rootQuery.data?.root ?? '—'}
-            </p>
-            <p className="mt-1 text-[10px] text-muted-foreground">
+            <div className="mt-1.5 flex items-center gap-2">
+              <Input
+                value={draft}
+                onChange={(e) => { setDraft(e.target.value); setSaveError(null) }}
+                placeholder={rootQuery.isLoading ? 'loading…' : 'C:\\homerun\\data\\parquet'}
+                disabled={rootQuery.isLoading || saveMutation.isPending}
+                className="h-7 flex-1 font-mono text-[11px]"
+                spellCheck={false}
+              />
+              <Button
+                size="sm"
+                variant="default"
+                className="h-7 gap-1 text-[10px]"
+                disabled={!isDirty || saveMutation.isPending}
+                onClick={() => saveMutation.mutate(draft)}
+              >
+                {saveMutation.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : null}
+                Save
+              </Button>
+              {isDirty && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px]"
+                  onClick={() => { setDraft(serverRoot); setSaveError(null) }}
+                  disabled={saveMutation.isPending}
+                >
+                  Reset
+                </Button>
+              )}
+              {serverOverride && !isDirty && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-[10px]"
+                  title="Clear UI override and fall back to env / default"
+                  onClick={() => { setDraft(''); saveMutation.mutate('') }}
+                  disabled={saveMutation.isPending}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
               Drop parquet files here following the layout{' '}
               <code className="text-[10px]">
                 {'{provider}/{coin}/{startISO}__{endISO}/{kind}__{token_id}.parquet'}
               </code>
-              .  Override via the <code>HOMERUN_PARQUET_ROOT</code> env var.
+              .
               {rootQuery.data && !rootQuery.data.exists && (
                 <span className="ml-1 text-amber-400">
-                  Directory does not exist yet — it will be created on first import.
+                  Directory does not exist yet — create it then save.
                 </span>
               )}
             </p>
+            {saveError && (
+              <p className="mt-1 text-[10px] text-red-400">{saveError}</p>
+            )}
           </div>
           <Button
             size="sm"
             variant="outline"
-            className="h-7 gap-1 text-[10px]"
+            className="h-7 gap-1 text-[10px] shrink-0"
             disabled={rescanMutation.isPending}
             onClick={() => rescanMutation.mutate()}
           >

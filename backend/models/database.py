@@ -1357,6 +1357,14 @@ class AppSettings(Base):
     polybacktest_api_key = Column(String, nullable=True)
     polybacktest_base_url = Column(String, nullable=True)
 
+    # Parquet ingest storage root — UI-editable so operators don't have
+    # to set HOMERUN_PARQUET_ROOT and restart.  Resolution order:
+    #   1. this column (UI-set, persists)
+    #   2. HOMERUN_PARQUET_ROOT env var (legacy / fallback)
+    #   3. <repo>/data/parquet default
+    # See services/external_data/parquet_schema.parquet_root().
+    parquet_root_override = Column(String, nullable=True)
+
     # Strategy reverse-engineer agent — UI-tunable defaults.  Null
     # values fall back to service-level constants.  The default *model*
     # for this purpose lives in ``llm_model_assignments['strategy_reverse_engineer']``

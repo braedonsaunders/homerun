@@ -94,8 +94,47 @@ def test_parquet_path_for_normalises_long_token_ids(tmp_path):
 
 def test_parquet_root_env_override(monkeypatch, tmp_path):
     """HOMERUN_PARQUET_ROOT must override the default location."""
+    # Clear any in-process UI override the previous test may have left.
+    from services.external_data.parquet_schema import set_parquet_root_override
+    set_parquet_root_override(None)
     monkeypatch.setenv("HOMERUN_PARQUET_ROOT", str(tmp_path))
     assert parquet_root() == tmp_path.resolve()
+
+
+def test_parquet_root_ui_override_beats_env(monkeypatch, tmp_path):
+    """UI-set override wins over env var (operator's most-recent
+    intent should always be authoritative).  The override value is
+    stored in-process so callers don't have to do an async DB read on
+    the hot path; the API handler is responsible for hydrating it from
+    ``app_settings`` on each GET."""
+    from services.external_data.parquet_schema import (
+        parquet_root,
+        parquet_root_source,
+        set_parquet_root_override,
+    )
+    env_dir = tmp_path / "env"
+    ui_dir = tmp_path / "ui"
+    env_dir.mkdir()
+    ui_dir.mkdir()
+
+    monkeypatch.setenv("HOMERUN_PARQUET_ROOT", str(env_dir))
+    set_parquet_root_override(str(ui_dir))
+    try:
+        assert parquet_root() == ui_dir.resolve()
+        assert parquet_root_source() == "override"
+
+        # Clearing the override falls back to env.
+        set_parquet_root_override(None)
+        assert parquet_root() == env_dir.resolve()
+        assert parquet_root_source() == "env"
+
+        # Clearing env too falls back to default.
+        monkeypatch.delenv("HOMERUN_PARQUET_ROOT", raising=False)
+        assert parquet_root_source() == "default"
+        # default path must end with data/parquet
+        assert parquet_root().parts[-2:] == ("data", "parquet")
+    finally:
+        set_parquet_root_override(None)
 
 
 # ── Writer round-trip ────────────────────────────────────────────────
