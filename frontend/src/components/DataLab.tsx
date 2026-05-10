@@ -590,6 +590,12 @@ function StorageOverviewSection() {
     refetchInterval: 60_000,
   })
   const data = storageQuery.data
+  // Show skeleton on the very first load only — once we have data,
+  // background refetches keep the previous values visible (the
+  // sweeping refresh icon in the header signals the refetch).  This
+  // is the institutional pattern: never replace populated data with
+  // a shimmer, but always show one while we have nothing.
+  const showSkeleton = storageQuery.isLoading || !data
   return (
     <div className="rounded-md border border-border/40 bg-card/30">
       <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
@@ -597,6 +603,11 @@ function StorageOverviewSection() {
           <HardDrive className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
           <span className="text-xs font-semibold">{t('dataLab.storageOverview')}</span>
           <span className="text-[10px] text-muted-foreground">{t('dataLab.storageOverviewSub')}</span>
+          {storageQuery.isFetching && data ? (
+            // Subtle "still working" indicator on background refetches
+            // that DOES NOT wipe the existing data.
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+          ) : null}
         </div>
         <Button
           size="sm"
@@ -609,22 +620,49 @@ function StorageOverviewSection() {
           {t('dataLab.refresh')}
         </Button>
       </div>
+
+      {/* KPI tiles — three across.  Skeleton mirrors the same grid +
+          tile dimensions so the layout doesn't jump when data lands. */}
       <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-3">
-        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
-          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.totalRows')}</div>
-          <div className="font-mono text-sm tabular-nums">
-            {data?.total_rows != null ? data.total_rows.toLocaleString() : '—'}
-          </div>
-        </div>
-        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
-          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.onDisk')}</div>
-          <div className="font-mono text-sm tabular-nums">{fmtBytes(data?.total_bytes)}</div>
-        </div>
-        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
-          <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.tables')}</div>
-          <div className="font-mono text-sm tabular-nums">{data?.tables.length ?? 0}</div>
-        </div>
+        {showSkeleton ? (
+          <>
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="rounded-md border border-border/30 bg-background/40 px-3 py-2"
+              >
+                <div className="h-2 w-16 animate-pulse rounded bg-muted/60" />
+                <div
+                  className="mt-2 h-5 w-24 animate-pulse rounded bg-muted/80"
+                  style={{ animationDuration: '1.6s' }}
+                />
+              </div>
+            ))}
+          </>
+        ) : (
+          <>
+            <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.totalRows')}</div>
+              <div className="font-mono text-sm tabular-nums">
+                {data?.total_rows != null ? data.total_rows.toLocaleString() : '—'}
+              </div>
+            </div>
+            <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.onDisk')}</div>
+              <div className="font-mono text-sm tabular-nums">{fmtBytes(data?.total_bytes)}</div>
+            </div>
+            <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{t('dataLab.tables')}</div>
+              <div className="font-mono text-sm tabular-nums">{data?.tables.length ?? 0}</div>
+            </div>
+          </>
+        )}
       </div>
+
+      {/* Per-table breakdown.  Skeleton renders 6 ghost rows (the
+          typical real count) so the eventual layout is predicted
+          accurately — operator immediately sees how much content is
+          coming. */}
       <div className="overflow-x-auto px-3 pb-3">
         <table className="w-full text-[11px]">
           <thead>
@@ -637,31 +675,86 @@ function StorageOverviewSection() {
             </tr>
           </thead>
           <tbody>
-            {(data?.tables ?? []).map((t) => (
-              <tr key={t.name} className="border-t border-border/20">
-                <td className="py-1 pr-3">
-                  <span className="font-medium">{t.label}</span>
-                  <span className="ml-1.5 font-mono text-[10px] text-muted-foreground/60">
-                    {t.table_name}
-                  </span>
-                </td>
-                <td className="py-1 pr-3 text-right font-mono tabular-nums">
-                  {t.row_count.toLocaleString()}
-                </td>
-                <td className="py-1 pr-3 text-right font-mono tabular-nums">
-                  {fmtBytes(t.size_bytes)}
-                </td>
-                <td className="py-1 pr-3 text-[10px] text-muted-foreground">
-                  {fmtAge(t.oldest_at)}
-                </td>
-                <td className="py-1 pr-3 text-[10px] text-muted-foreground">
-                  {fmtAge(t.newest_at)}
-                </td>
-              </tr>
-            ))}
+            {showSkeleton ? (
+              [0, 1, 2, 3, 4, 5].map((i) => (
+                <tr key={i} className="border-t border-border/20">
+                  <td className="py-1.5 pr-3">
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="h-2.5 w-32 animate-pulse rounded bg-muted/70"
+                        style={{ animationDelay: `${i * 80}ms` }}
+                      />
+                      <div
+                        className="h-2 w-20 animate-pulse rounded bg-muted/40"
+                        style={{ animationDelay: `${i * 80}ms` }}
+                      />
+                    </div>
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <div
+                      className="ml-auto h-2.5 w-16 animate-pulse rounded bg-muted/70"
+                      style={{ animationDelay: `${i * 80}ms` }}
+                    />
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <div
+                      className="ml-auto h-2.5 w-14 animate-pulse rounded bg-muted/70"
+                      style={{ animationDelay: `${i * 80}ms` }}
+                    />
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <div
+                      className="h-2 w-12 animate-pulse rounded bg-muted/50"
+                      style={{ animationDelay: `${i * 80}ms` }}
+                    />
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    <div
+                      className="h-2 w-12 animate-pulse rounded bg-muted/50"
+                      style={{ animationDelay: `${i * 80}ms` }}
+                    />
+                  </td>
+                </tr>
+              ))
+            ) : (
+              (data?.tables ?? []).map((row) => (
+                <tr key={row.name} className="border-t border-border/20">
+                  <td className="py-1 pr-3">
+                    <span className="font-medium">{row.label}</span>
+                    <span className="ml-1.5 font-mono text-[10px] text-muted-foreground/60">
+                      {row.table_name}
+                    </span>
+                  </td>
+                  <td className="py-1 pr-3 text-right font-mono tabular-nums">
+                    {row.row_count.toLocaleString()}
+                  </td>
+                  <td className="py-1 pr-3 text-right font-mono tabular-nums">
+                    {fmtBytes(row.size_bytes)}
+                  </td>
+                  <td className="py-1 pr-3 text-[10px] text-muted-foreground">
+                    {fmtAge(row.oldest_at)}
+                  </td>
+                  <td className="py-1 pr-3 text-[10px] text-muted-foreground">
+                    {fmtAge(row.newest_at)}
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
+
+      {/* Footer caption — only shown while loading, calls out that
+          the slow query is in progress so the operator doesn't think
+          the UI hung.  Disappears once data lands. */}
+      {showSkeleton ? (
+        <div className="border-t border-border/30 px-3 py-1.5 text-[10px] text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {t('dataLab.storageLoading', { defaultValue: 'Computing per-table row counts and on-disk sizes — this query inspects every dataset table and can take a few seconds.' })}
+          </span>
+        </div>
+      ) : null}
     </div>
   )
 }
