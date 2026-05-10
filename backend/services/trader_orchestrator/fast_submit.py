@@ -587,6 +587,7 @@ async def execute_fast_signal(
                     notional_usd=notional,
                     strategy_params=strategy_params,
                     risk_limits=risk_limits,
+                    trader_id=trader_id,
                 ),
                 timeout=_FAST_LEG_SUBMIT_TIMEOUT_SECONDS,
             )

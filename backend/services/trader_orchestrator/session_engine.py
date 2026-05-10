@@ -1419,6 +1419,7 @@ class ExecutionSessionEngine:
                         legs_with_notionals=legs_with_notionals,
                         strategy_params=strategy_params,
                         risk_limits=risk_limits,
+                        trader_id=trader_id,
                     )
             except asyncio.CancelledError:
                 await asyncio.shield(

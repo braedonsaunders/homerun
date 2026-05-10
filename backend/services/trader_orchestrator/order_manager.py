@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from services.daily_spend_tracker import check_daily_spend_cap, record_spend_usd
 from services.live_execution_adapter import execute_live_order
 from services.polymarket import polymarket_client
 from services.live_execution_service import live_execution_service
@@ -655,6 +656,7 @@ async def submit_execution_leg(
     notional_usd: float,
     strategy_params: dict[str, Any] | None = None,
     risk_limits: dict[str, Any] | None = None,
+    trader_id: str | None = None,
 ) -> LegSubmitResult:
     mode_key = str(mode or "").strip().lower()
     if mode_key not in {"live", "shadow"}:
@@ -867,6 +869,43 @@ async def submit_execution_leg(
             shares=None,
             notional_usd=0.0,
         )
+
+    # Pre-trade daily-spend gate (per-trader risk_limits.max_daily_spend_usd).
+    # Pure read; counter only advances after a successful fill (see post-fill
+    # record_spend_usd call below). Soft-fail when Redis is unhealthy — the
+    # gate allows the trade through but flags soft_fail=True in the payload
+    # so operators can detect un-enforceable periods.
+    _daily_spend_cap_raw = (risk_limits or {}).get("max_daily_spend_usd") if isinstance(risk_limits, dict) else None
+    if _daily_spend_cap_raw is not None and trader_id:
+        _daily_spend_status = await check_daily_spend_cap(
+            trader_id=str(trader_id),
+            proposed_notional_usd=notional,
+            cap_usd=_daily_spend_cap_raw,
+        )
+        if not _daily_spend_status["allowed"]:
+            return LegSubmitResult(
+                leg_id=leg_id,
+                status="skipped" if mode_key == "shadow" else "failed",
+                effective_price=price,
+                error_message=(
+                    f"Daily spend cap {_daily_spend_status['cap_usd']:.2f} USD would be exceeded "
+                    f"(current {_daily_spend_status['current_spend_usd']:.2f}, "
+                    f"projected {_daily_spend_status['projected_spend_usd']:.2f})."
+                ),
+                payload={
+                    "mode": mode_key,
+                    "submission": "rejected",
+                    "reason": "max_daily_spend_usd_exceeded",
+                    "max_daily_spend_usd": float(_daily_spend_status["cap_usd"]),
+                    "current_daily_spend_usd": float(_daily_spend_status["current_spend_usd"]),
+                    "projected_daily_spend_usd": float(_daily_spend_status["projected_spend_usd"]),
+                    "leg": dict(leg),
+                    "requested_notional_usd": notional,
+                    "effective_notional_usd": 0.0,
+                },
+                shares=None,
+                notional_usd=0.0,
+            )
 
     requested_shares = notional / price
     if requested_shares <= 0:
@@ -1495,6 +1534,18 @@ async def submit_execution_leg(
                 )
         except Exception:
             pass  # never raise from a fill notification
+        # Advance the per-trader daily-spend counter ONLY for real (live)
+        # fills. Shadow fills are simulated and must not consume the cap.
+        # Use actual filled notional (filled_size * effective_price) so a
+        # partial fill consumes only what actually settled. Fire-and-forget
+        # — Redis is soft-fail so this never blocks the submit return.
+        if trader_id:
+            _filled_price = float(execution.effective_price or 0.0)
+            _live_filled_notional = _live_filled * _filled_price
+            if _live_filled_notional > 0.0:
+                asyncio.create_task(
+                    record_spend_usd(str(trader_id), _live_filled_notional)
+                )
 
     # Stamp the wrapper-level total + merge our leg sub-stages INTO
     # the inner place_order ``submit_breakdown`` dict so the
@@ -1552,6 +1603,7 @@ async def submit_execution_wave(
     legs_with_notionals: list[tuple[dict[str, Any], float]],
     strategy_params: dict[str, Any] | None = None,
     risk_limits: dict[str, Any] | None = None,
+    trader_id: str | None = None,
 ) -> list[LegSubmitResult]:
     if not legs_with_notionals:
         return []
@@ -1564,6 +1616,7 @@ async def submit_execution_wave(
                 notional_usd=notional,
                 strategy_params=strategy_params,
                 risk_limits=risk_limits,
+                trader_id=trader_id,
             ),
             timeout=_LEG_SUBMIT_TIMEOUT_SECONDS,
         )
