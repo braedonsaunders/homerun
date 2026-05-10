@@ -187,8 +187,57 @@ class InboundAPIRateLimiter:
 inbound_api_rate_limiter = InboundAPIRateLimiter()
 
 
+# Auto-resume policy for shadow mode (plan 0021): a backend restart
+# is benign for shadow bots (no real money), so reapplying the
+# operator-set state across restarts removes a routine
+# click-through. Live mode and any operator-stopped/paused state
+# always fall through to the hard reset; live_preflight and
+# live_arm are nulled in both branches because those flags must
+# never survive a process restart.
 async def _reset_orchestrator_boot_state() -> None:
     async with AsyncSessionLocal() as session:
+        prior = await read_orchestrator_control(session)
+        prior_mode = str(prior.get("mode") or "shadow").strip().lower()
+        prior_enabled = bool(prior.get("is_enabled"))
+        prior_paused = bool(prior.get("is_paused"))
+
+        if prior_mode == "shadow" and prior_enabled and not prior_paused:
+            control = await update_orchestrator_control(
+                session,
+                settings_json={
+                    "live_preflight": None,
+                    "live_arm": None,
+                },
+            )
+            interval_seconds = int(
+                control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+            )
+            await write_orchestrator_snapshot(
+                session,
+                running=False,
+                enabled=True,
+                current_activity="Resumed in shadow on application startup",
+                interval_seconds=interval_seconds,
+                last_error=None,
+            )
+            runtime_status.update_orchestrator(
+                running=False,
+                enabled=True,
+                current_activity="Resumed in shadow on application startup",
+                interval_seconds=interval_seconds,
+                last_run_at=None,
+                lag_seconds=None,
+                last_error=None,
+                stats={},
+                control={
+                    "is_enabled": True,
+                    "is_paused": False,
+                    "interval_seconds": interval_seconds,
+                    "requested_run_at": control.get("requested_run_at"),
+                },
+            )
+            return
+
         control = await update_orchestrator_control(
             session,
             is_enabled=False,
@@ -202,18 +251,16 @@ async def _reset_orchestrator_boot_state() -> None:
                 "live_arm": None,
             },
         )
+        interval_seconds = int(
+            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
+        )
         await write_orchestrator_snapshot(
             session,
             running=False,
             enabled=False,
             current_activity="Paused on application startup",
-            interval_seconds=int(
-                control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
-            ),
+            interval_seconds=interval_seconds,
             last_error=None,
-        )
-        interval_seconds = int(
-            control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS
         )
         runtime_status.update_orchestrator(
             running=False,
