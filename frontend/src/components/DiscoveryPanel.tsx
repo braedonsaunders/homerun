@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Trophy,
@@ -75,12 +76,12 @@ type SortDir = 'asc' | 'desc'
 type RecommendationFilter = '' | 'copy_candidate' | 'monitor' | 'avoid'
 type TimePeriod = '24h' | '7d' | '30d' | '90d' | 'all'
 
-const TIME_PERIODS: { value: TimePeriod; label: string; description: string }[] = [
-  { value: '24h', label: '24H', description: 'last 24 hours' },
-  { value: '7d', label: '7D', description: 'last 7 days' },
-  { value: '30d', label: '1M', description: 'last 30 days' },
-  { value: '90d', label: '3M', description: 'last 90 days' },
-  { value: 'all', label: 'All', description: 'all time' },
+const TIME_PERIODS: { value: TimePeriod; labelKey: string; descriptionKey: string }[] = [
+  { value: '24h', labelKey: 'discoveryPanel.timePeriods.24h.label', descriptionKey: 'discoveryPanel.timePeriods.24h.description' },
+  { value: '7d', labelKey: 'discoveryPanel.timePeriods.7d.label', descriptionKey: 'discoveryPanel.timePeriods.7d.description' },
+  { value: '30d', labelKey: 'discoveryPanel.timePeriods.30d.label', descriptionKey: 'discoveryPanel.timePeriods.30d.description' },
+  { value: '90d', labelKey: 'discoveryPanel.timePeriods.90d.label', descriptionKey: 'discoveryPanel.timePeriods.90d.description' },
+  { value: 'all', labelKey: 'discoveryPanel.timePeriods.all.label', descriptionKey: 'discoveryPanel.timePeriods.all.description' },
 ]
 
 const RECOMMENDATION_COLORS: Record<string, string> = {
@@ -89,10 +90,10 @@ const RECOMMENDATION_COLORS: Record<string, string> = {
   avoid: 'border-rose-300 bg-rose-100 text-rose-900 dark:border-rose-400/30 dark:bg-rose-500/15 dark:text-rose-200',
 }
 
-const RECOMMENDATION_LABELS: Record<string, string> = {
-  copy_candidate: 'Copy Candidate',
-  monitor: 'Monitor',
-  avoid: 'Avoid',
+const RECOMMENDATION_LABEL_KEYS: Record<string, string> = {
+  copy_candidate: 'discoveryPanel.recommendation.copyCandidate',
+  monitor: 'discoveryPanel.recommendation.monitor',
+  avoid: 'discoveryPanel.recommendation.avoid',
 }
 
 const ITEMS_PER_PAGE = 25
@@ -212,16 +213,18 @@ function truncateAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
 
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return 'Never'
+type TFunc = (key: string, options?: Record<string, unknown>) => string
+
+function timeAgo(dateStr: string | null, t: TFunc): string {
+  if (!dateStr) return t('discoveryPanel.time.never')
   const diff = Date.now() - new Date(dateStr).getTime()
   const minutes = Math.floor(diff / 60000)
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes}m ago`
+  if (minutes < 1) return t('discoveryPanel.time.justNow')
+  if (minutes < 60) return t('discoveryPanel.time.minutesAgo', { n: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return t('discoveryPanel.time.hoursAgo', { n: hours })
   const days = Math.floor(hours / 24)
-  return `${days}d ago`
+  return t('discoveryPanel.time.daysAgo', { n: days })
 }
 
 function getAnalysisAgeHours(dateStr: string | null): number | null {
@@ -301,113 +304,46 @@ type SelectionReason = {
   detail?: string
 }
 
-const POOL_SELECTION_REASON_LIBRARY: Record<string, SelectionReason> = {
-  manual_include: {
-    code: 'manual_include',
-    label: 'Manual include override',
-    detail: 'Manually added to the pool.',
-  },
-  manual_exclude: {
-    code: 'manual_exclude',
-    label: 'Manual exclude',
-    detail: 'Manually excluded from the pool.',
-  },
-  blacklisted: {
-    code: 'blacklisted',
-    label: 'Blacklisted',
-    detail: 'Blacklisted from pool actions.',
-  },
-  tracked: {
-    code: 'tracked',
-    label: 'Tracked wallet',
-    detail: 'Included from tracked-wallet workflows.',
-  },
-  core_quality_gate: {
-    code: 'core_quality_gate',
-    label: 'Core quality tier',
-    detail: 'Passed core quality gates.',
-  },
-  rising_quality_gate: {
-    code: 'rising_quality_gate',
-    label: 'Rising quality tier',
-    detail: 'Passed rising-tier quality and activity gates.',
-  },
-  churn_guard_retained: {
-    code: 'churn_guard_retained',
-    label: 'Churn guard retention',
-    detail: 'Kept to limit hourly churn.',
-  },
-  elite_composite: {
-    code: 'elite_composite',
-    label: 'Elite composite profile',
-    detail: 'Strong quality, activity, and stability profile.',
-  },
-  active_momentum: {
-    code: 'active_momentum',
-    label: 'Active momentum',
-    detail: 'Recent trade velocity met the threshold.',
-  },
-  active_recent: {
-    code: 'active_recent',
-    label: 'Recent activity',
-    detail: 'Traded within the active window.',
-  },
-  insider_alignment: {
-    code: 'insider_alignment',
-    label: 'Insider-aligned signal',
-    detail: 'High insider score with recent activity.',
-  },
-  cluster_capped: {
-    code: 'cluster_capped',
-    label: 'Cluster-capped slot',
-    detail: 'Included within cluster concentration limits.',
-  },
-  quality_gate_pass: {
-    code: 'quality_gate_pass',
-    label: 'Quality gate pass',
-    detail: 'Passed quality eligibility checks.',
-  },
-  below_selection_cutoff: {
-    code: 'below_selection_cutoff',
-    label: 'Below pool cutoff',
-    detail: 'Did not clear current selection cutoff.',
-  },
-  tier_thresholds_not_met: {
-    code: 'tier_thresholds_not_met',
-    label: 'Tier thresholds not met',
-    detail: 'Core and rising thresholds were not met.',
-  },
-  non_positive_pnl: {
-    code: 'non_positive_pnl',
-    label: 'Non-positive PnL',
-    detail: 'Total PnL must be positive.',
-  },
-  insufficient_trades: {
-    code: 'insufficient_trades',
-    label: 'Insufficient trade sample',
-    detail: 'Needs more trade history.',
-  },
-  anomaly_too_high: {
-    code: 'anomaly_too_high',
-    label: 'Anomaly score too high',
-    detail: 'Anomaly score exceeded the limit.',
-  },
-  recommendation_blocked: {
-    code: 'recommendation_blocked',
-    label: 'Recommendation blocked',
-    detail: 'Recommendation is not pool-eligible.',
-  },
-  not_analyzed: {
-    code: 'not_analyzed',
-    label: 'Analysis missing',
-    detail: 'No completed discovery analysis yet.',
-  },
-}
+const POOL_REASON_CODES = [
+  'manual_include',
+  'manual_exclude',
+  'blacklisted',
+  'tracked',
+  'core_quality_gate',
+  'rising_quality_gate',
+  'churn_guard_retained',
+  'elite_composite',
+  'active_momentum',
+  'active_recent',
+  'insider_alignment',
+  'cluster_capped',
+  'quality_gate_pass',
+  'below_selection_cutoff',
+  'tier_thresholds_not_met',
+  'non_positive_pnl',
+  'insufficient_trades',
+  'anomaly_too_high',
+  'recommendation_blocked',
+  'not_analyzed',
+] as const
+
+type PoolReasonCode = typeof POOL_REASON_CODES[number]
+
+const POOL_SELECTION_REASON_LIBRARY: Record<string, SelectionReason> = Object.fromEntries(
+  POOL_REASON_CODES.map((code) => [
+    code,
+    {
+      code,
+      label: `discoveryPanel.poolReason.${code}.label`,
+      detail: `discoveryPanel.poolReason.${code}.detail`,
+    },
+  ])
+) as Record<PoolReasonCode, SelectionReason>
 
 const FALLBACK_REASON: SelectionReason = {
   code: 'selection_reason_unknown',
-  label: 'Selection reason unavailable',
-  detail: 'Reason metadata missing for this recompute cycle.',
+  label: 'discoveryPanel.poolReason.fallback.label',
+  detail: 'discoveryPanel.poolReason.fallback.detail',
 }
 
 const BLOCKER_REASON_CODES = new Set<string>([
@@ -435,7 +371,7 @@ function getReasonDefinition(code: string): SelectionReason | null {
 
 function formatReasonLabel(rawCode: string): string {
   const clean = rawCode.trim()
-  if (!clean) return 'Pool membership detail'
+  if (!clean) return 'discoveryPanel.poolReason.membershipDetail'
   return clean
     .replace(/_/g, ' ')
     .replace(/\b\w/g, char => char.toUpperCase())
@@ -474,7 +410,13 @@ function normalizeSelectionReason(raw: unknown): SelectionReason | null {
   return { code, label, detail }
 }
 
-function enrichMissingReasonSignals(member: PoolMember): SelectionReason[] {
+function resolveReasonText(value: string | undefined, t: TFunc): string | undefined {
+  if (!value) return undefined
+  if (value.startsWith('discoveryPanel.')) return t(value)
+  return value
+}
+
+function enrichMissingReasonSignals(member: PoolMember, t: TFunc): SelectionReason[] {
   const inferred: SelectionReason[] = []
   const seen = new Set<string>()
   const seenPush = (reason: SelectionReason | null) => {
@@ -497,7 +439,7 @@ function enrichMissingReasonSignals(member: PoolMember): SelectionReason[] {
   if (qualityScore >= 0.70 || member.total_pnl > 50_000) {
     seenPush({
       ...POOL_SELECTION_REASON_LIBRARY.quality_gate_pass,
-      detail: `Quality score ${(qualityScore * 100).toFixed(1)}% met threshold.`,
+      detail: t('discoveryPanel.poolReason.qualityScoreMet', { value: (qualityScore * 100).toFixed(1) }),
     })
   }
   if (activityScore >= 0.55 || member.trades_24h >= 6 || member.trades_1h > 0) {
@@ -506,15 +448,15 @@ function enrichMissingReasonSignals(member: PoolMember): SelectionReason[] {
   if (stabilityScore >= 0.65) {
     seenPush({
       ...POOL_SELECTION_REASON_LIBRARY.quality_gate_pass,
-      label: 'Stable risk-adjusted profile',
-      detail: 'Drawdown and returns were relatively stable.',
+      label: 'discoveryPanel.poolReason.stableRiskAdjusted.label',
+      detail: 'discoveryPanel.poolReason.stableRiskAdjusted.detail',
     })
   }
 
   return inferred
 }
 
-function getPoolSelectionReasons(member: PoolMember): SelectionReason[] {
+function getPoolSelectionReasons(member: PoolMember, t: TFunc): SelectionReason[] {
   const out: SelectionReason[] = []
   const seen = new Set<string>()
   const normalizedRaw = Array.isArray(member.selection_reasons)
@@ -537,15 +479,27 @@ function getPoolSelectionReasons(member: PoolMember): SelectionReason[] {
 
   const manualReason: SelectionReason | null =
     member.pool_flags?.manual_include
-      ? { code: 'manual_include', label: 'Manual include', detail: 'Manually included in the pool.' }
+      ? {
+          code: 'manual_include',
+          label: 'discoveryPanel.poolReason.manualIncludeShort.label',
+          detail: 'discoveryPanel.poolReason.manualIncludeShort.detail',
+        }
       : null
   const blacklistedReason: SelectionReason | null =
     member.pool_flags?.blacklisted
-      ? { code: 'blacklisted', label: 'Blacklisted', detail: 'Wallet is blacklisted from pool membership.' }
+      ? {
+          code: 'blacklisted',
+          label: 'discoveryPanel.poolReason.blacklistedShort.label',
+          detail: 'discoveryPanel.poolReason.blacklistedShort.detail',
+        }
       : null
   const trackedReason: SelectionReason | null =
     member.tracked_wallet
-      ? { code: 'tracked', label: 'Tracked wallet', detail: 'Included from tracked-wallet updates.' }
+      ? {
+          code: 'tracked',
+          label: 'discoveryPanel.poolReason.trackedShort.label',
+          detail: 'discoveryPanel.poolReason.trackedShort.detail',
+        }
       : null
 
   const fallbackReason: SelectionReason | null = (() => {
@@ -573,7 +527,7 @@ function getPoolSelectionReasons(member: PoolMember): SelectionReason[] {
     out.push(reason)
   }
 
-  for (const inferred of enrichMissingReasonSignals(member)) {
+  for (const inferred of enrichMissingReasonSignals(member, t)) {
     const key = inferred.code.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
@@ -581,15 +535,14 @@ function getPoolSelectionReasons(member: PoolMember): SelectionReason[] {
   }
 
   if (!out.length) {
-    const statusLabel = member.in_top_pool
-      ? 'Top-pool candidate'
-      : 'Pool membership pending'
     out.push({
       code: member.in_top_pool ? 'top_pool_member' : 'pool_pending',
-      label: statusLabel,
+      label: member.in_top_pool
+        ? 'discoveryPanel.poolReason.topPoolCandidate.label'
+        : 'discoveryPanel.poolReason.poolPending.label',
       detail: member.in_top_pool
         ? FALLBACK_REASON.detail
-        : 'Wallet is not currently in the active pool.',
+        : 'discoveryPanel.poolReason.poolPending.detail',
     })
   }
 
@@ -602,6 +555,7 @@ interface DiscoveryPanelProps {
 }
 
 export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: DiscoveryPanelProps) {
+  const { t } = useTranslation()
   const isPoolView = view === 'pool'
   const [sortBy, setSortBy] = useState<SortField>('rank_score')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -775,7 +729,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         address: params.address,
         label:
           params.username ||
-          `Discovered ${params.address.slice(0, 6)}...${params.address.slice(-4)}`,
+          t('discoveryPanel.discoveredLabel', { short: `${params.address.slice(0, 6)}...${params.address.slice(-4)}` }),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['wallets'] })
@@ -827,7 +781,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   const savePoolSettingsMutation = useMutation({
     mutationFn: (payload: Partial<DiscoverySettings>) => updateDiscoverySettings(payload),
     onSuccess: async () => {
-      setPoolSettingsSaveMessage({ type: 'success', text: 'Pool settings saved' })
+      setPoolSettingsSaveMessage({ type: 'success', text: t('discoveryPanel.toast.poolSettingsSaved') })
       setTimeout(() => setPoolSettingsSaveMessage(null), 3000)
       queryClient.invalidateQueries({ queryKey: ['settings-discovery'] })
       try {
@@ -842,7 +796,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       const detail = error?.response?.data?.detail
       const message = typeof detail === 'string' && detail.trim()
         ? detail.trim()
-        : 'Failed to save pool settings'
+        : t('discoveryPanel.toast.poolSettingsSaveFailed')
       setPoolSettingsSaveMessage({ type: 'error', text: message })
       setTimeout(() => setPoolSettingsSaveMessage(null), 5000)
     },
@@ -852,7 +806,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     if (!discoverySettings) {
       setPoolSettingsSaveMessage({
         type: 'error',
-        text: 'Pool settings are not loaded yet',
+        text: t('discoveryPanel.toast.poolSettingsNotLoaded'),
       })
       setTimeout(() => setPoolSettingsSaveMessage(null), 4000)
       return
@@ -887,7 +841,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
       pool_activity_reconciliation_interval_seconds: next.pool_activity_reconciliation_interval_seconds,
       pool_recompute_interval_seconds: next.pool_recompute_interval_seconds,
     })
-  }, [discoverySettings, savePoolSettingsMutation])
+  }, [discoverySettings, savePoolSettingsMutation, t])
 
   const handleSort = useCallback(
     (field: SortField) => {
@@ -913,10 +867,12 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
   }, [])
 
   const handleAddToBotSuccess = useCallback((result: AddWalletToTraderBotResult) => {
-    const action = result.created ? 'Created bot and added wallet' : 'Added wallet to existing bot'
+    const action = result.created
+      ? t('discoveryPanel.toast.createdBotAndAdded')
+      : t('discoveryPanel.toast.addedToExistingBot')
     setAddToBotMessage(`${action}: ${result.trader.name}`)
     setTimeout(() => setAddToBotMessage(null), 4500)
-  }, [])
+  }, [t])
 
   const toggleTagFilter = useCallback((tagName: string) => {
     setSelectedTags(prev =>
@@ -943,15 +899,15 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     if (!poolMembersError) return null
     const detail = (poolMembersError as any)?.response?.data?.detail
     if (typeof detail === 'string' && detail.trim()) return detail.trim()
-    return 'Failed to load pool members.'
-  }, [poolMembersError])
+    return t('discoveryPanel.error.poolMembersLoadFailed')
+  }, [poolMembersError, t])
 
   const leaderboardErrorMessage = useMemo(() => {
     if (!leaderboardError) return null
     const detail = (leaderboardError as any)?.response?.data?.detail
     if (typeof detail === 'string' && detail.trim()) return detail.trim()
-    return 'Failed to load discovery leaderboard.'
-  }, [leaderboardError])
+    return t('discoveryPanel.error.leaderboardLoadFailed')
+  }, [leaderboardError, t])
 
   const totalPages = Math.ceil(totalWallets / ITEMS_PER_PAGE)
   const poolTotalPages = Math.ceil(poolTotalMembers / ITEMS_PER_PAGE)
@@ -972,19 +928,19 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
     ? (
       <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/20">
         <RefreshCw className="w-3 h-3 mr-1 animate-spin" />
-        Worker scanning
+        {t('discoveryPanel.status.workerScanning')}
       </Badge>
     )
     : stats?.paused
       ? (
         <Badge variant="outline" className="text-xs bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
           <PauseCircle className="w-3 h-3 mr-1" />
-          Paused
+          {t('discoveryPanel.status.paused')}
         </Badge>
       )
       : (
         <Badge variant="outline" className="text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-          Auto every {stats?.interval_minutes || 60}m
+          {t('discoveryPanel.status.autoInterval', { n: stats?.interval_minutes || 60 })}
         </Badge>
       )
 
@@ -995,7 +951,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
         {stats?.current_activity && (
           <span className="max-w-[320px] truncate">{stats.current_activity}</span>
         )}
-        {stats?.last_run_at && <span>Last run: {timeAgo(stats.last_run_at)}</span>}
+        {stats?.last_run_at && <span>{t('discoveryPanel.lastRun', { time: timeAgo(stats.last_run_at, t) })}</span>}
         {isPoolView && (
           <Button
             variant="outline"
@@ -1005,7 +961,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
             disabled={!discoverySettings || savePoolSettingsMutation.isPending}
           >
             <Settings className="w-3.5 h-3.5" />
-            Settings
+            {t('discoveryPanel.settings')}
           </Button>
         )}
       </div>
@@ -1023,7 +979,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <Users className="w-5 h-5 text-cyan-500" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Top Pool</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.topPool')}</p>
                 <p className="text-lg font-semibold">
                   {formatNumber(poolStats?.pool_size || poolMemberStats?.pool_members || 0)}
                   <span className="text-[11px] text-muted-foreground ml-1">
@@ -1039,7 +995,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <Activity className="w-5 h-5 text-emerald-400" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Pool Active (1h)</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.poolActive1h')}</p>
                 <p className="text-sm font-semibold">
                   {poolStats?.active_1h ?? 0} ({(poolStats?.active_1h_pct ?? 0).toFixed(1)}%)
                 </p>
@@ -1052,7 +1008,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <TrendingUp className="w-5 h-5 text-blue-400" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Pool Active (24h)</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.poolActive24h')}</p>
                 <p className="text-sm font-semibold">
                   {poolStats?.active_24h ?? 0} ({(poolStats?.active_24h_pct ?? 0).toFixed(1)}%)
                 </p>
@@ -1065,7 +1021,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <RefreshCw className="w-5 h-5 text-amber-400" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Hourly Churn</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.hourlyChurn')}</p>
                 <p className="text-sm font-semibold">{((poolStats?.churn_rate || 0) * 100).toFixed(2)}%</p>
               </div>
             </CardContent>
@@ -1079,7 +1035,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <Users className="w-5 h-5 text-blue-500" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Discovered</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.discovered')}</p>
                 <p className="text-lg font-semibold">{formatNumber(stats?.total_discovered || 0)}</p>
               </div>
             </CardContent>
@@ -1091,7 +1047,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <TrendingUp className="w-5 h-5 text-green-500" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Profitable</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.profitable')}</p>
                 <p className="text-lg font-semibold">{formatNumber(stats?.total_profitable || 0)}</p>
               </div>
             </CardContent>
@@ -1103,7 +1059,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <Target className="w-5 h-5 text-yellow-500" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Copy Candidates</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.copyCandidates')}</p>
                 <p className="text-lg font-semibold">{formatNumber(stats?.total_copy_candidates || 0)}</p>
               </div>
             </CardContent>
@@ -1115,7 +1071,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <Trophy className="w-5 h-5 text-purple-500" />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Analyzed (last run)</p>
+                <p className="text-xs text-muted-foreground">{t('discoveryPanel.stats.analyzedLastRun')}</p>
                 <p className="text-lg font-semibold">{formatNumber(stats?.wallets_analyzed_last_run || 0)}</p>
               </div>
             </CardContent>
@@ -1129,11 +1085,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           <div className="overflow-x-auto pb-1">
             <div className="flex min-w-max items-end gap-2">
               <div className="flex w-[190px] flex-col gap-1">
-                <span className={FILTER_LABEL_CLASS}>Manual add</span>
+                <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.manualAdd')}</span>
                 <Input
                   value={manualPoolAddress}
                   onChange={e => setManualPoolAddress(e.target.value)}
-                  placeholder="0x... add to pool"
+                  placeholder={t('discoveryPanel.filter.manualAddPlaceholder')}
                   className={FILTER_INPUT_CLASS}
                 />
               </div>
@@ -1148,7 +1104,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 }}
               >
                 <UserCheck className="w-3.5 h-3.5" />
-                Add
+                {t('discoveryPanel.action.add')}
               </Button>
               <Button
                 variant="outline"
@@ -1158,32 +1114,32 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 className="h-8 text-xs gap-1.5 mb-0.5"
               >
                 {promoteTrackedMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
-                Add tracked
+                {t('discoveryPanel.action.addTracked')}
               </Button>
               <div className="h-6 w-px bg-border/70 mb-1" />
               <div className="flex w-[210px] flex-col gap-1">
-                <span className={FILTER_LABEL_CLASS}>Search</span>
+                <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.search')}</span>
                 <Input
                   value={poolSearch}
                   onChange={e => setPoolSearch(e.target.value)}
-                  placeholder="Wallet / username"
+                  placeholder={t('discoveryPanel.filter.walletUsernamePlaceholder')}
                   className={FILTER_INPUT_CLASS}
                 />
               </div>
               <div className="flex w-[116px] flex-col gap-1">
-                <span className={FILTER_LABEL_CLASS}>Tier</span>
+                <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.tier')}</span>
                 <select
                   value={poolTierFilter}
                   onChange={e => setPoolTierFilter(e.target.value as 'all' | 'core' | 'rising')}
                   className={FILTER_SELECT_CLASS}
                 >
-                  <option value="all">All tiers</option>
-                  <option value="core">Core</option>
-                  <option value="rising">Rising</option>
+                  <option value="all">{t('discoveryPanel.tier.all')}</option>
+                  <option value="core">{t('discoveryPanel.tier.core')}</option>
+                  <option value="rising">{t('discoveryPanel.tier.rising')}</option>
                 </select>
               </div>
               <div className="flex w-[98px] flex-col gap-1">
-                <span className={FILTER_LABEL_CLASS}>Min WR %</span>
+                <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.minWinRate')}</span>
                 <Input
                   type="number"
                   value={minPoolWinRate}
@@ -1195,38 +1151,38 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 />
               </div>
               <div className="flex w-[152px] flex-col gap-1">
-                <span className={FILTER_LABEL_CLASS}>Sort by</span>
+                <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.sortBy')}</span>
                 <select
                   value={poolSortBy}
                   onChange={e => setPoolSortBy(e.target.value as 'selection_score' | 'composite_score' | 'activity_score' | 'quality_score' | 'trades_24h' | 'trades_1h' | 'total_trades' | 'total_pnl' | 'win_rate' | 'last_trade_at')}
                   className={FILTER_SELECT_CLASS}
                 >
-                  <option value="selection_score">Selection</option>
-                  <option value="composite_score">Composite</option>
-                  <option value="activity_score">Activity</option>
-                  <option value="quality_score">Quality</option>
-                  <option value="win_rate">Win rate</option>
-                  <option value="total_pnl">PnL</option>
-                  <option value="total_trades">Trades</option>
-                  <option value="trades_24h">Trades 24h</option>
-                  <option value="trades_1h">Trades 1h</option>
-                  <option value="last_trade_at">Last trade</option>
+                  <option value="selection_score">{t('discoveryPanel.sort.selection')}</option>
+                  <option value="composite_score">{t('discoveryPanel.sort.composite')}</option>
+                  <option value="activity_score">{t('discoveryPanel.sort.activity')}</option>
+                  <option value="quality_score">{t('discoveryPanel.sort.quality')}</option>
+                  <option value="win_rate">{t('discoveryPanel.sort.winRate')}</option>
+                  <option value="total_pnl">{t('discoveryPanel.sort.pnl')}</option>
+                  <option value="total_trades">{t('discoveryPanel.sort.trades')}</option>
+                  <option value="trades_24h">{t('discoveryPanel.sort.trades24h')}</option>
+                  <option value="trades_1h">{t('discoveryPanel.sort.trades1h')}</option>
+                  <option value="last_trade_at">{t('discoveryPanel.sort.lastTrade')}</option>
                 </select>
               </div>
               <div className="flex w-[94px] flex-col gap-1">
-                <span className={FILTER_LABEL_CLASS}>Direction</span>
+                <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.direction')}</span>
                 <select
                   value={poolSortDir}
                   onChange={e => setPoolSortDir(e.target.value as 'asc' | 'desc')}
                   className={FILTER_SELECT_CLASS}
                 >
-                  <option value="desc">Desc</option>
-                  <option value="asc">Asc</option>
+                  <option value="desc">{t('discoveryPanel.direction.desc')}</option>
+                  <option value="asc">{t('discoveryPanel.direction.asc')}</option>
                 </select>
               </div>
               <label className="mb-0.5 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 text-[11px] text-muted-foreground">
                 <input type="checkbox" checked={includeBlacklisted} onChange={e => setIncludeBlacklisted(e.target.checked)} className="h-3.5 w-3.5" />
-                Show blacklisted
+                {t('discoveryPanel.filter.showBlacklisted')}
               </label>
               <Button
                 variant="outline"
@@ -1242,7 +1198,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                   setPoolCurrentPage(0)
                 }}
               >
-                Reset
+                {t('discoveryPanel.action.reset')}
               </Button>
             </div>
           </div>
@@ -1257,7 +1213,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
             </div>
           ) : poolMembers.length === 0 ? (
             <div className="py-6 text-sm text-muted-foreground text-center">
-              No pool members match current filters.
+              {t('discoveryPanel.empty.noPoolMembers')}
             </div>
           ) : (
             <>
@@ -1265,20 +1221,20 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <Table className="text-[11px] leading-tight">
                 <TableHeader className="sticky top-0 z-10 bg-background/85 backdrop-blur-sm">
                   <TableRow className="bg-muted/55 border-b border-border/80">
-                    <TableHead className="h-9 px-2 min-w-[210px]">Trader</TableHead>
-                    <TableHead className="h-9 px-2 min-w-[220px]">Performance</TableHead>
-                    <TableHead className="h-9 px-2 min-w-[190px]">Selection</TableHead>
-                    <TableHead className="h-9 px-2 min-w-[220px]">Why Selected</TableHead>
-                    <TableHead className="h-9 px-2 min-w-[120px]">Flags</TableHead>
-                    <TableHead className="h-9 px-2 min-w-[140px]">Actions</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[210px]">{t('discoveryPanel.column.trader')}</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[220px]">{t('discoveryPanel.column.performance')}</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[190px]">{t('discoveryPanel.column.selection')}</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[220px]">{t('discoveryPanel.column.whySelected')}</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[120px]">{t('discoveryPanel.column.flags')}</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[140px]">{t('discoveryPanel.column.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {poolMembers.map((member, rowIndex) => {
                     const flags = member.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
                     const canAnalyze = !!onAnalyzeWallet
-                    const reasons = getPoolSelectionReasons(member)
-                    const displayName = member.display_name || member.username || 'Unknown Trader'
+                    const reasons = getPoolSelectionReasons(member, t)
+                    const displayName = member.display_name || member.username || t('discoveryPanel.unknownTrader')
                     const rowHighlight = rowIndex % 2 === 0 ? 'bg-background/30' : ''
                     const selectionValue = Number(member.selection_score ?? member.composite_score ?? 0)
                     const compositeValue = Number(member.composite_score || 0)
@@ -1294,10 +1250,10 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     const stabilityScore = Number(breakdown.stability_score ?? member.stability_score ?? 0)
                     const insiderScore = Number(breakdown.insider_score ?? 0)
                     const selectionSparkline = [
-                      { key: 'quality', label: 'Quality', value: qualityScore, tone: scoreTone(qualityScore, 0.7, 0.45) },
-                      { key: 'activity', label: 'Activity', value: activityScore, tone: scoreTone(activityScore, 0.55, 0.3) },
-                      { key: 'stability', label: 'Stability', value: stabilityScore, tone: scoreTone(stabilityScore, 0.65, 0.45) },
-                      { key: 'insider', label: 'Insider', value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
+                      { key: 'quality', label: t('discoveryPanel.spark.quality'), value: qualityScore, tone: scoreTone(qualityScore, 0.7, 0.45) },
+                      { key: 'activity', label: t('discoveryPanel.spark.activity'), value: activityScore, tone: scoreTone(activityScore, 0.55, 0.3) },
+                      { key: 'stability', label: t('discoveryPanel.spark.stability'), value: stabilityScore, tone: scoreTone(stabilityScore, 0.65, 0.45) },
+                      { key: 'insider', label: t('discoveryPanel.spark.insider'), value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
                     ]
                     const hasSparkline = selectionSparkline.some((point) => point.value > 0)
                     const resolvedPositions = Math.max(
@@ -1363,7 +1319,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                             )}
                             {member.name_source === 'tracked_label' && member.tracked_label && (
                               <div className="truncate text-[10px] text-muted-foreground" title={member.tracked_label}>
-                                Label: {member.tracked_label}
+                                {t('discoveryPanel.labelPrefix', { value: member.tracked_label })}
                               </div>
                             )}
                           </div>
@@ -1374,27 +1330,31 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                             <div className="flex flex-wrap items-center gap-1">
                               <PnlDisplay value={member.total_pnl || 0} className="text-xs" />
                               <MetricPill
-                                label="WR"
+                                label={t('discoveryPanel.pill.wr')}
                                 value={formatWinRate(member.win_rate || 0)}
                                 tone={scoreTone(normalizePercentRatio(member.win_rate || 0) / 100, 0.6, 0.45)}
                               />
-                              <MetricPill label="T" value={formatNumber(member.total_trades || 0)} />
+                              <MetricPill label={t('discoveryPanel.pill.t')} value={formatNumber(member.total_trades || 0)} />
                             </div>
                             <div className="text-[9px] text-muted-foreground">
-                              {formatNumber(Number(member.wins || 0))}W/{formatNumber(Number(member.losses || 0))}L · {formatNumber(resolvedPositions)} resolved
+                              {t('discoveryPanel.winsLossesResolved', {
+                                wins: formatNumber(Number(member.wins || 0)),
+                                losses: formatNumber(Number(member.losses || 0)),
+                                resolved: formatNumber(resolvedPositions),
+                              })}
                             </div>
                             <div className="flex flex-wrap items-center gap-1">
                               <MetricPill
-                                label="24h"
+                                label={t('discoveryPanel.pill.24h')}
                                 value={formatNumber(member.trades_24h || 0)}
                                 tone={scoreTone(clamp01((member.trades_24h || 0) / 12), 0.6, 0.25)}
                               />
                               <MetricPill
-                                label="1h"
+                                label={t('discoveryPanel.pill.1h')}
                                 value={formatNumber(member.trades_1h || 0)}
                                 tone={scoreTone(clamp01((member.trades_1h || 0) / 4), 0.55, 0.25)}
                               />
-                              <span className="text-[10px] text-muted-foreground">{timeAgo(member.last_trade_at || null)}</span>
+                              <span className="text-[10px] text-muted-foreground">{timeAgo(member.last_trade_at || null, t)}</span>
                             </div>
                           </div>
                         </TableCell>
@@ -1403,19 +1363,19 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                           <div className="space-y-1">
                             <div className="flex flex-wrap items-center gap-1">
                               <MetricPill
-                                label={showCompositeScore ? 'Sel' : 'Sel/Cmp'}
+                                label={showCompositeScore ? t('discoveryPanel.pill.sel') : t('discoveryPanel.pill.selCmp')}
                                 value={formatScorePct(selectionValue)}
                                 tone={scoreTone(selectionValue, 0.7, 0.5)}
                               />
                               {showCompositeScore && (
                                 <MetricPill
-                                  label="Cmp"
+                                  label={t('discoveryPanel.pill.cmp')}
                                   value={formatScorePct(compositeValue)}
                                   tone={scoreTone(compositeValue, 0.7, 0.5)}
                                 />
                               )}
                               {percentile && (
-                                <MetricPill label="Top" value={percentile} tone="info" />
+                                <MetricPill label={t('discoveryPanel.pill.top')} value={percentile} tone="info" />
                               )}
                             </div>
                             {hasSparkline && (
@@ -1435,10 +1395,10 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                       METRIC_TONE_CLASSES[selectionReasonTone(reason.code)]
                                     )}
                                   >
-                                    {reason.label}
+                                    {resolveReasonText(reason.label, t)}
                                   </span>
                                 </TooltipTrigger>
-                                {reason.detail && <TooltipContent>{reason.detail}</TooltipContent>}
+                                {reason.detail && <TooltipContent>{resolveReasonText(reason.detail, t)}</TooltipContent>}
                               </Tooltip>
                             ))}
                             {reasons.length > 2 && (
@@ -1449,10 +1409,10 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
 
                         <TableCell className="px-2 py-1.5 align-middle">
                           <div className="flex flex-wrap gap-1">
-                            {member.tracked_wallet && <MetricPill label="Tracked" value="Yes" tone="info" mono={false} />}
-                            {flags.manual_include && <MetricPill label="Manual+" value="On" tone="good" mono={false} />}
-                            {flags.manual_exclude && <MetricPill label="Manual-" value="On" tone="warn" mono={false} />}
-                            {flags.blacklisted && <MetricPill label="BL" value="On" tone="bad" mono={false} />}
+                            {member.tracked_wallet && <MetricPill label={t('discoveryPanel.flag.tracked')} value={t('discoveryPanel.flag.yes')} tone="info" mono={false} />}
+                            {flags.manual_include && <MetricPill label={t('discoveryPanel.flag.manualPlus')} value={t('discoveryPanel.flag.on')} tone="good" mono={false} />}
+                            {flags.manual_exclude && <MetricPill label={t('discoveryPanel.flag.manualMinus')} value={t('discoveryPanel.flag.on')} tone="warn" mono={false} />}
+                            {flags.blacklisted && <MetricPill label={t('discoveryPanel.flag.bl')} value={t('discoveryPanel.flag.on')} tone="bad" mono={false} />}
                           </div>
                         </TableCell>
 
@@ -1468,7 +1428,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <Activity className="w-3.5 h-3.5" />
                                 </button>
                               </TooltipTrigger>
-                              <TooltipContent>Analyze wallet</TooltipContent>
+                              <TooltipContent>{t('discoveryPanel.tooltip.analyzeWallet')}</TooltipContent>
                             </Tooltip>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -1479,7 +1439,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <Bot className="w-3.5 h-3.5" />
                                 </button>
                               </TooltipTrigger>
-                              <TooltipContent>Add wallet to bot</TooltipContent>
+                              <TooltipContent>{t('discoveryPanel.tooltip.addWalletToBot')}</TooltipContent>
                             </Tooltip>
                             {!member.tracked_wallet ? (
                               <Tooltip>
@@ -1497,7 +1457,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <UserPlus className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Add to tracked traders</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.addToTrackedTraders')}</TooltipContent>
                               </Tooltip>
                             ) : (
                               <Tooltip>
@@ -1509,7 +1469,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <CheckCircle className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Already tracked</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.alreadyTracked')}</TooltipContent>
                               </Tooltip>
                             )}
                             {!flags.manual_include ? (
@@ -1523,7 +1483,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <UserCheck className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Manual include</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.manualInclude')}</TooltipContent>
                               </Tooltip>
                             ) : (
                               <Tooltip>
@@ -1536,7 +1496,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <UserCheck className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Clear manual include</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.clearManualInclude')}</TooltipContent>
                               </Tooltip>
                             )}
                             {!flags.manual_exclude ? (
@@ -1550,7 +1510,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <UserX className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Manual exclude</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.manualExclude')}</TooltipContent>
                               </Tooltip>
                             ) : (
                               <Tooltip>
@@ -1563,7 +1523,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <UserX className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Clear manual exclude</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.clearManualExclude')}</TooltipContent>
                               </Tooltip>
                             )}
                             {!flags.blacklisted ? (
@@ -1577,7 +1537,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <Ban className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Blacklist</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.blacklist')}</TooltipContent>
                               </Tooltip>
                             ) : (
                               <Tooltip>
@@ -1590,14 +1550,14 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                     <Ban className="w-3.5 h-3.5" />
                                   </button>
                                 </TooltipTrigger>
-                                <TooltipContent>Unblacklist</TooltipContent>
+                                <TooltipContent>{t('discoveryPanel.tooltip.unblacklist')}</TooltipContent>
                               </Tooltip>
                             )}
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <button
                                   onClick={() => {
-                                    if (window.confirm(`Delete ${member.address} from discovery/pool/tracking datasets?`)) {
+                                    if (window.confirm(t('discoveryPanel.confirm.deleteWallet', { address: member.address }))) {
                                       deletePoolWalletMutation.mutate(member.address)
                                     }
                                   }}
@@ -1607,7 +1567,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </TooltipTrigger>
-                              <TooltipContent>Delete wallet</TooltipContent>
+                              <TooltipContent>{t('discoveryPanel.tooltip.deleteWallet')}</TooltipContent>
                             </Tooltip>
                             <Tooltip>
                               <TooltipTrigger asChild>
@@ -1620,7 +1580,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                                   <ExternalLink className="w-3.5 h-3.5" />
                                 </a>
                               </TooltipTrigger>
-                              <TooltipContent>View on Polymarket</TooltipContent>
+                              <TooltipContent>{t('discoveryPanel.tooltip.viewOnPolymarket')}</TooltipContent>
                             </Tooltip>
                           </div>
                         </TableCell>
@@ -1633,7 +1593,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
               {poolTotalPages > 1 && (
                 <div className="flex items-center justify-between pt-2">
                   <div className="text-sm text-muted-foreground">
-                    Showing {poolCurrentPage * ITEMS_PER_PAGE + 1} - {Math.min((poolCurrentPage + 1) * ITEMS_PER_PAGE, poolTotalMembers)} of {poolTotalMembers}
+                    {t('discoveryPanel.pagination.showing', {
+                      from: poolCurrentPage * ITEMS_PER_PAGE + 1,
+                      to: Math.min((poolCurrentPage + 1) * ITEMS_PER_PAGE, poolTotalMembers),
+                      total: poolTotalMembers,
+                    })}
                   </div>
                   <div className="flex items-center gap-2">
                     <Button
@@ -1642,10 +1606,10 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                       onClick={() => setPoolCurrentPage(p => Math.max(0, p - 1))}
                       disabled={poolCurrentPage === 0}
                     >
-                      Previous
+                      {t('discoveryPanel.pagination.previous')}
                     </Button>
                     <span className="px-3 py-1.5 bg-card rounded-lg text-sm border border-border">
-                      Page {poolCurrentPage + 1} of {poolTotalPages}
+                      {t('discoveryPanel.pagination.pageOf', { current: poolCurrentPage + 1, total: poolTotalPages })}
                     </span>
                     <Button
                       variant="outline"
@@ -1653,7 +1617,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                       onClick={() => setPoolCurrentPage(p => p + 1)}
                       disabled={poolCurrentPage >= poolTotalPages - 1}
                     >
-                      Next
+                      {t('discoveryPanel.pagination.next')}
                     </Button>
                   </div>
                 </div>
@@ -1710,7 +1674,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
             <div className="overflow-x-auto pb-1">
               <div className="flex min-w-max items-end gap-2">
                 <div className="flex flex-col gap-1">
-                  <span className={FILTER_LABEL_CLASS}>Period</span>
+                  <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.period')}</span>
                   <div className="flex h-8 items-center bg-muted/50 rounded-lg p-0.5 border border-border">
                     {TIME_PERIODS.map(tp => (
                       <button
@@ -1723,7 +1687,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                             : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                         )}
                       >
-                        {tp.label}
+                        {t(tp.labelKey)}
                       </button>
                     ))}
                   </div>
@@ -1732,7 +1696,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <div className="h-6 w-px bg-border/70 mb-1" />
 
                 <div className="flex w-[350px] flex-col gap-1">
-                  <span className={FILTER_LABEL_CLASS}>Tags</span>
+                  <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.tags')}</span>
                   <div className="flex gap-1">
                     <div className="relative flex-1 min-w-[170px]">
                       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -1740,7 +1704,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                         type="text"
                         value={tagSearch}
                         onChange={e => setTagSearch(e.target.value)}
-                        placeholder="Filter tags"
+                        placeholder={t('discoveryPanel.filter.tagSearchPlaceholder')}
                         className={cn(FILTER_INPUT_CLASS, 'pl-8')}
                       />
                     </div>
@@ -1757,7 +1721,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                       className={cn(FILTER_SELECT_CLASS, 'w-[170px]')}
                     >
                       <option value="">
-                        {tagsLoading ? 'Loading...' : filteredTags.length === 0 ? 'No matching tags' : 'Select tag'}
+                        {tagsLoading
+                          ? t('discoveryPanel.filter.loading')
+                          : filteredTags.length === 0
+                            ? t('discoveryPanel.filter.noMatchingTags')
+                            : t('discoveryPanel.filter.selectTag')}
                       </option>
                       {filteredTags.map((tag) => (
                         <option key={tag.name} value={tag.name}>
@@ -1770,7 +1738,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
 
                 <div className="flex w-[112px] flex-col gap-1">
                   <span className={FILTER_LABEL_CLASS}>
-                    {useResolvedWinRateFilter ? 'Min resolved' : 'Min trades'}
+                    {useResolvedWinRateFilter ? t('discoveryPanel.filter.minResolved') : t('discoveryPanel.filter.minTrades')}
                   </span>
                   <Input
                     type="number"
@@ -1782,7 +1750,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 </div>
 
                 <div className="flex w-[120px] flex-col gap-1">
-                  <span className={FILTER_LABEL_CLASS}>Min pnl ($)</span>
+                  <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.minPnl')}</span>
                   <Input
                     type="number"
                     value={minPnl}
@@ -1793,40 +1761,40 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 </div>
 
                 <div className="flex w-[148px] flex-col gap-1">
-                  <span className={FILTER_LABEL_CLASS}>Recommendation</span>
+                  <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.recommendation')}</span>
                   <select
                     value={recommendationFilter}
                     onChange={e => setRecommendationFilter(e.target.value as RecommendationFilter)}
                     className={FILTER_SELECT_CLASS}
                   >
-                    <option value="">All</option>
-                    <option value="copy_candidate">Copy candidate</option>
-                    <option value="monitor">Monitor</option>
-                    <option value="avoid">Avoid</option>
+                    <option value="">{t('discoveryPanel.recommendationFilter.all')}</option>
+                    <option value="copy_candidate">{t('discoveryPanel.recommendationFilter.copyCandidate')}</option>
+                    <option value="monitor">{t('discoveryPanel.recommendationFilter.monitor')}</option>
+                    <option value="avoid">{t('discoveryPanel.recommendationFilter.avoid')}</option>
                   </select>
                 </div>
 
                 <div className="flex w-[140px] flex-col gap-1">
-                  <span className={FILTER_LABEL_CLASS}>Category</span>
+                  <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.category')}</span>
                   <select
                     value={marketCategoryFilter}
                     onChange={e => setMarketCategoryFilter(e.target.value as 'all' | 'politics' | 'sports' | 'crypto' | 'culture' | 'economics' | 'tech' | 'finance' | 'weather')}
                     className={FILTER_SELECT_CLASS}
                   >
-                    <option value="all">All</option>
-                    <option value="politics">Politics</option>
-                    <option value="sports">Sports</option>
-                    <option value="crypto">Crypto</option>
-                    <option value="culture">Culture</option>
-                    <option value="economics">Economics</option>
-                    <option value="tech">Tech</option>
-                    <option value="finance">Finance</option>
-                    <option value="weather">Weather</option>
+                    <option value="all">{t('discoveryPanel.category.all')}</option>
+                    <option value="politics">{t('discoveryPanel.category.politics')}</option>
+                    <option value="sports">{t('discoveryPanel.category.sports')}</option>
+                    <option value="crypto">{t('discoveryPanel.category.crypto')}</option>
+                    <option value="culture">{t('discoveryPanel.category.culture')}</option>
+                    <option value="economics">{t('discoveryPanel.category.economics')}</option>
+                    <option value="tech">{t('discoveryPanel.category.tech')}</option>
+                    <option value="finance">{t('discoveryPanel.category.finance')}</option>
+                    <option value="weather">{t('discoveryPanel.category.weather')}</option>
                   </select>
                 </div>
 
                 <div className="flex w-[138px] flex-col gap-1">
-                  <span className={FILTER_LABEL_CLASS}>Min insider</span>
+                  <span className={FILTER_LABEL_CLASS}>{t('discoveryPanel.filter.minInsider')}</span>
                   <Input
                     type="number"
                     value={minInsiderScore}
@@ -1854,7 +1822,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     setMinInsiderScore(0)
                   }}
                 >
-                  Reset
+                  {t('discoveryPanel.action.reset')}
                 </Button>
               </div>
             </div>
@@ -1868,7 +1836,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                       key={name}
                       onClick={() => toggleTagFilter(name)}
                       className="inline-flex h-6 items-center gap-1 rounded-full border border-border bg-background/70 px-2 text-[10px] text-muted-foreground hover:text-foreground"
-                      title="Remove tag filter"
+                      title={t('discoveryPanel.removeTagFilter')}
                     >
                       <span className="max-w-[120px] truncate">{tagMeta?.display_name || name}</span>
                       <X className="w-3 h-3" />
@@ -1888,7 +1856,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           <Card className="border-border">
             <CardContent className="flex flex-col items-center justify-center py-12">
               <AlertTriangle className="w-12 h-12 text-rose-400/70 mb-4" />
-              <p className="text-rose-300">Failed to load leaderboard</p>
+              <p className="text-rose-300">{t('discoveryPanel.error.leaderboardLoad')}</p>
               <p className="text-sm text-muted-foreground mt-1">{leaderboardErrorMessage}</p>
             </CardContent>
           </Card>
@@ -1896,9 +1864,9 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
           <Card className="border-border">
             <CardContent className="flex flex-col items-center justify-center py-12">
               <Trophy className="w-12 h-12 text-muted-foreground/30 mb-4" />
-              <p className="text-muted-foreground">No wallets found</p>
+              <p className="text-muted-foreground">{t('discoveryPanel.empty.noWalletsFound')}</p>
               <p className="text-sm text-muted-foreground/70 mt-1">
-                Try clearing filters or wait for the discovery worker to complete the next run
+                {t('discoveryPanel.empty.noWalletsHint')}
               </p>
             </CardContent>
           </Card>
@@ -1909,12 +1877,12 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                 <Table className="text-[11px] leading-tight">
                 <TableHeader className="sticky top-0 z-10 bg-background/85 backdrop-blur-sm">
                   <TableRow className="bg-muted/55 border-b border-border/80">
-                    <TableHead className="h-9 px-2 w-[46px]">#</TableHead>
-                    <TableHead className="h-9 px-2 min-w-[230px]">Trader</TableHead>
+                    <TableHead className="h-9 px-2 w-[46px]">{t('discoveryPanel.column.rank')}</TableHead>
+                    <TableHead className="h-9 px-2 min-w-[230px]">{t('discoveryPanel.column.trader')}</TableHead>
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="composite_score"
-                        label="Composite"
+                        label={t('discoveryPanel.column.composite')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1923,7 +1891,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="activity_score"
-                        label="Activity"
+                        label={t('discoveryPanel.column.activity')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1932,7 +1900,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="quality_score"
-                        label="Quality"
+                        label={t('discoveryPanel.column.quality')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1941,7 +1909,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="insider_score"
-                        label="Insider"
+                        label={t('discoveryPanel.column.insider')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1950,7 +1918,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="last_trade_at"
-                        label="Last Trade"
+                        label={t('discoveryPanel.column.lastTrade')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1959,7 +1927,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="total_pnl"
-                        label={isWindowActive ? 'Period PnL' : 'PnL'}
+                        label={isWindowActive ? t('discoveryPanel.column.periodPnl') : t('discoveryPanel.column.pnl')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1968,7 +1936,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="win_rate"
-                        label={isWindowActive ? 'Period WR' : 'Resolved WR'}
+                        label={isWindowActive ? t('discoveryPanel.column.periodWr') : t('discoveryPanel.column.resolvedWr')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1977,7 +1945,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="sharpe_ratio"
-                        label={isWindowActive ? 'Period Sharpe' : 'Sharpe'}
+                        label={isWindowActive ? t('discoveryPanel.column.periodSharpe') : t('discoveryPanel.column.sharpe')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1986,7 +1954,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="total_trades"
-                        label={isWindowActive ? 'Period Trades' : 'Trades'}
+                        label={isWindowActive ? t('discoveryPanel.column.periodTrades') : t('discoveryPanel.column.trades')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
@@ -1995,14 +1963,14 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     <TableHead className="h-9 px-2">
                       <SortButton
                         field="avg_roi"
-                        label={isWindowActive ? 'Period ROI' : 'Avg ROI'}
+                        label={isWindowActive ? t('discoveryPanel.column.periodRoi') : t('discoveryPanel.column.avgRoi')}
                         currentSort={sortBy}
                         currentDir={sortDir}
                         onSort={handleSort}
                       />
                     </TableHead>
-                    <TableHead className="h-9 px-2">Rec.</TableHead>
-                    <TableHead className="h-9 px-2">Actions</TableHead>
+                    <TableHead className="h-9 px-2">{t('discoveryPanel.column.rec')}</TableHead>
+                    <TableHead className="h-9 px-2">{t('discoveryPanel.column.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -2031,7 +1999,11 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
             {totalPages > 1 && (
               <div className="flex items-center justify-between pt-2">
                 <div className="text-sm text-muted-foreground">
-                  Showing {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalWallets)} of {totalWallets}
+                  {t('discoveryPanel.pagination.showing', {
+                    from: currentPage * ITEMS_PER_PAGE + 1,
+                    to: Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalWallets),
+                    total: totalWallets,
+                  })}
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -2040,10 +2012,10 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
                     disabled={currentPage === 0}
                   >
-                    Previous
+                    {t('discoveryPanel.pagination.previous')}
                   </Button>
                   <span className="px-3 py-1.5 bg-card rounded-lg text-sm border border-border">
-                    Page {currentPage + 1} of {totalPages}
+                    {t('discoveryPanel.pagination.pageOf', { current: currentPage + 1, total: totalPages })}
                   </span>
                   <Button
                     variant="outline"
@@ -2051,7 +2023,7 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                     onClick={() => setCurrentPage(p => p + 1)}
                     disabled={currentPage >= totalPages - 1}
                   >
-                    Next
+                    {t('discoveryPanel.pagination.next')}
                   </Button>
                 </div>
               </div>
@@ -2117,6 +2089,7 @@ function WalletAddress({
   copiedAddress: string | null
   onCopy: (address: string) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className="min-w-0">
       {username && (
@@ -2142,7 +2115,7 @@ function WalletAddress({
             </button>
           </TooltipTrigger>
           <TooltipContent>
-            {copiedAddress === address ? 'Copied!' : 'Copy address'}
+            {copiedAddress === address ? t('discoveryPanel.copied') : t('discoveryPanel.copyAddress')}
           </TooltipContent>
         </Tooltip>
       </div>
@@ -2166,10 +2139,12 @@ function PnlDisplay({ value, className }: { value: number; className?: string })
 }
 
 function RecommendationBadge({ recommendation }: { recommendation: string }) {
+  const { t } = useTranslation()
   const colorClass =
     RECOMMENDATION_COLORS[recommendation] ||
     'border-slate-300 bg-slate-100 text-slate-800 dark:bg-muted-foreground/15 dark:text-muted-foreground dark:border-muted-foreground/20'
-  const label = RECOMMENDATION_LABELS[recommendation] || recommendation
+  const labelKey = RECOMMENDATION_LABEL_KEYS[recommendation]
+  const label = labelKey ? t(labelKey) : recommendation
   return (
     <Badge variant="outline" className={cn('text-[10px] font-semibold', colorClass)}>
       {label}
@@ -2200,6 +2175,7 @@ function LeaderboardRow({
   isTracking?: boolean
   useWindowMetrics?: boolean
 }) {
+  const { t } = useTranslation()
   const rankDisplay = useWindowMetrics ? rank : wallet.rank_position || rank
   const resolvedPositions = getResolvedPositionsCount(wallet)
   const analysisAgeHours = getAnalysisAgeHours(wallet.last_analyzed_at || null)
@@ -2238,9 +2214,9 @@ function LeaderboardRow({
     (wallet.insider_confidence || 0) >= 0.60 &&
     (wallet.insider_sample_size || 0) >= 25
   const metricSparkline = [
-    { key: 'composite', label: 'Composite', value: composite, tone: scoreTone(composite, 0.7, 0.5) },
-    { key: 'quality', label: 'Quality', value: quality, tone: scoreTone(quality, 0.6, 0.4) },
-    { key: 'activity', label: 'Activity', value: activity, tone: scoreTone(activity, 0.6, 0.3) },
+    { key: 'composite', label: t('discoveryPanel.spark.composite'), value: composite, tone: scoreTone(composite, 0.7, 0.5) },
+    { key: 'quality', label: t('discoveryPanel.spark.quality'), value: quality, tone: scoreTone(quality, 0.6, 0.4) },
+    { key: 'activity', label: t('discoveryPanel.spark.activity'), value: activity, tone: scoreTone(activity, 0.6, 0.3) },
   ]
 
   return (
@@ -2295,13 +2271,13 @@ function LeaderboardRow({
               )}
               </>
             ) : (
-              <span className="text-[9px] text-muted-foreground/60">no tags</span>
+              <span className="text-[9px] text-muted-foreground/60">{t('discoveryPanel.noTags')}</span>
             )}
             {!useWindowMetrics && hasLowResolvedSample && (
-              <span className="text-[9px] text-amber-300">low sample</span>
+              <span className="text-[9px] text-amber-300">{t('discoveryPanel.lowSample')}</span>
             )}
             {isAnalysisStale && (
-              <span className="text-[9px] text-amber-300">stale {timeAgo(wallet.last_analyzed_at || null)}</span>
+              <span className="text-[9px] text-amber-300">{t('discoveryPanel.stale', { time: timeAgo(wallet.last_analyzed_at || null, t) })}</span>
             )}
           </div>
           <ScoreSparkline points={metricSparkline} className="shrink-0" />
@@ -2310,7 +2286,7 @@ function LeaderboardRow({
 
       <TableCell className="px-2 py-1.5 align-middle">
         <MetricPill
-          label="C"
+          label={t('discoveryPanel.pill.c')}
           value={formatScorePct(composite)}
           tone={scoreTone(composite, 0.7, 0.5)}
           className="min-w-[72px] justify-between"
@@ -2319,7 +2295,7 @@ function LeaderboardRow({
 
       <TableCell className="px-2 py-1.5 align-middle">
         <MetricPill
-          label="A"
+          label={t('discoveryPanel.pill.a')}
           value={formatScorePct(activity)}
           tone={scoreTone(activity, 0.6, 0.3)}
           className="min-w-[72px] justify-between"
@@ -2328,7 +2304,7 @@ function LeaderboardRow({
 
       <TableCell className="px-2 py-1.5 align-middle">
         <MetricPill
-          label="Q"
+          label={t('discoveryPanel.pill.q')}
           value={formatScorePct(quality)}
           tone={scoreTone(quality, 0.6, 0.4)}
           className="min-w-[72px] justify-between"
@@ -2340,7 +2316,7 @@ function LeaderboardRow({
           <div className="space-y-0.5">
             <div className="flex items-center gap-1">
               <MetricPill
-                label="I"
+                label={t('discoveryPanel.pill.i')}
                 value={insiderScore.toFixed(2)}
                 tone={inverseScoreTone(insiderScore, 0.72, 0.6)}
                 className="min-w-[64px] justify-between"
@@ -2348,7 +2324,7 @@ function LeaderboardRow({
               {insiderSuspicious && (
                 <Badge variant="outline" className="text-[9px] bg-rose-500/10 text-rose-300 border-rose-500/20">
                   <AlertTriangle className="w-2.5 h-2.5 mr-0.5" />
-                  Suspect
+                  {t('discoveryPanel.suspect')}
                 </Badge>
               )}
             </div>
@@ -2363,7 +2339,7 @@ function LeaderboardRow({
 
       <TableCell className="px-2 py-1.5 align-middle">
         <span className="text-[10px] text-muted-foreground">
-          {timeAgo(wallet.last_trade_at || null)}
+          {timeAgo(wallet.last_trade_at || null, t)}
         </span>
       </TableCell>
 
@@ -2372,7 +2348,7 @@ function LeaderboardRow({
           <PnlDisplay value={pnl} className="text-xs" />
           {useWindowMetrics && wallet.period_pnl != null && (
             <div className="text-[9px] text-muted-foreground/65 mt-0.5">
-              All: ${formatPnl(wallet.total_pnl)}
+              {t('discoveryPanel.allPnl', { value: `$${formatPnl(wallet.total_pnl)}` })}
             </div>
           )}
         </div>
@@ -2381,7 +2357,7 @@ function LeaderboardRow({
       <TableCell className="px-2 py-1.5 align-middle">
         <div className="space-y-0.5">
           <MetricPill
-            label="WR"
+            label={t('discoveryPanel.pill.wr')}
             value={formatWinRate(winRate)}
             tone={winRatePct >= 60 ? 'good' : winRatePct >= 45 ? 'warn' : 'bad'}
             className="min-w-[78px] justify-between"
@@ -2389,11 +2365,15 @@ function LeaderboardRow({
           {!useWindowMetrics && (
             <>
               <span className="text-[9px] text-muted-foreground">
-                {wallet.wins}W/{wallet.losses}L · {formatNumber(resolvedPositions)} resolved
+                {t('discoveryPanel.winsLossesResolved', {
+                  wins: wallet.wins,
+                  losses: wallet.losses,
+                  resolved: formatNumber(resolvedPositions),
+                })}
               </span>
               {Number(wallet.total_trades ?? 0) > resolvedPositions && (
                 <span className="text-[9px] text-muted-foreground/70">
-                  {formatNumber(wallet.total_trades ?? 0)} total trades
+                  {t('discoveryPanel.totalTrades', { n: formatNumber(wallet.total_trades ?? 0) })}
                 </span>
               )}
             </>
@@ -2404,7 +2384,7 @@ function LeaderboardRow({
       <TableCell className="px-2 py-1.5 align-middle">
         {sharpe != null ? (
           <MetricPill
-            label="S"
+            label={t('discoveryPanel.pill.s')}
             value={sharpe.toFixed(2)}
             tone={sharpe >= 2 ? 'good' : sharpe >= 1 ? 'warn' : 'neutral'}
             className="min-w-[64px] justify-between"
@@ -2416,10 +2396,10 @@ function LeaderboardRow({
 
       <TableCell className="px-2 py-1.5 align-middle">
         <div className="space-y-0.5">
-          <MetricPill label="T" value={formatNumber(trades)} className="min-w-[70px] justify-between" />
+          <MetricPill label={t('discoveryPanel.pill.t')} value={formatNumber(trades)} className="min-w-[70px] justify-between" />
           {!useWindowMetrics && (
             <span className="text-[9px] text-muted-foreground/75">
-              {(wallet.trades_per_day ?? 0).toFixed(1)}/d
+              {t('discoveryPanel.tradesPerDay', { n: (wallet.trades_per_day ?? 0).toFixed(1) })}
             </span>
           )}
         </div>
@@ -2427,7 +2407,7 @@ function LeaderboardRow({
 
       <TableCell className="px-2 py-1.5 align-middle">
         <MetricPill
-          label="ROI"
+          label={t('discoveryPanel.pill.roi')}
           value={`${roi >= 0 ? '+' : ''}${formatPercent(roi)}`}
           tone={roi >= 0 ? 'good' : 'bad'}
           className="min-w-[84px] justify-between"
@@ -2450,7 +2430,7 @@ function LeaderboardRow({
                   <Activity className="w-3.5 h-3.5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Analyze wallet</TooltipContent>
+              <TooltipContent>{t('discoveryPanel.tooltip.analyzeWallet')}</TooltipContent>
             </Tooltip>
           )}
           {onTrack && (
@@ -2464,7 +2444,7 @@ function LeaderboardRow({
                   <UserPlus className="w-3.5 h-3.5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Track wallet</TooltipContent>
+              <TooltipContent>{t('discoveryPanel.tooltip.trackWallet')}</TooltipContent>
             </Tooltip>
           )}
           {onAddToBot && (
@@ -2477,7 +2457,7 @@ function LeaderboardRow({
                   <Bot className="w-3.5 h-3.5" />
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Add wallet to bot</TooltipContent>
+              <TooltipContent>{t('discoveryPanel.tooltip.addWalletToBot')}</TooltipContent>
             </Tooltip>
           )}
           <Tooltip>
@@ -2491,7 +2471,7 @@ function LeaderboardRow({
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
             </TooltipTrigger>
-            <TooltipContent>View on Polymarket</TooltipContent>
+            <TooltipContent>{t('discoveryPanel.tooltip.viewOnPolymarket')}</TooltipContent>
           </Tooltip>
         </div>
       </TableCell>

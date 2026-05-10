@@ -3879,5 +3879,406 @@
       "groupNameRequired": "El nombre del grupo es obligatorio",
       "walletRequired": "Añade al menos una dirección de wallet"
     }
+  },
+  "discoveryPanel": {
+    "settings": "Configuración",
+    "lastRun": "Última ejecución: {{time}}",
+    "unknownTrader": "Trader desconocido",
+    "labelPrefix": "Etiqueta: {{value}}",
+    "discoveredLabel": "Descubierto {{short}}",
+    "copied": "¡Copiado!",
+    "copyAddress": "Copiar dirección",
+    "noTags": "sin etiquetas",
+    "lowSample": "muestra baja",
+    "stale": "obsoleto {{time}}",
+    "suspect": "Sospechoso",
+    "allPnl": "Todo: {{value}}",
+    "totalTrades": "{{n}} operaciones totales",
+    "tradesPerDay": "{{n}}/d",
+    "winsLossesResolved": "{{wins}}V/{{losses}}D · {{resolved}} resueltas",
+    "removeTagFilter": "Quitar filtro de etiqueta",
+    "status": {
+      "workerScanning": "Worker escaneando",
+      "paused": "Pausado",
+      "autoInterval": "Auto cada {{n}}m"
+    },
+    "stats": {
+      "topPool": "Pool principal",
+      "poolActive1h": "Pool activo (1h)",
+      "poolActive24h": "Pool activo (24h)",
+      "hourlyChurn": "Rotación por hora",
+      "discovered": "Descubiertos",
+      "profitable": "Rentables",
+      "copyCandidates": "Candidatos a copiar",
+      "analyzedLastRun": "Analizados (última ejecución)"
+    },
+    "filter": {
+      "manualAdd": "Agregar manual",
+      "manualAddPlaceholder": "0x... agregar al pool",
+      "search": "Buscar",
+      "walletUsernamePlaceholder": "Wallet / nombre",
+      "tier": "Nivel",
+      "minWinRate": "Tasa de victoria mín. %",
+      "sortBy": "Ordenar por",
+      "direction": "Dirección",
+      "showBlacklisted": "Mostrar en lista negra",
+      "period": "Periodo",
+      "tags": "Etiquetas",
+      "tagSearchPlaceholder": "Filtrar etiquetas",
+      "loading": "Cargando...",
+      "noMatchingTags": "Sin etiquetas coincidentes",
+      "selectTag": "Seleccionar etiqueta",
+      "minResolved": "Resueltas mín.",
+      "minTrades": "Operaciones mín.",
+      "minPnl": "PnL mínimo ($)",
+      "recommendation": "Recomendación",
+      "category": "Categoría",
+      "minInsider": "Insider mín."
+    },
+    "tier": {
+      "all": "Todos los niveles",
+      "core": "Core",
+      "rising": "Emergente"
+    },
+    "direction": {
+      "asc": "Asc",
+      "desc": "Desc"
+    },
+    "sort": {
+      "selection": "Selección",
+      "composite": "Compuesto",
+      "activity": "Actividad",
+      "quality": "Calidad",
+      "winRate": "Tasa victoria",
+      "pnl": "PnL",
+      "trades": "Operaciones",
+      "trades24h": "Operaciones 24h",
+      "trades1h": "Operaciones 1h",
+      "lastTrade": "Última operación"
+    },
+    "recommendationFilter": {
+      "all": "Todos",
+      "copyCandidate": "Candidato a copiar",
+      "monitor": "Monitorear",
+      "avoid": "Evitar"
+    },
+    "category": {
+      "all": "Todas",
+      "politics": "Política",
+      "sports": "Deportes",
+      "crypto": "Cripto",
+      "culture": "Cultura",
+      "economics": "Economía",
+      "tech": "Tecnología",
+      "finance": "Finanzas",
+      "weather": "Clima"
+    },
+    "recommendation": {
+      "copyCandidate": "Candidato a copiar",
+      "monitor": "Monitorear",
+      "avoid": "Evitar"
+    },
+    "timePeriods": {
+      "24h": { "label": "24H", "description": "últimas 24 horas" },
+      "7d": { "label": "7D", "description": "últimos 7 días" },
+      "30d": { "label": "1M", "description": "últimos 30 días" },
+      "90d": { "label": "3M", "description": "últimos 90 días" },
+      "all": { "label": "Todo", "description": "siempre" }
+    },
+    "action": {
+      "add": "Agregar",
+      "addTracked": "Agregar rastreados",
+      "reset": "Restablecer"
+    },
+    "column": {
+      "rank": "#",
+      "trader": "Trader",
+      "performance": "Rendimiento",
+      "selection": "Selección",
+      "whySelected": "Por qué seleccionado",
+      "flags": "Marcas",
+      "actions": "Acciones",
+      "composite": "Compuesto",
+      "activity": "Actividad",
+      "quality": "Calidad",
+      "insider": "Insider",
+      "lastTrade": "Última operación",
+      "pnl": "PnL",
+      "periodPnl": "PnL del periodo",
+      "resolvedWr": "WR resuelto",
+      "periodWr": "WR del periodo",
+      "sharpe": "Sharpe",
+      "periodSharpe": "Sharpe del periodo",
+      "trades": "Operaciones",
+      "periodTrades": "Operaciones del periodo",
+      "avgRoi": "ROI medio",
+      "periodRoi": "ROI del periodo",
+      "rec": "Rec."
+    },
+    "empty": {
+      "noPoolMembers": "Ningún miembro del pool coincide con los filtros actuales.",
+      "noWalletsFound": "No se encontraron wallets",
+      "noWalletsHint": "Prueba a quitar filtros o espera a que el worker complete la próxima ejecución"
+    },
+    "error": {
+      "poolMembersLoadFailed": "Error al cargar miembros del pool.",
+      "leaderboardLoadFailed": "Error al cargar la clasificación.",
+      "leaderboardLoad": "Error al cargar la clasificación"
+    },
+    "toast": {
+      "poolSettingsSaved": "Configuración del pool guardada",
+      "poolSettingsSaveFailed": "Error al guardar la configuración del pool",
+      "poolSettingsNotLoaded": "La configuración del pool aún no está cargada",
+      "createdBotAndAdded": "Bot creado y wallet agregada",
+      "addedToExistingBot": "Wallet añadida al bot existente"
+    },
+    "pill": {
+      "wr": "WR",
+      "t": "T",
+      "24h": "24h",
+      "1h": "1h",
+      "sel": "Sel",
+      "selCmp": "Sel/Cmp",
+      "cmp": "Cmp",
+      "top": "Top",
+      "c": "C",
+      "a": "A",
+      "q": "Q",
+      "i": "I",
+      "s": "S",
+      "roi": "ROI"
+    },
+    "spark": {
+      "quality": "Calidad",
+      "activity": "Actividad",
+      "stability": "Estabilidad",
+      "insider": "Insider",
+      "composite": "Compuesto"
+    },
+    "flag": {
+      "tracked": "Rastreado",
+      "yes": "Sí",
+      "manualPlus": "Manual+",
+      "manualMinus": "Manual-",
+      "bl": "BL",
+      "on": "On"
+    },
+    "tooltip": {
+      "analyzeWallet": "Analizar wallet",
+      "addWalletToBot": "Agregar wallet al bot",
+      "addToTrackedTraders": "Agregar a traders rastreados",
+      "alreadyTracked": "Ya rastreado",
+      "manualInclude": "Inclusión manual",
+      "clearManualInclude": "Quitar inclusión manual",
+      "manualExclude": "Exclusión manual",
+      "clearManualExclude": "Quitar exclusión manual",
+      "blacklist": "Lista negra",
+      "unblacklist": "Quitar de lista negra",
+      "deleteWallet": "Eliminar wallet",
+      "viewOnPolymarket": "Ver en Polymarket",
+      "trackWallet": "Rastrear wallet"
+    },
+    "confirm": {
+      "deleteWallet": "¿Eliminar {{address}} de los conjuntos de discovery/pool/rastreo?"
+    },
+    "pagination": {
+      "showing": "Mostrando {{from}} - {{to}} de {{total}}",
+      "previous": "Anterior",
+      "next": "Siguiente",
+      "pageOf": "Página {{current}} de {{total}}"
+    },
+    "time": {
+      "never": "Nunca",
+      "justNow": "Ahora mismo",
+      "minutesAgo": "hace {{n}}m",
+      "hoursAgo": "hace {{n}}h",
+      "daysAgo": "hace {{n}}d"
+    },
+    "poolReason": {
+      "membershipDetail": "Detalle de membresía del pool",
+      "qualityScoreMet": "Puntuación de calidad {{value}}% alcanzó el umbral.",
+      "manual_include": { "label": "Anulación de inclusión manual", "detail": "Añadido manualmente al pool." },
+      "manual_exclude": { "label": "Exclusión manual", "detail": "Excluido manualmente del pool." },
+      "blacklisted": { "label": "En lista negra", "detail": "En lista negra de acciones del pool." },
+      "tracked": { "label": "Wallet rastreada", "detail": "Incluido desde flujos de wallets rastreadas." },
+      "core_quality_gate": { "label": "Nivel de calidad core", "detail": "Pasó las puertas de calidad core." },
+      "rising_quality_gate": { "label": "Nivel de calidad emergente", "detail": "Pasó las puertas de calidad y actividad de nivel emergente." },
+      "churn_guard_retained": { "label": "Retención por guard de rotación", "detail": "Mantenido para limitar la rotación por hora." },
+      "elite_composite": { "label": "Perfil compuesto élite", "detail": "Perfil sólido de calidad, actividad y estabilidad." },
+      "active_momentum": { "label": "Momentum activo", "detail": "La velocidad de operaciones reciente alcanzó el umbral." },
+      "active_recent": { "label": "Actividad reciente", "detail": "Operó dentro de la ventana activa." },
+      "insider_alignment": { "label": "Señal alineada con insider", "detail": "Alta puntuación insider con actividad reciente." },
+      "cluster_capped": { "label": "Slot limitado por clúster", "detail": "Incluido dentro de los límites de concentración del clúster." },
+      "quality_gate_pass": { "label": "Aprobó la puerta de calidad", "detail": "Pasó las verificaciones de elegibilidad de calidad." },
+      "below_selection_cutoff": { "label": "Por debajo del corte del pool", "detail": "No superó el corte de selección actual." },
+      "tier_thresholds_not_met": { "label": "Umbrales de nivel no alcanzados", "detail": "No se alcanzaron los umbrales core ni emergentes." },
+      "non_positive_pnl": { "label": "PnL no positivo", "detail": "El PnL total debe ser positivo." },
+      "insufficient_trades": { "label": "Muestra de operaciones insuficiente", "detail": "Necesita más historial de operaciones." },
+      "anomaly_too_high": { "label": "Puntuación de anomalía demasiado alta", "detail": "La puntuación de anomalía superó el límite." },
+      "recommendation_blocked": { "label": "Recomendación bloqueada", "detail": "La recomendación no es elegible para el pool." },
+      "not_analyzed": { "label": "Análisis ausente", "detail": "Aún no hay análisis de discovery completado." },
+      "fallback": { "label": "Razón de selección no disponible", "detail": "Faltan metadatos de razón para este ciclo de recálculo." },
+      "stableRiskAdjusted": { "label": "Perfil estable ajustado al riesgo", "detail": "Drawdown y rendimientos relativamente estables." },
+      "manualIncludeShort": { "label": "Inclusión manual", "detail": "Incluido manualmente en el pool." },
+      "blacklistedShort": { "label": "En lista negra", "detail": "La wallet está en lista negra del pool." },
+      "trackedShort": { "label": "Wallet rastreada", "detail": "Incluido por actualizaciones de wallets rastreadas." },
+      "topPoolCandidate": { "label": "Candidato al top del pool" },
+      "poolPending": { "label": "Membresía del pool pendiente", "detail": "La wallet no está actualmente en el pool activo." }
+    }
+  },
+  "tradersNetworkPanel": {
+    "title": "Red de Traders",
+    "searchPlaceholder": "Buscar wallet, nombre, grupo",
+    "loading": "Construyendo red de traders...",
+    "applyingAction": "Aplicando acción de red...",
+    "trackedTraderGroup": "Grupo de traders rastreados",
+    "graphCohortName": "Cohorte del grafo {{suffix}}",
+    "cohortName": "Cohorte {{id}}",
+    "groupDescription": "Generado desde la red de traders alrededor de {{seed}}",
+    "badge": {
+      "walletsRatio": "{{visible}} / {{total}} wallets",
+      "edges": "{{n}} aristas",
+      "trackedFocus": "Enfoque rastreado ({{n}})",
+      "selectedFocus": "Enfoque seleccionado ({{n}})",
+      "cohortFocus": "Enfoque cohorte ({{n}})",
+      "allGraph": "Grafo completo"
+    },
+    "focus": {
+      "all": "Todo",
+      "tracked": "Rastreados",
+      "selected": "Seleccionado",
+      "cohort": "Cohorte"
+    },
+    "kind": {
+      "wallet": "wallet",
+      "group": "grupo",
+      "cluster": "clúster"
+    },
+    "action": {
+      "fit": "Ajustar",
+      "refresh": "Actualizar",
+      "focus": "Enfocar",
+      "clear": "Limpiar",
+      "analyze": "Analizar",
+      "track": "Rastrear",
+      "untrack": "Dejar de rastrear",
+      "profile": "Perfil",
+      "groupNeighbors": "Agrupar vecinos",
+      "center": "Centrar",
+      "focusHood": "Enfocar vecindario",
+      "add": "Agregar",
+      "trackMembers": "Rastrear miembros",
+      "deleteGroup": "Eliminar grupo",
+      "focusGroupMembers": "Enfocar miembros del grupo",
+      "focusFirstMatch": "Enfocar primera coincidencia",
+      "group": "Grupo"
+    },
+    "empty": {
+      "tracked": "No hay nodos del vecindario rastreado para los filtros actuales.",
+      "selected": "No hay nodos del vecindario seleccionado para los filtros actuales.",
+      "default": "No hay nodos para los filtros actuales."
+    },
+    "dock": {
+      "collapse": "Colapsar panel",
+      "expand": "Expandir panel",
+      "ctx": "CTX",
+      "flt": "FLT",
+      "sts": "STS",
+      "contextTitle": "Contexto seleccionado",
+      "filtersTitle": "Filtros del grafo",
+      "statsTitle": "Estadísticas del grafo",
+      "nodes": "nodos",
+      "contextHeader": "Contexto seleccionado",
+      "filtersHeader": "Controles de filtro",
+      "statsHeader": "Métricas de red",
+      "kindDetail": "Detalle de {{kind}}",
+      "selectNode": "Selecciona un nodo",
+      "filtersSubtitle": "Despeja y enfoca el grafo",
+      "statsSubtitle": "Salud del grafo en vivo",
+      "selectNodeHint": "Selecciona un nodo en el grafo. Doble clic en cualquier nodo para centrarlo.",
+      "addToExistingGroup": "Agregar wallet a un grupo existente",
+      "selectGroup": "Seleccionar grupo",
+      "topNeighbors": "Mejores vecinos conectados ({{n}})"
+    },
+    "stat": {
+      "pnl": "PnL {{value}}",
+      "wr": "WR {{value}}",
+      "deg": "Grado {{value}}",
+      "members": "Miembros {{value}}",
+      "linked": "Enlazados {{value}}"
+    },
+    "filters": {
+      "search": "Buscar",
+      "searchPlaceholder": "Wallet, nombre, grupo",
+      "minCoTradeScore": "Puntuación mín. de arista co-trade",
+      "maxEdgesPerWallet": "Máx. aristas por wallet",
+      "neighborhoodDepth": "Profundidad del vecindario",
+      "nodeBudget": "Presupuesto de nodos",
+      "focusVisibility": "Enfoque y visibilidad",
+      "seedsInView": "Semillas a la vista: rastreadas {{tracked}}, seleccionadas {{selected}}, cohorte {{cohort}}",
+      "showGroups": "Mostrar grupos ({{n}} visibles)",
+      "showClusters": "Mostrar clústeres ({{n}} visibles)",
+      "hideIsolated": "Ocultar wallets aisladas"
+    },
+    "stats": {
+      "visibleWallets": "Wallets visibles",
+      "visibleEdges": "Aristas visibles",
+      "totalWallets": "Wallets totales",
+      "rawCoTrade": "Aristas co-trade brutas",
+      "focusState": "Estado de enfoque",
+      "modeLabel": "Modo:",
+      "seedCountLabel": "Cantidad de semillas:",
+      "neighborhoodDepthLabel": "Profundidad del vecindario:",
+      "cohortIntelligence": "Inteligencia de cohortes",
+      "cohortLabel": "Cohorte {{id}}",
+      "walletsCount": "{{n}} wallets",
+      "cohortScoreMarkets": "Puntuación {{score}} | Mercados compartidos {{markets}}",
+      "noCohorts": "No hay cohortes visibles para los filtros actuales.",
+      "systemSummary": "Resumen del sistema",
+      "componentsLabel": "Componentes:",
+      "densityLabel": "Densidad:",
+      "generatedLabel": "Generado:",
+      "notAvailable": "n/d",
+      "nodeLegend": "Leyenda de nodos"
+    },
+    "legend": {
+      "trackedWallet": "Wallet rastreada",
+      "poolWallet": "Wallet del pool",
+      "groupNode": "Nodo de grupo",
+      "clusterNode": "Nodo de clúster"
+    },
+    "message": {
+      "trackedFocusEmpty": "El vecindario rastreado necesita wallets rastreadas en el grafo actual.",
+      "selectedFocusEmpty": "Selecciona primero una wallet o entidad y luego cambia al enfoque del vecindario seleccionado.",
+      "cohortFocusEmpty": "Selecciona una cohorte desde insights primero y luego activa el enfoque por cohorte.",
+      "noNodeMatches": "Ningún nodo coincide con esa búsqueda en los filtros actuales",
+      "needTwoWallets": "Se necesitan al menos dos wallets conectadas para crear un grupo",
+      "noTrackedInGraph": "Aún no hay wallets rastreadas en esta instantánea del grafo.",
+      "pickCohortFirst": "Elige una cohorte visible en insights antes de cambiar al enfoque por cohorte.",
+      "selectFirst": "Selecciona una wallet, grupo o clúster para enfocar su vecindario.",
+      "selectFirstShort": "Selecciona primero una wallet, grupo o clúster.",
+      "showingFull": "Mostrando grafo completo ({{n}} wallets)",
+      "focusedTracked": "Vecindario rastreado enfocado ({{seeds}} semillas, profundidad {{depth}})",
+      "focusedCohort": "Vecindario de cohorte enfocado ({{seeds}} semillas, profundidad {{depth}})",
+      "focusedSelected": "Vecindario seleccionado enfocado ({{seeds}} semillas, profundidad {{depth}})",
+      "focusedCohortShort": "Cohorte enfocada {{id}} ({{count}} wallets, profundidad {{depth}})",
+      "needTwoCohortWallets": "Se necesitan al menos dos wallets visibles en la cohorte para crear un grupo."
+    },
+    "toast": {
+      "walletAdded": "Wallet añadida al rastreo",
+      "walletRemoved": "Wallet eliminada del rastreo",
+      "walletAddedToGroup": "Wallet añadida al grupo",
+      "groupCreated": "Grupo creado ({{members}} miembros, {{tracked}} rastreados)",
+      "trackingRefreshed": "Rastreo actualizado para {{n}} miembros del grupo",
+      "groupDeleted": "Grupo eliminado"
+    },
+    "error": {
+      "trackWallet": "Error al rastrear la wallet",
+      "untrackWallet": "Error al dejar de rastrear la wallet",
+      "addWalletToGroup": "Error al añadir wallet al grupo",
+      "createGroup": "Error al crear el grupo",
+      "trackGroupMembers": "Error al rastrear miembros del grupo",
+      "deleteGroup": "Error al eliminar el grupo"
+    }
   }
 }

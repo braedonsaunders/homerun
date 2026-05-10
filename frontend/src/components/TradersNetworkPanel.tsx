@@ -7,6 +7,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
@@ -689,6 +690,7 @@ function edgePath(source: PositionedNode, target: PositionedNode, curveSeed: str
 }
 
 export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWallet }: TradersNetworkPanelProps) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -755,14 +757,14 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
 
   const trackWalletMutation = useMutation({
     mutationFn: ({ address, label }: { address: string; label?: string }) => addWallet(address, label),
-    onSuccess: () => invalidateNetworkData('Wallet added to tracking'),
-    onError: (error) => setActionMessage(extractErrorMessage(error, 'Failed to track wallet')),
+    onSuccess: () => invalidateNetworkData(t('tradersNetworkPanel.toast.walletAdded')),
+    onError: (error) => setActionMessage(extractErrorMessage(error, t('tradersNetworkPanel.error.trackWallet'))),
   })
 
   const untrackWalletMutation = useMutation({
     mutationFn: (address: string) => removeWallet(address),
-    onSuccess: () => invalidateNetworkData('Wallet removed from tracking'),
-    onError: (error) => setActionMessage(extractErrorMessage(error, 'Failed to untrack wallet')),
+    onSuccess: () => invalidateNetworkData(t('tradersNetworkPanel.toast.walletRemoved')),
+    onError: (error) => setActionMessage(extractErrorMessage(error, t('tradersNetworkPanel.error.untrackWallet'))),
   })
 
   const addToGroupMutation = useMutation({
@@ -772,15 +774,15 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
         add_to_tracking: true,
         source_label: 'network_graph',
       }),
-    onSuccess: () => invalidateNetworkData('Wallet added to group'),
-    onError: (error) => setActionMessage(extractErrorMessage(error, 'Failed to add wallet to group')),
+    onSuccess: () => invalidateNetworkData(t('tradersNetworkPanel.toast.walletAddedToGroup')),
+    onError: (error) => setActionMessage(extractErrorMessage(error, t('tradersNetworkPanel.error.addWalletToGroup'))),
   })
 
   const createGroupMutation = useMutation({
     mutationFn: (payload: { name: string; walletAddresses: string[]; seedAddress: string }) =>
       discoveryApi.createTraderGroup({
         name: payload.name,
-        description: `Generated from trader network around ${shortAddress(payload.seedAddress)}`,
+        description: t('tradersNetworkPanel.groupDescription', { seed: shortAddress(payload.seedAddress) }),
         wallet_addresses: payload.walletAddresses,
         source_type: 'manual',
         criteria: {
@@ -792,24 +794,27 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
       }),
     onSuccess: (result) =>
       invalidateNetworkData(
-        `Group created (${result.group?.member_count ?? 0} members, ${result.tracked_members} tracked)`,
+        t('tradersNetworkPanel.toast.groupCreated', {
+          members: result.group?.member_count ?? 0,
+          tracked: result.tracked_members,
+        }),
       ),
-    onError: (error) => setActionMessage(extractErrorMessage(error, 'Failed to create group')),
+    onError: (error) => setActionMessage(extractErrorMessage(error, t('tradersNetworkPanel.error.createGroup'))),
   })
 
   const trackGroupMutation = useMutation({
     mutationFn: (groupId: string) => discoveryApi.trackTraderGroupMembers(groupId),
-    onSuccess: (result) => invalidateNetworkData(`Tracking refreshed for ${result.tracked_members} group members`),
-    onError: (error) => setActionMessage(extractErrorMessage(error, 'Failed to track group members')),
+    onSuccess: (result) => invalidateNetworkData(t('tradersNetworkPanel.toast.trackingRefreshed', { n: result.tracked_members })),
+    onError: (error) => setActionMessage(extractErrorMessage(error, t('tradersNetworkPanel.error.trackGroupMembers'))),
   })
 
   const deleteGroupMutation = useMutation({
     mutationFn: (groupId: string) => discoveryApi.deleteTraderGroup(groupId),
     onSuccess: () => {
       setSelectedNodeId(null)
-      invalidateNetworkData('Group deleted')
+      invalidateNetworkData(t('tradersNetworkPanel.toast.groupDeleted'))
     },
-    onError: (error) => setActionMessage(extractErrorMessage(error, 'Failed to delete group')),
+    onError: (error) => setActionMessage(extractErrorMessage(error, t('tradersNetworkPanel.error.deleteGroup'))),
   })
 
   useEffect(() => {
@@ -1005,13 +1010,13 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
 
   useEffect(() => {
     if (focusMode === 'tracked' && filteredGraph.trackedSeedCount === 0) {
-      setActionMessage('Tracked neighborhood needs tracked wallets in the current graph.')
+      setActionMessage(t('tradersNetworkPanel.message.trackedFocusEmpty'))
     }
     if (focusMode === 'selected' && filteredGraph.selectedSeedCount === 0) {
-      setActionMessage('Select a wallet or entity first, then switch to selected neighborhood focus.')
+      setActionMessage(t('tradersNetworkPanel.message.selectedFocusEmpty'))
     }
     if (focusMode === 'cohort' && filteredGraph.cohortSeedCount === 0) {
-      setActionMessage('Select a cohort from insights first, then enable cohort focus.')
+      setActionMessage(t('tradersNetworkPanel.message.cohortFocusEmpty'))
     }
   }, [
     filteredGraph.cohortSeedCount,
@@ -1019,6 +1024,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
     filteredGraph.trackedSeedCount,
     focusMode,
     setActionMessage,
+    t,
   ])
 
   const searchMatches = useMemo(() => {
@@ -1207,14 +1213,14 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
     if (!search.trim()) return
     const first = positionedNodes.find((node) => searchMatches.has(String(node.id)))
     if (!first) {
-      setActionMessage('No node matches that query in current filters')
+      setActionMessage(t('tradersNetworkPanel.message.noNodeMatches'))
       return
     }
     setSelectedNodeId(String(first.id))
     centerOnNode(first)
     setDockTab('context')
     setDockExpanded(true)
-  }, [centerOnNode, positionedNodes, search, searchMatches, setActionMessage])
+  }, [centerOnNode, positionedNodes, search, searchMatches, setActionMessage, t])
 
   const onWheel = useCallback((event: ReactWheelEvent<SVGSVGElement>) => {
     event.preventDefault()
@@ -1260,16 +1266,16 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
     const addresses = [String(selectedNode.address).toLowerCase(), ...neighborhoodWallets]
     const deduped = Array.from(new Set(addresses.filter((address) => Boolean(address))))
     if (deduped.length < 2) {
-      setActionMessage('Need at least two connected wallets to create a group')
+      setActionMessage(t('tradersNetworkPanel.message.needTwoWallets'))
       return
     }
-    const name = `Graph Cohort ${shortAddress(selectedNode.address).replace('...', '')}`
+    const name = t('tradersNetworkPanel.graphCohortName', { suffix: shortAddress(selectedNode.address).replace('...', '') })
     createGroupMutation.mutate({
       name,
       walletAddresses: deduped,
       seedAddress: selectedNode.address,
     })
-  }, [createGroupMutation, neighborhoodWallets, selectedNode, setActionMessage])
+  }, [createGroupMutation, neighborhoodWallets, selectedNode, setActionMessage, t])
 
   const activeMutations =
     trackWalletMutation.isPending
@@ -1286,32 +1292,32 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
 
   const activateFocusMode = useCallback((nextMode: FocusMode) => {
     if (nextMode === 'tracked' && filteredGraph.trackedSeedCount === 0) {
-      setActionMessage('No tracked wallets are in this graph snapshot yet.')
+      setActionMessage(t('tradersNetworkPanel.message.noTrackedInGraph'))
       return
     }
     if (nextMode === 'cohort' && (!selectedCohortId || filteredGraph.cohortSeedCount === 0)) {
-      setActionMessage('Pick a visible cohort in insights before switching to cohort focus.')
+      setActionMessage(t('tradersNetworkPanel.message.pickCohortFirst'))
       return
     }
     if (nextMode === 'selected' && !selectedFocusReady) {
-      setActionMessage('Select a wallet, group, or cluster to focus its neighborhood.')
+      setActionMessage(t('tradersNetworkPanel.message.selectFirst'))
       return
     }
 
     setFocusMode(nextMode)
     if (nextMode === 'all') {
-      setActionMessage(`Showing full graph (${filteredGraph.counts.walletsTotal} wallets)`)
+      setActionMessage(t('tradersNetworkPanel.message.showingFull', { n: filteredGraph.counts.walletsTotal }))
       return
     }
     if (nextMode === 'tracked') {
-      setActionMessage(`Focused tracked neighborhood (${filteredGraph.trackedSeedCount} seeds, depth ${neighborhoodDepth})`)
+      setActionMessage(t('tradersNetworkPanel.message.focusedTracked', { seeds: filteredGraph.trackedSeedCount, depth: neighborhoodDepth }))
       return
     }
     if (nextMode === 'cohort') {
-      setActionMessage(`Focused cohort neighborhood (${filteredGraph.cohortSeedCount} seeds, depth ${neighborhoodDepth})`)
+      setActionMessage(t('tradersNetworkPanel.message.focusedCohort', { seeds: filteredGraph.cohortSeedCount, depth: neighborhoodDepth }))
       return
     }
-    setActionMessage(`Focused selected neighborhood (${filteredGraph.selectedSeedCount} seeds, depth ${neighborhoodDepth})`)
+    setActionMessage(t('tradersNetworkPanel.message.focusedSelected', { seeds: filteredGraph.selectedSeedCount, depth: neighborhoodDepth }))
   }, [
     filteredGraph.counts.walletsVisible,
     filteredGraph.counts.walletsTotal,
@@ -1323,18 +1329,19 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
     selectedCohortId,
     selectedFocusReady,
     setActionMessage,
+    t,
   ])
 
   const focusSelectedNeighborhood = useCallback(() => {
     if (!selectedFocusReady) {
-      setActionMessage('Select a wallet, group, or cluster first.')
+      setActionMessage(t('tradersNetworkPanel.message.selectFirstShort'))
       return
     }
     setFocusMode('selected')
     setActionMessage(
-      `Focused selected neighborhood (${filteredGraph.selectedSeedCount} seeds, depth ${neighborhoodDepth})`,
+      t('tradersNetworkPanel.message.focusedSelected', { seeds: filteredGraph.selectedSeedCount, depth: neighborhoodDepth }),
     )
-  }, [filteredGraph.selectedSeedCount, neighborhoodDepth, selectedFocusReady, setActionMessage])
+  }, [filteredGraph.selectedSeedCount, neighborhoodDepth, selectedFocusReady, setActionMessage, t])
 
   const focusCohort = useCallback((cohort: TraderNetworkCohort & { visibleAddresses?: string[]; visibleCount?: number }) => {
     setSelectedCohortId(String(cohort.id))
@@ -1342,35 +1349,39 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
     setFocusMode('cohort')
     setDockTab('stats')
     const visibleCount = Number(cohort.visibleCount || cohort.visibleAddresses?.length || 0)
-    setActionMessage(`Focused cohort ${String(cohort.id).slice(0, 6)} (${visibleCount} wallets, depth ${neighborhoodDepth})`)
-  }, [neighborhoodDepth, setActionMessage])
+    setActionMessage(t('tradersNetworkPanel.message.focusedCohortShort', {
+      id: String(cohort.id).slice(0, 6),
+      count: visibleCount,
+      depth: neighborhoodDepth,
+    }))
+  }, [neighborhoodDepth, setActionMessage, t])
 
   const createGroupFromCohort = useCallback((cohort: TraderNetworkCohort & { visibleAddresses?: string[]; visibleCount?: number }) => {
     const addresses = Array.from(new Set((cohort.visibleAddresses || []).map((address) => String(address).toLowerCase())))
     if (addresses.length < 2) {
-      setActionMessage('Need at least two visible wallets in cohort to create a group.')
+      setActionMessage(t('tradersNetworkPanel.message.needTwoCohortWallets'))
       return
     }
     const seedAddress = addresses[0]
     createGroupMutation.mutate({
-      name: `Cohort ${String(cohort.id).slice(0, 6).toUpperCase()}`,
+      name: t('tradersNetworkPanel.cohortName', { id: String(cohort.id).slice(0, 6).toUpperCase() }),
       walletAddresses: addresses,
       seedAddress,
     })
-  }, [createGroupMutation, setActionMessage])
+  }, [createGroupMutation, setActionMessage, t])
 
   const focusBadgeLabel = useMemo(() => {
     if (focusMode === 'tracked') {
-      return `Tracked focus (${filteredGraph.counts.walletsVisible})`
+      return t('tradersNetworkPanel.badge.trackedFocus', { n: filteredGraph.counts.walletsVisible })
     }
     if (focusMode === 'selected') {
-      return `Selected focus (${filteredGraph.counts.walletsVisible})`
+      return t('tradersNetworkPanel.badge.selectedFocus', { n: filteredGraph.counts.walletsVisible })
     }
     if (focusMode === 'cohort') {
-      return `Cohort focus (${filteredGraph.counts.walletsVisible})`
+      return t('tradersNetworkPanel.badge.cohortFocus', { n: filteredGraph.counts.walletsVisible })
     }
-    return 'All graph'
-  }, [filteredGraph.counts.walletsVisible, focusMode])
+    return t('tradersNetworkPanel.badge.allGraph')
+  }, [filteredGraph.counts.walletsVisible, focusMode, t])
 
   return (
     <div className="h-full min-h-0 overflow-hidden rounded-lg border border-border/60 bg-card/30 relative">
@@ -1382,10 +1393,10 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
           <div className="min-w-0 max-w-full flex-[1_1_0] flex flex-wrap items-center gap-2 rounded-lg border border-border/70 bg-background/90 backdrop-blur-md px-3 py-2 shadow-lg">
             <Badge variant="outline" className="h-6 px-2 text-[11px] border-cyan-500/50 text-cyan-700 dark:text-cyan-300 bg-cyan-500/10">
               <Network className="w-3 h-3 mr-1.5" />
-              Trader Network
+              {t('tradersNetworkPanel.title')}
             </Badge>
-            <Badge variant="secondary" className="h-5 text-[10px]">{filteredGraph.counts.walletsVisible} / {filteredGraph.counts.walletsTotal} wallets</Badge>
-            <Badge variant="secondary" className="h-5 text-[10px]">{filteredGraph.counts.edgesVisible} edges</Badge>
+            <Badge variant="secondary" className="h-5 text-[10px]">{t('tradersNetworkPanel.badge.walletsRatio', { visible: filteredGraph.counts.walletsVisible, total: filteredGraph.counts.walletsTotal })}</Badge>
+            <Badge variant="secondary" className="h-5 text-[10px]">{t('tradersNetworkPanel.badge.edges', { n: filteredGraph.counts.edgesVisible })}</Badge>
             <Badge
               variant="secondary"
               className={cn(
@@ -1409,7 +1420,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
                 )}
               >
-                All
+                {t('tradersNetworkPanel.focus.all')}
               </button>
               <button
                 type="button"
@@ -1421,7 +1432,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
                 )}
               >
-                Tracked
+                {t('tradersNetworkPanel.focus.tracked')}
               </button>
               <button
                 type="button"
@@ -1433,7 +1444,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
                 )}
               >
-                Selected
+                {t('tradersNetworkPanel.focus.selected')}
               </button>
             </div>
             <Button
@@ -1446,7 +1457,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
               }}
             >
               <Target className="w-3 h-3" />
-              Fit
+              {t('tradersNetworkPanel.action.fit')}
             </Button>
             <Button
               variant="outline"
@@ -1456,7 +1467,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
               disabled={isFetching}
             >
               <RefreshCw className={cn('w-3 h-3', isFetching && 'animate-spin')} />
-              Refresh
+              {t('tradersNetworkPanel.action.refresh')}
             </Button>
           </div>
           <div
@@ -1471,7 +1482,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Find wallet, username, group"
+              placeholder={t('tradersNetworkPanel.searchPlaceholder')}
               className="h-7 min-w-0 flex-1 border-0 bg-transparent p-0 text-xs focus-visible:ring-0"
             />
             <Button
@@ -1482,7 +1493,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
               disabled={!search.trim()}
             >
               <Zap className="w-3 h-3 mr-1" />
-              Focus
+              {t('tradersNetworkPanel.action.focus')}
             </Button>
           </div>
         </div>
@@ -1496,7 +1507,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
         {isLoading && (
           <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center text-sm text-foreground/80">
             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            Building trader network...
+            {t('tradersNetworkPanel.loading')}
           </div>
         )}
 
@@ -1505,10 +1516,10 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
             <Network className="w-7 h-7 text-muted-foreground/70" />
             <p>
               {focusMode === 'tracked'
-                ? 'No tracked-neighborhood nodes for current filters.'
+                ? t('tradersNetworkPanel.empty.tracked')
                 : focusMode === 'selected'
-                  ? 'No selected-neighborhood nodes for current filters.'
-                  : 'No nodes for current filters.'}
+                  ? t('tradersNetworkPanel.empty.selected')
+                  : t('tradersNetworkPanel.empty.default')}
             </p>
           </div>
         )}
@@ -1676,7 +1687,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                 type="button"
                 onClick={() => setDockExpanded((current) => !current)}
                 className="w-full h-8 rounded-lg border border-border bg-background text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/45 transition-colors"
-                title={dockExpanded ? 'Collapse panel' : 'Expand panel'}
+                title={dockExpanded ? t('tradersNetworkPanel.dock.collapse') : t('tradersNetworkPanel.dock.expand')}
               >
                 {dockExpanded ? <ChevronRight className="w-3.5 h-3.5 mx-auto" /> : <ChevronLeft className="w-3.5 h-3.5 mx-auto" />}
               </button>
@@ -1693,9 +1704,9 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                     ? 'border-blue-500/45 bg-blue-500/15 text-blue-300'
                     : 'border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/45',
                 )}
-                title="Selected context"
+                title={t('tradersNetworkPanel.dock.contextTitle')}
               >
-                CTX
+                {t('tradersNetworkPanel.dock.ctx')}
                 {selectedNode ? <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-emerald-400" /> : null}
               </button>
 
@@ -1711,9 +1722,9 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                     ? 'border-orange-500/45 bg-orange-500/15 text-orange-300'
                     : 'border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/45',
                 )}
-                title="Graph filters"
+                title={t('tradersNetworkPanel.dock.filtersTitle')}
               >
-                FLT
+                {t('tradersNetworkPanel.dock.flt')}
               </button>
 
               <button
@@ -1728,13 +1739,13 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                     ? 'border-cyan-500/45 bg-cyan-500/15 text-cyan-300'
                     : 'border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/45',
                 )}
-                title="Graph stats"
+                title={t('tradersNetworkPanel.dock.statsTitle')}
               >
-                STS
+                {t('tradersNetworkPanel.dock.sts')}
               </button>
 
               <div className="rounded-lg border border-border/70 bg-background/80 px-1 py-1.5 text-center">
-                <div className="text-[8px] leading-none text-muted-foreground uppercase">nodes</div>
+                <div className="text-[8px] leading-none text-muted-foreground uppercase">{t('tradersNetworkPanel.dock.nodes')}</div>
                 <div className="mt-1 text-[10px] leading-none font-semibold text-foreground">{filteredGraph.nodes.length}</div>
               </div>
             </div>
@@ -1743,17 +1754,21 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
               <div className="flex-1 min-w-0 h-full flex flex-col">
                 <div className="shrink-0 border-b border-border/70 px-4 py-3 bg-card/92">
                   <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                    {dockTab === 'context' ? 'Selected Context' : dockTab === 'filters' ? 'Filter Controls' : 'Network Metrics'}
+                    {dockTab === 'context'
+                      ? t('tradersNetworkPanel.dock.contextHeader')
+                      : dockTab === 'filters'
+                        ? t('tradersNetworkPanel.dock.filtersHeader')
+                        : t('tradersNetworkPanel.dock.statsHeader')}
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2">
                     <div className="text-sm font-semibold text-foreground">
                       {dockTab === 'context'
                         ? selectedNode
-                          ? `${selectedNode.kind} detail`
-                          : 'Select a node'
+                          ? t('tradersNetworkPanel.dock.kindDetail', { kind: t(`tradersNetworkPanel.kind.${selectedNode.kind}`, { defaultValue: String(selectedNode.kind) }) })
+                          : t('tradersNetworkPanel.dock.selectNode')
                         : dockTab === 'filters'
-                          ? 'Declutter and focus graph'
-                          : 'Live graph health'}
+                          ? t('tradersNetworkPanel.dock.filtersSubtitle')
+                          : t('tradersNetworkPanel.dock.statsSubtitle')}
                     </div>
                     {dockTab === 'context' && selectedNode ? (
                       <button
@@ -1761,7 +1776,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                         onClick={() => setSelectedNodeId(null)}
                         className="rounded-md border border-border px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                       >
-                        Clear
+                        {t('tradersNetworkPanel.action.clear')}
                       </button>
                     ) : null}
                   </div>
@@ -1785,7 +1800,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                       : 'border-amber-500/50 text-amber-200 bg-amber-500/10',
                                 )}
                               >
-                                {selectedNode.kind}
+                                {t(`tradersNetworkPanel.kind.${selectedNode.kind}`, { defaultValue: String(selectedNode.kind) })}
                               </Badge>
                               <p className="text-sm font-semibold truncate">{selectedNode.label}</p>
                             </div>
@@ -1793,18 +1808,18 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                               <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
                                 <p>{selectedNode.username || shortAddress(selectedNode.address)}</p>
                                 <div className="flex flex-wrap gap-1.5">
-                                  <Badge variant="secondary" className="h-5 text-[10px]">PnL {formatUsd(selectedNode.total_pnl)}</Badge>
-                                  <Badge variant="secondary" className="h-5 text-[10px]">WR {formatPct(selectedNode.win_rate)}</Badge>
-                                  <Badge variant="secondary" className="h-5 text-[10px]">Deg {selectedNode.co_trade_degree ?? selectedNode.degree ?? 0}</Badge>
+                                  <Badge variant="secondary" className="h-5 text-[10px]">{t('tradersNetworkPanel.stat.pnl', { value: formatUsd(selectedNode.total_pnl) })}</Badge>
+                                  <Badge variant="secondary" className="h-5 text-[10px]">{t('tradersNetworkPanel.stat.wr', { value: formatPct(selectedNode.win_rate) })}</Badge>
+                                  <Badge variant="secondary" className="h-5 text-[10px]">{t('tradersNetworkPanel.stat.deg', { value: selectedNode.co_trade_degree ?? selectedNode.degree ?? 0 })}</Badge>
                                 </div>
                               </div>
                             ) : null}
                             {selectedNode.kind === 'group' ? (
                               <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
-                                <p>{selectedNode.description || 'Tracked trader group'}</p>
+                                <p>{selectedNode.description || t('tradersNetworkPanel.trackedTraderGroup')}</p>
                                 <div className="flex flex-wrap gap-1.5">
-                                  <Badge variant="secondary" className="h-5 text-[10px]">Members {selectedNode.member_count || 0}</Badge>
-                                  <Badge variant="secondary" className="h-5 text-[10px]">Linked {selectedNode.linked_wallet_count || 0}</Badge>
+                                  <Badge variant="secondary" className="h-5 text-[10px]">{t('tradersNetworkPanel.stat.members', { value: selectedNode.member_count || 0 })}</Badge>
+                                  <Badge variant="secondary" className="h-5 text-[10px]">{t('tradersNetworkPanel.stat.linked', { value: selectedNode.linked_wallet_count || 0 })}</Badge>
                                 </div>
                               </div>
                             ) : null}
@@ -1819,7 +1834,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   onClick={() => handleAnalyzeWallet(selectedWalletAddress, selectedNode.username)}
                                 >
                                   <Activity className="w-3.5 h-3.5" />
-                                  Analyze
+                                  {t('tradersNetworkPanel.action.analyze')}
                                 </Button>
                                 <Button
                                   size="sm"
@@ -1838,7 +1853,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   disabled={trackWalletMutation.isPending || untrackWalletMutation.isPending}
                                 >
                                   {selectedNode.tracked ? <UserX className="w-3.5 h-3.5" /> : <UserPlus className="w-3.5 h-3.5" />}
-                                  {selectedNode.tracked ? 'Untrack' : 'Track'}
+                                  {selectedNode.tracked ? t('tradersNetworkPanel.action.untrack') : t('tradersNetworkPanel.action.track')}
                                 </Button>
 
                                 <Button
@@ -1848,7 +1863,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   onClick={() => window.open(`https://polymarket.com/profile/${selectedWalletAddress}`, '_blank', 'noopener,noreferrer')}
                                 >
                                   <ExternalLink className="w-3.5 h-3.5" />
-                                  Profile
+                                  {t('tradersNetworkPanel.action.profile')}
                                 </Button>
                                 <Button
                                   size="sm"
@@ -1858,7 +1873,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   disabled={createGroupMutation.isPending}
                                 >
                                   <Users className="w-3.5 h-3.5" />
-                                  Group Neighbors
+                                  {t('tradersNetworkPanel.action.groupNeighbors')}
                                 </Button>
                               </div>
 
@@ -1870,7 +1885,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   onClick={() => centerOnNode(selectedNode)}
                                 >
                                   <Target className="w-3.5 h-3.5" />
-                                  Center
+                                  {t('tradersNetworkPanel.action.center')}
                                 </Button>
                                 <Button
                                   size="sm"
@@ -1879,19 +1894,19 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   onClick={focusSelectedNeighborhood}
                                 >
                                   <Zap className="w-3.5 h-3.5" />
-                                  Focus Hood
+                                  {t('tradersNetworkPanel.action.focusHood')}
                                 </Button>
                               </div>
 
                               <div className="rounded-md border border-border bg-muted/30 p-2 space-y-2">
-                                <p className="text-[11px] text-muted-foreground">Add wallet to existing group</p>
+                                <p className="text-[11px] text-muted-foreground">{t('tradersNetworkPanel.dock.addToExistingGroup')}</p>
                                 <div className="flex gap-2">
                                   <select
                                     value={selectedGroupId}
                                     onChange={(event) => setSelectedGroupId(event.target.value)}
                                     className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs"
                                   >
-                                    <option value="">Select group</option>
+                                    <option value="">{t('tradersNetworkPanel.dock.selectGroup')}</option>
                                     {groups.map((group) => (
                                       <option key={group.id} value={group.id}>
                                         {group.name} ({group.member_count})
@@ -1905,14 +1920,14 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                     onClick={() => addToGroupMutation.mutate({ groupId: selectedGroupId, address: selectedWalletAddress })}
                                   >
                                     <Link2 className="w-3.5 h-3.5" />
-                                    Add
+                                    {t('tradersNetworkPanel.action.add')}
                                   </Button>
                                 </div>
                               </div>
 
                               {neighborhoodWallets.length > 0 ? (
                                 <div className="rounded-md border border-cyan-500/25 bg-cyan-500/8 p-2">
-                                  <p className="text-[11px] text-cyan-100 mb-1">Top connected neighbors ({neighborhoodWallets.length})</p>
+                                  <p className="text-[11px] text-cyan-100 mb-1">{t('tradersNetworkPanel.dock.topNeighbors', { n: neighborhoodWallets.length })}</p>
                                   <div className="flex flex-wrap gap-1">
                                     {neighborhoodWallets.map((address) => (
                                       <Badge key={address} variant="outline" className="text-[10px] h-5 border-cyan-500/35 text-cyan-200">
@@ -1938,7 +1953,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   disabled={trackGroupMutation.isPending || !selectedGroupNode.group_id}
                                 >
                                   <Users className="w-3.5 h-3.5" />
-                                  Track Members
+                                  {t('tradersNetworkPanel.action.trackMembers')}
                                 </Button>
                                 <Button
                                   size="sm"
@@ -1951,7 +1966,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                   disabled={deleteGroupMutation.isPending || !selectedGroupNode.group_id}
                                 >
                                   <UserX className="w-3.5 h-3.5" />
-                                  Delete Group
+                                  {t('tradersNetworkPanel.action.deleteGroup')}
                                 </Button>
                               </div>
                               <Button
@@ -1961,14 +1976,14 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                 onClick={focusSelectedNeighborhood}
                               >
                                 <Zap className="w-3.5 h-3.5" />
-                                Focus Group Members
+                                {t('tradersNetworkPanel.action.focusGroupMembers')}
                               </Button>
                             </div>
                           ) : null}
                         </div>
                       ) : (
                         <div className="rounded-lg border border-border bg-muted/30 px-3 py-4 text-[12px] text-muted-foreground">
-                          Select a node in the graph. Double-click any node to center it.
+                          {t('tradersNetworkPanel.dock.selectNodeHint')}
                         </div>
                       )}
                     </>
@@ -1977,11 +1992,11 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                   {dockTab === 'filters' ? (
                     <div className="space-y-3">
                       <div className="rounded-lg border border-border bg-card/70 p-3 space-y-2">
-                        <label className="text-[10px] uppercase tracking-wide text-muted-foreground">Search</label>
+                        <label className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('tradersNetworkPanel.filters.search')}</label>
                         <Input
                           value={search}
                           onChange={(event) => setSearch(event.target.value)}
-                          placeholder="Wallet, username, group"
+                          placeholder={t('tradersNetworkPanel.filters.searchPlaceholder')}
                           className="h-8 text-xs"
                         />
                         <Button
@@ -1992,14 +2007,14 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                           disabled={!search.trim()}
                         >
                           <Search className="w-3.5 h-3.5" />
-                          Focus First Match
+                          {t('tradersNetworkPanel.action.focusFirstMatch')}
                         </Button>
                       </div>
 
                       <div className="rounded-lg border border-border bg-card/70 p-3 space-y-3">
                         <div>
                           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-                            <span>Min co-trade edge score</span>
+                            <span>{t('tradersNetworkPanel.filters.minCoTradeScore')}</span>
                             <span className="font-mono text-cyan-300">{edgeThreshold.toFixed(2)}</span>
                           </div>
                           <input
@@ -2015,7 +2030,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
 
                         <div>
                           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-                            <span>Max edges per wallet</span>
+                            <span>{t('tradersNetworkPanel.filters.maxEdgesPerWallet')}</span>
                             <span className="font-mono text-cyan-300">{connectionCap}</span>
                           </div>
                           <input
@@ -2031,7 +2046,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
 
                         <div>
                           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-                            <span>Neighborhood depth</span>
+                            <span>{t('tradersNetworkPanel.filters.neighborhoodDepth')}</span>
                             <span className="font-mono text-cyan-300">{neighborhoodDepth}</span>
                           </div>
                           <input
@@ -2047,7 +2062,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
 
                         <div>
                           <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-                            <span>Node budget</span>
+                            <span>{t('tradersNetworkPanel.filters.nodeBudget')}</span>
                           </div>
                           <select
                             value={nodeLimit}
@@ -2063,7 +2078,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
 
                       <div className="rounded-lg border border-border bg-card/70 p-3 space-y-3">
                         <div className="flex items-center justify-between">
-                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Focus + visibility</p>
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('tradersNetworkPanel.filters.focusVisibility')}</p>
                           <Filter className="w-3.5 h-3.5 text-muted-foreground" />
                         </div>
 
@@ -2078,7 +2093,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                 : 'border-border bg-background/70 text-muted-foreground hover:text-foreground',
                             )}
                           >
-                            All
+                            {t('tradersNetworkPanel.focus.all')}
                           </button>
                           <button
                             type="button"
@@ -2090,7 +2105,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                 : 'border-border bg-background/70 text-muted-foreground hover:text-foreground',
                             )}
                           >
-                            Tracked
+                            {t('tradersNetworkPanel.focus.tracked')}
                           </button>
                           <button
                             type="button"
@@ -2102,7 +2117,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                 : 'border-border bg-background/70 text-muted-foreground hover:text-foreground',
                             )}
                           >
-                            Selected
+                            {t('tradersNetworkPanel.focus.selected')}
                           </button>
                           <button
                             type="button"
@@ -2114,12 +2129,16 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                 : 'border-border bg-background/70 text-muted-foreground hover:text-foreground',
                             )}
                           >
-                            Cohort
+                            {t('tradersNetworkPanel.focus.cohort')}
                           </button>
                         </div>
 
                         <p className="text-[10px] text-muted-foreground">
-                          Seeds in view: tracked {filteredGraph.trackedSeedCount}, selected {filteredGraph.selectedSeedCount}, cohort {filteredGraph.cohortSeedCount}
+                          {t('tradersNetworkPanel.filters.seedsInView', {
+                            tracked: filteredGraph.trackedSeedCount,
+                            selected: filteredGraph.selectedSeedCount,
+                            cohort: filteredGraph.cohortSeedCount,
+                          })}
                         </p>
 
                         <button
@@ -2132,7 +2151,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                               : 'border-border bg-background/70 text-muted-foreground',
                           )}
                         >
-                          Show groups ({filteredGraph.counts.groupsVisible} visible)
+                          {t('tradersNetworkPanel.filters.showGroups', { n: filteredGraph.counts.groupsVisible })}
                         </button>
 
                         <button
@@ -2145,7 +2164,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                               : 'border-border bg-background/70 text-muted-foreground',
                           )}
                         >
-                          Show clusters ({filteredGraph.counts.clustersVisible} visible)
+                          {t('tradersNetworkPanel.filters.showClusters', { n: filteredGraph.counts.clustersVisible })}
                         </button>
 
                         <button
@@ -2158,7 +2177,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                               : 'border-border bg-background/70 text-muted-foreground',
                           )}
                         >
-                          Hide isolated wallets
+                          {t('tradersNetworkPanel.filters.hideIsolated')}
                         </button>
                       </div>
                     </div>
@@ -2168,34 +2187,34 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                     <div className="space-y-3">
                       <div className="grid grid-cols-2 gap-2">
                         <div className="rounded-md border border-border bg-muted/35 px-2 py-1.5">
-                          <p className="text-[10px] text-muted-foreground">Visible wallets</p>
+                          <p className="text-[10px] text-muted-foreground">{t('tradersNetworkPanel.stats.visibleWallets')}</p>
                           <p className="text-sm font-semibold">{filteredGraph.counts.walletsVisible}</p>
                         </div>
                         <div className="rounded-md border border-border bg-muted/35 px-2 py-1.5">
-                          <p className="text-[10px] text-muted-foreground">Visible edges</p>
+                          <p className="text-[10px] text-muted-foreground">{t('tradersNetworkPanel.stats.visibleEdges')}</p>
                           <p className="text-sm font-semibold">{filteredGraph.counts.edgesVisible}</p>
                         </div>
                         <div className="rounded-md border border-border bg-muted/35 px-2 py-1.5">
-                          <p className="text-[10px] text-muted-foreground">Total wallets</p>
+                          <p className="text-[10px] text-muted-foreground">{t('tradersNetworkPanel.stats.totalWallets')}</p>
                           <p className="text-sm font-semibold">{filteredGraph.counts.walletsTotal}</p>
                         </div>
                         <div className="rounded-md border border-border bg-muted/35 px-2 py-1.5">
-                          <p className="text-[10px] text-muted-foreground">Raw co-trade edges</p>
+                          <p className="text-[10px] text-muted-foreground">{t('tradersNetworkPanel.stats.rawCoTrade')}</p>
                           <p className="text-sm font-semibold">{filteredGraph.counts.edgesTotal}</p>
                         </div>
                       </div>
 
                       <div className="rounded-md border border-border bg-muted/35 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Focus state</p>
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('tradersNetworkPanel.stats.focusState')}</p>
                         <div className="mt-2 text-[11px] text-muted-foreground space-y-1">
-                          <p>Mode: <span className="text-foreground/90 font-medium capitalize">{focusMode}</span></p>
-                          <p>Seed count: <span className="text-foreground/90 font-medium">{filteredGraph.focusSeedCount}</span></p>
-                          <p>Neighborhood depth: <span className="text-foreground/90 font-medium">{neighborhoodDepth}</span></p>
+                          <p>{t('tradersNetworkPanel.stats.modeLabel')} <span className="text-foreground/90 font-medium capitalize">{t(`tradersNetworkPanel.focus.${focusMode}`, { defaultValue: focusMode })}</span></p>
+                          <p>{t('tradersNetworkPanel.stats.seedCountLabel')} <span className="text-foreground/90 font-medium">{filteredGraph.focusSeedCount}</span></p>
+                          <p>{t('tradersNetworkPanel.stats.neighborhoodDepthLabel')} <span className="text-foreground/90 font-medium">{neighborhoodDepth}</span></p>
                         </div>
                       </div>
 
                       <div className="rounded-md border border-border bg-muted/35 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Cohort intelligence</p>
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('tradersNetworkPanel.stats.cohortIntelligence')}</p>
                         {topVisibleCohorts.length > 0 ? (
                           <div className="mt-2 space-y-2">
                             {topVisibleCohorts.map((cohort) => (
@@ -2210,14 +2229,17 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                               >
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="text-[11px] font-medium text-foreground/90">
-                                    Cohort {String(cohort.id).slice(0, 6).toUpperCase()}
+                                    {t('tradersNetworkPanel.stats.cohortLabel', { id: String(cohort.id).slice(0, 6).toUpperCase() })}
                                   </div>
                                   <div className="text-[10px] text-muted-foreground">
-                                    {cohort.visibleCount} wallets
+                                    {t('tradersNetworkPanel.stats.walletsCount', { n: cohort.visibleCount })}
                                   </div>
                                 </div>
                                 <div className="mt-1 text-[10px] text-muted-foreground">
-                                  Score {Number(cohort.avg_combined_score || 0).toFixed(2)} | Shared markets {Number(cohort.shared_market_count || 0)}
+                                  {t('tradersNetworkPanel.stats.cohortScoreMarkets', {
+                                    score: Number(cohort.avg_combined_score || 0).toFixed(2),
+                                    markets: Number(cohort.shared_market_count || 0),
+                                  })}
                                 </div>
                                 <div className="mt-1.5 grid grid-cols-2 gap-1.5">
                                   <Button
@@ -2227,7 +2249,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                     onClick={() => focusCohort(cohort)}
                                   >
                                     <Zap className="w-3 h-3" />
-                                    Focus
+                                    {t('tradersNetworkPanel.action.focus')}
                                   </Button>
                                   <Button
                                     size="sm"
@@ -2237,33 +2259,33 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                                     disabled={createGroupMutation.isPending}
                                   >
                                     <Users className="w-3 h-3" />
-                                    Group
+                                    {t('tradersNetworkPanel.action.group')}
                                   </Button>
                                 </div>
                               </div>
                             ))}
                           </div>
                         ) : (
-                          <p className="mt-2 text-[11px] text-muted-foreground">No visible cohorts for current filters.</p>
+                          <p className="mt-2 text-[11px] text-muted-foreground">{t('tradersNetworkPanel.stats.noCohorts')}</p>
                         )}
                       </div>
 
                       <div className="rounded-md border border-border bg-muted/35 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">System summary</p>
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('tradersNetworkPanel.stats.systemSummary')}</p>
                         <div className="mt-2 text-[11px] text-muted-foreground space-y-1">
-                          <p>Components: <span className="text-foreground/90 font-medium">{summary?.components ?? 0}</span></p>
-                          <p>Density: <span className="text-foreground/90 font-medium">{(Number(summary?.density || 0) * 100).toFixed(1)}%</span></p>
-                          <p>Generated: <span className="text-foreground/90 font-medium">{graphData?.generated_at ? new Date(graphData.generated_at).toLocaleString() : 'n/a'}</span></p>
+                          <p>{t('tradersNetworkPanel.stats.componentsLabel')} <span className="text-foreground/90 font-medium">{summary?.components ?? 0}</span></p>
+                          <p>{t('tradersNetworkPanel.stats.densityLabel')} <span className="text-foreground/90 font-medium">{(Number(summary?.density || 0) * 100).toFixed(1)}%</span></p>
+                          <p>{t('tradersNetworkPanel.stats.generatedLabel')} <span className="text-foreground/90 font-medium">{graphData?.generated_at ? new Date(graphData.generated_at).toLocaleString() : t('tradersNetworkPanel.stats.notAvailable')}</span></p>
                         </div>
                       </div>
 
                       <div className="rounded-md border border-border bg-muted/35 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Node legend</p>
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('tradersNetworkPanel.stats.nodeLegend')}</p>
                         <div className="mt-2 space-y-2 text-[11px]">
-                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Tracked wallet</div>
-                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-sky-400" />Pool wallet</div>
-                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-cyan-500" />Group node</div>
-                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />Cluster node</div>
+                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />{t('tradersNetworkPanel.legend.trackedWallet')}</div>
+                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-sky-400" />{t('tradersNetworkPanel.legend.poolWallet')}</div>
+                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-cyan-500" />{t('tradersNetworkPanel.legend.groupNode')}</div>
+                          <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />{t('tradersNetworkPanel.legend.clusterNode')}</div>
                         </div>
                       </div>
                     </div>
@@ -2272,7 +2294,7 @@ export default function TradersNetworkPanel({ onAnalyzeWallet, onNavigateToWalle
                   {activeMutations ? (
                     <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-200 flex items-center gap-2">
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Applying network action...
+                      {t('tradersNetworkPanel.applyingAction')}
                     </div>
                   ) : null}
                 </div>
