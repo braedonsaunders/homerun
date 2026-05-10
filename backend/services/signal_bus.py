@@ -120,6 +120,20 @@ _SKIPPED_REACTIVATION_EXPIRY_DELTA_SECONDS = 15.0
 _SKIPPED_REACTIVATION_LIQUIDITY_BANDS = (250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0, 32000.0)
 _ACTIVE_REFRESH_SOURCES = {"crypto", "scanner", "traders", "weather"}
 _RUNTIME_SEQUENCE_UNSET = object()
+# Keys stamped by this system at emit time — not actual market data.
+# Used in the active-unchanged refresh path to skip payload updates
+# that differ only in metadata, without stripping real market data
+# like price_age_seconds or outcome_prices.
+_ACTIVE_REFRESH_EMIT_JITTER_KEYS = {
+    "signal_emitted_at",
+    "scan_completed_at",
+    "scan_started_at",
+    "published_at",
+    "updated_at",
+    "roster_hash",
+    "runtime_sequence",
+    "sequence",
+}
 
 
 def _utc_now() -> datetime:
@@ -157,6 +171,20 @@ def _normalize_reactivation_value(value: Any) -> Any:
         return [_normalize_reactivation_value(item) for item in value]
     if isinstance(value, float):
         return round(float(value), 4)
+    return value
+
+
+def _normalize_emit_jitter(value: Any) -> Any:
+    """Strip only emit-time metadata keys for active-refresh payload comparisons.
+
+    Unlike ``_normalize_reactivation_value``, market-data keys such as
+    ``price_age_seconds``, ``outcome_prices``, and ``price_updated_at`` are
+    preserved so scanner price refreshes still update the stored payload.
+    """
+    if isinstance(value, dict):
+        return {k: _normalize_emit_jitter(v) for k, v in value.items() if k not in _ACTIVE_REFRESH_EMIT_JITTER_KEYS}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_emit_jitter(item) for item in value]
     return value
 
 
@@ -1488,43 +1516,34 @@ async def upsert_trade_signal(
                     # assignments removes the row from the dirty set
                     # entirely; no UPDATE is emitted, no row lock taken.
                     #
-                    # 2026-05-09: tighten the JSON comparisons so a
-                    # fresh ``signal_emitted_at`` timestamp doesn't
-                    # itself defeat the skip. ``_has_signal_material_change``
-                    # already runs ``_normalize_reactivation_value`` over
-                    # both sides (strips ``signal_emitted_at``,
-                    # ``runtime_sequence``, ``scan_completed_at``,
-                    # ``updated_at`` etc.) before declaring no material
-                    # change. We were re-comparing the RAW JSON here,
-                    # which always reported "differs" because every call
-                    # stamps a new ``signal_emitted_at`` at line ~1296.
-                    # Result: every active-unchanged refresh dirtied the
-                    # row and emitted an UPDATE — exactly the contention
-                    # the surrounding block was meant to eliminate.
-                    # Match the comparison: if the normalized forms are
-                    # equal, the stored RAW with stale ``signal_emitted_at``
-                    # is functionally identical and we keep it untouched.
-                    # (The volatile keys are not load-bearing for any
-                    # downstream consumer — they're audit timestamps,
-                    # superseded by trade_signal_emissions rows.)
+                    # Use _normalize_emit_jitter (not the broader
+                    # _normalize_reactivation_value) so that pure emit-time
+                    # metadata keys like ``signal_emitted_at`` and
+                    # ``roster_hash`` don't dirty the row on every call,
+                    # but market-data keys such as ``price_age_seconds``,
+                    # ``outcome_prices``, and ``price_updated_at`` still
+                    # trigger a payload update when the scanner sends fresh
+                    # price data.  The broader normalization was stripping
+                    # those market-data keys and causing scanner price
+                    # refreshes to silently no-op.
                     new_payload = _safe_json(normalized_payload_json)
                     new_strategy_ctx = _safe_json(strategy_context_json)
                     if existing_expires_naive != incoming_expires_naive:
                         row.expires_at = incoming_expires_naive
-                    existing_payload_normalized = _normalize_reactivation_value(
+                    existing_payload_normalized = _normalize_emit_jitter(
                         ensure_market_roster_payload(
                             _safe_json(row.payload_json),
                             market_id=market_id,
                             market_question=market_question,
                         )
                     )
-                    incoming_payload_normalized = _normalize_reactivation_value(new_payload)
+                    incoming_payload_normalized = _normalize_emit_jitter(new_payload)
                     if existing_payload_normalized != incoming_payload_normalized:
                         row.payload_json = new_payload
-                    existing_ctx_normalized = _normalize_reactivation_value(
+                    existing_ctx_normalized = _normalize_emit_jitter(
                         _safe_json(row.strategy_context_json)
                     )
-                    incoming_ctx_normalized = _normalize_reactivation_value(new_strategy_ctx)
+                    incoming_ctx_normalized = _normalize_emit_jitter(new_strategy_ctx)
                     if existing_ctx_normalized != incoming_ctx_normalized:
                         row.strategy_context_json = new_strategy_ctx
                     if quality_passed is not None:
