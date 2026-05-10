@@ -900,7 +900,6 @@ class HybridBookSource:
         """
         if not self._backends:
             return
-        import asyncio as _asyncio
 
         # Spin up one async iterator per backend.
         iterators: dict[str, AsyncIterator[BookSnapshot]] = {
@@ -908,7 +907,6 @@ class HybridBookSource:
         }
         # Pre-fetch the first snapshot from each so the heap has
         # something to compare on.
-        head_task: dict[str, _asyncio.Task | None] = {}
         head_snap: dict[str, BookSnapshot | None] = {}
         for name, it in iterators.items():
             try:

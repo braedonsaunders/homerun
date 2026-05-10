@@ -7,11 +7,7 @@ exercised in ``test_parquet_scanner.py``.
 """
 from __future__ import annotations
 
-import asyncio
-import os
-import tempfile
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
 import pytest
 

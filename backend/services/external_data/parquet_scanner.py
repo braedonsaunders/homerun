@@ -179,7 +179,6 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
     ``provider_datasets`` row.  Returns a small dict of stats for
     the caller's report.
     """
-    from sqlalchemy import select
     from sqlalchemy.dialects.postgresql import insert as _pg_insert
     from models.database import AsyncSessionLocal, ProviderDataset
 
