@@ -1,25 +1,42 @@
-"""Bridge from ExecutionLatencyMetrics into the fill estimator.
+"""Rolling fill-latency distribution for the fill estimator.
 
 Replaces the hardcoded ``latency_ms=350.0`` in
 ``services/trader_orchestrator/order_manager.py`` and the equivalent
 constant in the ExecutionEstimator with the rolling p50/p95/p99
 measured across the last 15 minutes of orders.
 
-The metrics singleton is fully sync-safe to read from snapshot() —
-which itself is async because it acquires a lock — so this helper
-exposes both an async (real read) and a sync (cached) variant.
+Architecture
+------------
+The orchestrator worker process records every submit/cancel sample to
+two places: an in-memory deque on ``execution_latency_metrics``
+(process-local, used by the worker's own dashboards), AND a durable
+``TraderEvent`` row of type ``execution_latency``.  The API process
+runs in a separate Python process from the workers (see
+``backend/main.py`` lifespan: workers run in ``workers.host``), so
+the API's in-memory deque is permanently empty.
 
-The cache uses a small TTL (5 s) so the estimator can be called
-inline from the order-manager hot path without paying for an async
-hop on every fill simulation.
+To stay consistent across processes — and survive worker restarts —
+the rolling distribution is sourced from the DB (the cross-process
+source of truth), not from the in-memory deque.  The DB query is
+indexed (``idx_trader_events_type_created``) and bounded to a 15-min
+window of at most a few thousand rows, so it's cheap.
+
+In-process caching
+------------------
+``measured_latency_async()`` refreshes a process-local cached
+``LatencyDistribution`` after each DB read.  The order hot path
+(``order_manager.py``) reads ``measured_latency_cached()`` inline —
+no async hop, no DB round-trip — and a background refresher
+(``workers/fill_simulator_refresh_worker.py``) calls
+``measured_latency_async()`` every 60 s to keep the cache warm in
+the worker process.  The API process refreshes its own cache on each
+``/fill-model/latency`` request (15 s UI poll).
 """
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
 from typing import Any
-
-from services.execution_latency_metrics import execution_latency_metrics
 
 
 _CACHE_TTL_SECONDS = 5.0
@@ -133,10 +150,21 @@ def _from_snapshot(snapshot: dict[str, Any]) -> LatencyDistribution:
 
 
 async def measured_latency_async() -> LatencyDistribution:
+    """Refresh and return the rolling 15-minute fill-latency distribution.
+
+    Reads from the persisted ``TraderEvent`` rows of type
+    ``execution_latency`` — the cross-process source of truth.  Updates
+    the process-local cache so ``measured_latency_cached()`` (called
+    from the order hot path) can answer without awaiting.
+    """
+    from services.execution_latency_metrics import snapshot_from_events
+    from models.database import AsyncSessionLocal
+
     # Refresh the operator overrides opportunistically — once per call
     # is fine because the cache itself has a 30s TTL.
     await refresh_fallback_overrides()
-    snapshot = await execution_latency_metrics.snapshot()
+    async with AsyncSessionLocal() as session:
+        snapshot = await snapshot_from_events(session)
     dist = _from_snapshot(snapshot)
     global _cached
     _cached = (time.monotonic(), dist)

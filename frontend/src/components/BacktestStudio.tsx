@@ -2029,13 +2029,13 @@ export default function BacktestStudio({
                     <button
                       type="button"
                       onClick={() => setLeftTab('parameters')}
-                      className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-[10px] rounded-md border border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/10 transition-colors text-cyan-200"
+                      className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-[10px] rounded-md border border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/10 transition-colors text-cyan-700 dark:text-cyan-200"
                     >
                       <span className="flex items-center gap-1.5">
                         <Sliders className="h-3 w-3" />
                         {t('backtestStudio.paramsAvailable', { n: paramFieldGroups.reduce((sum, g) => sum + g.fields.length, 0) })}
                       </span>
-                      <span className="text-cyan-300">{t('backtestStudio.goToParameters')}</span>
+                      <span className="text-cyan-700 dark:text-cyan-300">{t('backtestStudio.goToParameters')}</span>
                     </button>
                   ) : null}
                 </div>
