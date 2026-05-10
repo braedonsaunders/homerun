@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cn } from '../lib/utils'
 import {
@@ -40,9 +41,9 @@ import {
 // ==================== Constants ====================
 
 const TABS = [
-  { key: 'discovery_scoring', label: 'Discovery Scoring', icon: Code2 },
-  { key: 'pool_selection', label: 'Pool Selection', icon: Sliders },
-  { key: 'signal_settings', label: 'Signal Settings', icon: Settings2 },
+  { key: 'discovery_scoring', labelKey: 'discoveryProfilesManager.tabDiscoveryScoring', icon: Code2 },
+  { key: 'pool_selection', labelKey: 'discoveryProfilesManager.tabPoolSelection', icon: Sliders },
+  { key: 'signal_settings', labelKey: 'discoveryProfilesManager.tabSignalSettings', icon: Settings2 },
 ] as const
 
 type TabKey = (typeof TABS)[number]['key']
@@ -90,6 +91,7 @@ function NumericField({
 // ==================== Signal Settings Tab ====================
 
 function SignalSettingsTab() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   const { data: settings, isLoading } = useQuery({
@@ -145,7 +147,7 @@ function SignalSettingsTab() {
     return (
       <div className="flex items-center justify-center py-20 text-muted-foreground gap-2 text-xs">
         <Loader2 className="w-4 h-4 animate-spin" />
-        Loading settings...
+        {t('discoveryProfilesManager.loadingSettings')}
       </div>
     )
   }
@@ -156,13 +158,13 @@ function SignalSettingsTab() {
       <div className="space-y-3">
         <div className="flex items-center gap-1.5">
           <Sliders className="w-3.5 h-3.5 text-orange-400" />
-          <h4 className="text-[10px] uppercase tracking-widest font-semibold">Signal Display Settings</h4>
+          <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('discoveryProfilesManager.signalDisplaySettings')}</h4>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <NumericField
-            label="Confluence Fetch Limit"
-            help="Max confluence signals to fetch (1-200)"
+            label={t('discoveryProfilesManager.confluenceFetchLimitLabel')}
+            help={t('discoveryProfilesManager.confluenceFetchLimitHelp')}
             value={form.confluence_limit}
             onChange={(v) => update({ confluence_limit: v })}
             min={1}
@@ -170,8 +172,8 @@ function SignalSettingsTab() {
             step={1}
           />
           <NumericField
-            label="Individual Trade Limit"
-            help="Max individual trade signals (1-500)"
+            label={t('discoveryProfilesManager.individualTradeLimitLabel')}
+            help={t('discoveryProfilesManager.individualTradeLimitHelp')}
             value={form.insider_limit}
             onChange={(v) => update({ insider_limit: v })}
             min={1}
@@ -179,8 +181,8 @@ function SignalSettingsTab() {
             step={1}
           />
           <NumericField
-            label="Individual Trade Min Confidence"
-            help="Minimum confidence threshold (0-1)"
+            label={t('discoveryProfilesManager.individualTradeMinConfidenceLabel')}
+            help={t('discoveryProfilesManager.individualTradeMinConfidenceHelp')}
             value={form.insider_min_confidence}
             onChange={(v) => update({ insider_min_confidence: v })}
             min={0}
@@ -188,8 +190,8 @@ function SignalSettingsTab() {
             step={0.01}
           />
           <NumericField
-            label="Individual Trade Max Age (min)"
-            help="Max signal age in minutes (1-1440)"
+            label={t('discoveryProfilesManager.individualTradeMaxAgeLabel')}
+            help={t('discoveryProfilesManager.individualTradeMaxAgeHelp')}
             value={form.insider_max_age_minutes}
             onChange={(v) => update({ insider_max_age_minutes: v })}
             min={1}
@@ -204,17 +206,17 @@ function SignalSettingsTab() {
         <div className="flex items-center gap-2">
           {dirty && (
             <Badge variant="outline" className="text-[9px] border-amber-500/30 text-amber-400 bg-amber-500/5">
-              unsaved changes
+              {t('discoveryProfilesManager.unsavedChanges')}
             </Badge>
           )}
           {saveMutation.isSuccess && (
             <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3" /> Saved
+              <CheckCircle2 className="w-3 h-3" /> {t('discoveryProfilesManager.saved')}
             </span>
           )}
           {saveMutation.isError && (
             <span className="text-[10px] text-red-400 flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3" /> Save failed
+              <AlertTriangle className="w-3 h-3" /> {t('discoveryProfilesManager.saveFailed')}
             </span>
           )}
         </div>
@@ -225,7 +227,7 @@ function SignalSettingsTab() {
           className="gap-1.5 text-[10px] h-7 px-3 bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-40"
         >
           {saveMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-          {saveMutation.isPending ? 'Saving...' : 'Save Settings'}
+          {saveMutation.isPending ? t('discoveryProfilesManager.saving') : t('discoveryProfilesManager.saveSettings')}
         </Button>
       </div>
 
@@ -233,7 +235,7 @@ function SignalSettingsTab() {
       <div className="space-y-2 pt-2 border-t border-border/30">
         <div className="flex items-center gap-1.5 pt-2">
           <Code2 className="w-3.5 h-3.5 text-violet-400" />
-          <h4 className="text-[10px] uppercase tracking-widest font-semibold">Strategy Configurations</h4>
+          <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('discoveryProfilesManager.strategyConfigurations')}</h4>
         </div>
         <StrategyConfigSections sourceKey="discovery" />
       </div>
@@ -258,6 +260,7 @@ function VersionHistorySheet({
   currentVersion: number
   onRestore: (version: DiscoveryProfileVersion) => void
 }) {
+  const { t } = useTranslation()
   const { data: versions, isLoading } = useQuery({
     queryKey: ['discovery-profile-versions', profileId],
     queryFn: () => getDiscoveryProfileVersions(profileId),
@@ -272,7 +275,7 @@ function VersionHistorySheet({
         <SheetHeader className="px-4 py-3 border-b border-border/30">
           <div className="flex items-center gap-2">
             <History className="w-4 h-4 text-blue-400" />
-            <SheetTitle className="text-sm">{profileName} - Version History</SheetTitle>
+            <SheetTitle className="text-sm">{t('discoveryProfilesManager.versionHistoryTitle', { name: profileName })}</SheetTitle>
           </div>
         </SheetHeader>
 
@@ -280,11 +283,11 @@ function VersionHistorySheet({
           {isLoading ? (
             <div className="flex items-center justify-center py-20 text-muted-foreground gap-2 text-xs">
               <Loader2 className="w-4 h-4 animate-spin" />
-              Loading versions...
+              {t('discoveryProfilesManager.loadingVersions')}
             </div>
           ) : !versions?.length ? (
             <div className="flex items-center justify-center py-20 text-muted-foreground text-xs">
-              No version history available
+              {t('discoveryProfilesManager.noVersionHistory')}
             </div>
           ) : (
             <div className="divide-y divide-border/20">
@@ -301,12 +304,12 @@ function VersionHistorySheet({
                       <span className="text-xs font-mono font-medium">v{v.version}</span>
                       {v.is_latest && (
                         <Badge variant="outline" className="text-[9px] border-blue-500/30 text-blue-400 bg-blue-500/5 py-0">
-                          latest
+                          {t('discoveryProfilesManager.badgeLatest')}
                         </Badge>
                       )}
                       {v.version === currentVersion && (
                         <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-400 bg-emerald-500/5 py-0">
-                          current
+                          {t('discoveryProfilesManager.badgeCurrent')}
                         </Badge>
                       )}
                     </div>
@@ -326,14 +329,14 @@ function VersionHistorySheet({
                         ) : (
                           <RefreshCw className="w-3 h-3 mr-1" />
                         )}
-                        Restore
+                        {t('discoveryProfilesManager.restore')}
                       </Button>
                     )}
                   </div>
                   <div className="flex items-center gap-3 mt-1 text-[10px] text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {v.created_at ? new Date(v.created_at).toLocaleString() : 'Unknown'}
+                      {v.created_at ? new Date(v.created_at).toLocaleString() : t('discoveryProfilesManager.unknownDate')}
                     </span>
                     {v.class_name && (
                       <span className="font-mono text-cyan-400/70">{v.class_name}</span>
@@ -361,6 +364,7 @@ function ProfileEditorTab({
   profile: DiscoveryProfile
   onSaved: () => void
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [editorCode, setEditorCode] = useState(profile.source_code)
   const [validation, setValidation] = useState<DiscoveryProfileValidationResult | null>(null)
@@ -398,7 +402,7 @@ function ProfileEditorTab({
 
   const restoreMutation = useMutation({
     mutationFn: (v: DiscoveryProfileVersion) =>
-      restoreDiscoveryProfileVersion(profile.id, v.version, `Restored from v${v.version}`),
+      restoreDiscoveryProfileVersion(profile.id, v.version, t('discoveryProfilesManager.restoreReason', { version: v.version })),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['discovery-profiles'] })
       queryClient.invalidateQueries({ queryKey: ['discovery-profile-versions', profile.id] })
@@ -424,7 +428,7 @@ function ProfileEditorTab({
               <span className="text-xs font-semibold">{profile.name}</span>
               {isDirty && (
                 <Badge variant="outline" className="text-[9px] border-amber-500/30 text-amber-400 bg-amber-500/5 py-0">
-                  unsaved
+                  {t('discoveryProfilesManager.badgeUnsaved')}
                 </Badge>
               )}
             </div>
@@ -437,7 +441,11 @@ function ProfileEditorTab({
                 ) : (
                   <Clock className="w-3 h-3 text-muted-foreground" />
                 )}
-                {profile.status}
+                {profile.status === 'loaded'
+                  ? t('discoveryProfilesManager.statusLoaded')
+                  : profile.status === 'error'
+                    ? t('discoveryProfilesManager.statusError')
+                    : profile.status}
               </span>
               <span className="text-[10px] text-muted-foreground">
                 v{profile.version}
@@ -464,7 +472,7 @@ function ProfileEditorTab({
             ) : (
               <Check className="w-3 h-3" />
             )}
-            Validate
+            {t('discoveryProfilesManager.validate')}
           </Button>
           <Button
             size="sm"
@@ -477,7 +485,7 @@ function ProfileEditorTab({
             ) : (
               <Save className="w-3 h-3" />
             )}
-            Save
+            {t('discoveryProfilesManager.save')}
           </Button>
           <Button
             variant="outline"
@@ -485,14 +493,14 @@ function ProfileEditorTab({
             onClick={() => reloadMutation.mutate()}
             disabled={reloadMutation.isPending}
             className="text-[10px] h-6 px-2 gap-1"
-            title="Hot-reload profile in runtime"
+            title={t('discoveryProfilesManager.tooltipHotReload')}
           >
             {reloadMutation.isPending ? (
               <Loader2 className="w-3 h-3 animate-spin" />
             ) : (
               <RefreshCw className="w-3 h-3" />
             )}
-            Reload
+            {t('discoveryProfilesManager.reload')}
           </Button>
           <Button
             variant="outline"
@@ -501,7 +509,7 @@ function ProfileEditorTab({
             className="text-[10px] h-6 px-2 gap-1"
           >
             <History className="w-3 h-3" />
-            History
+            {t('discoveryProfilesManager.history')}
           </Button>
           <Button
             variant="outline"
@@ -510,7 +518,7 @@ function ProfileEditorTab({
             className="text-[10px] h-6 px-2 gap-1"
           >
             <BookOpen className="w-3 h-3" />
-            Docs
+            {t('discoveryProfilesManager.docs')}
           </Button>
         </div>
       </div>
@@ -526,13 +534,14 @@ function ProfileEditorTab({
       {/* Save success/error banner */}
       {saveMutation.isSuccess && (
         <div className="px-3 py-1.5 bg-emerald-500/10 border-b border-emerald-500/20 text-[10px] text-emerald-400 flex items-center gap-1.5 shrink-0">
-          <CheckCircle2 className="w-3 h-3" /> Saved successfully
+          <CheckCircle2 className="w-3 h-3" /> {t('discoveryProfilesManager.savedSuccessfully')}
         </div>
       )}
       {saveMutation.isError && (
         <div className="px-3 py-1.5 bg-red-500/10 border-b border-red-500/20 text-[10px] text-red-400 flex items-center gap-1.5 shrink-0">
-          <AlertTriangle className="w-3 h-3" /> Save failed:{' '}
-          {(saveMutation.error as Error)?.message || 'Unknown error'}
+          <AlertTriangle className="w-3 h-3" /> {t('discoveryProfilesManager.saveFailedWith', {
+            message: (saveMutation.error as Error)?.message || t('discoveryProfilesManager.unknownError'),
+          })}
         </div>
       )}
 
@@ -563,11 +572,11 @@ function ProfileEditorTab({
             ) : (
               <AlertTriangle className="w-3.5 h-3.5" />
             )}
-            {validation.valid ? 'Valid' : 'Invalid'}
+            {validation.valid ? t('discoveryProfilesManager.valid') : t('discoveryProfilesManager.invalid')}
           </span>
           {validation.class_name && (
             <span className="text-muted-foreground">
-              Class: <span className="font-mono text-cyan-400">{validation.class_name}</span>
+              {t('discoveryProfilesManager.classLabel')} <span className="font-mono text-cyan-400">{validation.class_name}</span>
             </span>
           )}
           {validation.capabilities && (
@@ -618,6 +627,7 @@ function ProfileEditorTab({
 // ==================== Main Component ====================
 
 export default function DiscoveryProfilesManager() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState<TabKey>('discovery_scoring')
 
@@ -663,7 +673,7 @@ export default function DiscoveryProfilesManager() {
         </div>
         <div className="flex-1 flex items-center justify-center text-muted-foreground gap-2 text-xs">
           <Loader2 className="w-4 h-4 animate-spin" />
-          Loading profiles...
+          {t('discoveryProfilesManager.loadingProfiles')}
         </div>
       </div>
     )
@@ -674,7 +684,7 @@ export default function DiscoveryProfilesManager() {
     return (
       <div className="h-full flex items-center justify-center text-red-400 gap-2 text-xs">
         <AlertTriangle className="w-4 h-4" />
-        Failed to load discovery profiles
+        {t('discoveryProfilesManager.failedToLoad')}
       </div>
     )
   }
@@ -704,7 +714,7 @@ export default function DiscoveryProfilesManager() {
               )}
             >
               <Icon className={cn('w-3.5 h-3.5', hasError && 'text-red-400')} />
-              {tab.label}
+              {t(tab.labelKey)}
               {hasError && <AlertTriangle className="w-3 h-3 text-red-400" />}
             </button>
           )
@@ -726,7 +736,7 @@ export default function DiscoveryProfilesManager() {
         ) : (
           <div className="flex items-center justify-center h-full text-muted-foreground text-xs gap-2">
             <AlertTriangle className="w-4 h-4" />
-            Profile "{activeTab}" not found. It may need to be seeded in the backend.
+            {t('discoveryProfilesManager.profileNotFound', { name: activeTab })}
           </div>
         )}
       </div>

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
@@ -74,14 +75,14 @@ const METRIC_BAR_CLASSES: Record<MetricTone, string> = {
   info: 'bg-indigo-600 dark:bg-indigo-300/95',
 }
 
-function shortAddress(address: string): string {
-  if (!address) return 'unknown'
+function shortAddress(address: string, unknownLabel = 'unknown'): string {
+  if (!address) return unknownLabel
   if (address.length <= 12) return address
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
 
-function walletDisplayName(wallet: WalletType): string {
-  return wallet.username || wallet.label || shortAddress(wallet.address)
+function walletDisplayName(wallet: WalletType, unknownLabel = 'unknown'): string {
+  return wallet.username || wallet.label || shortAddress(wallet.address, unknownLabel)
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -121,16 +122,19 @@ function formatPnl(value: number): string {
   return value.toFixed(2)
 }
 
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return 'Never'
+function timeAgo(
+  dateStr: string | null,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (!dateStr) return t('walletTracker.timeNever')
   const diff = Date.now() - new Date(dateStr).getTime()
   const minutes = Math.floor(diff / 60000)
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes}m ago`
+  if (minutes < 1) return t('walletTracker.timeJustNow')
+  if (minutes < 60) return t('walletTracker.timeMinutesAgo', { n: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return t('walletTracker.timeHoursAgo', { n: hours })
   const days = Math.floor(hours / 24)
-  return `${days}d ago`
+  return t('walletTracker.timeDaysAgo', { n: days })
 }
 
 function scoreTone(value: number, goodThreshold: number, warnThreshold: number): MetricTone {
@@ -179,15 +183,21 @@ function selectionReasonTone(code: string): MetricTone {
   return 'neutral'
 }
 
-function reasonLabelFromCode(code: string): string {
+function reasonLabelFromCode(
+  code: string,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
   const clean = String(code || '').trim()
-  if (!clean) return 'Selection detail'
+  if (!clean) return t('walletTracker.reasonSelectionDetail')
   return clean
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
-function selectionReasons(member: PoolMember): Array<{ code: string; label: string; detail?: string }> {
+function selectionReasons(
+  member: PoolMember,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): Array<{ code: string; label: string; detail?: string }> {
   const raw = Array.isArray(member.selection_reasons) ? member.selection_reasons : []
   const normalized: Array<{ code: string; label: string; detail?: string }> = []
   for (const item of raw) {
@@ -197,7 +207,7 @@ function selectionReasons(member: PoolMember): Array<{ code: string; label: stri
     if (!code && !label) continue
     normalized.push({
       code: code || `reason_${label.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
-      label: label || reasonLabelFromCode(code),
+      label: label || reasonLabelFromCode(code, t),
       detail,
     })
   }
@@ -206,19 +216,19 @@ function selectionReasons(member: PoolMember): Array<{ code: string; label: stri
   if (member.pool_membership_reason) {
     return [{
       code: member.pool_membership_reason,
-      label: reasonLabelFromCode(member.pool_membership_reason),
+      label: reasonLabelFromCode(member.pool_membership_reason, t),
     }]
   }
   if (member.tracked_wallet) {
     return [{
       code: 'tracked_wallet',
-      label: 'Tracked wallet',
-      detail: 'Included from tracked-wallet workflows.',
+      label: t('walletTracker.reasonTrackedWallet'),
+      detail: t('walletTracker.reasonTrackedWalletDetail'),
     }]
   }
   return [{
     code: 'selection_reason_unknown',
-    label: 'Selection reason unavailable',
+    label: t('walletTracker.reasonUnavailable'),
   }]
 }
 
@@ -296,6 +306,7 @@ export default function WalletTracker({
   onNavigateToWallet,
   showManagementPanel = true,
 }: WalletTrackerProps) {
+  const { t } = useTranslation()
   const [newAddress, setNewAddress] = useState('')
   const [newLabel, setNewLabel] = useState('')
   const [activeSection, setActiveSection] = useState<'tracked' | 'discover'>('discover')
@@ -443,9 +454,14 @@ export default function WalletTracker({
 
   const handleTrackOnly = (address: string) => {
     const allTraders = currentDiscoverMode === 'winrate' ? winRateTraders : discoveredTraders
-    const trader = allTraders.find(t => t.address === address)
-    const winRateStr = trader?.win_rate ? ` | ${trader.win_rate.toFixed(1)}% WR` : ''
-    const label = `Discovered Trader (${trader?.volume?.toFixed(0) || '?'} vol${winRateStr})`
+    const trader = allTraders.find(tr => tr.address === address)
+    const winRateStr = trader?.win_rate
+      ? ` | ${t('walletTracker.discoveredLabelWinRate', { wr: trader.win_rate.toFixed(1) })}`
+      : ''
+    const label = t('walletTracker.discoveredLabel', {
+      vol: trader?.volume?.toFixed(0) || '?',
+      wr: winRateStr,
+    })
     trackWalletMutation.mutate({
       address,
       label,
@@ -457,7 +473,9 @@ export default function WalletTracker({
   }
 
   const handleAddToBotSuccess = (result: AddWalletToTraderBotResult) => {
-    const action = result.created ? 'Created bot and added wallet' : 'Added wallet to existing bot'
+    const action = result.created
+      ? t('walletTracker.addToBotCreated')
+      : t('walletTracker.addToBotAdded')
     setAddToBotMessage(`${action}: ${result.trader.name}`)
     setTimeout(() => setAddToBotMessage(null), 4500)
   }
@@ -525,6 +543,8 @@ export default function WalletTracker({
     [fallbackWalletMetrics],
   )
 
+  const unknownLabel = t('walletTracker.unknownAddress')
+
   const trackedWalletRows = useMemo(() => {
     const rows = wallets.map((wallet) => ({
       wallet,
@@ -544,13 +564,13 @@ export default function WalletTracker({
         return 1
       }
 
-      return walletDisplayName(a.wallet).localeCompare(walletDisplayName(b.wallet), undefined, {
+      return walletDisplayName(a.wallet, unknownLabel).localeCompare(walletDisplayName(b.wallet, unknownLabel), undefined, {
         sensitivity: 'base',
       })
     })
 
     return rows
-  }, [wallets, trackedPoolMemberMap])
+  }, [wallets, trackedPoolMemberMap, unknownLabel])
 
   // Check if navigation is controlled by parent
   const isControlledByParent = propSection !== undefined
@@ -566,14 +586,14 @@ export default function WalletTracker({
               className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-green-500/20 data-[state=active]:text-green-400 data-[state=active]:border data-[state=active]:border-green-500/50 data-[state=active]:shadow-none"
             >
               <Search className="w-4 h-4" />
-              Discover Top Traders
+              {t('walletTracker.tabDiscoverTopTraders')}
             </TabsTrigger>
             <TabsTrigger
               value="tracked"
               className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-blue-500/20 data-[state=active]:text-blue-400 data-[state=active]:border data-[state=active]:border-blue-500/50 data-[state=active]:shadow-none"
             >
               <Wallet className="w-4 h-4" />
-              Tracked Wallets ({wallets.length})
+              {t('walletTracker.tabTrackedWallets', { count: wallets.length })}
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -596,14 +616,14 @@ export default function WalletTracker({
                   className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-yellow-500/20 data-[state=active]:text-yellow-400 data-[state=active]:border data-[state=active]:border-yellow-500/50 data-[state=active]:shadow-none"
                 >
                   <Trophy className="w-4 h-4" />
-                  Leaderboard
+                  {t('walletTracker.tabLeaderboard')}
                 </TabsTrigger>
                 <TabsTrigger
                   value="winrate"
                   className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-400 data-[state=active]:border data-[state=active]:border-emerald-500/50 data-[state=active]:shadow-none"
                 >
                   <Target className="w-4 h-4" />
-                  High Win Rate
+                  {t('walletTracker.tabHighWinRate')}
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -617,19 +637,25 @@ export default function WalletTracker({
                   {currentDiscoverMode === 'winrate' ? (
                     <>
                       <Target className="w-5 h-5 text-emerald-500" />
-                      Discover Traders
+                      {t('walletTracker.headingDiscoverTraders')}
                     </>
                   ) : (
                     <>
                       <Star className="w-5 h-5 text-yellow-500" />
-                      Top Active Traders
+                      {t('walletTracker.headingTopActiveTraders')}
                     </>
                   )}
                 </h3>
                 <p className="text-sm text-muted-foreground">
                   {currentDiscoverMode === 'winrate'
-                    ? `Scanning ~${scanCount * 2} traders for ${minWinRate}%+ win rate${minVolume > 0 ? `, $${minVolume.toLocaleString()}+ volume` : ''}`
-                    : 'Discovered from Polymarket leaderboard'}
+                    ? minVolume > 0
+                      ? t('walletTracker.scanningWithVolume', {
+                          n: scanCount * 2,
+                          wr: minWinRate,
+                          vol: minVolume.toLocaleString(),
+                        })
+                      : t('walletTracker.scanning', { n: scanCount * 2, wr: minWinRate })
+                    : t('walletTracker.discoveredFromLeaderboard')}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -642,7 +668,7 @@ export default function WalletTracker({
                   )}
                 >
                   <Filter className="w-4 h-4" />
-                  Filters
+                  {t('walletTracker.filters')}
                 </Button>
                 <Button
                   variant="ghost"
@@ -651,7 +677,7 @@ export default function WalletTracker({
                   className="h-auto gap-2 px-3 py-1.5 bg-muted rounded-lg text-sm hover:bg-accent"
                 >
                   <RefreshCw className={cn("w-4 h-4", isLoadingTraders && "animate-spin")} />
-                  Refresh
+                  {t('walletTracker.refresh')}
                 </Button>
               </div>
             </div>
@@ -662,52 +688,52 @@ export default function WalletTracker({
                 {/* Row 1: Basic filters */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
-                    <label className="block text-xs text-muted-foreground mb-1">Time Period</label>
+                    <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterTimePeriod')}</label>
                     <select
                       value={timePeriod}
                       onChange={(e) => setTimePeriod(e.target.value as TimePeriod)}
                       className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                     >
-                      <option value="ALL">All Time</option>
-                      <option value="MONTH">Last 30 Days</option>
-                      <option value="WEEK">Last 7 Days</option>
-                      <option value="DAY">Last 24 Hours</option>
+                      <option value="ALL">{t('walletTracker.timeAllTime')}</option>
+                      <option value="MONTH">{t('walletTracker.timeLast30Days')}</option>
+                      <option value="WEEK">{t('walletTracker.timeLast7Days')}</option>
+                      <option value="DAY">{t('walletTracker.timeLast24Hours')}</option>
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs text-muted-foreground mb-1">Category</label>
+                    <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterCategory')}</label>
                     <select
                       value={category}
                       onChange={(e) => setCategory(e.target.value as Category)}
                       className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                     >
-                      <option value="OVERALL">All Categories</option>
-                      <option value="POLITICS">Politics</option>
-                      <option value="SPORTS">Sports</option>
-                      <option value="CRYPTO">Crypto</option>
-                      <option value="CULTURE">Culture</option>
-                      <option value="ECONOMICS">Economics</option>
-                      <option value="TECH">Tech</option>
-                      <option value="FINANCE">Finance</option>
+                      <option value="OVERALL">{t('walletTracker.categoryAll')}</option>
+                      <option value="POLITICS">{t('walletTracker.categoryPolitics')}</option>
+                      <option value="SPORTS">{t('walletTracker.categorySports')}</option>
+                      <option value="CRYPTO">{t('walletTracker.categoryCrypto')}</option>
+                      <option value="CULTURE">{t('walletTracker.categoryCulture')}</option>
+                      <option value="ECONOMICS">{t('walletTracker.categoryEconomics')}</option>
+                      <option value="TECH">{t('walletTracker.categoryTech')}</option>
+                      <option value="FINANCE">{t('walletTracker.categoryFinance')}</option>
                     </select>
                   </div>
                   {currentDiscoverMode === 'leaderboard' && (
                     <div>
-                      <label className="block text-xs text-muted-foreground mb-1">Sort By</label>
+                      <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterSortBy')}</label>
                       <select
                         value={orderBy}
                         onChange={(e) => setOrderBy(e.target.value as OrderBy)}
                         className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
-                        <option value="PNL">Profit/Loss</option>
-                        <option value="VOL">Volume</option>
+                        <option value="PNL">{t('walletTracker.sortProfitLoss')}</option>
+                        <option value="VOL">{t('walletTracker.sortVolume')}</option>
                       </select>
                     </div>
                   )}
                   {currentDiscoverMode === 'winrate' && (
                     <>
                       <div>
-                        <label className="block text-xs text-muted-foreground mb-1">Min Win Rate</label>
+                        <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterMinWinRate')}</label>
                         <select
                           value={minWinRate}
                           onChange={(e) => setMinWinRate(Number(e.target.value))}
@@ -725,21 +751,21 @@ export default function WalletTracker({
                         </select>
                       </div>
                       <div>
-                        <label className="block text-xs text-muted-foreground mb-1">Min Trades</label>
+                        <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterMinTrades')}</label>
                         <select
                           value={minTrades}
                           onChange={(e) => setMinTrades(Number(e.target.value))}
                           className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                         >
-                          <option value={3}>3+ trades</option>
-                          <option value={5}>5+ trades</option>
-                          <option value={10}>10+ trades</option>
-                          <option value={20}>20+ trades</option>
-                          <option value={50}>50+ trades</option>
-                          <option value={100}>100+ trades</option>
-                          <option value={200}>200+ trades</option>
-                          <option value={500}>500+ trades</option>
-                          <option value={1000}>1000+ trades</option>
+                          <option value={3}>{t('walletTracker.tradesPlus', { n: 3 })}</option>
+                          <option value={5}>{t('walletTracker.tradesPlus', { n: 5 })}</option>
+                          <option value={10}>{t('walletTracker.tradesPlus', { n: 10 })}</option>
+                          <option value={20}>{t('walletTracker.tradesPlus', { n: 20 })}</option>
+                          <option value={50}>{t('walletTracker.tradesPlus', { n: 50 })}</option>
+                          <option value={100}>{t('walletTracker.tradesPlus', { n: 100 })}</option>
+                          <option value={200}>{t('walletTracker.tradesPlus', { n: 200 })}</option>
+                          <option value={500}>{t('walletTracker.tradesPlus', { n: 500 })}</option>
+                          <option value={1000}>{t('walletTracker.tradesPlus', { n: 1000 })}</option>
                         </select>
                       </div>
                     </>
@@ -750,13 +776,13 @@ export default function WalletTracker({
                 {currentDiscoverMode === 'winrate' && (
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-border">
                     <div>
-                      <label className="block text-xs text-muted-foreground mb-1">Min Volume ($)</label>
+                      <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterMinVolume')}</label>
                       <select
                         value={minVolume}
                         onChange={(e) => setMinVolume(Number(e.target.value))}
                         className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
-                        <option value={0}>No minimum</option>
+                        <option value={0}>{t('walletTracker.volumeNoMin')}</option>
                         <option value={1000}>$1,000+</option>
                         <option value={5000}>$5,000+</option>
                         <option value={10000}>$10,000+</option>
@@ -768,13 +794,13 @@ export default function WalletTracker({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-muted-foreground mb-1">Max Volume ($)</label>
+                      <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterMaxVolume')}</label>
                       <select
                         value={maxVolume}
                         onChange={(e) => setMaxVolume(Number(e.target.value))}
                         className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
-                        <option value={0}>No maximum</option>
+                        <option value={0}>{t('walletTracker.volumeNoMax')}</option>
                         <option value={10000}>$10,000</option>
                         <option value={50000}>$50,000</option>
                         <option value={100000}>$100,000</option>
@@ -784,30 +810,30 @@ export default function WalletTracker({
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-muted-foreground mb-1">Scan Depth</label>
+                      <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterScanDepth')}</label>
                       <select
                         value={scanCount}
                         onChange={(e) => setScanCount(Number(e.target.value))}
                         className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
-                        <option value={200}>200 (fast)</option>
-                        <option value={500}>500 (default)</option>
-                        <option value={750}>750 (deep)</option>
-                        <option value={1000}>1000 (max)</option>
+                        <option value={200}>{t('walletTracker.scanDepthFast', { n: 200 })}</option>
+                        <option value={500}>{t('walletTracker.scanDepthDefault', { n: 500 })}</option>
+                        <option value={750}>{t('walletTracker.scanDepthDeep', { n: 750 })}</option>
+                        <option value={1000}>{t('walletTracker.scanDepthMax', { n: 1000 })}</option>
                       </select>
                     </div>
                     <div>
-                      <label className="block text-xs text-muted-foreground mb-1">Show Results</label>
+                      <label className="block text-xs text-muted-foreground mb-1">{t('walletTracker.filterShowResults')}</label>
                       <select
                         value={resultLimit}
                         onChange={(e) => setResultLimit(Number(e.target.value))}
                         className="w-full bg-[#222] border border-border rounded px-2 py-1.5 text-sm"
                       >
-                        <option value={25}>25 results</option>
-                        <option value={50}>50 results</option>
-                        <option value={100}>100 results</option>
-                        <option value={200}>200 results</option>
-                        <option value={500}>500 results</option>
+                        <option value={25}>{t('walletTracker.resultsCount', { n: 25 })}</option>
+                        <option value={50}>{t('walletTracker.resultsCount', { n: 50 })}</option>
+                        <option value={100}>{t('walletTracker.resultsCount', { n: 100 })}</option>
+                        <option value={200}>{t('walletTracker.resultsCount', { n: 200 })}</option>
+                        <option value={500}>{t('walletTracker.resultsCount', { n: 500 })}</option>
                       </select>
                     </div>
                   </div>
@@ -816,7 +842,7 @@ export default function WalletTracker({
                 {/* Tip for high win rate searches */}
                 {currentDiscoverMode === 'winrate' && minWinRate >= 95 && (
                   <div className="text-xs text-yellow-500/80 flex items-center gap-1 pt-1">
-                    <span>Tip: For 95%+ win rates, set Scan Depth to 1000 (max). Scans both PNL and VOL leaderboards (~2x depth).</span>
+                    <span>{t('walletTracker.tipHighWinRate')}</span>
                   </div>
                 )}
               </div>
@@ -827,12 +853,12 @@ export default function WalletTracker({
                 <RefreshCw className="w-6 h-6 animate-spin text-muted-foreground" />
                 <span className="mt-2 text-muted-foreground">
                   {currentDiscoverMode === 'winrate'
-                    ? `Scanning ~${scanCount * 2} traders from PNL + VOL leaderboards for ${minWinRate}%+ win rate...`
-                    : 'Verifying trader activity across leaderboard...'}
+                    ? t('walletTracker.scanningLoading', { n: scanCount * 2, wr: minWinRate })
+                    : t('walletTracker.verifyingActivity')}
                 </span>
                 {currentDiscoverMode === 'winrate' && (
                   <span className="text-xs text-muted-foreground mt-1">
-                    Analyzing closed positions for each trader (this is fast)
+                    {t('walletTracker.analyzingClosed')}
                   </span>
                 )}
               </div>
@@ -840,12 +866,12 @@ export default function WalletTracker({
               <div className="text-center py-8">
                 <p className="text-muted-foreground">
                   {currentDiscoverMode === 'winrate'
-                    ? `No traders found with ${minWinRate}%+ win rate.`
-                    : 'No traders discovered yet'}
+                    ? t('walletTracker.noTradersWithWr', { wr: minWinRate })
+                    : t('walletTracker.noTradersDiscovered')}
                 </p>
                 {currentDiscoverMode === 'winrate' && (
                   <p className="text-xs text-muted-foreground mt-2">
-                    Try: Lower the win rate threshold, increase scan count, or reduce min trades/volume filters
+                    {t('walletTracker.noTradersTip')}
                   </p>
                 )}
               </div>
@@ -853,12 +879,15 @@ export default function WalletTracker({
               <>
                 <div className="flex items-center justify-between mb-2 px-1">
                   <span className="text-sm text-muted-foreground">
-                    Found {currentTraders.length} trader{currentTraders.length !== 1 ? 's' : ''}
-                    {currentDiscoverMode === 'winrate' && ` with ${minWinRate}%+ win rate`}
+                    {currentDiscoverMode === 'winrate'
+                      ? t('walletTracker.foundTradersWithWr', { count: currentTraders.length, wr: minWinRate })
+                      : t('walletTracker.foundTraders', { count: currentTraders.length })}
                   </span>
                   {currentDiscoverMode === 'winrate' && currentTraders.length > 0 && (
                     <span className="text-xs text-muted-foreground">
-                      Avg: {(currentTraders.reduce((sum, t) => sum + (t.win_rate || 0), 0) / currentTraders.length).toFixed(1)}% WR
+                      {t('walletTracker.avgWinRate', {
+                        wr: (currentTraders.reduce((sum, tr) => sum + (tr.win_rate || 0), 0) / currentTraders.length).toFixed(1),
+                      })}
                     </span>
                   )}
                 </div>
@@ -887,18 +916,18 @@ export default function WalletTracker({
                               trader.win_rate >= 60 ? "text-green-400" :
                               trader.win_rate >= 50 ? "text-yellow-400" : "text-red-400"
                             )}>
-                              {trader.win_rate.toFixed(1)}% WR
+                              {t('walletTracker.wrShort', { wr: trader.win_rate.toFixed(1) })}
                             </span>
                           )}
                           {trader.wins !== undefined && trader.losses !== undefined && (
                             <span className="text-muted-foreground mr-2">
-                              ({trader.wins}W/{trader.losses}L)
+                              ({trader.wins}{t('walletTracker.winsShort')}/{trader.losses}{t('walletTracker.lossesShort')})
                             </span>
                           )}
-                          ${trader.volume.toLocaleString(undefined, { maximumFractionDigits: 0 })} vol
+                          {t('walletTracker.volShort', { vol: `$${trader.volume.toLocaleString(undefined, { maximumFractionDigits: 0 })}` })}
                           {trader.pnl !== undefined && (
                             <span className={trader.pnl >= 0 ? 'text-green-400 ml-2' : 'text-red-400 ml-2'}>
-                              {trader.pnl >= 0 ? '+' : ''}${trader.pnl.toLocaleString(undefined, { maximumFractionDigits: 0 })} P/L
+                              {trader.pnl >= 0 ? '+' : ''}${trader.pnl.toLocaleString(undefined, { maximumFractionDigits: 0 })} {t('walletTracker.pnlLabel')}
                             </span>
                           )}
                         </p>
@@ -911,7 +940,7 @@ export default function WalletTracker({
                         className="h-auto gap-1 px-2 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 rounded text-xs"
                       >
                         <Activity className="w-3 h-3" />
-                        Analyze
+                        {t('walletTracker.analyze')}
                       </Button>
                       <Button
                         variant="ghost"
@@ -920,7 +949,7 @@ export default function WalletTracker({
                         className="h-auto gap-1 px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded text-xs"
                       >
                         <UserPlus className="w-3 h-3" />
-                        Track
+                        {t('walletTracker.track')}
                       </Button>
                       <Button
                         variant="ghost"
@@ -928,14 +957,14 @@ export default function WalletTracker({
                         className="h-auto gap-1 px-2 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded text-xs"
                       >
                         <Bot className="w-3 h-3" />
-                        Add To Bot
+                        {t('walletTracker.addToBot')}
                       </Button>
                       <a
                         href={`https://polymarket.com/profile/${trader.address}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="p-1 hover:bg-accent rounded"
-                        title="View on Polymarket"
+                        title={t('walletTracker.viewOnPolymarket')}
                       >
                         <ExternalLink className="w-3 h-3 text-muted-foreground" />
                       </a>
@@ -953,20 +982,20 @@ export default function WalletTracker({
         <>
           {/* Add Wallet Form */}
           <Card className="p-4">
-            <h3 className="text-lg font-medium mb-4">Track a Wallet</h3>
+            <h3 className="text-lg font-medium mb-4">{t('walletTracker.trackWalletHeading')}</h3>
             <div className="flex gap-3">
               <Input
                 type="text"
                 value={newAddress}
                 onChange={(e) => setNewAddress(e.target.value)}
-                placeholder="Wallet address, @handle, or profile URL"
+                placeholder={t('walletTracker.addressPlaceholder')}
                 className="flex-1 bg-muted rounded-lg"
               />
               <Input
                 type="text"
                 value={newLabel}
                 onChange={(e) => setNewLabel(e.target.value)}
-                placeholder="Label (optional)"
+                placeholder={t('walletTracker.labelPlaceholder')}
                 className="w-48 bg-muted rounded-lg"
               />
               <Button
@@ -979,7 +1008,7 @@ export default function WalletTracker({
                 )}
               >
                 <Plus className="w-4 h-4" />
-                Add
+                {t('walletTracker.add')}
               </Button>
             </div>
           </Card>
@@ -987,15 +1016,19 @@ export default function WalletTracker({
           {/* Tracked Wallets */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-medium">Tracked Wallets ({wallets.length})</h3>
+              <h3 className="text-lg font-medium">{t('walletTracker.trackedWalletsHeading', { count: wallets.length })}</h3>
               <p className="text-xs text-muted-foreground">
                 {fallbackWalletMetricsLoading
-                  ? 'Loading wallet stats...'
+                  ? t('walletTracker.loadingWalletStats')
                   : trackedPoolMembersLoading
-                    ? `Pool metrics still loading · Live stats ${fallbackMetricCount}`
+                    ? t('walletTracker.poolMetricsLoading', { live: fallbackMetricCount })
                   : trackedPoolMembersError
-                    ? 'Pool metrics unavailable'
-                    : `Pool metrics ${trackedPoolMembers.length}/${wallets.length} · Live stats ${fallbackMetricCount}`}
+                    ? t('walletTracker.poolMetricsUnavailable')
+                    : t('walletTracker.poolMetricsSummary', {
+                        pool: trackedPoolMembers.length,
+                        total: wallets.length,
+                        live: fallbackMetricCount,
+                      })}
               </p>
             </div>
 
@@ -1006,9 +1039,9 @@ export default function WalletTracker({
             ) : wallets.length === 0 ? (
               <Card className="text-center py-12">
                 <Wallet className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-                <p className="text-muted-foreground">No wallets being tracked</p>
+                <p className="text-muted-foreground">{t('walletTracker.noWalletsTracked')}</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  Use the Discover tab to find top traders, or add a wallet manually
+                  {t('walletTracker.noWalletsTrackedHint')}
                 </p>
               </Card>
             ) : (
@@ -1017,17 +1050,17 @@ export default function WalletTracker({
                   <Table className="text-[11px] leading-tight">
                     <TableHeader className="sticky top-0 z-10 bg-background/85 backdrop-blur-sm">
                       <TableRow className="bg-muted/55 border-b border-border/80">
-                        <TableHead className="h-9 px-2 min-w-[210px]">Trader</TableHead>
-                        <TableHead className="h-9 px-2 min-w-[220px]">Performance</TableHead>
-                        <TableHead className="h-9 px-2 min-w-[190px]">Selection</TableHead>
-                        <TableHead className="h-9 px-2 min-w-[220px]">Why Selected</TableHead>
-                        <TableHead className="h-9 px-2 min-w-[130px]">Flags</TableHead>
-                        <TableHead className="h-9 px-2 min-w-[140px]">Actions</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[210px]">{t('walletTracker.colTrader')}</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[220px]">{t('walletTracker.colPerformance')}</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[190px]">{t('walletTracker.colSelection')}</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[220px]">{t('walletTracker.colWhySelected')}</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[130px]">{t('walletTracker.colFlags')}</TableHead>
+                        <TableHead className="h-9 px-2 min-w-[140px]">{t('walletTracker.colActions')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {trackedWalletRows.map(({ wallet, member }, rowIndex) => {
-                        const displayName = member?.display_name || walletDisplayName(wallet)
+                        const displayName = member?.display_name || walletDisplayName(wallet, unknownLabel)
                         const username = member?.username || wallet.username || null
                         const fallbackMetrics = fallbackWalletMetrics[wallet.address.toLowerCase()]
                         const hasFallbackMetrics = Boolean(
@@ -1039,7 +1072,7 @@ export default function WalletTracker({
                             || fallbackMetrics.openPositions != null
                           ),
                         )
-                        const reasons = member ? selectionReasons(member) : []
+                        const reasons = member ? selectionReasons(member, t) : []
                         const flags = member?.pool_flags || { manual_include: false, manual_exclude: false, blacklisted: false }
                         const selectionValue = Number(member?.selection_score ?? member?.composite_score ?? 0)
                         const compositeValue = Number(member?.composite_score ?? 0)
@@ -1054,10 +1087,10 @@ export default function WalletTracker({
                         const stabilityScore = Number(breakdown.stability_score ?? member?.stability_score ?? 0)
                         const insiderScore = Number(breakdown.insider_score ?? 0)
                         const selectionSparkline = [
-                          { key: 'quality', label: 'Quality', value: qualityScore, tone: scoreTone(qualityScore, 0.7, 0.45) },
-                          { key: 'activity', label: 'Activity', value: activityScore, tone: scoreTone(activityScore, 0.55, 0.3) },
-                          { key: 'stability', label: 'Stability', value: stabilityScore, tone: scoreTone(stabilityScore, 0.65, 0.45) },
-                          { key: 'insider', label: 'Insider', value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
+                          { key: 'quality', label: t('walletTracker.scoreQuality'), value: qualityScore, tone: scoreTone(qualityScore, 0.7, 0.45) },
+                          { key: 'activity', label: t('walletTracker.scoreActivity'), value: activityScore, tone: scoreTone(activityScore, 0.55, 0.3) },
+                          { key: 'stability', label: t('walletTracker.scoreStability'), value: stabilityScore, tone: scoreTone(stabilityScore, 0.65, 0.45) },
+                          { key: 'insider', label: t('walletTracker.scoreInsider'), value: insiderScore, tone: inverseScoreTone(insiderScore, 0.72, 0.6) },
                         ]
                         const hasSparkline = member ? selectionSparkline.some((point) => point.value > 0) : false
                         const rowHighlight = rowIndex % 2 === 0 ? 'bg-background/30' : ''
@@ -1080,11 +1113,11 @@ export default function WalletTracker({
                                   {username && (
                                     <span className="max-w-[120px] truncate" title={`@${username}`}>@{username}</span>
                                   )}
-                                  <span className="font-mono">{shortAddress(wallet.address)}</span>
+                                  <span className="font-mono">{shortAddress(wallet.address, unknownLabel)}</span>
                                 </div>
                                 {wallet.label && wallet.label !== displayName && (
                                   <div className="truncate text-[10px] text-muted-foreground" title={wallet.label}>
-                                    Label: {wallet.label}
+                                    {t('walletTracker.labelPrefix', { label: wallet.label })}
                                   </div>
                                 )}
                               </div>
@@ -1096,24 +1129,24 @@ export default function WalletTracker({
                                   <div className="flex flex-wrap items-center gap-1">
                                     <PnlDisplay value={member.total_pnl || 0} className="text-xs" />
                                     <MetricPill
-                                      label="WR"
+                                      label={t('walletTracker.pillWr')}
                                       value={formatWinRate(member.win_rate || 0)}
                                       tone={scoreTone(normalizePercentRatio(member.win_rate || 0) / 100, 0.6, 0.45)}
                                     />
-                                    <MetricPill label="T" value={formatNumber(member.total_trades || 0)} />
+                                    <MetricPill label={t('walletTracker.pillTrades')} value={formatNumber(member.total_trades || 0)} />
                                   </div>
                                   <div className="flex flex-wrap items-center gap-1">
                                     <MetricPill
-                                      label="24h"
+                                      label={t('walletTracker.pill24h')}
                                       value={formatNumber(member.trades_24h || 0)}
                                       tone={scoreTone(clamp01((member.trades_24h || 0) / 12), 0.6, 0.25)}
                                     />
                                     <MetricPill
-                                      label="1h"
+                                      label={t('walletTracker.pill1h')}
                                       value={formatNumber(member.trades_1h || 0)}
                                       tone={scoreTone(clamp01((member.trades_1h || 0) / 4), 0.55, 0.25)}
                                     />
-                                    <span className="text-[10px] text-muted-foreground">{timeAgo(member.last_trade_at || null)}</span>
+                                    <span className="text-[10px] text-muted-foreground">{timeAgo(member.last_trade_at || null, t)}</span>
                                   </div>
                                 </div>
                               ) : (
@@ -1123,7 +1156,7 @@ export default function WalletTracker({
                                       <PnlDisplay value={fallbackMetrics.totalPnl} className="text-xs" />
                                     )}
                                     <MetricPill
-                                      label="WR"
+                                      label={t('walletTracker.pillWr')}
                                       value={fallbackMetrics?.winRate != null ? `${fallbackMetrics.winRate.toFixed(1)}%` : '--'}
                                       tone={
                                         fallbackMetrics?.winRate != null
@@ -1132,18 +1165,18 @@ export default function WalletTracker({
                                       }
                                     />
                                     <MetricPill
-                                      label="T"
+                                      label={t('walletTracker.pillTrades')}
                                       value={fallbackMetrics?.totalTrades != null ? formatNumber(fallbackMetrics.totalTrades) : '--'}
                                     />
                                     <MetricPill
-                                      label="Pos"
+                                      label={t('walletTracker.pillPositions')}
                                       value={fallbackMetrics?.openPositions != null ? formatNumber(fallbackMetrics.openPositions) : '--'}
                                     />
                                   </div>
                                   <span className="text-[10px] text-muted-foreground">
                                     {hasFallbackMetrics
-                                      ? 'Live wallet stats'
-                                      : 'Wallet stats unavailable right now'}
+                                      ? t('walletTracker.liveWalletStats')
+                                      : t('walletTracker.walletStatsUnavailable')}
                                   </span>
                                 </div>
                               )}
@@ -1154,23 +1187,23 @@ export default function WalletTracker({
                                 <div className="space-y-1">
                                   <div className="flex flex-wrap items-center gap-1">
                                     <MetricPill
-                                      label={showCompositeScore ? 'Sel' : 'Sel/Cmp'}
+                                      label={showCompositeScore ? t('walletTracker.pillSel') : t('walletTracker.pillSelCmp')}
                                       value={formatScorePct(selectionValue)}
                                       tone={scoreTone(selectionValue, 0.7, 0.5)}
                                     />
                                     {showCompositeScore && (
                                       <MetricPill
-                                        label="Cmp"
+                                        label={t('walletTracker.pillCmp')}
                                         value={formatScorePct(compositeValue)}
                                         tone={scoreTone(compositeValue, 0.7, 0.5)}
                                       />
                                     )}
-                                    {percentile && <MetricPill label="Top" value={percentile} tone="info" />}
+                                    {percentile && <MetricPill label={t('walletTracker.pillTop')} value={percentile} tone="info" />}
                                   </div>
                                   {hasSparkline && <ScoreSparkline points={selectionSparkline} />}
                                 </div>
                               ) : (
-                                <span className="text-[10px] text-muted-foreground">No selection score yet</span>
+                                <span className="text-[10px] text-muted-foreground">{t('walletTracker.noSelectionScore')}</span>
                               )}
                             </TableCell>
 
@@ -1194,24 +1227,24 @@ export default function WalletTracker({
                                   )}
                                 </div>
                               ) : (
-                                <span className="text-[10px] text-muted-foreground">Awaiting analysis refresh</span>
+                                <span className="text-[10px] text-muted-foreground">{t('walletTracker.awaitingAnalysis')}</span>
                               )}
                             </TableCell>
 
                             <TableCell className="px-2 py-1.5 align-middle">
                               <div className="flex flex-wrap gap-1">
-                                <MetricPill label="Tracked" value="Yes" tone="info" mono={false} />
+                                <MetricPill label={t('walletTracker.flagTracked')} value={t('walletTracker.flagYes')} tone="info" mono={false} />
                                 {member?.in_top_pool && (
                                   <MetricPill
-                                    label="Pool"
-                                    value={member.pool_tier ? member.pool_tier.toUpperCase() : 'TOP'}
+                                    label={t('walletTracker.flagPool')}
+                                    value={member.pool_tier ? member.pool_tier.toUpperCase() : t('walletTracker.flagPoolTop')}
                                     tone="good"
                                     mono={false}
                                   />
                                 )}
-                                {flags.manual_include && <MetricPill label="Manual+" value="On" tone="good" mono={false} />}
-                                {flags.manual_exclude && <MetricPill label="Manual-" value="On" tone="warn" mono={false} />}
-                                {flags.blacklisted && <MetricPill label="BL" value="On" tone="bad" mono={false} />}
+                                {flags.manual_include && <MetricPill label={t('walletTracker.flagManualPlus')} value={t('walletTracker.flagOn')} tone="good" mono={false} />}
+                                {flags.manual_exclude && <MetricPill label={t('walletTracker.flagManualMinus')} value={t('walletTracker.flagOn')} tone="warn" mono={false} />}
+                                {flags.blacklisted && <MetricPill label={t('walletTracker.flagBlacklist')} value={t('walletTracker.flagOn')} tone="bad" mono={false} />}
                               </div>
                             </TableCell>
 
@@ -1220,14 +1253,14 @@ export default function WalletTracker({
                                 <button
                                   onClick={() => handleAnalyze(wallet.address, username || undefined)}
                                   className="p-1 rounded bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 transition-colors"
-                                  title="Analyze wallet"
+                                  title={t('walletTracker.tooltipAnalyzeWallet')}
                                 >
                                   <Activity className="w-3.5 h-3.5" />
                                 </button>
                                 <button
                                   onClick={() => openAddToBotDialog(wallet.address, displayName)}
                                   className="p-1 rounded bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 transition-colors"
-                                  title="Add wallet to bot"
+                                  title={t('walletTracker.tooltipAddToBot')}
                                 >
                                   <Bot className="w-3.5 h-3.5" />
                                 </button>
@@ -1236,7 +1269,7 @@ export default function WalletTracker({
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="p-1 rounded bg-muted text-muted-foreground hover:text-foreground transition-colors inline-flex"
-                                  title="View on Polymarket"
+                                  title={t('walletTracker.viewOnPolymarket')}
                                 >
                                   <ExternalLink className="w-3.5 h-3.5" />
                                 </a>
@@ -1244,7 +1277,7 @@ export default function WalletTracker({
                                   onClick={() => removeMutation.mutate(wallet.address)}
                                   disabled={removeMutation.isPending}
                                   className="p-1 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
-                                  title="Remove wallet"
+                                  title={t('walletTracker.tooltipRemoveWallet')}
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
