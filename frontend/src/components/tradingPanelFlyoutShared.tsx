@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from 'react'
+import type { TFunction } from 'i18next'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card } from './ui/card'
@@ -28,6 +29,28 @@ export const TRADING_SCHEDULE_DAY_LABEL: Record<TradingScheduleDay, string> = {
   fri: 'Fri',
   sat: 'Sat',
   sun: 'Sun',
+}
+
+export const TRADING_SCHEDULE_DAY_LABEL_KEYS: Record<TradingScheduleDay, string> = {
+  mon: 'tradingPanelShared.mon',
+  tue: 'tradingPanelShared.tue',
+  wed: 'tradingPanelShared.wed',
+  thu: 'tradingPanelShared.thu',
+  fri: 'tradingPanelShared.fri',
+  sat: 'tradingPanelShared.sat',
+  sun: 'tradingPanelShared.sun',
+}
+
+export function getTradingScheduleDayLabels(t: TFunction): Record<TradingScheduleDay, string> {
+  return {
+    mon: t('tradingPanelShared.mon'),
+    tue: t('tradingPanelShared.tue'),
+    wed: t('tradingPanelShared.wed'),
+    thu: t('tradingPanelShared.thu'),
+    fri: t('tradingPanelShared.fri'),
+    sat: t('tradingPanelShared.sat'),
+    sun: t('tradingPanelShared.sun'),
+  }
 }
 
 export const DEFAULT_TRADING_SCHEDULE_DRAFT: TradingScheduleDraft = {

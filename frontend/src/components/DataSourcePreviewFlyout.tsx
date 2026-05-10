@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation } from '@tanstack/react-query'
 import {
   ChevronDown,
@@ -34,6 +35,7 @@ interface PreviewRecord {
 }
 
 function PayloadViewer({ data, label }: { data: Record<string, any> | null; label: string }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   if (!data || Object.keys(data).length === 0) return null
   return (
@@ -43,7 +45,7 @@ function PayloadViewer({ data, label }: { data: Record<string, any> | null; labe
         onClick={() => setOpen(!open)}
       >
         {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-        {label} ({Object.keys(data).length} fields)
+        {label} ({t('dataSourcePreviewFlyout.fieldsCount', { count: Object.keys(data).length })})
       </button>
       {open && (
         <pre className="mt-1 bg-[#1e1e2e] border border-border/30 rounded-md p-2 text-[10px] leading-relaxed font-mono text-gray-300 overflow-x-auto whitespace-pre max-h-48">
@@ -55,6 +57,7 @@ function PayloadViewer({ data, label }: { data: Record<string, any> | null; labe
 }
 
 function RecordRow({ record, index }: { record: PreviewRecord; index: number }) {
+  const { t } = useTranslation()
   const severity = record.payload?.severity
   return (
     <div className="border-b border-border/30 px-4 py-3 hover:bg-muted/20 transition-colors">
@@ -63,7 +66,7 @@ function RecordRow({ record, index }: { record: PreviewRecord; index: number }) 
           <div className="flex items-center gap-2 mb-0.5">
             <span className="text-[10px] text-muted-foreground font-mono">#{index + 1}</span>
             <span className="text-[12px] font-medium text-foreground truncate">
-              {record.title || '(untitled)'}
+              {record.title || t('dataSourcePreviewFlyout.untitled')}
             </span>
           </div>
           {record.summary && (
@@ -116,6 +119,7 @@ export default function DataSourcePreviewFlyout({
   onOpenChange: (open: boolean) => void
   sourceId: string | null
 }) {
+  const { t } = useTranslation()
   const previewMutation = useMutation({
     mutationFn: async () => {
       if (!sourceId) throw new Error('No source selected')
@@ -151,16 +155,16 @@ export default function DataSourcePreviewFlyout({
             <div>
               <SheetTitle className="flex items-center gap-2 text-sm">
                 <Eye className="w-4 h-4 text-cyan-400" />
-                Preview
+                {t('dataSourcePreviewFlyout.preview')}
               </SheetTitle>
               <SheetDescription className="text-[11px] mt-0.5">
-                Live fetch — no records persisted
+                {t('dataSourcePreviewFlyout.liveFetchNoRecords')}
               </SheetDescription>
             </div>
             <div className="flex items-center gap-2">
               {data && (
                 <span className="text-[10px] text-muted-foreground">
-                  {data.records.length} of {data.total_fetched} rows &middot; {data.duration_ms}ms
+                  {t('dataSourcePreviewFlyout.recordSummary', { shown: data.records.length, total: data.total_fetched, duration: data.duration_ms })}
                 </span>
               )}
               <Button
@@ -175,7 +179,7 @@ export default function DataSourcePreviewFlyout({
                 ) : (
                   <Eye className="w-3 h-3" />
                 )}
-                Refresh
+                {t('common.refresh')}
               </Button>
             </div>
           </div>
@@ -186,7 +190,7 @@ export default function DataSourcePreviewFlyout({
             <div className="flex items-center justify-center py-16">
               <div className="flex flex-col items-center gap-3">
                 <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
-                <span className="text-[11px] text-muted-foreground">Fetching preview rows...</span>
+                <span className="text-[11px] text-muted-foreground">{t('dataSourcePreviewFlyout.fetchingPreview')}</span>
               </div>
             </div>
           )}
@@ -195,7 +199,7 @@ export default function DataSourcePreviewFlyout({
             <div className="mx-4 mt-4 p-3 rounded-md bg-red-500/10 border border-red-500/30">
               <div className="flex items-center gap-2 text-red-400 text-[11px]">
                 <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                <span>{(previewMutation.error as Error)?.message || 'Preview failed'}</span>
+                <span>{(previewMutation.error as Error)?.message || t('dataSourcePreviewFlyout.previewFailed')}</span>
               </div>
             </div>
           )}
@@ -205,7 +209,7 @@ export default function DataSourcePreviewFlyout({
               {data.records.length === 0 ? (
                 <div className="flex items-center justify-center py-16">
                   <span className="text-[11px] text-muted-foreground">
-                    fetch_async() returned 0 records
+                    {t('dataSourcePreviewFlyout.zeroRecords')}
                   </span>
                 </div>
               ) : (

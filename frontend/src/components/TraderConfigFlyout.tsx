@@ -16,7 +16,7 @@ import { Switch } from './ui/switch'
 import {
   FlyoutSection,
   TRADING_SCHEDULE_DAYS,
-  TRADING_SCHEDULE_DAY_LABEL,
+  TRADING_SCHEDULE_DAY_LABEL_KEYS,
   TRADING_SCHEDULE_WEEKDAYS,
   TRADING_SCHEDULE_WEEKENDS,
   type StrategyCatalogOption,
@@ -505,7 +505,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                             onClick={() => toggleTradingScheduleDay(day)}
                             disabled={!tradingScheduleDraft.enabled}
                           >
-                            {TRADING_SCHEDULE_DAY_LABEL[day]}
+                            {t(TRADING_SCHEDULE_DAY_LABEL_KEYS[day])}
                           </Button>
                         )
                       })}

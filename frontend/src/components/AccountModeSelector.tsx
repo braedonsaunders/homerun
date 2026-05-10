@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useAtom } from 'jotai'
 import { useQuery } from '@tanstack/react-query'
 import { Shield, Zap, ChevronDown, DollarSign, BarChart3, Check } from 'lucide-react'
@@ -7,6 +8,7 @@ import { accountModeAtom, selectedAccountIdAtom } from '../store/atoms'
 import { getKalshiBalance, getKalshiStatus, getSimulationAccounts, getTradingBalance, getTradingStatus } from '../services/api'
 
 export default function AccountModeSelector() {
+  const { t } = useTranslation()
   const [, setMode] = useAtom(accountModeAtom)
   const [selectedAccountId, setSelectedAccountId] = useAtom(selectedAccountIdAtom)
   const [open, setOpen] = useState(false)
@@ -99,7 +101,7 @@ export default function AccountModeSelector() {
     if (selectedSandbox) {
       return selectedSandbox.name
     }
-    return 'Select Account'
+    return t('accountModeSelector.selectAccount')
   }
 
   const selectAccount = (id: string) => {
@@ -134,13 +136,13 @@ export default function AccountModeSelector() {
           <div className="px-3 py-2 border-b border-border">
             <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
               <Shield className="w-3 h-3" />
-              Sandbox Accounts
+              {t('accountModeSelector.sandboxAccounts')}
             </div>
           </div>
           <div className="max-h-48 overflow-y-auto">
             {sandboxAccounts.length === 0 ? (
               <div className="px-3 py-3 text-xs text-muted-foreground">
-                No sandbox accounts yet
+                {t('accountModeSelector.noSandboxAccounts')}
               </div>
             ) : (
               sandboxAccounts.map(acc => (
@@ -170,7 +172,7 @@ export default function AccountModeSelector() {
           <div className="px-3 py-2 border-y border-border">
             <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-green-400">
               <Zap className="w-3 h-3" />
-              Live Accounts
+              {t('accountModeSelector.liveAccounts')}
             </div>
           </div>
           <button

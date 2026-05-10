@@ -1,4 +1,5 @@
 import { memo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useAtom } from 'jotai'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import type { Trader } from '../services/apiTraders'
@@ -31,6 +32,7 @@ function RiskLimitsViewImpl({
   onDiscard,
   flyoutOpen,
 }: RiskLimitsViewProps) {
+  const { t } = useTranslation()
   const [riskValues, setRiskValues] = useAtom(draftRiskValuesAtom)
 
   if (!selectedTrader) {
@@ -38,7 +40,7 @@ function RiskLimitsViewImpl({
       <div className="h-full min-h-0 overflow-auto px-1">
         <div className="h-full min-h-0 rounded-md border border-border/50 bg-muted/10 p-2">
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-100">
-            Select a bot to configure risk limits.
+            {t('riskLimitsView.selectBotPrompt')}
           </div>
         </div>
       </div>
@@ -52,13 +54,13 @@ function RiskLimitsViewImpl({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1.5">
               <AlertTriangle className="h-3.5 w-3.5 text-rose-500" />
-              <p className="text-[11px] font-medium">Risk Limits</p>
+              <p className="text-[11px] font-medium">{t('riskLimitsView.title')}</p>
               <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-mono">
-                {riskFormSchema.param_fields.length} fields
+                {t('riskLimitsView.fieldsCount', { count: riskFormSchema.param_fields.length })}
               </Badge>
               {riskDraftDirty ? (
                 <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-amber-500">
-                  UNSAVED
+                  {t('riskLimitsView.unsaved')}
                 </span>
               ) : null}
             </div>
@@ -74,7 +76,7 @@ function RiskLimitsViewImpl({
                 }}
                 disabled={!riskDraftDirty}
               >
-                Discard
+                {t('riskLimitsView.discard')}
               </Button>
               <Button
                 type="button"
@@ -86,12 +88,12 @@ function RiskLimitsViewImpl({
                 {saveRiskLimitsMutation.isPending ? (
                   <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                 ) : null}
-                Save Risk Limits
+                {t('riskLimitsView.saveRiskLimits')}
               </Button>
             </div>
           </div>
           <p className="text-[10px] text-muted-foreground/80">
-            Rendered directly from StrategySDK risk limit schema.
+            {t('riskLimitsView.renderedFromSchema')}
           </p>
           {riskSaveError ? (
             <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-500">
@@ -109,7 +111,7 @@ function RiskLimitsViewImpl({
                 }}
               />
             ) : (
-              <p className="text-[10px] text-muted-foreground/80">No risk schema available.</p>
+              <p className="text-[10px] text-muted-foreground/80">{t('riskLimitsView.noRiskSchema')}</p>
             )}
           </div>
         </div>

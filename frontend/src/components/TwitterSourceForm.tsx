@@ -1,3 +1,5 @@
+import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
@@ -7,16 +9,17 @@ interface TwitterSourceFormProps {
   onChange: (config: Record<string, any>) => void
 }
 
-const POLL_INTERVAL_OPTIONS = [
-  { value: '5', label: '5 minutes' },
-  { value: '15', label: '15 minutes' },
-  { value: '30', label: '30 minutes' },
-  { value: '60', label: '1 hour' },
-  { value: '240', label: '4 hours' },
-  { value: '1440', label: '24 hours' },
-]
-
 export default function TwitterSourceForm({ config, onChange }: TwitterSourceFormProps) {
+  const { t } = useTranslation()
+  const pollIntervalOptions = useMemo(() => [
+    { value: '5', label: t('twitterSourceForm.pollOption5min') },
+    { value: '15', label: t('twitterSourceForm.pollOption15min') },
+    { value: '30', label: t('twitterSourceForm.pollOption30min') },
+    { value: '60', label: t('twitterSourceForm.pollOption1hour') },
+    { value: '240', label: t('twitterSourceForm.pollOption4hours') },
+    { value: '1440', label: t('twitterSourceForm.pollOption24hours') },
+  ], [t])
+
   const update = (key: string, value: unknown) => {
     onChange({ ...config, [key]: value })
   }
@@ -32,7 +35,7 @@ export default function TwitterSourceForm({ config, onChange }: TwitterSourceFor
     <div className="space-y-3">
       <div>
         <Label className="text-[11px] text-muted-foreground">
-          Accounts <span className="text-muted-foreground/60 font-normal">(comma-separated @handles)</span>
+          {t('twitterSourceForm.accounts')} <span className="text-muted-foreground/60 font-normal">{t('twitterSourceForm.accountsHint')}</span>
         </Label>
         <textarea
           value={handles}
@@ -42,12 +45,12 @@ export default function TwitterSourceForm({ config, onChange }: TwitterSourceFor
           placeholder="@polyaborist, @KalshiWatch, @ElectionBettingOdds, @PolymarketWhale"
           spellCheck={false}
         />
-        <p className="text-[10px] text-muted-foreground mt-1">Twitter/X accounts to monitor for prediction-market-relevant posts</p>
+        <p className="text-[10px] text-muted-foreground mt-1">{t('twitterSourceForm.accountsHelp')}</p>
       </div>
 
       <div>
         <Label className="text-[11px] text-muted-foreground">
-          Keywords <span className="text-muted-foreground/60 font-normal">(comma-separated search terms)</span>
+          {t('twitterSourceForm.keywords')} <span className="text-muted-foreground/60 font-normal">{t('twitterSourceForm.keywordsHint')}</span>
         </Label>
         <textarea
           value={keywords}
@@ -57,12 +60,12 @@ export default function TwitterSourceForm({ config, onChange }: TwitterSourceFor
           placeholder="polymarket, kalshi, prediction market, election odds"
           spellCheck={false}
         />
-        <p className="text-[10px] text-muted-foreground mt-1">Search terms for finding relevant tweets (requires X API bearer token)</p>
+        <p className="text-[10px] text-muted-foreground mt-1">{t('twitterSourceForm.keywordsHelp')}</p>
       </div>
 
       <div>
         <Label className="text-[11px] text-muted-foreground">
-          X API Bearer Token <span className="text-muted-foreground/60 font-normal">(optional)</span>
+          {t('twitterSourceForm.bearerToken')} <span className="text-muted-foreground/60 font-normal">{t('twitterSourceForm.optional')}</span>
         </Label>
         <Input
           type="password"
@@ -73,30 +76,30 @@ export default function TwitterSourceForm({ config, onChange }: TwitterSourceFor
           autoComplete="off"
         />
         <p className="text-[10px] text-muted-foreground mt-1">
-          If set, uses X API v2 for real-time search. Without it, falls back to Nitter RSS (accounts only, no keyword search).
+          {t('twitterSourceForm.bearerTokenHelp')}
         </p>
       </div>
 
       <div>
-        <Label className="text-[11px] text-muted-foreground">Nitter Instance</Label>
+        <Label className="text-[11px] text-muted-foreground">{t('twitterSourceForm.nitterInstance')}</Label>
         <Input
           value={nitterInstance}
           onChange={(e) => update('nitter_instance', e.target.value)}
           className="mt-1 h-8 text-xs font-mono"
           placeholder="nitter.privacydev.net"
         />
-        <p className="text-[10px] text-muted-foreground mt-1">Fallback RSS source when no bearer token is configured</p>
+        <p className="text-[10px] text-muted-foreground mt-1">{t('twitterSourceForm.nitterInstanceHelp')}</p>
       </div>
 
       <div className="grid gap-3 grid-cols-2">
         <div>
-          <Label className="text-[11px] text-muted-foreground">Poll Interval</Label>
+          <Label className="text-[11px] text-muted-foreground">{t('twitterSourceForm.pollInterval')}</Label>
           <Select value={pollInterval} onValueChange={(val) => update('poll_interval_minutes', parseInt(val, 10))}>
             <SelectTrigger className="mt-1 h-8 text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {POLL_INTERVAL_OPTIONS.map((opt) => (
+              {pollIntervalOptions.map((opt) => (
                 <SelectItem key={opt.value} value={opt.value}>
                   {opt.label}
                 </SelectItem>
@@ -106,7 +109,7 @@ export default function TwitterSourceForm({ config, onChange }: TwitterSourceFor
         </div>
 
         <div>
-          <Label className="text-[11px] text-muted-foreground">Max Tweets</Label>
+          <Label className="text-[11px] text-muted-foreground">{t('twitterSourceForm.maxTweets')}</Label>
           <Input
             type="number"
             value={limit}

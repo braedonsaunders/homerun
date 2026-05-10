@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { FolderTree, Wallet } from 'lucide-react'
 import WalletTracker from './WalletTracker'
 import RecentTradesPanel from './RecentTradesPanel'
@@ -12,6 +13,7 @@ interface TrackedTradersPanelProps {
 type TrackedView = 'wallets' | 'groups'
 
 export default function TrackedTradersPanel({ onAnalyzeWallet, onNavigateToWallet }: TrackedTradersPanelProps) {
+  const { t } = useTranslation()
   const [activeView, setActiveView] = useState<TrackedView>('wallets')
 
   const navigateWallet = (address: string, username?: string | null) => {
@@ -31,14 +33,14 @@ export default function TrackedTradersPanel({ onAnalyzeWallet, onNavigateToWalle
             className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-300 data-[state=active]:border data-[state=active]:border-emerald-500/40 data-[state=active]:shadow-none"
           >
             <Wallet className="w-4 h-4" />
-            Wallets
+            {t('trackedTradersPanel.wallets')}
           </TabsTrigger>
           <TabsTrigger
             value="groups"
             className="gap-2 rounded-lg bg-muted text-muted-foreground hover:text-foreground data-[state=active]:bg-amber-500/20 data-[state=active]:text-amber-300 data-[state=active]:border data-[state=active]:border-amber-500/40 data-[state=active]:shadow-none"
           >
             <FolderTree className="w-4 h-4" />
-            Groups
+            {t('trackedTradersPanel.groups')}
           </TabsTrigger>
         </TabsList>
 

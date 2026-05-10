@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bot, Loader2, PlusCircle } from 'lucide-react'
 import { Button } from './ui/button'
@@ -22,24 +24,30 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
 
-function errorMessage(error: unknown): string {
+function errorMessage(error: unknown, t: TFunction): string {
   const detail = (error as any)?.response?.data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail.trim()
   const message = (error as any)?.message
   if (typeof message === 'string' && message.trim()) return message.trim()
-  return 'Failed to add wallet to bot'
+  return t('addWalletToBotDialog.failedToAdd')
 }
 
-function resolveDefaultBotName(walletAddress: string, walletLabel?: string | null): string {
+function resolveDefaultBotName(walletAddress: string, walletLabel: string | null | undefined, t: TFunction): string {
   const label = String(walletLabel || '').trim()
-  if (label) return `${label} Copy Bot`
-  return `${shortAddress(walletAddress)} Copy Bot`
+  const suffix = t('addWalletToBotDialog.copyBotSuffix')
+  if (label) return `${label} ${suffix}`
+  return `${shortAddress(walletAddress)} ${suffix}`
 }
 
-function resolveTraderCaption(trader: Trader): string {
+function resolveTraderCaption(trader: Trader, t: TFunction): string {
   const sourceCount = Array.isArray(trader.source_configs) ? trader.source_configs.length : 0
-  const mode = trader.mode === 'live' ? 'live' : 'paper'
-  return `${mode} | ${sourceCount} source${sourceCount === 1 ? '' : 's'}`
+  const mode = trader.mode === 'live'
+    ? t('addWalletToBotDialog.modeLive')
+    : t('addWalletToBotDialog.modePaper')
+  const sourcesLabel = sourceCount === 1
+    ? t('addWalletToBotDialog.sourceSingular')
+    : t('addWalletToBotDialog.sourcePlural')
+  return `${mode} | ${sourceCount} ${sourcesLabel}`
 }
 
 export default function AddWalletToBotDialog({
@@ -49,6 +57,7 @@ export default function AddWalletToBotDialog({
   onOpenChange,
   onAdded,
 }: AddWalletToBotDialogProps) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [target, setTarget] = useState<AddWalletToTraderBotTarget>('new')
   const [newTraderName, setNewTraderName] = useState('')
@@ -68,18 +77,18 @@ export default function AddWalletToBotDialog({
       traders.map((trader) => ({
         id: trader.id,
         name: trader.name,
-        caption: resolveTraderCaption(trader),
+        caption: resolveTraderCaption(trader, t),
       })),
-    [traders],
+    [traders, t],
   )
 
   useEffect(() => {
     if (!open || !walletAddress) return
     setTarget('new')
     setNewTraderMode('paper')
-    setNewTraderName(resolveDefaultBotName(walletAddress, walletLabel))
+    setNewTraderName(resolveDefaultBotName(walletAddress, walletLabel, t))
     setExistingTraderId('')
-  }, [open, walletAddress, walletLabel])
+  }, [open, walletAddress, walletLabel, t])
 
   useEffect(() => {
     if (!open || target !== 'existing') return
@@ -125,16 +134,16 @@ export default function AddWalletToBotDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <Bot className="h-4 w-4 text-sky-400" />
-            Add Wallet To Bot
+            {t('addWalletToBotDialog.title')}
           </DialogTitle>
           <DialogDescription>
-            Configure copy-trade routing for this wallet.
+            {t('addWalletToBotDialog.description')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <div className="rounded-md border border-border bg-muted/35 px-3 py-2">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Wallet</p>
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{t('addWalletToBotDialog.wallet')}</p>
             <p className="mt-0.5 font-mono text-sm">{walletAddress || '--'}</p>
             {walletLabel && (
               <p className="mt-0.5 text-[11px] text-muted-foreground">{walletLabel}</p>
@@ -142,14 +151,14 @@ export default function AddWalletToBotDialog({
           </div>
 
           <div className="space-y-1">
-            <Label>Target</Label>
+            <Label>{t('addWalletToBotDialog.target')}</Label>
             <Select value={target} onValueChange={(value) => setTarget(value as AddWalletToTraderBotTarget)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="new">Create new bot</SelectItem>
-                <SelectItem value="existing">Add to existing bot</SelectItem>
+                <SelectItem value="new">{t('addWalletToBotDialog.createNewBot')}</SelectItem>
+                <SelectItem value="existing">{t('addWalletToBotDialog.addToExistingBot')}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -157,32 +166,32 @@ export default function AddWalletToBotDialog({
           {target === 'new' ? (
             <div className="space-y-3">
               <div className="space-y-1">
-                <Label>Bot Name</Label>
+                <Label>{t('addWalletToBotDialog.botName')}</Label>
                 <Input
                   value={newTraderName}
                   onChange={(event) => setNewTraderName(event.target.value)}
-                  placeholder="Wallet Copy Bot"
+                  placeholder={t('addWalletToBotDialog.botNamePlaceholder')}
                 />
               </div>
               <div className="space-y-1">
-                <Label>Mode</Label>
+                <Label>{t('addWalletToBotDialog.mode')}</Label>
                 <Select value={newTraderMode} onValueChange={(value) => setNewTraderMode(value === 'live' ? 'live' : 'paper')}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="paper">Paper</SelectItem>
-                    <SelectItem value="live">Live</SelectItem>
+                    <SelectItem value="paper">{t('addWalletToBotDialog.paper')}</SelectItem>
+                    <SelectItem value="live">{t('addWalletToBotDialog.live')}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
           ) : (
             <div className="space-y-1">
-              <Label>Existing Bot</Label>
+              <Label>{t('addWalletToBotDialog.existingBot')}</Label>
               <Select value={existingTraderId} onValueChange={setExistingTraderId} disabled={existingTraderOptions.length === 0 || tradersQuery.isLoading}>
                 <SelectTrigger>
-                  <SelectValue placeholder={tradersQuery.isLoading ? 'Loading bots...' : 'Select bot'} />
+                  <SelectValue placeholder={tradersQuery.isLoading ? t('addWalletToBotDialog.loadingBots') : t('addWalletToBotDialog.selectBot')} />
                 </SelectTrigger>
                 <SelectContent>
                   {existingTraderOptions.map((option) => (
@@ -193,19 +202,19 @@ export default function AddWalletToBotDialog({
                 </SelectContent>
               </Select>
               {!tradersQuery.isLoading && existingTraderOptions.length === 0 && (
-                <p className="text-xs text-muted-foreground">No existing bots found. Select "Create new bot".</p>
+                <p className="text-xs text-muted-foreground">{t('addWalletToBotDialog.noExistingBots')}</p>
               )}
             </div>
           )}
 
           {addWalletMutation.isError && (
-            <p className="text-xs text-rose-400">{errorMessage(addWalletMutation.error)}</p>
+            <p className="text-xs text-rose-400">{errorMessage(addWalletMutation.error, t)}</p>
           )}
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={addWalletMutation.isPending}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             onClick={() => addWalletMutation.mutate()}
@@ -213,7 +222,7 @@ export default function AddWalletToBotDialog({
             className="gap-2"
           >
             {addWalletMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlusCircle className="h-4 w-4" />}
-            {target === 'new' ? 'Create Bot + Add Wallet' : 'Add Wallet'}
+            {target === 'new' ? t('addWalletToBotDialog.createBotAndAddWallet') : t('addWalletToBotDialog.addWallet')}
           </Button>
         </DialogFooter>
       </DialogContent>
