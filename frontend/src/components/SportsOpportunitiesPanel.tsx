@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Trophy,
   TrendingDown,
@@ -30,12 +31,12 @@ import { themeAtom } from '../store/atoms'
 const ITEMS_PER_PAGE = 20
 const SPORTS_OVERREACTION_FADER_STRATEGY = 'sports_overreaction_fader'
 
-const MARKET_TYPE_LABELS: Record<string, string> = {
-  moneyline: 'Moneyline',
-  spread: 'Spread',
-  total: 'Total',
-  over_under: 'Over/Under',
-  player_prop: 'Player Prop',
+const MARKET_TYPE_KEYS: Record<string, string> = {
+  moneyline: 'moneyline',
+  spread: 'spread',
+  total: 'total',
+  over_under: 'overUnder',
+  player_prop: 'playerProp',
 }
 
 const MARKET_TYPE_COLORS: Record<string, string> = {
@@ -57,30 +58,58 @@ function formatPct(pct: number): string {
   return `${sign}${pct.toFixed(1)}%`
 }
 
-function formatGameTime(isoStr: string | null | undefined): string {
-  if (!isoStr) return ''
+type GameTimeResult =
+  | { kind: 'inProgress' }
+  | { kind: 'minutes'; minutes: number }
+  | { kind: 'time'; text: string }
+  | { kind: 'date'; text: string }
+  | { kind: 'empty' }
+
+function resolveGameTime(isoStr: string | null | undefined): GameTimeResult {
+  if (!isoStr) return { kind: 'empty' }
   try {
     const d = new Date(isoStr)
-    if (isNaN(d.getTime())) return ''
+    if (isNaN(d.getTime())) return { kind: 'empty' }
     const now = new Date()
     const diffMs = d.getTime() - now.getTime()
-    if (diffMs < 0) return 'In Progress'
-    if (diffMs < 3600_000) return `${Math.ceil(diffMs / 60_000)}m`
+    if (diffMs < 0) return { kind: 'inProgress' }
+    if (diffMs < 3600_000) return { kind: 'minutes', minutes: Math.ceil(diffMs / 60_000) }
     if (diffMs < 86400_000) {
-      return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+      return { kind: 'time', text: d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }
     }
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    return { kind: 'date', text: d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) }
   } catch {
-    return ''
+    return { kind: 'empty' }
   }
 }
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime()
-  if (diff < 60_000) return 'just now'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
-  return `${Math.floor(diff / 86_400_000)}d ago`
+function useTimeAgo() {
+  const { t } = useTranslation()
+  return (dateStr: string): string => {
+    const diff = Date.now() - new Date(dateStr).getTime()
+    if (diff < 60_000) return t('sportsOpportunitiesPanel.time.justNow')
+    if (diff < 3_600_000) return t('sportsOpportunitiesPanel.time.minutesAgo', { n: Math.floor(diff / 60_000) })
+    if (diff < 86_400_000) return t('sportsOpportunitiesPanel.time.hoursAgo', { n: Math.floor(diff / 3_600_000) })
+    return t('sportsOpportunitiesPanel.time.daysAgo', { n: Math.floor(diff / 86_400_000) })
+  }
+}
+
+function useSportLabel() {
+  const { t } = useTranslation()
+  return (question: string): string => {
+    const q = question.toLowerCase()
+    if (q.includes('nba') || q.includes('basketball')) return 'NBA'
+    if (q.includes('nfl') || q.includes('football')) return 'NFL'
+    if (q.includes('mlb') || q.includes('baseball')) return 'MLB'
+    if (q.includes('nhl') || q.includes('hockey')) return 'NHL'
+    if (q.includes('soccer') || q.includes('fifa') || q.includes('premier league')) return t('sportsOpportunitiesPanel.sport.soccer')
+    if (q.includes('ufc') || q.includes('mma')) return 'UFC'
+    if (q.includes('tennis') || q.includes('atp') || q.includes('wta')) return t('sportsOpportunitiesPanel.sport.tennis')
+    if (q.includes('f1') || q.includes('formula')) return 'F1'
+    if (q.includes('golf') || q.includes('pga')) return t('sportsOpportunitiesPanel.sport.golf')
+    if (q.includes('boxing')) return t('sportsOpportunitiesPanel.sport.boxing')
+    return t('sportsOpportunitiesPanel.sport.generic')
+  }
 }
 
 function extractSportsLivelinePoints(opportunity: Opportunity): LivelinePoint[] {
@@ -106,21 +135,6 @@ function extractSportsLivelinePoints(opportunity: Opportunity): LivelinePoint[] 
   return points
 }
 
-function extractSportFromQuestion(question: string): string {
-  const q = question.toLowerCase()
-  if (q.includes('nba') || q.includes('basketball')) return 'NBA'
-  if (q.includes('nfl') || q.includes('football')) return 'NFL'
-  if (q.includes('mlb') || q.includes('baseball')) return 'MLB'
-  if (q.includes('nhl') || q.includes('hockey')) return 'NHL'
-  if (q.includes('soccer') || q.includes('fifa') || q.includes('premier league')) return 'Soccer'
-  if (q.includes('ufc') || q.includes('mma')) return 'UFC'
-  if (q.includes('tennis') || q.includes('atp') || q.includes('wta')) return 'Tennis'
-  if (q.includes('f1') || q.includes('formula')) return 'F1'
-  if (q.includes('golf') || q.includes('pga')) return 'Golf'
-  if (q.includes('boxing')) return 'Boxing'
-  return 'Sports'
-}
-
 // ─── Sport Game Card ──────────────────────────────────────
 
 function SportsGameCard({
@@ -128,6 +142,9 @@ function SportsGameCard({
 }: {
   opportunity: Opportunity
 }) {
+  const { t } = useTranslation()
+  const sportLabelOf = useSportLabel()
+  const timeAgo = useTimeAgo()
   const themeMode = useAtomValue(themeAtom)
   const isDarkTheme = themeMode === 'dark'
   const livelinePoints = useMemo(() => extractSportsLivelinePoints(opportunity), [opportunity])
@@ -154,10 +171,12 @@ function SportsGameCard({
 
   const market = opportunity.markets?.[0]
   const question = market?.question || opportunity.title
-  const sport = extractSportFromQuestion(question)
-  const gameTimeStr = formatGameTime(gameStartTime)
-
-  const marketTypeLabel = MARKET_TYPE_LABELS[sportsMarketType] || (sportsMarketType ? sportsMarketType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : null)
+  const sport = sportLabelOf(question)
+  const gameTime = resolveGameTime(gameStartTime)
+  const marketTypeKey = MARKET_TYPE_KEYS[sportsMarketType]
+  const marketTypeLabel = marketTypeKey
+    ? t(`sportsOpportunitiesPanel.marketType.${marketTypeKey}`)
+    : (sportsMarketType ? sportsMarketType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : null)
   const marketTypeColor = MARKET_TYPE_COLORS[sportsMarketType] || 'bg-zinc-500/15 text-zinc-400 border-zinc-500/25'
 
   const moveBarWidth = Math.min(Math.abs(movePct) * 2.5, 100)
@@ -183,18 +202,22 @@ function SportsGameCard({
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {gameTimeStr && (
+            {gameTime.kind !== 'empty' && (
               <span className={cn(
                 'inline-flex items-center gap-1 text-[10px] font-medium',
-                gameTimeStr === 'In Progress' ? 'text-red-400' : 'text-muted-foreground',
+                gameTime.kind === 'inProgress' ? 'text-red-400' : 'text-muted-foreground',
               )}>
                 <Clock className="w-3 h-3" />
-                {gameTimeStr === 'In Progress' ? (
+                {gameTime.kind === 'inProgress' ? (
                   <span className="flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
-                    LIVE
+                    {t('sportsOpportunitiesPanel.live')}
                   </span>
-                ) : gameTimeStr}
+                ) : gameTime.kind === 'minutes' ? (
+                  t('sportsOpportunitiesPanel.gameTime.minutes', { n: gameTime.minutes })
+                ) : (
+                  gameTime.text
+                )}
               </span>
             )}
             <span className="text-[10px] text-muted-foreground/60">
@@ -234,7 +257,7 @@ function SportsGameCard({
         <div className="rounded-lg bg-muted/30 border border-border/30 p-3 space-y-2">
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">
-              {fadeOutcome} price movement
+              {t('sportsOpportunitiesPanel.priceMovement', { outcome: fadeOutcome })}
             </span>
             <span className={cn(
               'font-mono font-semibold',
@@ -264,12 +287,12 @@ function SportsGameCard({
           <div className="flex items-center justify-between text-[11px]">
             <div className="flex items-center gap-1.5 text-muted-foreground">
               <Target className="w-3 h-3 text-emerald-400" />
-              <span>Reversion target</span>
+              <span>{t('sportsOpportunitiesPanel.reversionTarget')}</span>
             </div>
             <div className="flex items-center gap-1 font-mono">
               <span className="text-foreground">{formatPrice(reversionTarget)}</span>
               <span className="text-emerald-400">
-                (+{(reversionEdge * 100).toFixed(1)}{'\u00A2'} edge)
+                {t('sportsOpportunitiesPanel.edgeCents', { value: (reversionEdge * 100).toFixed(1) })}
               </span>
             </div>
           </div>
@@ -278,7 +301,7 @@ function SportsGameCard({
         {/* Metrics Row */}
         <div className="grid grid-cols-4 gap-2">
           <div className="text-center">
-            <div className="text-[10px] text-muted-foreground mb-0.5">Confidence</div>
+            <div className="text-[10px] text-muted-foreground mb-0.5">{t('sportsOpportunitiesPanel.metrics.confidence')}</div>
             <div className={cn(
               'text-sm font-semibold font-mono',
               confidence >= 0.7 ? 'text-green-400' : confidence >= 0.5 ? 'text-yellow-400' : 'text-muted-foreground',
@@ -287,7 +310,7 @@ function SportsGameCard({
             </div>
           </div>
           <div className="text-center">
-            <div className="text-[10px] text-muted-foreground mb-0.5">Risk</div>
+            <div className="text-[10px] text-muted-foreground mb-0.5">{t('sportsOpportunitiesPanel.metrics.risk')}</div>
             <div className={cn(
               'text-sm font-semibold font-mono',
               riskScore <= 0.4 ? 'text-green-400' : riskScore <= 0.65 ? 'text-yellow-400' : 'text-red-400',
@@ -296,7 +319,7 @@ function SportsGameCard({
             </div>
           </div>
           <div className="text-center">
-            <div className="text-[10px] text-muted-foreground mb-0.5">ROI</div>
+            <div className="text-[10px] text-muted-foreground mb-0.5">{t('sportsOpportunitiesPanel.metrics.roi')}</div>
             <div className={cn(
               'text-sm font-semibold font-mono',
               opportunity.roi_percent > 0 ? 'text-green-400' : 'text-red-400',
@@ -305,7 +328,7 @@ function SportsGameCard({
             </div>
           </div>
           <div className="text-center">
-            <div className="text-[10px] text-muted-foreground mb-0.5">Resolves</div>
+            <div className="text-[10px] text-muted-foreground mb-0.5">{t('sportsOpportunitiesPanel.metrics.resolves')}</div>
             <div className="text-sm font-semibold font-mono text-foreground/80">
               {hoursToResolution < 1 ? `${(hoursToResolution * 60).toFixed(0)}m` : `${hoursToResolution.toFixed(1)}h`}
             </div>
@@ -317,16 +340,16 @@ function SportsGameCard({
           {isFavoriteDropping && (
             <span className="inline-flex items-center gap-1 rounded-md bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 px-1.5 py-0.5 text-[10px] font-medium">
               <Zap className="w-2.5 h-2.5" />
-              Surprise Move
+              {t('sportsOpportunitiesPanel.tag.surpriseMove')}
             </span>
           )}
           <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium">
             <TrendingDown className="w-2.5 h-2.5" />
-            Fade {fadeOutcome}
+            {t('sportsOpportunitiesPanel.tag.fade', { outcome: fadeOutcome })}
           </span>
           <span className="inline-flex items-center gap-1 rounded-md bg-zinc-500/10 text-zinc-400 border border-zinc-500/20 px-1.5 py-0.5 text-[10px] font-medium">
             <Shield className="w-2.5 h-2.5" />
-            Mean Reversion
+            {t('sportsOpportunitiesPanel.tag.meanReversion')}
           </span>
         </div>
 
@@ -351,6 +374,7 @@ export default function SportsOpportunitiesPanel({
   viewMode = 'card',
   onAnalyzeTargetsChange,
 }: SportsOpportunitiesPanelProps) {
+  const { t } = useTranslation()
   const { isConnected } = useWebSocket('/ws')
   const [currentPage, setCurrentPage] = useState(0)
 
@@ -384,7 +408,7 @@ export default function SportsOpportunitiesPanel({
       <div className="flex items-center justify-center py-20">
         <div className="flex items-center gap-2 text-muted-foreground">
           <Trophy className="w-5 h-5 animate-pulse text-emerald-400" />
-          <span className="text-sm">Loading sports opportunities...</span>
+          <span className="text-sm">{t('sportsOpportunitiesPanel.loading')}</span>
         </div>
       </div>
     )
@@ -393,8 +417,8 @@ export default function SportsOpportunitiesPanel({
   if (opportunities.length === 0) {
     return (
       <OpportunityEmptyState
-        title="No sports opportunities"
-        description="Sports strategies are active and monitoring markets. New opportunities will appear here as they are detected."
+        title={t('sportsOpportunitiesPanel.empty.title')}
+        description={t('sportsOpportunitiesPanel.empty.description')}
       />
     )
   }
@@ -406,7 +430,7 @@ export default function SportsOpportunitiesPanel({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Trophy className="w-4 h-4 text-emerald-400" />
-            <span className="text-xs font-medium text-foreground/80">Sports Opportunities</span>
+            <span className="text-xs font-medium text-foreground/80">{t('sportsOpportunitiesPanel.title')}</span>
             <span className="inline-flex items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400 text-[10px] font-medium min-w-[20px] h-4 px-1.5">
               {total}
             </span>
@@ -415,7 +439,7 @@ export default function SportsOpportunitiesPanel({
             {isConnected && (
               <span className="flex items-center gap-1 text-[10px] text-emerald-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Live
+                {t('sportsOpportunitiesPanel.liveLabel')}
               </span>
             )}
           </div>
@@ -471,7 +495,7 @@ export default function SportsOpportunitiesPanel({
                 disabled={currentPage === 0}
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
-                Prev
+                {t('sportsOpportunitiesPanel.pagination.prev')}
               </Button>
               <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
                 {currentPage + 1}/{totalPages}
@@ -483,7 +507,7 @@ export default function SportsOpportunitiesPanel({
                 onClick={() => setCurrentPage(p => p + 1)}
                 disabled={currentPage >= totalPages - 1}
               >
-                Next
+                {t('sportsOpportunitiesPanel.pagination.next')}
                 <ChevronRight className="w-3.5 h-3.5" />
               </Button>
             </div>

@@ -3395,5 +3395,189 @@
     "actionAskAi": "[ki-fragen]",
     "actionAnalyze": "[analysieren]",
     "actionAnalyzing": "[analysiere...]"
+  },
+  "newsIntelligencePanel": {
+    "opportunities": "Chancen",
+    "feed": "Feed",
+    "live": "Live",
+    "lastScan": "Letzter {{time}}",
+    "waitingForWorker": "Warte auf News-Worker",
+    "allSources": "Alle Quellen ({{n}})",
+    "filterPlaceholder": "Filter...",
+    "resume": "Fortsetzen",
+    "pause": "Pause",
+    "refresh": "Aktualisieren",
+    "showFiltered": "Gefilterte anzeigen",
+    "hideFiltered": "Gefilterte ausblenden",
+    "clear": "Löschen",
+    "refreshingWorkflow": "News-Workflow wird aktualisiert...",
+    "loadingFindings": "Lade Ergebnisse...",
+    "findingsCount": "Ergebnisse ({{n}})",
+    "actionableSuffix": "/ {{n}} ausführbar",
+    "loadingEllipsis": "Lädt...",
+    "loadMoreRemaining": "Mehr laden ({{n}} verbleibend)",
+    "showing": "Zeige {{n}}",
+    "showingTotal": "Zeige {{n}} ({{total}} insgesamt)",
+    "showingFilter": "Zeige {{n}} von {{loaded}} geladenen",
+    "showingFilterTotal": "Zeige {{n}} von {{loaded}} geladenen ({{total}} insgesamt)",
+    "publishedTime": "Veröffentlicht {{time}}",
+    "addedTime": "Hinzugefügt {{time}}",
+    "vectorIndexed": "Vektor-indiziert",
+    "buyOutcome": "KAUFEN {{outcome}}",
+    "actionable": "Ausführbar",
+    "articleCount": "{{n}} Artikel",
+    "sdkLabel": "SDK {{sdk}}",
+    "sdkTooltip": "StrategySDK: {{sdk}}",
+    "edgeLabel": "Edge",
+    "linkedArticle": "Verknüpfter Artikel",
+    "linkedArticles": "{{n}} verknüpfte Artikel",
+    "hide": "Ausblenden",
+    "showAllCount": "Alle anzeigen ({{n}})",
+    "expand": "Erweitern",
+    "expandCardTooltip": "Diese Karte erweitern",
+    "popIn": "Einklappen",
+    "returnToGridTooltip": "Zurück zum Raster",
+    "expandedFindingAria": "Erweitertes News-Ergebnis: {{question}}",
+    "outcome": {
+      "yes": "Ja",
+      "no": "Nein"
+    },
+    "metrics": {
+      "current": "Aktuell",
+      "model": "Modell",
+      "conf": "Konf",
+      "rerank": "Rerank"
+    },
+    "category": {
+      "politics": "Politik",
+      "business": "Wirtschaft",
+      "technology": "Tech",
+      "science": "Wissenschaft",
+      "sports": "Sport",
+      "world": "Welt",
+      "cryptocurrency": "Krypto",
+      "entertainment": "Unterhaltung"
+    },
+    "time": {
+      "justNow": "gerade eben",
+      "secondsAgo": "vor {{n}}s",
+      "minutesAgo": "vor {{n}}m",
+      "hoursAgo": "vor {{n}}h",
+      "daysAgo": "vor {{n}}d"
+    },
+    "empty": {
+      "noMatchTitle": "Keine Ergebnisse passen zu deinem Filter",
+      "noMatchDescription": "Versuche, den Filter zu erweitern oder ihn zu löschen, um alle Ergebnisse anzuzeigen",
+      "scannedTitle": "Keine gescannten News-Chancen gefunden",
+      "scannedDescription": "Aus aktuellen News sind derzeit keine Roh-Workflow-Ergebnisse verfügbar",
+      "executableTitle": "Keine ausführbaren News-Chancen gefunden",
+      "executableDescription": "Versuche, Gefilterte anzeigen umzuschalten oder warte auf neue Signale",
+      "noArticles": "Keine Artikel im Feed",
+      "noArticlesMatch": "Keine Artikel passen zu deinem Filter"
+    }
+  },
+  "weatherOpportunitiesPanel": {
+    "state": {
+      "paused": "Pausiert",
+      "running": "Läuft",
+      "disabled": "Deaktiviert"
+    },
+    "lastScan": "Letzter {{time}}",
+    "oppsCount": "Chancen {{n}}",
+    "showingFiltered": "Gefilterte werden angezeigt",
+    "direction": {
+      "all": "Alle",
+      "buyYes": "JA kaufen",
+      "buyNo": "NEIN kaufen"
+    },
+    "placeholder": {
+      "city": "Stadt/Ort",
+      "edge": "Edge%",
+      "entry": "Eintritt≤"
+    },
+    "waiting": "Wartet",
+    "refresh": "Aktualisieren",
+    "resume": "Fortsetzen",
+    "pause": "Pause",
+    "settings": "Einstellungen",
+    "showFiltered": "Gefilterte anzeigen",
+    "hideFiltered": "Gefilterte ausblenden",
+    "date": "Datum",
+    "showEarlierDates": "Frühere Daten anzeigen",
+    "showLaterDates": "Spätere Daten anzeigen",
+    "allDates": "Alle Daten",
+    "filterToDate": "Auf {{date}} filtern",
+    "noDatedOpportunities": "Keine datierten Chancen",
+    "loading": "Lade Wetter-Chancen...",
+    "empty": {
+      "scannedTitle": "Keine gescannten Wetter-Chancen gefunden",
+      "scannedDescription": "Derzeit sind keine rohen Wetter-Workflow-Ergebnisse verfügbar",
+      "executableTitle": "Keine ausführbaren Wetter-Chancen gefunden",
+      "executableDescription": "Versuche, die Filter Richtung/Ort/Datum zu lockern oder warte auf neue Signale"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} von {{total}}",
+      "prev": "Zurück",
+      "next": "Weiter"
+    },
+    "time": {
+      "never": "Nie",
+      "unknown": "Unbekannt",
+      "secondsAgo": "vor {{n}}s",
+      "minutesAgo": "vor {{n}}m",
+      "hoursAgo": "vor {{n}}h",
+      "daysAgo": "vor {{n}}d"
+    }
+  },
+  "sportsOpportunitiesPanel": {
+    "title": "Sport-Chancen",
+    "loading": "Lade Sport-Chancen...",
+    "liveLabel": "Live",
+    "live": "LIVE",
+    "empty": {
+      "title": "Keine Sport-Chancen",
+      "description": "Sport-Strategien sind aktiv und überwachen die Märkte. Neue Chancen erscheinen hier, sobald sie erkannt werden."
+    },
+    "marketType": {
+      "moneyline": "Moneyline",
+      "spread": "Spread",
+      "total": "Total",
+      "overUnder": "Über/Unter",
+      "playerProp": "Spieler-Prop"
+    },
+    "sport": {
+      "soccer": "Fußball",
+      "tennis": "Tennis",
+      "golf": "Golf",
+      "boxing": "Boxen",
+      "generic": "Sport"
+    },
+    "gameTime": {
+      "minutes": "{{n}}m"
+    },
+    "priceMovement": "{{outcome}}-Preisbewegung",
+    "reversionTarget": "Reversionsziel",
+    "edgeCents": "(+{{value}}¢ Edge)",
+    "metrics": {
+      "confidence": "Konfidenz",
+      "risk": "Risiko",
+      "roi": "ROI",
+      "resolves": "Löst"
+    },
+    "tag": {
+      "surpriseMove": "Überraschungs-Move",
+      "fade": "Fade {{outcome}}",
+      "meanReversion": "Mittelwertrückkehr"
+    },
+    "pagination": {
+      "prev": "Zurück",
+      "next": "Weiter"
+    },
+    "time": {
+      "justNow": "gerade eben",
+      "minutesAgo": "vor {{n}}m",
+      "hoursAgo": "vor {{n}}h",
+      "daysAgo": "vor {{n}}d"
+    }
   }
 }

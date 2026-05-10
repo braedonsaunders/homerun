@@ -3395,5 +3395,189 @@
     "actionAskAi": "[AI に質問]",
     "actionAnalyze": "[分析]",
     "actionAnalyzing": "[分析中...]"
+  },
+  "newsIntelligencePanel": {
+    "opportunities": "機会",
+    "feed": "フィード",
+    "live": "ライブ",
+    "lastScan": "最終 {{time}}",
+    "waitingForWorker": "ニュースワーカーを待機中",
+    "allSources": "すべてのソース ({{n}})",
+    "filterPlaceholder": "フィルター...",
+    "resume": "再開",
+    "pause": "一時停止",
+    "refresh": "更新",
+    "showFiltered": "フィルタ済みを表示",
+    "hideFiltered": "フィルタ済みを隠す",
+    "clear": "クリア",
+    "refreshingWorkflow": "ニュースワークフローを更新中...",
+    "loadingFindings": "結果を読み込み中...",
+    "findingsCount": "結果 ({{n}})",
+    "actionableSuffix": "/ {{n}} 件の実行可能",
+    "loadingEllipsis": "読み込み中...",
+    "loadMoreRemaining": "さらに読み込む (残り {{n}} 件)",
+    "showing": "{{n}} 件を表示",
+    "showingTotal": "{{n}} 件を表示 (合計 {{total}} 件)",
+    "showingFilter": "読み込み済み {{loaded}} 件中 {{n}} 件を表示",
+    "showingFilterTotal": "読み込み済み {{loaded}} 件中 {{n}} 件を表示 (合計 {{total}} 件)",
+    "publishedTime": "{{time}} 公開",
+    "addedTime": "{{time}} 追加",
+    "vectorIndexed": "ベクトルインデックス済み",
+    "buyOutcome": "買い {{outcome}}",
+    "actionable": "実行可能",
+    "articleCount": "{{n}} 記事",
+    "sdkLabel": "SDK {{sdk}}",
+    "sdkTooltip": "StrategySDK: {{sdk}}",
+    "edgeLabel": "エッジ",
+    "linkedArticle": "リンク記事",
+    "linkedArticles": "{{n}} 件のリンク記事",
+    "hide": "隠す",
+    "showAllCount": "すべて表示 ({{n}})",
+    "expand": "展開",
+    "expandCardTooltip": "このカードを展開",
+    "popIn": "閉じる",
+    "returnToGridTooltip": "グリッドに戻る",
+    "expandedFindingAria": "展開されたニュース結果: {{question}}",
+    "outcome": {
+      "yes": "はい",
+      "no": "いいえ"
+    },
+    "metrics": {
+      "current": "現在",
+      "model": "モデル",
+      "conf": "確信度",
+      "rerank": "再ランク"
+    },
+    "category": {
+      "politics": "政治",
+      "business": "ビジネス",
+      "technology": "テクノロジー",
+      "science": "科学",
+      "sports": "スポーツ",
+      "world": "ワールド",
+      "cryptocurrency": "暗号資産",
+      "entertainment": "エンタメ"
+    },
+    "time": {
+      "justNow": "たった今",
+      "secondsAgo": "{{n}}秒前",
+      "minutesAgo": "{{n}}分前",
+      "hoursAgo": "{{n}}時間前",
+      "daysAgo": "{{n}}日前"
+    },
+    "empty": {
+      "noMatchTitle": "フィルターに一致する結果はありません",
+      "noMatchDescription": "フィルターを広げるか、クリアしてすべての結果を表示してください",
+      "scannedTitle": "スキャンされたニュース機会は見つかりません",
+      "scannedDescription": "最近のニュースから現在利用可能な生のワークフロー結果はありません",
+      "executableTitle": "実行可能なニュース機会は見つかりません",
+      "executableDescription": "フィルタ済みの表示を切り替えるか、新しいシグナルを待ってください",
+      "noArticles": "フィードに記事はありません",
+      "noArticlesMatch": "フィルターに一致する記事はありません"
+    }
+  },
+  "weatherOpportunitiesPanel": {
+    "state": {
+      "paused": "一時停止中",
+      "running": "実行中",
+      "disabled": "無効"
+    },
+    "lastScan": "最終 {{time}}",
+    "oppsCount": "機会 {{n}}",
+    "showingFiltered": "フィルタ済みを表示中",
+    "direction": {
+      "all": "すべて",
+      "buyYes": "YES買い",
+      "buyNo": "NO買い"
+    },
+    "placeholder": {
+      "city": "都市/場所",
+      "edge": "エッジ%",
+      "entry": "エントリー≤"
+    },
+    "waiting": "待機中",
+    "refresh": "更新",
+    "resume": "再開",
+    "pause": "一時停止",
+    "settings": "設定",
+    "showFiltered": "フィルタ済みを表示",
+    "hideFiltered": "フィルタ済みを隠す",
+    "date": "日付",
+    "showEarlierDates": "以前の日付を表示",
+    "showLaterDates": "以降の日付を表示",
+    "allDates": "すべての日付",
+    "filterToDate": "{{date}} でフィルター",
+    "noDatedOpportunities": "日付付きの機会はありません",
+    "loading": "天気機会を読み込み中...",
+    "empty": {
+      "scannedTitle": "スキャンされた天気機会は見つかりません",
+      "scannedDescription": "現在利用可能な生の天気ワークフロー結果はありません",
+      "executableTitle": "実行可能な天気機会は見つかりません",
+      "executableDescription": "方向/場所/日付フィルターを下げるか、新しいシグナルを待ってください"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} / {{total}}",
+      "prev": "前へ",
+      "next": "次へ"
+    },
+    "time": {
+      "never": "なし",
+      "unknown": "不明",
+      "secondsAgo": "{{n}}秒前",
+      "minutesAgo": "{{n}}分前",
+      "hoursAgo": "{{n}}時間前",
+      "daysAgo": "{{n}}日前"
+    }
+  },
+  "sportsOpportunitiesPanel": {
+    "title": "スポーツ機会",
+    "loading": "スポーツ機会を読み込み中...",
+    "liveLabel": "ライブ",
+    "live": "ライブ",
+    "empty": {
+      "title": "スポーツ機会はありません",
+      "description": "スポーツ戦略は有効でマーケットを監視しています。新しい機会は検出され次第ここに表示されます。"
+    },
+    "marketType": {
+      "moneyline": "マネーライン",
+      "spread": "スプレッド",
+      "total": "合計",
+      "overUnder": "オーバー/アンダー",
+      "playerProp": "プレイヤープロップ"
+    },
+    "sport": {
+      "soccer": "サッカー",
+      "tennis": "テニス",
+      "golf": "ゴルフ",
+      "boxing": "ボクシング",
+      "generic": "スポーツ"
+    },
+    "gameTime": {
+      "minutes": "{{n}}分"
+    },
+    "priceMovement": "{{outcome}} 価格変動",
+    "reversionTarget": "回帰目標",
+    "edgeCents": "(+{{value}}¢ エッジ)",
+    "metrics": {
+      "confidence": "確信度",
+      "risk": "リスク",
+      "roi": "ROI",
+      "resolves": "解決"
+    },
+    "tag": {
+      "surpriseMove": "サプライズ変動",
+      "fade": "{{outcome}} フェード",
+      "meanReversion": "平均回帰"
+    },
+    "pagination": {
+      "prev": "前へ",
+      "next": "次へ"
+    },
+    "time": {
+      "justNow": "たった今",
+      "minutesAgo": "{{n}}分前",
+      "hoursAgo": "{{n}}時間前",
+      "daysAgo": "{{n}}日前"
+    }
   }
 }

@@ -3395,5 +3395,189 @@
     "actionAskAi": "[спросить-ии]",
     "actionAnalyze": "[анализ]",
     "actionAnalyzing": "[анализ...]"
+  },
+  "newsIntelligencePanel": {
+    "opportunities": "Возможности",
+    "feed": "Лента",
+    "live": "В эфире",
+    "lastScan": "Последнее {{time}}",
+    "waitingForWorker": "Ожидание новостного воркера",
+    "allSources": "Все источники ({{n}})",
+    "filterPlaceholder": "Фильтр...",
+    "resume": "Продолжить",
+    "pause": "Пауза",
+    "refresh": "Обновить",
+    "showFiltered": "Показать отфильтрованные",
+    "hideFiltered": "Скрыть отфильтрованные",
+    "clear": "Очистить",
+    "refreshingWorkflow": "Обновление новостного процесса...",
+    "loadingFindings": "Загрузка результатов...",
+    "findingsCount": "Результаты ({{n}})",
+    "actionableSuffix": "/ {{n}} к исполнению",
+    "loadingEllipsis": "Загрузка...",
+    "loadMoreRemaining": "Загрузить ещё (осталось {{n}})",
+    "showing": "Показано {{n}}",
+    "showingTotal": "Показано {{n}} (всего {{total}})",
+    "showingFilter": "Показано {{n}} из {{loaded}} загруженных",
+    "showingFilterTotal": "Показано {{n}} из {{loaded}} загруженных (всего {{total}})",
+    "publishedTime": "Опубликовано {{time}}",
+    "addedTime": "Добавлено {{time}}",
+    "vectorIndexed": "Векторно индексировано",
+    "buyOutcome": "КУПИТЬ {{outcome}}",
+    "actionable": "К исполнению",
+    "articleCount": "{{n}} статей",
+    "sdkLabel": "SDK {{sdk}}",
+    "sdkTooltip": "StrategySDK: {{sdk}}",
+    "edgeLabel": "edge",
+    "linkedArticle": "Связанная статья",
+    "linkedArticles": "{{n}} связанных статей",
+    "hide": "Скрыть",
+    "showAllCount": "Показать все ({{n}})",
+    "expand": "Развернуть",
+    "expandCardTooltip": "Развернуть эту карточку",
+    "popIn": "Свернуть",
+    "returnToGridTooltip": "Вернуться к сетке",
+    "expandedFindingAria": "Развёрнутый новостной результат: {{question}}",
+    "outcome": {
+      "yes": "Да",
+      "no": "Нет"
+    },
+    "metrics": {
+      "current": "Текущий",
+      "model": "Модель",
+      "conf": "Уверенность",
+      "rerank": "Реранк"
+    },
+    "category": {
+      "politics": "Политика",
+      "business": "Бизнес",
+      "technology": "Тех",
+      "science": "Наука",
+      "sports": "Спорт",
+      "world": "Мир",
+      "cryptocurrency": "Крипто",
+      "entertainment": "Развлечения"
+    },
+    "time": {
+      "justNow": "только что",
+      "secondsAgo": "{{n}} с назад",
+      "minutesAgo": "{{n}} мин назад",
+      "hoursAgo": "{{n}} ч назад",
+      "daysAgo": "{{n}} д назад"
+    },
+    "empty": {
+      "noMatchTitle": "Нет результатов по вашему фильтру",
+      "noMatchDescription": "Попробуйте расширить фильтр или очистить его, чтобы увидеть все результаты",
+      "scannedTitle": "Сканированные новостные возможности не найдены",
+      "scannedDescription": "Сырые результаты процесса из недавних новостей сейчас недоступны",
+      "executableTitle": "Исполняемые новостные возможности не найдены",
+      "executableDescription": "Попробуйте включить Показать отфильтрованные или подождите новых сигналов",
+      "noArticles": "В ленте нет статей",
+      "noArticlesMatch": "Нет статей по вашему фильтру"
+    }
+  },
+  "weatherOpportunitiesPanel": {
+    "state": {
+      "paused": "Приостановлено",
+      "running": "Работает",
+      "disabled": "Отключено"
+    },
+    "lastScan": "Последнее {{time}}",
+    "oppsCount": "Возм {{n}}",
+    "showingFiltered": "Показываются отфильтрованные",
+    "direction": {
+      "all": "Все",
+      "buyYes": "Купить ДА",
+      "buyNo": "Купить НЕТ"
+    },
+    "placeholder": {
+      "city": "Город/место",
+      "edge": "Edge%",
+      "entry": "Вход≤"
+    },
+    "waiting": "Ожидание",
+    "refresh": "Обновить",
+    "resume": "Продолжить",
+    "pause": "Пауза",
+    "settings": "Настройки",
+    "showFiltered": "Показать отфильтрованные",
+    "hideFiltered": "Скрыть отфильтрованные",
+    "date": "Дата",
+    "showEarlierDates": "Показать более ранние даты",
+    "showLaterDates": "Показать более поздние даты",
+    "allDates": "Все даты",
+    "filterToDate": "Фильтровать на {{date}}",
+    "noDatedOpportunities": "Нет возможностей с датой",
+    "loading": "Загрузка погодных возможностей...",
+    "empty": {
+      "scannedTitle": "Сканированные погодные возможности не найдены",
+      "scannedDescription": "Сейчас нет сырых результатов погодного процесса",
+      "executableTitle": "Исполняемые погодные возможности не найдены",
+      "executableDescription": "Попробуйте смягчить фильтры направления/места/даты или подождите новых сигналов"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} из {{total}}",
+      "prev": "Назад",
+      "next": "Вперёд"
+    },
+    "time": {
+      "never": "Никогда",
+      "unknown": "Неизвестно",
+      "secondsAgo": "{{n}} с назад",
+      "minutesAgo": "{{n}} мин назад",
+      "hoursAgo": "{{n}} ч назад",
+      "daysAgo": "{{n}} д назад"
+    }
+  },
+  "sportsOpportunitiesPanel": {
+    "title": "Спортивные возможности",
+    "loading": "Загрузка спортивных возможностей...",
+    "liveLabel": "В эфире",
+    "live": "В ЭФИРЕ",
+    "empty": {
+      "title": "Нет спортивных возможностей",
+      "description": "Спортивные стратегии активны и отслеживают рынки. Новые возможности появятся здесь по мере обнаружения."
+    },
+    "marketType": {
+      "moneyline": "Манилайн",
+      "spread": "Гандикап",
+      "total": "Тотал",
+      "overUnder": "Больше/Меньше",
+      "playerProp": "Проп игрока"
+    },
+    "sport": {
+      "soccer": "Футбол",
+      "tennis": "Теннис",
+      "golf": "Гольф",
+      "boxing": "Бокс",
+      "generic": "Спорт"
+    },
+    "gameTime": {
+      "minutes": "{{n}} мин"
+    },
+    "priceMovement": "Движение цены {{outcome}}",
+    "reversionTarget": "Цель возврата",
+    "edgeCents": "(+{{value}}¢ edge)",
+    "metrics": {
+      "confidence": "Уверенность",
+      "risk": "Риск",
+      "roi": "ROI",
+      "resolves": "Разрешается"
+    },
+    "tag": {
+      "surpriseMove": "Неожиданное движение",
+      "fade": "Fade {{outcome}}",
+      "meanReversion": "Возврат к среднему"
+    },
+    "pagination": {
+      "prev": "Назад",
+      "next": "Вперёд"
+    },
+    "time": {
+      "justNow": "только что",
+      "minutesAgo": "{{n}} мин назад",
+      "hoursAgo": "{{n}} ч назад",
+      "daysAgo": "{{n}} д назад"
+    }
   }
 }

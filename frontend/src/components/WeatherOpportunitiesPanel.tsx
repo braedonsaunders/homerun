@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   CloudRain,
   RefreshCw,
@@ -41,15 +42,18 @@ const ITEMS_PER_PAGE = 20
 const DATE_PAGE_SIZE = 8
 const ANALYZE_ALL_LIMIT = 5000
 
-function timeAgo(value: string | null | undefined): string {
-  if (!value) return 'Never'
-  const ts = new Date(value).getTime()
-  if (Number.isNaN(ts)) return 'Unknown'
-  const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000))
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
+function useTimeAgo() {
+  const { t } = useTranslation()
+  return (value: string | null | undefined): string => {
+    if (!value) return t('weatherOpportunitiesPanel.time.never')
+    const ts = new Date(value).getTime()
+    if (Number.isNaN(ts)) return t('weatherOpportunitiesPanel.time.unknown')
+    const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+    if (diff < 60) return t('weatherOpportunitiesPanel.time.secondsAgo', { n: diff })
+    if (diff < 3600) return t('weatherOpportunitiesPanel.time.minutesAgo', { n: Math.floor(diff / 60) })
+    if (diff < 86400) return t('weatherOpportunitiesPanel.time.hoursAgo', { n: Math.floor(diff / 3600) })
+    return t('weatherOpportunitiesPanel.time.daysAgo', { n: Math.floor(diff / 86400) })
+  }
 }
 
 function parseDateKey(value: string): Date {
@@ -98,6 +102,8 @@ export default function WeatherOpportunitiesPanel({
   showSettingsButton?: boolean
   onAnalyzeTargetsChange?: (targets: { visibleIds: string[]; allIds: string[] }) => void
 }) {
+  const { t } = useTranslation()
+  const timeAgo = useTimeAgo()
   const queryClient = useQueryClient()
   const { isConnected } = useWebSocket('/ws')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -312,10 +318,10 @@ export default function WeatherOpportunitiesPanel({
   }, [onAnalyzeTargetsChange])
 
   const workflowStateLabel = status?.paused
-    ? 'Paused'
+    ? t('weatherOpportunitiesPanel.state.paused')
     : status?.enabled
-      ? 'Running'
-      : 'Disabled'
+      ? t('weatherOpportunitiesPanel.state.running')
+      : t('weatherOpportunitiesPanel.state.disabled')
 
   const workflowConnected = Boolean(status?.enabled) && !status?.paused
 
@@ -338,14 +344,14 @@ export default function WeatherOpportunitiesPanel({
             {workflowStateLabel}
           </Badge>
           <Badge variant="outline" className="text-[10px] h-6 bg-card border-border/60 text-muted-foreground">
-            Last {timeAgo(status?.last_scan)}
+            {t('weatherOpportunitiesPanel.lastScan', { time: timeAgo(status?.last_scan) })}
           </Badge>
           <Badge variant="outline" className="text-[10px] h-6 bg-card border-border/60 text-muted-foreground">
-            Opps {totalOpportunities}
+            {t('weatherOpportunitiesPanel.oppsCount', { n: totalOpportunities })}
           </Badge>
           {showFiltered && (
             <Badge variant="outline" className="text-[10px] h-6 bg-amber-500/10 text-amber-300 border-amber-500/30">
-              Showing Filtered
+              {t('weatherOpportunitiesPanel.showingFiltered')}
             </Badge>
           )}
 
@@ -354,15 +360,15 @@ export default function WeatherOpportunitiesPanel({
             onChange={(e) => setDirection(e.target.value as DirectionFilter)}
             className="h-8 rounded-md border border-border bg-card px-2 text-xs text-foreground"
           >
-            <option value="all">All</option>
-            <option value="buy_yes">Buy YES</option>
-            <option value="buy_no">Buy NO</option>
+            <option value="all">{t('weatherOpportunitiesPanel.direction.all')}</option>
+            <option value="buy_yes">{t('weatherOpportunitiesPanel.direction.buyYes')}</option>
+            <option value="buy_no">{t('weatherOpportunitiesPanel.direction.buyNo')}</option>
           </select>
 
           <Input
             value={city}
             onChange={(e) => setCity(e.target.value)}
-            placeholder="City/location"
+            placeholder={t('weatherOpportunitiesPanel.placeholder.city')}
             className="h-8 w-[132px] text-xs bg-card border-border"
           />
           <Input
@@ -373,7 +379,7 @@ export default function WeatherOpportunitiesPanel({
             value={minEdge}
             onChange={(e) => setMinEdge(parseFloat(e.target.value) || 0)}
             className="h-8 w-[82px] text-xs bg-card border-border"
-            placeholder="Edge%"
+            placeholder={t('weatherOpportunitiesPanel.placeholder.edge')}
           />
           <Input
             type="number"
@@ -383,11 +389,11 @@ export default function WeatherOpportunitiesPanel({
             value={maxEntry}
             onChange={(e) => setMaxEntry(e.target.value)}
             className="h-8 w-[82px] text-xs bg-card border-border"
-            placeholder="Entry≤"
+            placeholder={t('weatherOpportunitiesPanel.placeholder.entry')}
           />
 
           <span className="hidden xl:block text-xs text-muted-foreground truncate max-w-[220px]">
-            {status?.current_activity || 'Waiting'}
+            {status?.current_activity || t('weatherOpportunitiesPanel.waiting')}
           </span>
 
           <div className="ml-auto flex w-full sm:w-auto items-center justify-end gap-2">
@@ -399,7 +405,7 @@ export default function WeatherOpportunitiesPanel({
               disabled={refreshMutation.isPending}
             >
               <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
-              Refresh
+              {t('weatherOpportunitiesPanel.refresh')}
             </Button>
             <Button
               variant="outline"
@@ -409,7 +415,7 @@ export default function WeatherOpportunitiesPanel({
               disabled={startMutation.isPending || pauseMutation.isPending}
             >
               {status?.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-              {status?.paused ? 'Resume' : 'Pause'}
+              {status?.paused ? t('weatherOpportunitiesPanel.resume') : t('weatherOpportunitiesPanel.pause')}
             </Button>
             {showSettingsButton && (
               <Button
@@ -419,7 +425,7 @@ export default function WeatherOpportunitiesPanel({
                 onClick={() => setSettingsOpen(true)}
               >
                 <Settings className="w-3.5 h-3.5" />
-                Settings
+                {t('weatherOpportunitiesPanel.settings')}
               </Button>
             )}
             <Button
@@ -433,21 +439,21 @@ export default function WeatherOpportunitiesPanel({
               )}
               onClick={() => setShowFiltered((prev) => !prev)}
             >
-              {showFiltered ? 'Hide Filtered' : 'Show Filtered'}
+              {showFiltered ? t('weatherOpportunitiesPanel.hideFiltered') : t('weatherOpportunitiesPanel.showFiltered')}
             </Button>
           </div>
         </div>
         <div className="mt-2 flex items-center gap-1.5">
           <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground uppercase tracking-wide shrink-0">
             <CalendarDays className="w-3 h-3 text-cyan-600/80 dark:text-cyan-400/80" />
-            Date
+            {t('weatherOpportunitiesPanel.date')}
           </span>
           <Button
             variant="outline"
             size="sm"
             className="h-7 px-2 shrink-0"
             onClick={() => setDatePage((p) => p - 1)}
-            title="Show earlier dates"
+            title={t('weatherOpportunitiesPanel.showEarlierDates')}
             disabled={datePage === 0}
           >
             <ChevronLeft className="w-3.5 h-3.5" />
@@ -464,7 +470,7 @@ export default function WeatherOpportunitiesPanel({
                     : 'border-border bg-card text-muted-foreground hover:text-foreground hover:bg-cyan-50 dark:hover:bg-cyan-900/20'
                 )}
               >
-                All Dates
+                {t('weatherOpportunitiesPanel.allDates')}
               </button>
               {renderDateBuckets.map((bucket) => {
                 const key = bucket.date
@@ -480,7 +486,7 @@ export default function WeatherOpportunitiesPanel({
                         ? 'border-cyan-300 bg-cyan-100 text-cyan-900 dark:border-cyan-500/40 dark:bg-cyan-500/20 dark:text-cyan-100'
                         : 'border-border bg-card text-muted-foreground hover:text-foreground hover:bg-cyan-50 dark:hover:bg-cyan-900/20'
                     )}
-                    title={`Filter to ${key}`}
+                    title={t('weatherOpportunitiesPanel.filterToDate', { date: key })}
                   >
                     <span className="font-data">{formatDateButtonLabel(key)}</span>
                     <span className={cn(
@@ -494,7 +500,7 @@ export default function WeatherOpportunitiesPanel({
               })}
               {availableDateBuckets.length === 0 && !dateBucketsLoading && !oppsLoading && (
                 <span className="h-7 px-2.5 rounded-md border border-border text-[10px] text-muted-foreground inline-flex items-center">
-                  No dated opportunities
+                  {t('weatherOpportunitiesPanel.noDatedOpportunities')}
                 </span>
               )}
             </div>
@@ -504,7 +510,7 @@ export default function WeatherOpportunitiesPanel({
             size="sm"
             className="h-7 px-2 shrink-0"
             onClick={() => setDatePage((p) => p + 1)}
-            title="Show later dates"
+            title={t('weatherOpportunitiesPanel.showLaterDates')}
             disabled={datePage >= totalDatePages - 1 || availableDateBuckets.length === 0}
           >
             <ChevronRight className="w-3.5 h-3.5" />
@@ -516,15 +522,15 @@ export default function WeatherOpportunitiesPanel({
         {oppsLoading ? (
           <div className="flex items-center justify-center py-10 text-muted-foreground">
             <RefreshCw className="w-4 h-4 animate-spin mr-2" />
-            Loading weather opportunities...
+            {t('weatherOpportunitiesPanel.loading')}
           </div>
         ) : totalOpportunities === 0 ? (
           <OpportunityEmptyState
-            title={showFiltered ? 'No scanned weather opportunities found' : 'No executable weather opportunities found'}
+            title={showFiltered ? t('weatherOpportunitiesPanel.empty.scannedTitle') : t('weatherOpportunitiesPanel.empty.executableTitle')}
             description={
               showFiltered
-                ? 'No raw weather workflow findings are currently available'
-                : 'Try lowering direction/location/date filters or wait for new signals'
+                ? t('weatherOpportunitiesPanel.empty.scannedDescription')
+                : t('weatherOpportunitiesPanel.empty.executableDescription')
             }
           />
         ) : viewMode === 'terminal' ? (
@@ -554,7 +560,11 @@ export default function WeatherOpportunitiesPanel({
           <Separator />
           <div className="flex items-center justify-between pt-4">
             <div className="text-xs text-muted-foreground">
-              {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalOpportunities)} of {totalOpportunities}
+              {t('weatherOpportunitiesPanel.pagination.range', {
+                from: currentPage * ITEMS_PER_PAGE + 1,
+                to: Math.min((currentPage + 1) * ITEMS_PER_PAGE, totalOpportunities),
+                total: totalOpportunities,
+              })}
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -565,7 +575,7 @@ export default function WeatherOpportunitiesPanel({
                 disabled={currentPage === 0}
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
-                Prev
+                {t('weatherOpportunitiesPanel.pagination.prev')}
               </Button>
               <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
                 {currentPage + 1}/{totalPages || 1}
@@ -577,7 +587,7 @@ export default function WeatherOpportunitiesPanel({
                 onClick={() => setCurrentPage((p) => p + 1)}
                 disabled={currentPage >= totalPages - 1}
               >
-                Next
+                {t('weatherOpportunitiesPanel.pagination.next')}
                 <ChevronRight className="w-3.5 h-3.5" />
               </Button>
             </div>

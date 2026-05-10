@@ -3395,5 +3395,189 @@
     "actionAskAi": "[AI에 질문]",
     "actionAnalyze": "[분석]",
     "actionAnalyzing": "[분석 중...]"
+  },
+  "newsIntelligencePanel": {
+    "opportunities": "기회",
+    "feed": "피드",
+    "live": "라이브",
+    "lastScan": "마지막 {{time}}",
+    "waitingForWorker": "뉴스 워커 대기 중",
+    "allSources": "모든 소스 ({{n}})",
+    "filterPlaceholder": "필터...",
+    "resume": "재개",
+    "pause": "일시 정지",
+    "refresh": "새로고침",
+    "showFiltered": "필터링 표시",
+    "hideFiltered": "필터링 숨기기",
+    "clear": "지우기",
+    "refreshingWorkflow": "뉴스 워크플로우 새로고침 중...",
+    "loadingFindings": "결과 로딩 중...",
+    "findingsCount": "결과 ({{n}})",
+    "actionableSuffix": "/ {{n}}건 실행 가능",
+    "loadingEllipsis": "로딩 중...",
+    "loadMoreRemaining": "더 보기 ({{n}}건 남음)",
+    "showing": "{{n}}건 표시",
+    "showingTotal": "{{n}}건 표시 (총 {{total}}건)",
+    "showingFilter": "로드된 {{loaded}}건 중 {{n}}건 표시",
+    "showingFilterTotal": "로드된 {{loaded}}건 중 {{n}}건 표시 (총 {{total}}건)",
+    "publishedTime": "게시 {{time}}",
+    "addedTime": "추가 {{time}}",
+    "vectorIndexed": "벡터 인덱스됨",
+    "buyOutcome": "매수 {{outcome}}",
+    "actionable": "실행 가능",
+    "articleCount": "{{n}}건의 기사",
+    "sdkLabel": "SDK {{sdk}}",
+    "sdkTooltip": "StrategySDK: {{sdk}}",
+    "edgeLabel": "엣지",
+    "linkedArticle": "연관 기사",
+    "linkedArticles": "{{n}}건의 연관 기사",
+    "hide": "숨기기",
+    "showAllCount": "모두 표시 ({{n}})",
+    "expand": "확장",
+    "expandCardTooltip": "이 카드 확장",
+    "popIn": "접기",
+    "returnToGridTooltip": "그리드로 돌아가기",
+    "expandedFindingAria": "확장된 뉴스 결과: {{question}}",
+    "outcome": {
+      "yes": "예",
+      "no": "아니오"
+    },
+    "metrics": {
+      "current": "현재",
+      "model": "모델",
+      "conf": "신뢰도",
+      "rerank": "재정렬"
+    },
+    "category": {
+      "politics": "정치",
+      "business": "비즈니스",
+      "technology": "기술",
+      "science": "과학",
+      "sports": "스포츠",
+      "world": "세계",
+      "cryptocurrency": "암호화폐",
+      "entertainment": "엔터테인먼트"
+    },
+    "time": {
+      "justNow": "방금 전",
+      "secondsAgo": "{{n}}초 전",
+      "minutesAgo": "{{n}}분 전",
+      "hoursAgo": "{{n}}시간 전",
+      "daysAgo": "{{n}}일 전"
+    },
+    "empty": {
+      "noMatchTitle": "필터와 일치하는 결과가 없습니다",
+      "noMatchDescription": "필터를 넓히거나 지워서 모든 결과를 보세요",
+      "scannedTitle": "스캔된 뉴스 기회를 찾을 수 없습니다",
+      "scannedDescription": "최근 뉴스에서 현재 사용 가능한 원시 워크플로우 결과가 없습니다",
+      "executableTitle": "실행 가능한 뉴스 기회를 찾을 수 없습니다",
+      "executableDescription": "필터링 표시를 토글하거나 새 신호를 기다리세요",
+      "noArticles": "피드에 기사가 없습니다",
+      "noArticlesMatch": "필터와 일치하는 기사가 없습니다"
+    }
+  },
+  "weatherOpportunitiesPanel": {
+    "state": {
+      "paused": "일시 정지",
+      "running": "실행 중",
+      "disabled": "비활성화"
+    },
+    "lastScan": "마지막 {{time}}",
+    "oppsCount": "기회 {{n}}",
+    "showingFiltered": "필터링 표시 중",
+    "direction": {
+      "all": "전체",
+      "buyYes": "YES 매수",
+      "buyNo": "NO 매수"
+    },
+    "placeholder": {
+      "city": "도시/위치",
+      "edge": "엣지%",
+      "entry": "진입≤"
+    },
+    "waiting": "대기 중",
+    "refresh": "새로고침",
+    "resume": "재개",
+    "pause": "일시 정지",
+    "settings": "설정",
+    "showFiltered": "필터링 표시",
+    "hideFiltered": "필터링 숨기기",
+    "date": "날짜",
+    "showEarlierDates": "이전 날짜 표시",
+    "showLaterDates": "이후 날짜 표시",
+    "allDates": "모든 날짜",
+    "filterToDate": "{{date}}로 필터",
+    "noDatedOpportunities": "날짜가 있는 기회 없음",
+    "loading": "날씨 기회 로딩 중...",
+    "empty": {
+      "scannedTitle": "스캔된 날씨 기회를 찾을 수 없습니다",
+      "scannedDescription": "현재 사용 가능한 원시 날씨 워크플로우 결과가 없습니다",
+      "executableTitle": "실행 가능한 날씨 기회를 찾을 수 없습니다",
+      "executableDescription": "방향/위치/날짜 필터를 낮추거나 새 신호를 기다리세요"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} / {{total}}",
+      "prev": "이전",
+      "next": "다음"
+    },
+    "time": {
+      "never": "없음",
+      "unknown": "알 수 없음",
+      "secondsAgo": "{{n}}초 전",
+      "minutesAgo": "{{n}}분 전",
+      "hoursAgo": "{{n}}시간 전",
+      "daysAgo": "{{n}}일 전"
+    }
+  },
+  "sportsOpportunitiesPanel": {
+    "title": "스포츠 기회",
+    "loading": "스포츠 기회 로딩 중...",
+    "liveLabel": "라이브",
+    "live": "라이브",
+    "empty": {
+      "title": "스포츠 기회 없음",
+      "description": "스포츠 전략이 활성화되어 시장을 모니터링하고 있습니다. 새로운 기회는 감지되는 대로 여기에 표시됩니다."
+    },
+    "marketType": {
+      "moneyline": "머니라인",
+      "spread": "스프레드",
+      "total": "토탈",
+      "overUnder": "오버/언더",
+      "playerProp": "플레이어 프롭"
+    },
+    "sport": {
+      "soccer": "축구",
+      "tennis": "테니스",
+      "golf": "골프",
+      "boxing": "복싱",
+      "generic": "스포츠"
+    },
+    "gameTime": {
+      "minutes": "{{n}}분"
+    },
+    "priceMovement": "{{outcome}} 가격 변동",
+    "reversionTarget": "회귀 목표",
+    "edgeCents": "(+{{value}}¢ 엣지)",
+    "metrics": {
+      "confidence": "신뢰도",
+      "risk": "리스크",
+      "roi": "ROI",
+      "resolves": "해결"
+    },
+    "tag": {
+      "surpriseMove": "예상 외 움직임",
+      "fade": "{{outcome}} 페이드",
+      "meanReversion": "평균 회귀"
+    },
+    "pagination": {
+      "prev": "이전",
+      "next": "다음"
+    },
+    "time": {
+      "justNow": "방금 전",
+      "minutesAgo": "{{n}}분 전",
+      "hoursAgo": "{{n}}시간 전",
+      "daysAgo": "{{n}}일 전"
+    }
   }
 }

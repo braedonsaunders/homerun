@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Newspaper,
@@ -73,15 +74,18 @@ function parseUtcDate(dateStr: string | null | undefined): Date | null {
   return date
 }
 
-function timeAgo(dateStr: string | null | undefined): string {
-  const date = parseUtcDate(dateStr)
-  if (!date) return ''
-  const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
-  if (seconds < 0) return 'just now'
-  if (seconds < 60) return `${seconds}s ago`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
-  return `${Math.floor(seconds / 86400)}d ago`
+function useTimeAgo() {
+  const { t } = useTranslation()
+  return (dateStr: string | null | undefined): string => {
+    const date = parseUtcDate(dateStr)
+    if (!date) return ''
+    const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
+    if (seconds < 0) return t('newsIntelligencePanel.time.justNow')
+    if (seconds < 60) return t('newsIntelligencePanel.time.secondsAgo', { n: seconds })
+    if (seconds < 3600) return t('newsIntelligencePanel.time.minutesAgo', { n: Math.floor(seconds / 60) })
+    if (seconds < 86400) return t('newsIntelligencePanel.time.hoursAgo', { n: Math.floor(seconds / 3600) })
+    return t('newsIntelligencePanel.time.daysAgo', { n: Math.floor(seconds / 86400) })
+  }
 }
 
 function articleRecencyMs(article: NewsArticle): number {
@@ -123,15 +127,15 @@ const CATEGORY_ICONS: Record<string, string> = {
   entertainment: '🎬',
 }
 
-const CATEGORY_NAMES: Record<string, string> = {
-  politics: 'Politics',
-  business: 'Business',
-  technology: 'Tech',
-  science: 'Science',
-  sports: 'Sports',
-  world: 'World',
-  cryptocurrency: 'Crypto',
-  entertainment: 'Entertainment',
+const CATEGORY_KEYS: Record<string, string> = {
+  politics: 'politics',
+  business: 'business',
+  technology: 'technology',
+  science: 'science',
+  sports: 'sports',
+  world: 'world',
+  cryptocurrency: 'cryptocurrency',
+  entertainment: 'entertainment',
 }
 
 const SPARKLINE_COLORS = [
@@ -526,12 +530,17 @@ function mergeFindingsByMarket(findings: NewsWorkflowFinding[]): NewsWorkflowFin
 }
 
 function ArticleRow({ article }: { article: NewsArticle }) {
+  const { t } = useTranslation()
+  const timeAgo = useTimeAgo()
   const [expanded, setExpanded] = useState(false)
   const publishedAgo = timeAgo(article.published)
   const fetchedAgo = timeAgo(article.fetched_at)
   const timeStr = publishedAgo || fetchedAgo
-  const timeLabel = publishedAgo ? `Published ${timeStr}` : `Added ${timeStr}`
-  const categoryName = CATEGORY_NAMES[article.category]
+  const timeLabel = publishedAgo
+    ? t('newsIntelligencePanel.publishedTime', { time: timeStr })
+    : t('newsIntelligencePanel.addedTime', { time: timeStr })
+  const categoryKey = CATEGORY_KEYS[article.category]
+  const categoryName = categoryKey ? t(`newsIntelligencePanel.category.${categoryKey}`) : undefined
 
   return (
     <div
@@ -565,7 +574,7 @@ function ArticleRow({ article }: { article: NewsArticle }) {
             <span className="text-[10px] text-muted-foreground truncate max-w-[180px]">{article.source}</span>
             {timeStr && <span className="text-[10px] text-muted-foreground font-data shrink-0">{timeLabel}</span>}
             {article.has_embedding && (
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title="Vector indexed" />
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title={t('newsIntelligencePanel.vectorIndexed')} />
             )}
           </div>
         </div>
@@ -591,6 +600,8 @@ function FindingCard({
   isModalView?: boolean
   onCloseModal?: () => void
 }) {
+  const { t } = useTranslation()
+  const timeAgo = useTimeAgo()
   const [expandedArticles, setExpandedArticles] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const themeMode = useAtomValue(themeAtom)
@@ -610,8 +621,8 @@ function FindingCard({
   )
   const odds = useMemo(() => resolveCurrentOddsForFinding(finding), [finding])
   const outcomeSnapshot = useMemo(() => resolveFindingOutcomes(finding), [finding])
-  const yesOutcomeLabel = outcomeSnapshot.labels[0] || 'Yes'
-  const noOutcomeLabel = outcomeSnapshot.labels[1] || 'No'
+  const yesOutcomeLabel = outcomeSnapshot.labels[0] || t('newsIntelligencePanel.outcome.yes')
+  const noOutcomeLabel = outcomeSnapshot.labels[1] || t('newsIntelligencePanel.outcome.no')
   const sparkSeries = useMemo(
     () => buildOutcomeSparklineSeries(
       finding.price_history,
@@ -695,31 +706,31 @@ function FindingCard({
               "text-[10px] font-semibold",
               isBuyYes ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-red-500/10 text-red-400 border-red-500/20"
             )}>
-              {`BUY ${compactOutcomeLabel(directionLabel, 18).toUpperCase()}`}
+              {t('newsIntelligencePanel.buyOutcome', { outcome: compactOutcomeLabel(directionLabel, 18).toUpperCase() })}
             </Badge>
             {finding.actionable && (
               <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20">
-                Actionable
+                {t('newsIntelligencePanel.actionable')}
               </Badge>
             )}
             {articleCount > 1 && (
               <Badge variant="outline" className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/20">
-                {articleCount} articles
+                {t('newsIntelligencePanel.articleCount', { n: articleCount })}
               </Badge>
             )}
             <Badge
               variant="outline"
               className="max-w-[170px] truncate text-[9px] font-mono border-border/50 bg-muted/25 text-muted-foreground"
-              title={`StrategySDK: ${strategySdk}`}
+              title={t('newsIntelligencePanel.sdkTooltip', { sdk: strategySdk })}
             >
-              SDK {strategySdk}
+              {t('newsIntelligencePanel.sdkLabel', { sdk: strategySdk })}
             </Badge>
           </div>
           <div className="text-right shrink-0">
             <span className={cn("text-lg font-bold font-data", edgeColor(finding.edge_percent))}>
               {finding.edge_percent.toFixed(1)}%
             </span>
-            <span className="text-[10px] text-muted-foreground block">edge</span>
+            <span className="text-[10px] text-muted-foreground block">{t('newsIntelligencePanel.edgeLabel')}</span>
             <div className="text-[10px] font-data mt-0.5">
               <span className="text-green-400">{compactOutcomeLabel(yesOutcomeLabel, 10)} {formatCents(odds.yes)}</span>
               <span className="text-muted-foreground mx-1">/</span>
@@ -751,7 +762,9 @@ function FindingCard({
             <div className="flex items-center gap-2">
               <Newspaper className="w-3.5 h-3.5 text-orange-400 shrink-0" />
               <span className="text-[10px] text-muted-foreground">
-                {articleCount > 1 ? `${articleCount} linked articles` : 'Linked article'}
+                {articleCount > 1
+                  ? t('newsIntelligencePanel.linkedArticles', { n: articleCount })
+                  : t('newsIntelligencePanel.linkedArticle')}
               </span>
             </div>
             {dedupedSupportingArticles.length > 2 && (
@@ -760,7 +773,7 @@ function FindingCard({
                 onClick={() => setExpandedArticles((v) => !v)}
                 className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
               >
-                {expandedArticles ? 'Hide' : `Show all (${articleCount})`}
+                {expandedArticles ? t('newsIntelligencePanel.hide') : t('newsIntelligencePanel.showAllCount', { n: articleCount })}
               </button>
             )}
           </div>
@@ -828,21 +841,21 @@ function FindingCard({
           )}
           <div className="grid grid-cols-2 gap-1.5">
             <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Current</div>
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">{t('newsIntelligencePanel.metrics.current')}</div>
               <div className={cn("text-xs font-data font-semibold", edgeColor(finding.edge_percent))}>
                 {formatCents(odds.signal)}
               </div>
             </div>
             <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Model</div>
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">{t('newsIntelligencePanel.metrics.model')}</div>
               <div className={cn("text-xs font-data font-semibold", edgeColor(finding.edge_percent))}>{formatCents(finding.model_probability)}</div>
             </div>
             <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Conf</div>
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">{t('newsIntelligencePanel.metrics.conf')}</div>
               <div className={cn("text-xs font-data font-semibold", confidenceColor(finding.confidence))}>{(finding.confidence * 100).toFixed(0)}%</div>
             </div>
             <div className="bg-muted/30 rounded-lg p-1.5 text-center">
-              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">Rerank</div>
+              <div className="text-[8px] text-muted-foreground uppercase tracking-wider">{t('newsIntelligencePanel.metrics.rerank')}</div>
               <div className="text-xs font-data font-semibold text-blue-400">{(finding.rerank_score * 100).toFixed(0)}%</div>
             </div>
           </div>
@@ -869,20 +882,20 @@ function FindingCard({
                 type="button"
                 onClick={() => setModalOpen(true)}
                 className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/20 hover:bg-violet-500/20 transition-colors font-medium"
-                title="Expand this card"
+                title={t('newsIntelligencePanel.expandCardTooltip')}
               >
                 <Maximize2 className="w-2.5 h-2.5" />
-                Expand
+                {t('newsIntelligencePanel.expand')}
               </button>
             ) : (
               <button
                 type="button"
                 onClick={() => onCloseModal?.()}
                 className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/20 hover:bg-violet-500/20 transition-colors font-medium"
-                title="Return to grid"
+                title={t('newsIntelligencePanel.returnToGridTooltip')}
               >
                 <Minimize2 className="w-2.5 h-2.5" />
-                Pop In
+                {t('newsIntelligencePanel.popIn')}
               </button>
             )}
             <span className="font-data">{timeAgo(finding.created_at)}</span>
@@ -913,7 +926,7 @@ function FindingCard({
                 className="relative z-10"
                 role="dialog"
                 aria-modal="true"
-                aria-label={`Expanded news finding: ${finding.market_question}`}
+                aria-label={t('newsIntelligencePanel.expandedFindingAria', { question: finding.market_question })}
                 initial={{ scale: 0.94, opacity: 0, y: 22 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 14 }}
@@ -971,6 +984,8 @@ export default function NewsIntelligencePanel({
   initialSearchQuery,
   mode = 'all',
 }: NewsIntelligencePanelProps = {}) {
+  const { t } = useTranslation()
+  const timeAgo = useTimeAgo()
   const queryClient = useQueryClient()
   const { isConnected } = useWebSocket('/ws')
   const [subView, setSubView] = useState<SubView>(initialSubView(mode, initialSearchQuery))
@@ -1154,7 +1169,7 @@ export default function NewsIntelligencePanel({
             )}
           >
             <Target className="w-3.5 h-3.5" />
-            Opportunities
+            {t('newsIntelligencePanel.opportunities')}
           </Button>
           <Button
             variant="outline"
@@ -1168,7 +1183,7 @@ export default function NewsIntelligencePanel({
             )}
           >
             <Newspaper className="w-3.5 h-3.5" />
-            Feed
+            {t('newsIntelligencePanel.feed')}
             {articlesTotalCount > 0 && (
               <span className="ml-1 px-1.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 text-[10px] font-data">
                 {articlesLoadedCount < articlesTotalCount ? `${articlesLoadedCount}/${articlesTotalCount}` : articlesTotalCount}
@@ -1182,15 +1197,15 @@ export default function NewsIntelligencePanel({
           {feedStatus?.running && (
             <Badge variant="outline" className="text-[10px] h-6 bg-green-500/10 text-green-400 border-green-500/20 gap-1">
               <Radio className="w-3 h-3" />
-              Live
+              {t('newsIntelligencePanel.live')}
             </Badge>
           )}
 
           <Badge variant="outline" className="text-[10px] h-6 bg-card border-border/60 text-muted-foreground">
-            Last {timeAgo(workflowStatus?.last_scan)}
+            {t('newsIntelligencePanel.lastScan', { time: timeAgo(workflowStatus?.last_scan) })}
           </Badge>
           <span className="text-xs text-muted-foreground truncate max-w-[280px]">
-            {workflowStatus?.current_activity || 'Waiting for news worker'}
+            {workflowStatus?.current_activity || t('newsIntelligencePanel.waitingForWorker')}
           </span>
 
           {subView === 'feed' && sourceKeys.length > 0 && (
@@ -1199,7 +1214,7 @@ export default function NewsIntelligencePanel({
               onChange={(e) => setFeedSourceFilter(e.target.value === '_all' ? null : e.target.value)}
               className="h-7 min-w-[150px] rounded-md border border-border bg-card px-2 text-xs text-foreground"
             >
-              <option value="_all">All sources ({feedStatus?.article_count ?? 0})</option>
+              <option value="_all">{t('newsIntelligencePanel.allSources', { n: feedStatus?.article_count ?? 0 })}</option>
               {sourceKeys.map((src) => (
                 <option key={src} value={src}>
                   {src.replace('_', ' ')} ({sourceBreakdown[src] as number})
@@ -1213,7 +1228,7 @@ export default function NewsIntelligencePanel({
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 type="text"
-                placeholder="Filter..."
+                placeholder={t('newsIntelligencePanel.filterPlaceholder')}
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
                 className={cn("pl-8 h-7 text-xs bg-card border-border", searchFilter ? "w-56 pr-8" : "w-48")}
@@ -1238,7 +1253,7 @@ export default function NewsIntelligencePanel({
                   disabled={startWorkflowMutation.isPending || pauseWorkflowMutation.isPending}
                 >
                   {workflowStatus?.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
-                  {workflowStatus?.paused ? 'Resume' : 'Pause'}
+                  {workflowStatus?.paused ? t('newsIntelligencePanel.resume') : t('newsIntelligencePanel.pause')}
                 </Button>
                 <Button
                   variant="outline"
@@ -1248,7 +1263,7 @@ export default function NewsIntelligencePanel({
                   disabled={refreshMutation.isPending}
                 >
                   <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
-                  Refresh
+                  {t('newsIntelligencePanel.refresh')}
                 </Button>
                 <Button
                   variant="outline"
@@ -1261,7 +1276,7 @@ export default function NewsIntelligencePanel({
                   )}
                   onClick={() => setShowFilteredWorkflow((prev) => !prev)}
                 >
-                  {showFilteredWorkflow ? 'Hide Filtered' : 'Show Filtered'}
+                  {showFilteredWorkflow ? t('newsIntelligencePanel.hideFiltered') : t('newsIntelligencePanel.showFiltered')}
                 </Button>
               </>
             ) : (
@@ -1274,7 +1289,7 @@ export default function NewsIntelligencePanel({
                   disabled={refreshMutation.isPending}
                 >
                   <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
-                  Refresh
+                  {t('newsIntelligencePanel.refresh')}
                 </Button>
                 <Button
                   variant="ghost"
@@ -1284,7 +1299,7 @@ export default function NewsIntelligencePanel({
                   disabled={clearMutation.isPending}
                 >
                   <Trash2 className="w-3 h-3" />
-                  Clear
+                  {t('newsIntelligencePanel.clear')}
                 </Button>
               </>
             )}
@@ -1298,32 +1313,32 @@ export default function NewsIntelligencePanel({
             <div className="flex flex-col items-center justify-center py-16">
               <RefreshCw className="w-8 h-8 animate-spin text-purple-400 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {refreshMutation.isPending ? 'Refreshing news workflow...' : 'Loading findings...'}
+                {refreshMutation.isPending ? t('newsIntelligencePanel.refreshingWorkflow') : t('newsIntelligencePanel.loadingFindings')}
               </p>
             </div>
           ) : filteredFindings.length === 0 ? (
             <OpportunityEmptyState
               title={
                 searchFilter
-                  ? 'No findings match your filter'
+                  ? t('newsIntelligencePanel.empty.noMatchTitle')
                   : showFilteredWorkflow
-                    ? 'No scanned news opportunities found'
-                    : 'No executable news opportunities found'
+                    ? t('newsIntelligencePanel.empty.scannedTitle')
+                    : t('newsIntelligencePanel.empty.executableTitle')
               }
               description={
                 searchFilter
-                  ? 'Try broadening the filter or clear it to view all findings'
+                  ? t('newsIntelligencePanel.empty.noMatchDescription')
                   : showFilteredWorkflow
-                    ? 'No raw workflow findings are currently available from recent news'
-                    : 'Try toggling Show Filtered or wait for new signals'
+                    ? t('newsIntelligencePanel.empty.scannedDescription')
+                    : t('newsIntelligencePanel.empty.executableDescription')
               }
             />
           ) : (
             <>
               <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
                 <Zap className="w-3 h-3 text-green-400" />
-                Findings ({workflowFindings.length})
-                {actionableFindingsCount ? ` / ${actionableFindingsCount} actionable` : ''}
+                {t('newsIntelligencePanel.findingsCount', { n: workflowFindings.length })}
+                {actionableFindingsCount ? ` ${t('newsIntelligencePanel.actionableSuffix', { n: actionableFindingsCount })}` : ''}
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3 card-stagger">
                 {filteredFindings.map((finding) => (
@@ -1345,7 +1360,7 @@ export default function NewsIntelligencePanel({
             <div className="text-center py-16">
               <Newspaper className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
               <p className="text-muted-foreground">
-                {searchFilter ? 'No articles match your filter' : 'No articles in feed'}
+                {searchFilter ? t('newsIntelligencePanel.empty.noArticlesMatch') : t('newsIntelligencePanel.empty.noArticles')}
               </p>
               {!searchFilter && (
                 <Button
@@ -1356,7 +1371,7 @@ export default function NewsIntelligencePanel({
                   disabled={refreshMutation.isPending}
                 >
                   <RefreshCw className={cn("w-3.5 h-3.5", refreshMutation.isPending && "animate-spin")} />
-                  Refresh
+                  {t('newsIntelligencePanel.refresh')}
                 </Button>
               )}
             </div>
@@ -1364,9 +1379,13 @@ export default function NewsIntelligencePanel({
             <>
               <div className="flex items-center justify-between mb-2 text-xs text-muted-foreground">
                 <span>
-                  Showing {filteredArticles.length}
-                  {searchFilter ? ` of ${articlesLoadedCount} loaded` : ''}
-                  {articlesTotalCount > articlesLoadedCount ? ` (${articlesTotalCount} total)` : ''}
+                  {searchFilter
+                    ? (articlesTotalCount > articlesLoadedCount
+                      ? t('newsIntelligencePanel.showingFilterTotal', { n: filteredArticles.length, loaded: articlesLoadedCount, total: articlesTotalCount })
+                      : t('newsIntelligencePanel.showingFilter', { n: filteredArticles.length, loaded: articlesLoadedCount }))
+                    : (articlesTotalCount > articlesLoadedCount
+                      ? t('newsIntelligencePanel.showingTotal', { n: filteredArticles.length, total: articlesTotalCount })
+                      : t('newsIntelligencePanel.showing', { n: filteredArticles.length }))}
                 </span>
               </div>
 
@@ -1390,12 +1409,12 @@ export default function NewsIntelligencePanel({
                     {isFetchingNextPage ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        Loading...
+                        {t('newsIntelligencePanel.loadingEllipsis')}
                       </>
                     ) : (
                       <>
                         <ChevronRight className="w-3.5 h-3.5" />
-                        Load More ({articlesTotalCount - articlesLoadedCount} remaining)
+                        {t('newsIntelligencePanel.loadMoreRemaining', { n: articlesTotalCount - articlesLoadedCount })}
                       </>
                     )}
                   </Button>

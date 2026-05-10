@@ -3395,5 +3395,189 @@
     "actionAskAi": "[preguntar-ia]",
     "actionAnalyze": "[analizar]",
     "actionAnalyzing": "[analizando...]"
+  },
+  "newsIntelligencePanel": {
+    "opportunities": "Oportunidades",
+    "feed": "Noticias",
+    "live": "En vivo",
+    "lastScan": "Último {{time}}",
+    "waitingForWorker": "Esperando al trabajador de noticias",
+    "allSources": "Todas las fuentes ({{n}})",
+    "filterPlaceholder": "Filtrar...",
+    "resume": "Reanudar",
+    "pause": "Pausar",
+    "refresh": "Actualizar",
+    "showFiltered": "Mostrar filtrados",
+    "hideFiltered": "Ocultar filtrados",
+    "clear": "Borrar",
+    "refreshingWorkflow": "Actualizando flujo de noticias...",
+    "loadingFindings": "Cargando hallazgos...",
+    "findingsCount": "Hallazgos ({{n}})",
+    "actionableSuffix": "/ {{n}} accionables",
+    "loadingEllipsis": "Cargando...",
+    "loadMoreRemaining": "Cargar más ({{n}} restantes)",
+    "showing": "Mostrando {{n}}",
+    "showingTotal": "Mostrando {{n}} ({{total}} en total)",
+    "showingFilter": "Mostrando {{n}} de {{loaded}} cargados",
+    "showingFilterTotal": "Mostrando {{n}} de {{loaded}} cargados ({{total}} en total)",
+    "publishedTime": "Publicado {{time}}",
+    "addedTime": "Agregado {{time}}",
+    "vectorIndexed": "Indexado por vectores",
+    "buyOutcome": "COMPRAR {{outcome}}",
+    "actionable": "Accionable",
+    "articleCount": "{{n}} artículos",
+    "sdkLabel": "SDK {{sdk}}",
+    "sdkTooltip": "StrategySDK: {{sdk}}",
+    "edgeLabel": "ventaja",
+    "linkedArticle": "Artículo vinculado",
+    "linkedArticles": "{{n}} artículos vinculados",
+    "hide": "Ocultar",
+    "showAllCount": "Mostrar todo ({{n}})",
+    "expand": "Expandir",
+    "expandCardTooltip": "Expandir esta tarjeta",
+    "popIn": "Contraer",
+    "returnToGridTooltip": "Volver a la cuadrícula",
+    "expandedFindingAria": "Hallazgo de noticias expandido: {{question}}",
+    "outcome": {
+      "yes": "Sí",
+      "no": "No"
+    },
+    "metrics": {
+      "current": "Actual",
+      "model": "Modelo",
+      "conf": "Conf",
+      "rerank": "Reclasif"
+    },
+    "category": {
+      "politics": "Política",
+      "business": "Negocios",
+      "technology": "Tecnología",
+      "science": "Ciencia",
+      "sports": "Deportes",
+      "world": "Mundo",
+      "cryptocurrency": "Cripto",
+      "entertainment": "Entretenimiento"
+    },
+    "time": {
+      "justNow": "ahora mismo",
+      "secondsAgo": "hace {{n}}s",
+      "minutesAgo": "hace {{n}}m",
+      "hoursAgo": "hace {{n}}h",
+      "daysAgo": "hace {{n}}d"
+    },
+    "empty": {
+      "noMatchTitle": "Ningún hallazgo coincide con tu filtro",
+      "noMatchDescription": "Intenta ampliar el filtro o bórralo para ver todos los hallazgos",
+      "scannedTitle": "No se encontraron oportunidades de noticias escaneadas",
+      "scannedDescription": "Actualmente no hay hallazgos brutos del flujo a partir de noticias recientes",
+      "executableTitle": "No se encontraron oportunidades de noticias ejecutables",
+      "executableDescription": "Prueba a activar Mostrar filtrados o espera nuevas señales",
+      "noArticles": "No hay artículos en las noticias",
+      "noArticlesMatch": "Ningún artículo coincide con tu filtro"
+    }
+  },
+  "weatherOpportunitiesPanel": {
+    "state": {
+      "paused": "Pausado",
+      "running": "En ejecución",
+      "disabled": "Deshabilitado"
+    },
+    "lastScan": "Último {{time}}",
+    "oppsCount": "Oport {{n}}",
+    "showingFiltered": "Mostrando filtrados",
+    "direction": {
+      "all": "Todos",
+      "buyYes": "Comprar SÍ",
+      "buyNo": "Comprar NO"
+    },
+    "placeholder": {
+      "city": "Ciudad/ubicación",
+      "edge": "Ventaja%",
+      "entry": "Entrada≤"
+    },
+    "waiting": "Esperando",
+    "refresh": "Actualizar",
+    "resume": "Reanudar",
+    "pause": "Pausar",
+    "settings": "Ajustes",
+    "showFiltered": "Mostrar filtrados",
+    "hideFiltered": "Ocultar filtrados",
+    "date": "Fecha",
+    "showEarlierDates": "Mostrar fechas anteriores",
+    "showLaterDates": "Mostrar fechas posteriores",
+    "allDates": "Todas las fechas",
+    "filterToDate": "Filtrar a {{date}}",
+    "noDatedOpportunities": "Sin oportunidades fechadas",
+    "loading": "Cargando oportunidades del clima...",
+    "empty": {
+      "scannedTitle": "No se encontraron oportunidades del clima escaneadas",
+      "scannedDescription": "Actualmente no hay hallazgos brutos del flujo del clima",
+      "executableTitle": "No se encontraron oportunidades del clima ejecutables",
+      "executableDescription": "Prueba bajando los filtros de dirección/ubicación/fecha o espera nuevas señales"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} de {{total}}",
+      "prev": "Ant",
+      "next": "Sig"
+    },
+    "time": {
+      "never": "Nunca",
+      "unknown": "Desconocido",
+      "secondsAgo": "hace {{n}}s",
+      "minutesAgo": "hace {{n}}m",
+      "hoursAgo": "hace {{n}}h",
+      "daysAgo": "hace {{n}}d"
+    }
+  },
+  "sportsOpportunitiesPanel": {
+    "title": "Oportunidades deportivas",
+    "loading": "Cargando oportunidades deportivas...",
+    "liveLabel": "En vivo",
+    "live": "EN VIVO",
+    "empty": {
+      "title": "Sin oportunidades deportivas",
+      "description": "Las estrategias deportivas están activas y monitoreando los mercados. Las nuevas oportunidades aparecerán aquí a medida que se detecten."
+    },
+    "marketType": {
+      "moneyline": "Línea de dinero",
+      "spread": "Hándicap",
+      "total": "Total",
+      "overUnder": "Más/Menos",
+      "playerProp": "Prop de jugador"
+    },
+    "sport": {
+      "soccer": "Fútbol",
+      "tennis": "Tenis",
+      "golf": "Golf",
+      "boxing": "Boxeo",
+      "generic": "Deportes"
+    },
+    "gameTime": {
+      "minutes": "{{n}}m"
+    },
+    "priceMovement": "Movimiento de precio de {{outcome}}",
+    "reversionTarget": "Objetivo de reversión",
+    "edgeCents": "(+{{value}}¢ ventaja)",
+    "metrics": {
+      "confidence": "Confianza",
+      "risk": "Riesgo",
+      "roi": "ROI",
+      "resolves": "Resuelve"
+    },
+    "tag": {
+      "surpriseMove": "Movimiento sorpresa",
+      "fade": "Fade {{outcome}}",
+      "meanReversion": "Reversión a la media"
+    },
+    "pagination": {
+      "prev": "Ant",
+      "next": "Sig"
+    },
+    "time": {
+      "justNow": "ahora mismo",
+      "minutesAgo": "hace {{n}}m",
+      "hoursAgo": "hace {{n}}h",
+      "daysAgo": "hace {{n}}d"
+    }
   }
 }

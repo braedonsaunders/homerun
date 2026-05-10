@@ -3395,5 +3395,189 @@
     "actionAskAi": "[ask-ai]",
     "actionAnalyze": "[analyze]",
     "actionAnalyzing": "[analyzing...]"
+  },
+  "newsIntelligencePanel": {
+    "opportunities": "Opportunities",
+    "feed": "Feed",
+    "live": "Live",
+    "lastScan": "Last {{time}}",
+    "waitingForWorker": "Waiting for news worker",
+    "allSources": "All sources ({{n}})",
+    "filterPlaceholder": "Filter...",
+    "resume": "Resume",
+    "pause": "Pause",
+    "refresh": "Refresh",
+    "showFiltered": "Show Filtered",
+    "hideFiltered": "Hide Filtered",
+    "clear": "Clear",
+    "refreshingWorkflow": "Refreshing news workflow...",
+    "loadingFindings": "Loading findings...",
+    "findingsCount": "Findings ({{n}})",
+    "actionableSuffix": "/ {{n}} actionable",
+    "loadingEllipsis": "Loading...",
+    "loadMoreRemaining": "Load More ({{n}} remaining)",
+    "showing": "Showing {{n}}",
+    "showingTotal": "Showing {{n}} ({{total}} total)",
+    "showingFilter": "Showing {{n}} of {{loaded}} loaded",
+    "showingFilterTotal": "Showing {{n}} of {{loaded}} loaded ({{total}} total)",
+    "publishedTime": "Published {{time}}",
+    "addedTime": "Added {{time}}",
+    "vectorIndexed": "Vector indexed",
+    "buyOutcome": "BUY {{outcome}}",
+    "actionable": "Actionable",
+    "articleCount": "{{n}} articles",
+    "sdkLabel": "SDK {{sdk}}",
+    "sdkTooltip": "StrategySDK: {{sdk}}",
+    "edgeLabel": "edge",
+    "linkedArticle": "Linked article",
+    "linkedArticles": "{{n}} linked articles",
+    "hide": "Hide",
+    "showAllCount": "Show all ({{n}})",
+    "expand": "Expand",
+    "expandCardTooltip": "Expand this card",
+    "popIn": "Pop In",
+    "returnToGridTooltip": "Return to grid",
+    "expandedFindingAria": "Expanded news finding: {{question}}",
+    "outcome": {
+      "yes": "Yes",
+      "no": "No"
+    },
+    "metrics": {
+      "current": "Current",
+      "model": "Model",
+      "conf": "Conf",
+      "rerank": "Rerank"
+    },
+    "category": {
+      "politics": "Politics",
+      "business": "Business",
+      "technology": "Tech",
+      "science": "Science",
+      "sports": "Sports",
+      "world": "World",
+      "cryptocurrency": "Crypto",
+      "entertainment": "Entertainment"
+    },
+    "time": {
+      "justNow": "just now",
+      "secondsAgo": "{{n}}s ago",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "daysAgo": "{{n}}d ago"
+    },
+    "empty": {
+      "noMatchTitle": "No findings match your filter",
+      "noMatchDescription": "Try broadening the filter or clear it to view all findings",
+      "scannedTitle": "No scanned news opportunities found",
+      "scannedDescription": "No raw workflow findings are currently available from recent news",
+      "executableTitle": "No executable news opportunities found",
+      "executableDescription": "Try toggling Show Filtered or wait for new signals",
+      "noArticles": "No articles in feed",
+      "noArticlesMatch": "No articles match your filter"
+    }
+  },
+  "weatherOpportunitiesPanel": {
+    "state": {
+      "paused": "Paused",
+      "running": "Running",
+      "disabled": "Disabled"
+    },
+    "lastScan": "Last {{time}}",
+    "oppsCount": "Opps {{n}}",
+    "showingFiltered": "Showing Filtered",
+    "direction": {
+      "all": "All",
+      "buyYes": "Buy YES",
+      "buyNo": "Buy NO"
+    },
+    "placeholder": {
+      "city": "City/location",
+      "edge": "Edge%",
+      "entry": "Entry≤"
+    },
+    "waiting": "Waiting",
+    "refresh": "Refresh",
+    "resume": "Resume",
+    "pause": "Pause",
+    "settings": "Settings",
+    "showFiltered": "Show Filtered",
+    "hideFiltered": "Hide Filtered",
+    "date": "Date",
+    "showEarlierDates": "Show earlier dates",
+    "showLaterDates": "Show later dates",
+    "allDates": "All Dates",
+    "filterToDate": "Filter to {{date}}",
+    "noDatedOpportunities": "No dated opportunities",
+    "loading": "Loading weather opportunities...",
+    "empty": {
+      "scannedTitle": "No scanned weather opportunities found",
+      "scannedDescription": "No raw weather workflow findings are currently available",
+      "executableTitle": "No executable weather opportunities found",
+      "executableDescription": "Try lowering direction/location/date filters or wait for new signals"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} of {{total}}",
+      "prev": "Prev",
+      "next": "Next"
+    },
+    "time": {
+      "never": "Never",
+      "unknown": "Unknown",
+      "secondsAgo": "{{n}}s ago",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "daysAgo": "{{n}}d ago"
+    }
+  },
+  "sportsOpportunitiesPanel": {
+    "title": "Sports Opportunities",
+    "loading": "Loading sports opportunities...",
+    "liveLabel": "Live",
+    "live": "LIVE",
+    "empty": {
+      "title": "No sports opportunities",
+      "description": "Sports strategies are active and monitoring markets. New opportunities will appear here as they are detected."
+    },
+    "marketType": {
+      "moneyline": "Moneyline",
+      "spread": "Spread",
+      "total": "Total",
+      "overUnder": "Over/Under",
+      "playerProp": "Player Prop"
+    },
+    "sport": {
+      "soccer": "Soccer",
+      "tennis": "Tennis",
+      "golf": "Golf",
+      "boxing": "Boxing",
+      "generic": "Sports"
+    },
+    "gameTime": {
+      "minutes": "{{n}}m"
+    },
+    "priceMovement": "{{outcome}} price movement",
+    "reversionTarget": "Reversion target",
+    "edgeCents": "(+{{value}}¢ edge)",
+    "metrics": {
+      "confidence": "Confidence",
+      "risk": "Risk",
+      "roi": "ROI",
+      "resolves": "Resolves"
+    },
+    "tag": {
+      "surpriseMove": "Surprise Move",
+      "fade": "Fade {{outcome}}",
+      "meanReversion": "Mean Reversion"
+    },
+    "pagination": {
+      "prev": "Prev",
+      "next": "Next"
+    },
+    "time": {
+      "justNow": "just now",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "daysAgo": "{{n}}d ago"
+    }
   }
 }

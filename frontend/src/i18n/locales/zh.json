@@ -3395,5 +3395,189 @@
     "actionAskAi": "[问 AI]",
     "actionAnalyze": "[分析]",
     "actionAnalyzing": "[分析中...]"
+  },
+  "newsIntelligencePanel": {
+    "opportunities": "机会",
+    "feed": "信息流",
+    "live": "直播",
+    "lastScan": "最后 {{time}}",
+    "waitingForWorker": "等待新闻工作进程",
+    "allSources": "所有来源 ({{n}})",
+    "filterPlaceholder": "过滤...",
+    "resume": "继续",
+    "pause": "暂停",
+    "refresh": "刷新",
+    "showFiltered": "显示已过滤",
+    "hideFiltered": "隐藏已过滤",
+    "clear": "清除",
+    "refreshingWorkflow": "正在刷新新闻流程...",
+    "loadingFindings": "正在加载发现...",
+    "findingsCount": "发现 ({{n}})",
+    "actionableSuffix": "/ {{n}} 个可执行",
+    "loadingEllipsis": "加载中...",
+    "loadMoreRemaining": "加载更多 (剩余 {{n}} 个)",
+    "showing": "显示 {{n}} 个",
+    "showingTotal": "显示 {{n}} 个 (共 {{total}} 个)",
+    "showingFilter": "显示 {{loaded}} 个已加载中的 {{n}} 个",
+    "showingFilterTotal": "显示 {{loaded}} 个已加载中的 {{n}} 个 (共 {{total}} 个)",
+    "publishedTime": "发布于 {{time}}",
+    "addedTime": "添加于 {{time}}",
+    "vectorIndexed": "向量已索引",
+    "buyOutcome": "买入 {{outcome}}",
+    "actionable": "可执行",
+    "articleCount": "{{n}} 篇文章",
+    "sdkLabel": "SDK {{sdk}}",
+    "sdkTooltip": "StrategySDK: {{sdk}}",
+    "edgeLabel": "优势",
+    "linkedArticle": "关联文章",
+    "linkedArticles": "{{n}} 篇关联文章",
+    "hide": "隐藏",
+    "showAllCount": "显示全部 ({{n}})",
+    "expand": "展开",
+    "expandCardTooltip": "展开此卡片",
+    "popIn": "收起",
+    "returnToGridTooltip": "返回网格",
+    "expandedFindingAria": "已展开新闻发现: {{question}}",
+    "outcome": {
+      "yes": "是",
+      "no": "否"
+    },
+    "metrics": {
+      "current": "当前",
+      "model": "模型",
+      "conf": "置信",
+      "rerank": "重排"
+    },
+    "category": {
+      "politics": "政治",
+      "business": "商业",
+      "technology": "科技",
+      "science": "科学",
+      "sports": "体育",
+      "world": "世界",
+      "cryptocurrency": "加密货币",
+      "entertainment": "娱乐"
+    },
+    "time": {
+      "justNow": "刚刚",
+      "secondsAgo": "{{n}} 秒前",
+      "minutesAgo": "{{n}} 分钟前",
+      "hoursAgo": "{{n}} 小时前",
+      "daysAgo": "{{n}} 天前"
+    },
+    "empty": {
+      "noMatchTitle": "没有发现符合您的过滤条件",
+      "noMatchDescription": "尝试扩大过滤范围或清除以查看所有发现",
+      "scannedTitle": "未找到已扫描的新闻机会",
+      "scannedDescription": "目前没有可用的来自最近新闻的原始流程发现",
+      "executableTitle": "未找到可执行的新闻机会",
+      "executableDescription": "尝试切换显示已过滤或等待新信号",
+      "noArticles": "信息流中没有文章",
+      "noArticlesMatch": "没有文章符合您的过滤条件"
+    }
+  },
+  "weatherOpportunitiesPanel": {
+    "state": {
+      "paused": "已暂停",
+      "running": "运行中",
+      "disabled": "已禁用"
+    },
+    "lastScan": "最后 {{time}}",
+    "oppsCount": "机会 {{n}}",
+    "showingFiltered": "显示已过滤",
+    "direction": {
+      "all": "全部",
+      "buyYes": "买入是",
+      "buyNo": "买入否"
+    },
+    "placeholder": {
+      "city": "城市/位置",
+      "edge": "优势%",
+      "entry": "入场≤"
+    },
+    "waiting": "等待中",
+    "refresh": "刷新",
+    "resume": "继续",
+    "pause": "暂停",
+    "settings": "设置",
+    "showFiltered": "显示已过滤",
+    "hideFiltered": "隐藏已过滤",
+    "date": "日期",
+    "showEarlierDates": "显示更早日期",
+    "showLaterDates": "显示更晚日期",
+    "allDates": "所有日期",
+    "filterToDate": "过滤至 {{date}}",
+    "noDatedOpportunities": "没有带日期的机会",
+    "loading": "正在加载天气机会...",
+    "empty": {
+      "scannedTitle": "未找到已扫描的天气机会",
+      "scannedDescription": "目前没有可用的原始天气流程发现",
+      "executableTitle": "未找到可执行的天气机会",
+      "executableDescription": "尝试降低方向/位置/日期过滤器或等待新信号"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} 共 {{total}}",
+      "prev": "上一页",
+      "next": "下一页"
+    },
+    "time": {
+      "never": "从未",
+      "unknown": "未知",
+      "secondsAgo": "{{n}} 秒前",
+      "minutesAgo": "{{n}} 分钟前",
+      "hoursAgo": "{{n}} 小时前",
+      "daysAgo": "{{n}} 天前"
+    }
+  },
+  "sportsOpportunitiesPanel": {
+    "title": "体育机会",
+    "loading": "正在加载体育机会...",
+    "liveLabel": "直播",
+    "live": "直播",
+    "empty": {
+      "title": "没有体育机会",
+      "description": "体育策略已激活并正在监控市场。新的机会将在检测到时显示在这里。"
+    },
+    "marketType": {
+      "moneyline": "胜负盘",
+      "spread": "让分",
+      "total": "总分",
+      "overUnder": "大/小",
+      "playerProp": "球员道具"
+    },
+    "sport": {
+      "soccer": "足球",
+      "tennis": "网球",
+      "golf": "高尔夫",
+      "boxing": "拳击",
+      "generic": "体育"
+    },
+    "gameTime": {
+      "minutes": "{{n}}分钟"
+    },
+    "priceMovement": "{{outcome}} 价格变动",
+    "reversionTarget": "回归目标",
+    "edgeCents": "(+{{value}}¢ 优势)",
+    "metrics": {
+      "confidence": "置信度",
+      "risk": "风险",
+      "roi": "投资回报率",
+      "resolves": "解决"
+    },
+    "tag": {
+      "surpriseMove": "意外波动",
+      "fade": "淡出 {{outcome}}",
+      "meanReversion": "均值回归"
+    },
+    "pagination": {
+      "prev": "上一页",
+      "next": "下一页"
+    },
+    "time": {
+      "justNow": "刚刚",
+      "minutesAgo": "{{n}} 分钟前",
+      "hoursAgo": "{{n}} 小时前",
+      "daysAgo": "{{n}} 天前"
+    }
   }
 }
