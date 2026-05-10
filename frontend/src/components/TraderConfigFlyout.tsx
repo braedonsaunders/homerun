@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import { AlertTriangle, Clock3, Sparkles, Zap } from 'lucide-react'
 import type { Trader, TraderLatencyClass } from '../services/apiTraders'
 import { draftDescriptionAtom, draftNameAtom, draftTradingScheduleAtom } from '../store/atoms'
@@ -139,6 +140,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
     saveTraderMutation,
   } = props
 
+  const { t } = useTranslation()
   const detail = effectiveDraftStrategyDetail
   const sourceKey = effectiveDraftSourceKey
   const sourceLabel = draftStrategyOption?.sourceLabel || sourceKey.toUpperCase()
@@ -193,12 +195,12 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
           <div className="border-b border-border px-4 py-3">
             <SheetHeader className="space-y-1 text-left">
               <SheetTitle className="text-base">
-                {mode === 'create' ? 'Create Auto Bot' : 'Edit Auto Bot'}
+                {mode === 'create' ? t('traderConfigFlyout.titleCreate') : t('traderConfigFlyout.titleEdit')}
               </SheetTitle>
               <SheetDescription>
                 {mode === 'create'
-                  ? 'Configure a new bot profile with explicit strategy, source, risk, and schedule controls.'
-                  : 'Update strategy, source, risk, and schedule settings for this bot.'}
+                  ? t('traderConfigFlyout.descriptionCreate')
+                  : t('traderConfigFlyout.descriptionEdit')}
               </SheetDescription>
             </SheetHeader>
           </div>
@@ -206,34 +208,36 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
           <ScrollArea className="flex-1 min-h-0 px-4 py-3">
             <div className="space-y-3 pb-2">
               <FlyoutSection
-                title="Bot Profile"
+                title={t('traderConfigFlyout.botProfileTitle')}
                 icon={Sparkles}
-                subtitle="Name this bot. The strategy and source are configured below."
+                subtitle={t('traderConfigFlyout.botProfileSubtitle')}
               >
                 <div className="rounded-md border border-border/60 bg-muted/15 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Bot Mode</p>
+                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">{t('traderConfigFlyout.botMode')}</p>
                     <Badge className="h-5 px-1.5 text-[10px]" variant={draftMode === 'live' ? 'destructive' : 'outline'}>
                       {draftMode.toUpperCase()}
                     </Badge>
                   </div>
                   <p className="mt-1 text-[10px] text-muted-foreground/75">
-                    This bot is scoped to {draftMode === 'live' ? 'live' : 'sandbox'} execution only.
+                    {draftMode === 'live'
+                      ? t('traderConfigFlyout.botModeScopeLive')
+                      : t('traderConfigFlyout.botModeScopeSandbox')}
                   </p>
                 </div>
 
                 <div>
-                  <Label>Name</Label>
+                  <Label>{t('traderConfigFlyout.name')}</Label>
                   <AtomInput atom={draftNameAtom} className="mt-1" />
                 </div>
 
                 <div>
-                  <Label>Description</Label>
+                  <Label>{t('traderConfigFlyout.description')}</Label>
                   <AtomInput atom={draftDescriptionAtom} className="mt-1" />
                 </div>
 
                 <div>
-                  <Label>Latency Class</Label>
+                  <Label>{t('traderConfigFlyout.latencyClass')}</Label>
                   <Select
                     value={draftLatencyClass}
                     onValueChange={(value: string) => setDraftLatencyClass((value === 'fast' || value === 'slow') ? (value as TraderLatencyClass) : 'normal')}
@@ -242,21 +246,19 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="fast">Fast — event-driven, sub-second single-leg</SelectItem>
-                      <SelectItem value="normal">Normal — shared orchestrator loop (default)</SelectItem>
-                      <SelectItem value="slow">Slow — relaxed budgets for multi-leg / recon-heavy strategies</SelectItem>
+                      <SelectItem value="fast">{t('traderConfigFlyout.latencyFast')}</SelectItem>
+                      <SelectItem value="normal">{t('traderConfigFlyout.latencyNormal')}</SelectItem>
+                      <SelectItem value="slow">{t('traderConfigFlyout.latencySlow')}</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
-                    Fast-tier bots run in the ``fast_trader_runtime`` with an isolated DB pool and sub-second budgets.
-                    They MUST be single-leg strategies (one market per signal).
-                    Pick Normal unless you explicitly need sub-second latency.
+                    {t('traderConfigFlyout.latencyHelp')}
                   </p>
                 </div>
 
                 {mode === 'create' ? (
                   <div>
-                    <Label>Copy Settings From Existing Bot (Optional)</Label>
+                    <Label>{t('traderConfigFlyout.copyFromLabel')}</Label>
                     <div className="mt-1 flex items-center gap-1">
                       <Button
                         type="button"
@@ -265,7 +267,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                         className="h-6 px-2 text-[10px]"
                         onClick={() => setDraftCopyFromMode('shadow')}
                       >
-                        Sandbox Bots
+                        {t('traderConfigFlyout.sandboxBots')}
                       </Button>
                       <Button
                         type="button"
@@ -274,7 +276,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                         className="h-6 px-2 text-[10px]"
                         onClick={() => setDraftCopyFromMode('live')}
                       >
-                        Live Bots
+                        {t('traderConfigFlyout.liveBots')}
                       </Button>
                     </div>
                     <Select
@@ -282,10 +284,10 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                       onValueChange={applyCreateCopyFromSelection}
                     >
                       <SelectTrigger className="mt-1">
-                        <SelectValue placeholder="Start from scratch" />
+                        <SelectValue placeholder={t('traderConfigFlyout.startFromScratch')} />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__none__">Start from scratch</SelectItem>
+                        <SelectItem value="__none__">{t('traderConfigFlyout.startFromScratch')}</SelectItem>
                         {copySourceTraders.map((trader) => (
                           <SelectItem key={trader.id} value={trader.id}>
                             {trader.name}
@@ -295,30 +297,31 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                     </Select>
                     {copySourceTraders.length === 0 ? (
                       <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
-                        No {draftCopyFromMode === 'live' ? 'live' : 'sandbox'} bots available to copy from.
+                        {draftCopyFromMode === 'live'
+                          ? t('traderConfigFlyout.noBotsAvailableLive')
+                          : t('traderConfigFlyout.noBotsAvailableSandbox')}
                       </p>
                     ) : null}
                     <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
-                      Creates a new bot with copied source config, strategy params, interval, risk limits, and schedule settings
-                      from the selected bot. Trades, decisions, orders, and events are never copied.
+                      {t('traderConfigFlyout.copyFromHelp')}
                     </p>
                   </div>
                 ) : null}
               </FlyoutSection>
 
               <FlyoutSection
-                title="Strategy"
+                title={t('traderConfigFlyout.strategyTitle')}
                 icon={Zap}
-                subtitle="Pick the strategy this bot will run. The signal source is derived from the strategy."
+                subtitle={t('traderConfigFlyout.strategySubtitle')}
               >
                 <div>
-                  <Label>Strategy</Label>
+                  <Label>{t('traderConfigFlyout.strategy')}</Label>
                   <Select
                     value={normalizeStrategyKey(draftStrategyKey)}
                     onValueChange={setDraftStrategy}
                   >
                     <SelectTrigger className="mt-1">
-                      <SelectValue placeholder="Choose a strategy" />
+                      <SelectValue placeholder={t('traderConfigFlyout.chooseStrategy')} />
                     </SelectTrigger>
                     <SelectContent>
                       {allStrategyOptions.map((option) => (
@@ -332,26 +335,26 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                     </SelectContent>
                   </Select>
                   <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted-foreground/80">
-                    <span>Source:</span>
+                    <span>{t('traderConfigFlyout.sourceLabel')}</span>
                     <Badge
                       variant="outline"
                       className="h-4 px-1.5 text-[9px] font-mono border-emerald-500/30 text-emerald-300 bg-emerald-500/10"
                     >
                       {sourceLabel || 'AUTO'}
                     </Badge>
-                    <span className="text-muted-foreground/60">auto-derived from strategy</span>
+                    <span className="text-muted-foreground/60">{t('traderConfigFlyout.autoDerived')}</span>
                   </div>
                 </div>
 
                 {detail ? (
                   <div className="mt-3">
-                    <Label>Version</Label>
+                    <Label>{t('traderConfigFlyout.version')}</Label>
                     <div className="mt-1 flex min-w-0 items-center gap-1.5">
                       <Badge
                         variant="outline"
                         className="h-5 min-w-0 flex-1 truncate px-1.5 text-[10px] font-mono border-emerald-500/30 text-emerald-300 bg-emerald-500/10"
                       >
-                        {latestVersion != null ? `Latest v${latestVersion}` : 'Latest'}
+                        {latestVersion != null ? t('traderConfigFlyout.latestVersionWithNum', { n: latestVersion }) : t('traderConfigFlyout.latest')}
                       </Badge>
                       <Select
                         value={selectedVersionToken}
@@ -362,7 +365,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="latest">
-                            {latestVersion != null ? `latest (v${latestVersion})` : 'latest'}
+                            {latestVersion != null ? t('traderConfigFlyout.latestWithVersion', { n: latestVersion }) : t('traderConfigFlyout.latestLower')}
                           </SelectItem>
                           {availableVersions.map((version) => (
                             <SelectItem key={`v${version}`} value={`v${version}`}>
@@ -377,18 +380,18 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
               </FlyoutSection>
 
               <FlyoutSection
-                title="Trading Schedule"
+                title={t('traderConfigFlyout.tradingScheduleTitle')}
                 icon={Clock3}
                 iconClassName="text-cyan-500"
-                count={tradingScheduleDraft.enabled ? 'active' : 'always-on'}
-                subtitle="UTC-only bot gate by days, time window, and optional date bounds."
+                count={tradingScheduleDraft.enabled ? t('traderConfigFlyout.scheduleStateActive') : t('traderConfigFlyout.scheduleStateAlwaysOn')}
+                subtitle={t('traderConfigFlyout.tradingScheduleSubtitle')}
               >
                 <div className="rounded-md border border-border p-3 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
-                      <p className="text-sm font-medium">Enable Schedule Gate</p>
+                      <p className="text-sm font-medium">{t('traderConfigFlyout.enableScheduleGate')}</p>
                       <p className="text-[10px] text-muted-foreground">
-                        When off, this bot can trade any time.
+                        {t('traderConfigFlyout.scheduleGateOffHelp')}
                       </p>
                     </div>
                     <Switch
@@ -405,7 +408,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                       className="h-6 px-2 text-[11px]"
                       onClick={() => setDraftTradingSchedule({ enabled: false })}
                     >
-                      Always On
+                      {t('traderConfigFlyout.alwaysOn')}
                     </Button>
                     <Button
                       type="button"
@@ -437,7 +440,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                         })
                       }
                     >
-                      Weekdays
+                      {t('traderConfigFlyout.weekdays')}
                     </Button>
                     <Button
                       type="button"
@@ -453,7 +456,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                         })
                       }
                     >
-                      Weekends
+                      {t('traderConfigFlyout.weekends')}
                     </Button>
                     <Button
                       type="button"
@@ -468,7 +471,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                         })
                       }
                     >
-                      Reset Window
+                      {t('traderConfigFlyout.resetWindow')}
                     </Button>
                     <Button
                       type="button"
@@ -483,12 +486,12 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                         })
                       }
                     >
-                      Clear Bounds
+                      {t('traderConfigFlyout.clearBounds')}
                     </Button>
                   </div>
 
                   <div>
-                    <Label className="text-[11px] text-muted-foreground">Days (UTC)</Label>
+                    <Label className="text-[11px] text-muted-foreground">{t('traderConfigFlyout.daysUtc')}</Label>
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {TRADING_SCHEDULE_DAYS.map((day) => {
                         const selected = tradingScheduleDraft.days.includes(day)
@@ -511,7 +514,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
 
                   <div className="grid gap-2 md:grid-cols-2">
                     <div>
-                      <Label className="text-[11px] text-muted-foreground">Start Time (UTC)</Label>
+                      <Label className="text-[11px] text-muted-foreground">{t('traderConfigFlyout.startTimeUtc')}</Label>
                       <Input
                         type="time"
                         value={tradingScheduleDraft.startTimeUtc}
@@ -521,7 +524,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                       />
                     </div>
                     <div>
-                      <Label className="text-[11px] text-muted-foreground">End Time (UTC)</Label>
+                      <Label className="text-[11px] text-muted-foreground">{t('traderConfigFlyout.endTimeUtc')}</Label>
                       <Input
                         type="time"
                         value={tradingScheduleDraft.endTimeUtc}
@@ -531,7 +534,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                       />
                     </div>
                     <div>
-                      <Label className="text-[11px] text-muted-foreground">Start Date (UTC)</Label>
+                      <Label className="text-[11px] text-muted-foreground">{t('traderConfigFlyout.startDateUtc')}</Label>
                       <Input
                         type="date"
                         value={tradingScheduleDraft.startDateUtc}
@@ -541,7 +544,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                       />
                     </div>
                     <div>
-                      <Label className="text-[11px] text-muted-foreground">End Date (UTC)</Label>
+                      <Label className="text-[11px] text-muted-foreground">{t('traderConfigFlyout.endDateUtc')}</Label>
                       <Input
                         type="date"
                         value={tradingScheduleDraft.endDateUtc}
@@ -553,7 +556,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                   </div>
 
                   <div>
-                    <Label className="text-[11px] text-muted-foreground">Hard End Timestamp (UTC ISO, optional)</Label>
+                    <Label className="text-[11px] text-muted-foreground">{t('traderConfigFlyout.hardEndTimestamp')}</Label>
                     <Input
                       value={tradingScheduleDraft.endAtUtc}
                       onChange={(event) => setDraftTradingSchedule({ endAtUtc: event.target.value })}
@@ -567,18 +570,18 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
 
               {mode === 'edit' && selectedTrader ? (
                 <FlyoutSection
-                  title="Delete / Disable Bot"
+                  title={t('traderConfigFlyout.deleteDisableTitle')}
                   icon={AlertTriangle}
                   iconClassName="text-red-500"
                   tone="danger"
-                  count={selectedTraderDeleteExposureSummary || 'No open exposure'}
+                  count={selectedTraderDeleteExposureSummary || t('traderConfigFlyout.noOpenExposure')}
                   defaultOpen={false}
                 >
                   <p className="text-xs text-muted-foreground">
-                    Open live positions: {selectedTraderOpenLivePositions} • Open shadow positions: {selectedTraderOpenShadowPositions}
+                    {t('traderConfigFlyout.openLivePositions')}: {selectedTraderOpenLivePositions} • {t('traderConfigFlyout.openShadowPositions')}: {selectedTraderOpenShadowPositions}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Open live orders: {selectedTraderOpenLiveOrders} • Open shadow orders: {selectedTraderOpenShadowOrders}
+                    {t('traderConfigFlyout.openLiveOrders')}: {selectedTraderOpenLiveOrders} • {t('traderConfigFlyout.openShadowOrders')}: {selectedTraderOpenShadowOrders}
                   </p>
                   <Select
                     value={deleteAction}
@@ -592,26 +595,26 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="disable">Disable (Recommended)</SelectItem>
-                      <SelectItem value="transfer_delete">Delete &amp; Transfer Trades</SelectItem>
-                      <SelectItem value="block">Delete (No Open Positions)</SelectItem>
-                      <SelectItem value="force_delete">Force Delete (Override Live Checks)</SelectItem>
+                      <SelectItem value="disable">{t('traderConfigFlyout.actionDisable')}</SelectItem>
+                      <SelectItem value="transfer_delete">{t('traderConfigFlyout.actionTransferDelete')}</SelectItem>
+                      <SelectItem value="block">{t('traderConfigFlyout.actionBlock')}</SelectItem>
+                      <SelectItem value="force_delete">{t('traderConfigFlyout.actionForceDelete')}</SelectItem>
                     </SelectContent>
                   </Select>
                   {deleteAction === 'transfer_delete' ? (
                     <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
                       <p className="text-xs font-medium text-amber-700 dark:text-amber-100">
-                        Transfer open trades to another bot before deleting
+                        {t('traderConfigFlyout.transferTradesTitle')}
                       </p>
                       <p className="text-[11px] text-amber-700/90 dark:text-amber-100/90">
-                        All open positions and active orders from {selectedTrader.name} will be reassigned to the selected bot, then {selectedTrader.name} will be permanently deleted.
+                        {t('traderConfigFlyout.transferTradesHelp', { name: selectedTrader.name })}
                       </p>
                       <Select
                         value={deleteTransferTargetId || ''}
                         onValueChange={(value) => setDeleteTransferTargetId(value || null)}
                       >
                         <SelectTrigger className="h-8">
-                          <SelectValue placeholder="Select target bot..." />
+                          <SelectValue placeholder={t('traderConfigFlyout.selectTargetBot')} />
                         </SelectTrigger>
                         <SelectContent>
                           {traders
@@ -628,25 +631,25 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                   {deleteAction === 'force_delete' ? (
                     <div className="space-y-2 rounded-md border border-red-500/40 bg-red-500/10 p-3">
                       <p className="text-xs font-medium text-red-700 dark:text-red-100">
-                        {selectedTraderHasLiveDeleteExposure ? 'Force delete with live exposure' : 'Confirm force delete'}
+                        {selectedTraderHasLiveDeleteExposure ? t('traderConfigFlyout.forceDeleteWithLive') : t('traderConfigFlyout.confirmForceDelete')}
                       </p>
                       <p className="text-[11px] text-red-700/90 dark:text-red-100/90">
                         {selectedTraderHasLiveDeleteExposure
-                          ? `This permanently deletes ${selectedTrader.name} while live exposure is still open. Only continue if those positions or orders were already flattened outside Homerun.`
-                          : `This permanently deletes ${selectedTrader.name} and bypasses the normal exposure safety check.`}
+                          ? t('traderConfigFlyout.forceDeleteLiveBody', { name: selectedTrader.name })
+                          : t('traderConfigFlyout.forceDeleteBody', { name: selectedTrader.name })}
                       </p>
                       {selectedTraderHasAnyDeleteExposure ? (
                         <p className="text-[11px] text-red-700/90 dark:text-red-100/90">
-                          Current exposure: {selectedTraderDeleteExposureSummary}.
+                          {t('traderConfigFlyout.currentExposure', { exposure: selectedTraderDeleteExposureSummary })}
                         </p>
                       ) : null}
                       <div className="flex items-center justify-between gap-3 rounded-md border border-red-500/30 bg-background/70 px-3 py-2">
                         <div className="space-y-0.5">
-                          <Label className="text-xs text-foreground">Confirm permanent deletion</Label>
+                          <Label className="text-xs text-foreground">{t('traderConfigFlyout.confirmPermanentDeletion')}</Label>
                           <p className="text-[11px] text-muted-foreground">
                             {selectedTraderHasLiveDeleteExposure
-                              ? 'I understand this can orphan live exposure if it is still open.'
-                              : 'I understand this permanently deletes the bot.'}
+                              ? t('traderConfigFlyout.understandOrphanLive')
+                              : t('traderConfigFlyout.understandPermanentDelete')}
                           </p>
                         </div>
                         <Switch checked={deleteForceConfirm} onCheckedChange={setDeleteForceConfirm} />
@@ -670,14 +673,14 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                     })}
                   >
                     {deleteTraderMutation.isPending
-                      ? 'Processing...'
+                      ? t('traderConfigFlyout.processing')
                       : deleteAction === 'disable'
-                        ? 'Disable Bot'
+                        ? t('traderConfigFlyout.disableBot')
                         : deleteAction === 'transfer_delete'
-                          ? 'Delete & Transfer'
+                          ? t('traderConfigFlyout.deleteAndTransfer')
                           : deleteAction === 'force_delete'
-                            ? 'Force Delete Bot'
-                            : 'Delete Bot'}
+                            ? t('traderConfigFlyout.forceDeleteBot')
+                            : t('traderConfigFlyout.deleteBot')}
                   </Button>
                 </FlyoutSection>
               ) : null}
@@ -691,7 +694,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
               </div>
             ) : null}
             <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-              Close
+              {t('traderConfigFlyout.close')}
             </Button>
             <Button
               onClick={() => {
@@ -709,7 +712,7 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                 (mode === 'create' && !draftCopyFromTraderId && !effectiveDraftSourceKey)
               }
             >
-              {mode === 'create' ? 'Create Bot' : 'Save Bot'}
+              {mode === 'create' ? t('traderConfigFlyout.createBot') : t('traderConfigFlyout.saveBot')}
             </Button>
           </div>
         </div>

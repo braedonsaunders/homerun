@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   SlidersHorizontal,
@@ -163,6 +164,7 @@ function SectionCard({ title, children }: { title: string; children: React.React
 }
 
 export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+  const { t } = useTranslation()
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [form, setForm] = useState(DEFAULTS)
   const queryClient = useQueryClient()
@@ -197,11 +199,11 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
     mutationFn: updateSettings,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
-      setSaveMessage({ type: 'success', text: 'Crypto settings saved' })
+      setSaveMessage({ type: 'success', text: t('cryptoSettingsFlyout.toastSaved') })
       setTimeout(() => setSaveMessage(null), 3000)
     },
     onError: (error: any) => {
-      setSaveMessage({ type: 'error', text: error.message || 'Failed to save crypto settings' })
+      setSaveMessage({ type: 'error', text: error.message || t('cryptoSettingsFlyout.toastFailed') })
       setTimeout(() => setSaveMessage(null), 5000)
     },
   })
@@ -228,11 +230,11 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4 text-purple-500" />
-            <h3 className="text-sm font-semibold">Settings</h3>
+            <h3 className="text-sm font-semibold">{t('cryptoSettingsFlyout.title')}</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={handleSave} disabled={saveMutation.isPending} className="gap-1 text-[10px] h-auto px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white">
-              <Save className="w-3 h-3" /> {saveMutation.isPending ? 'Saving...' : 'Save'}
+              <Save className="w-3 h-3" /> {saveMutation.isPending ? t('cryptoSettingsFlyout.saving') : t('cryptoSettingsFlyout.save')}
             </Button>
             <Button
               variant="ghost"
@@ -240,7 +242,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               className="text-xs h-auto px-2.5 py-1 hover:bg-card"
             >
               <X className="w-3.5 h-3.5 mr-1" />
-              Close
+              {t('cryptoSettingsFlyout.close')}
             </Button>
           </div>
         </div>
@@ -264,9 +266,9 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
         )}
 
         <div className="p-3 space-y-3 pb-6">
-          <SectionCard title="BTC/ETH High-Frequency">
+          <SectionCard title={t('cryptoSettingsFlyout.sectionBtcEthHf')}>
             <StrategyToggle
-              label="Enable BTC/ETH High-Frequency"
+              label={t('cryptoSettingsFlyout.enableBtcEthHf')}
               enabled={form.btc_eth_hf_enabled}
               onToggle={(v) => set('btc_eth_hf_enabled', v)}
               icon={Zap}
@@ -275,7 +277,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
             />
             <div className="mt-2">
               <StrategyToggle
-                label="Use Maker Orders"
+                label={t('cryptoSettingsFlyout.useMakerOrders')}
                 enabled={form.btc_eth_hf_maker_mode}
                 onToggle={(v) => set('btc_eth_hf_maker_mode', v)}
                 icon={Clock}
@@ -284,12 +286,12 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
             </div>
             <p className="text-[10px] text-muted-foreground/60 mt-2">
-              Configure 5m/15m/1h/4h BTC, ETH, SOL, and XRP series IDs used by the crypto strategy.
+              {t('cryptoSettingsFlyout.seriesIdsHelp')}
             </p>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5 mt-2">
               <NumericField
-                label="Pure Arb Max Combined"
-                help="Pure arb when YES+NO < this"
+                label={t('cryptoSettingsFlyout.pureArbMaxCombined')}
+                help={t('cryptoSettingsFlyout.pureArbMaxCombinedHelp')}
                 value={form.btc_eth_pure_arb_max_combined}
                 onChange={(v) => set('btc_eth_pure_arb_max_combined', v)}
                 min={0.5}
@@ -298,8 +300,8 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
                 disabled={!form.btc_eth_hf_enabled}
               />
               <NumericField
-                label="Dump-Hedge Drop %"
-                help="Min drop to trigger hedge"
+                label={t('cryptoSettingsFlyout.dumpHedgeDropPct')}
+                help={t('cryptoSettingsFlyout.dumpHedgeDropPctHelp')}
                 value={form.btc_eth_dump_hedge_drop_pct}
                 onChange={(v) => set('btc_eth_dump_hedge_drop_pct', v)}
                 min={0.01}
@@ -308,8 +310,8 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
                 disabled={!form.btc_eth_hf_enabled}
               />
               <NumericField
-                label="Thin Liquidity ($)"
-                help="Below = thin order book"
+                label={t('cryptoSettingsFlyout.thinLiquidityUsd')}
+                help={t('cryptoSettingsFlyout.thinLiquidityUsdHelp')}
                 value={form.btc_eth_thin_liquidity_usd}
                 onChange={(v) => set('btc_eth_thin_liquidity_usd', v)}
                 min={0}
@@ -318,11 +320,11 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
             </div>
           </SectionCard>
 
-          <SectionCard title="15m Series IDs">
+          <SectionCard title={t('cryptoSettingsFlyout.section15mSeriesIds')}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
               <TextField
                 label="BTC 15m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_btc_15m}
                 onChange={(v) => set('btc_eth_hf_series_btc_15m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -330,7 +332,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="ETH 15m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_eth_15m}
                 onChange={(v) => set('btc_eth_hf_series_eth_15m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -338,7 +340,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="SOL 15m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_sol_15m}
                 onChange={(v) => set('btc_eth_hf_series_sol_15m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -346,7 +348,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="XRP 15m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_xrp_15m}
                 onChange={(v) => set('btc_eth_hf_series_xrp_15m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -355,11 +357,11 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
             </div>
           </SectionCard>
 
-          <SectionCard title="5m Series IDs">
+          <SectionCard title={t('cryptoSettingsFlyout.section5mSeriesIds')}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
               <TextField
                 label="BTC 5m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_btc_5m}
                 onChange={(v) => set('btc_eth_hf_series_btc_5m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -367,7 +369,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="ETH 5m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_eth_5m}
                 onChange={(v) => set('btc_eth_hf_series_eth_5m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -375,7 +377,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="SOL 5m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_sol_5m}
                 onChange={(v) => set('btc_eth_hf_series_sol_5m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -383,7 +385,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="XRP 5m"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_xrp_5m}
                 onChange={(v) => set('btc_eth_hf_series_xrp_5m', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -392,11 +394,11 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
             </div>
           </SectionCard>
 
-          <SectionCard title="1h Series IDs">
+          <SectionCard title={t('cryptoSettingsFlyout.section1hSeriesIds')}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
               <TextField
                 label="BTC 1h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_btc_1h}
                 onChange={(v) => set('btc_eth_hf_series_btc_1h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -404,7 +406,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="ETH 1h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_eth_1h}
                 onChange={(v) => set('btc_eth_hf_series_eth_1h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -412,7 +414,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="SOL 1h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_sol_1h}
                 onChange={(v) => set('btc_eth_hf_series_sol_1h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -420,7 +422,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="XRP 1h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_xrp_1h}
                 onChange={(v) => set('btc_eth_hf_series_xrp_1h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -429,11 +431,11 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
             </div>
           </SectionCard>
 
-          <SectionCard title="4h Series IDs">
+          <SectionCard title={t('cryptoSettingsFlyout.section4hSeriesIds')}>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
               <TextField
                 label="BTC 4h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_btc_4h}
                 onChange={(v) => set('btc_eth_hf_series_btc_4h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -441,7 +443,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="ETH 4h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_eth_4h}
                 onChange={(v) => set('btc_eth_hf_series_eth_4h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -449,7 +451,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="SOL 4h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_sol_4h}
                 onChange={(v) => set('btc_eth_hf_series_sol_4h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -457,7 +459,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
               />
               <TextField
                 label="XRP 4h"
-                help="Series ID"
+                help={t('cryptoSettingsFlyout.seriesId')}
                 value={form.btc_eth_hf_series_xrp_4h}
                 onChange={(v) => set('btc_eth_hf_series_xrp_4h', v)}
                 disabled={!form.btc_eth_hf_enabled}
@@ -472,8 +474,8 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
           <Card className="bg-card/40 border-border/40 rounded-xl p-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Strategy Code</p>
-                <p className="text-[10px] text-muted-foreground">Edit the BTC/ETH HF opportunity strategy source code</p>
+                <p className="text-xs font-medium">{t('cryptoSettingsFlyout.strategyCode')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('cryptoSettingsFlyout.strategyCodeHelp')}</p>
               </div>
               <Button
                 variant="outline"
@@ -488,7 +490,7 @@ export default function CryptoSettingsFlyout({ isOpen, onClose }: { isOpen: bool
                 className="gap-1.5 text-[10px] h-7"
               >
                 <ExternalLink className="w-3 h-3" />
-                Edit Strategy Code
+                {t('cryptoSettingsFlyout.editStrategyCode')}
               </Button>
             </div>
           </Card>

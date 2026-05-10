@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   SlidersHorizontal,
@@ -94,6 +95,7 @@ export default function NewsWorkflowSettingsFlyout({
   isOpen: boolean
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<NewsWorkflowSettings>(DEFAULTS)
   const [lastNonZeroLlmCap, setLastNonZeroLlmCap] = useState(DEFAULTS.cycle_llm_call_cap)
@@ -129,14 +131,14 @@ export default function NewsWorkflowSettingsFlyout({
       queryClient.invalidateQueries({ queryKey: ['news-workflow-settings'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-status'] })
       queryClient.invalidateQueries({ queryKey: ['news-workflow-findings'] })
-      setSaveMessage({ type: 'success', text: 'News settings saved' })
+      setSaveMessage({ type: 'success', text: t('newsWorkflowSettingsFlyout.toastSaved') })
       setTimeout(() => setSaveMessage(null), 2500)
     },
     onError: (error: unknown) => {
       const message =
         error && typeof error === 'object' && 'message' in error
-          ? String((error as { message?: string }).message || 'Save failed')
-          : 'Save failed'
+          ? String((error as { message?: string }).message || t('newsWorkflowSettingsFlyout.saveFailed'))
+          : t('newsWorkflowSettingsFlyout.saveFailed')
       setSaveMessage({ type: 'error', text: message })
       setTimeout(() => setSaveMessage(null), 4000)
     },
@@ -159,7 +161,7 @@ export default function NewsWorkflowSettingsFlyout({
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4 text-orange-400" />
-            <h3 className="text-sm font-semibold">News Workflow Settings</h3>
+            <h3 className="text-sm font-semibold">{t('newsWorkflowSettingsFlyout.title')}</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -169,7 +171,7 @@ export default function NewsWorkflowSettingsFlyout({
               className="gap-1 text-[10px] h-auto px-3 py-1 bg-orange-500 hover:bg-orange-400 text-white"
             >
               <Save className="w-3 h-3" />
-              {saveMutation.isPending ? 'Saving...' : 'Save'}
+              {saveMutation.isPending ? t('newsWorkflowSettingsFlyout.saving') : t('newsWorkflowSettingsFlyout.save')}
             </Button>
             <Button
               variant="ghost"
@@ -177,7 +179,7 @@ export default function NewsWorkflowSettingsFlyout({
               className="text-xs h-auto px-2.5 py-1 hover:bg-card"
             >
               <X className="w-3.5 h-3.5 mr-1" />
-              Close
+              {t('newsWorkflowSettingsFlyout.close')}
             </Button>
           </div>
         </div>
@@ -204,19 +206,19 @@ export default function NewsWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <Newspaper className="w-3.5 h-3.5 text-orange-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Pipeline</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('newsWorkflowSettingsFlyout.sectionPipeline')}</h4>
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Enable Workflow</p>
-                <p className="text-[10px] text-muted-foreground">Turn news scanning and intent generation on/off</p>
+                <p className="text-xs font-medium">{t('newsWorkflowSettingsFlyout.enableWorkflow')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('newsWorkflowSettingsFlyout.enableWorkflowHelp')}</p>
               </div>
               <Switch checked={form.enabled} onCheckedChange={(v) => set('enabled', v)} className="scale-75" />
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Auto-Run</p>
-                <p className="text-[10px] text-muted-foreground">Run scans on interval without manual trigger</p>
+                <p className="text-xs font-medium">{t('newsWorkflowSettingsFlyout.autoRun')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('newsWorkflowSettingsFlyout.autoRunHelp')}</p>
               </div>
               <Switch
                 checked={form.auto_run}
@@ -227,7 +229,7 @@ export default function NewsWorkflowSettingsFlyout({
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Scan Interval Seconds"
+                label={t('newsWorkflowSettingsFlyout.scanIntervalSeconds')}
                 value={form.scan_interval_seconds}
                 onChange={(v) => set('scan_interval_seconds', Math.max(30, Math.min(3600, Math.round(v))))}
                 min={30}
@@ -236,7 +238,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Article Max Age (Hours)"
+                label={t('newsWorkflowSettingsFlyout.articleMaxAgeHours')}
                 value={form.article_max_age_hours}
                 onChange={() => undefined}
                 min={1}
@@ -250,11 +252,11 @@ export default function NewsWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <Newspaper className="w-3.5 h-3.5 text-violet-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Retrieval</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('newsWorkflowSettingsFlyout.sectionRetrieval')}</h4>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Top K Candidates"
+                label={t('newsWorkflowSettingsFlyout.topKCandidates')}
                 value={form.top_k}
                 onChange={(v) => set('top_k', Math.max(1, Math.min(50, Math.round(v))))}
                 min={1}
@@ -263,7 +265,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Rerank Top N"
+                label={t('newsWorkflowSettingsFlyout.rerankTopN')}
                 value={form.rerank_top_n}
                 onChange={(v) => set('rerank_top_n', Math.max(1, Math.min(20, Math.round(v))))}
                 min={1}
@@ -272,7 +274,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Similarity Threshold"
+                label={t('newsWorkflowSettingsFlyout.similarityThreshold')}
                 value={form.similarity_threshold}
                 onChange={(v) => set('similarity_threshold', Math.max(0, Math.min(1, v)))}
                 min={0}
@@ -281,7 +283,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Min Keyword Signal"
+                label={t('newsWorkflowSettingsFlyout.minKeywordSignal')}
                 value={form.min_keyword_signal}
                 onChange={(v) => set('min_keyword_signal', Math.max(0, Math.min(1, v)))}
                 min={0}
@@ -290,7 +292,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Min Semantic Signal"
+                label={t('newsWorkflowSettingsFlyout.minSemanticSignal')}
                 value={form.min_semantic_signal}
                 onChange={(v) => set('min_semantic_signal', Math.max(0, Math.min(1, v)))}
                 min={0}
@@ -299,7 +301,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Max Edge Evals / Article"
+                label={t('newsWorkflowSettingsFlyout.maxEdgeEvalsPerArticle')}
                 value={form.max_edge_evals_per_article}
                 onChange={(v) => set('max_edge_evals_per_article', Math.max(1, Math.min(20, Math.round(v))))}
                 min={1}
@@ -313,11 +315,11 @@ export default function NewsWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <Newspaper className="w-3.5 h-3.5 text-sky-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Scoring Weights</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('newsWorkflowSettingsFlyout.sectionScoringWeights')}</h4>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Keyword Weight"
+                label={t('newsWorkflowSettingsFlyout.keywordWeight')}
                 value={form.keyword_weight}
                 onChange={(v) => set('keyword_weight', Math.max(0, Math.min(1, v)))}
                 min={0}
@@ -326,7 +328,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Semantic Weight"
+                label={t('newsWorkflowSettingsFlyout.semanticWeight')}
                 value={form.semantic_weight}
                 onChange={(v) => set('semantic_weight', Math.max(0, Math.min(1, v)))}
                 min={0}
@@ -335,7 +337,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Event Weight"
+                label={t('newsWorkflowSettingsFlyout.eventWeight')}
                 value={form.event_weight}
                 onChange={(v) => set('event_weight', Math.max(0, Math.min(1, v)))}
                 min={0}
@@ -344,7 +346,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Cache TTL (Minutes)"
+                label={t('newsWorkflowSettingsFlyout.cacheTtlMinutes')}
                 value={form.cache_ttl_minutes}
                 onChange={(v) => set('cache_ttl_minutes', Math.max(1, Math.min(1440, Math.round(v))))}
                 min={1}
@@ -358,12 +360,12 @@ export default function NewsWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-2">
               <Brain className="w-3.5 h-3.5 text-amber-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">LLM Calls</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('newsWorkflowSettingsFlyout.sectionLlmCalls')}</h4>
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Enable News LLM Calls</p>
-                <p className="text-[10px] text-muted-foreground">Disables event extraction, rerank, and edge-estimation LLM calls when off</p>
+                <p className="text-xs font-medium">{t('newsWorkflowSettingsFlyout.enableNewsLlmCalls')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('newsWorkflowSettingsFlyout.enableNewsLlmCallsHelp')}</p>
               </div>
               <Switch
                 checked={llmCallsEnabled}
@@ -386,7 +388,7 @@ export default function NewsWorkflowSettingsFlyout({
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Cycle LLM Call Cap"
+                label={t('newsWorkflowSettingsFlyout.cycleLlmCallCap')}
                 value={form.cycle_llm_call_cap}
                 onChange={(v) => {
                   const nextValue = Math.max(0, Math.min(500, Math.round(v)))
@@ -401,7 +403,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Cycle Spend Cap (USD)"
+                label={t('newsWorkflowSettingsFlyout.cycleSpendCapUsd')}
                 value={form.cycle_spend_cap_usd}
                 onChange={(v) => set('cycle_spend_cap_usd', Math.max(0, Math.min(100, v)))}
                 min={0}
@@ -410,7 +412,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled || !llmCallsEnabled}
               />
               <NumericField
-                label="Hourly Spend Cap (USD)"
+                label={t('newsWorkflowSettingsFlyout.hourlySpendCapUsd')}
                 value={form.hourly_spend_cap_usd}
                 onChange={(v) => set('hourly_spend_cap_usd', Math.max(0, Math.min(1000, v)))}
                 min={0}
@@ -419,7 +421,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled || !llmCallsEnabled}
               />
               <NumericField
-                label="Min Market Liquidity"
+                label={t('newsWorkflowSettingsFlyout.minMarketLiquidity')}
                 value={form.market_min_liquidity}
                 onChange={(v) => set('market_min_liquidity', Math.max(0, Math.min(1_000_000, v)))}
                 min={0}
@@ -428,7 +430,7 @@ export default function NewsWorkflowSettingsFlyout({
                 disabled={!form.enabled}
               />
               <NumericField
-                label="Max Days To Resolution"
+                label={t('newsWorkflowSettingsFlyout.maxDaysToResolution')}
                 value={form.market_max_days_to_resolution}
                 onChange={(v) => set('market_max_days_to_resolution', Math.max(1, Math.min(3650, Math.round(v))))}
                 min={1}
@@ -438,12 +440,12 @@ export default function NewsWorkflowSettingsFlyout({
               />
             </div>
             <div>
-              <Label className="text-[11px] text-muted-foreground">Model Override</Label>
+              <Label className="text-[11px] text-muted-foreground">{t('newsWorkflowSettingsFlyout.modelOverride')}</Label>
               <Input
                 type="text"
                 value={form.model || ''}
                 onChange={(e) => set('model', e.target.value.trim() || null)}
-                placeholder="Default provider adapter model"
+                placeholder={t('newsWorkflowSettingsFlyout.modelOverridePlaceholder')}
                 className="mt-1 h-8 text-xs font-mono"
                 disabled={!form.enabled || !llmCallsEnabled}
               />
@@ -455,8 +457,8 @@ export default function NewsWorkflowSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Strategy Code</p>
-                <p className="text-[10px] text-muted-foreground">Edit News opportunity strategies in the Strategy Manager</p>
+                <p className="text-xs font-medium">{t('newsWorkflowSettingsFlyout.strategyCode')}</p>
+                <p className="text-[10px] text-muted-foreground">{t('newsWorkflowSettingsFlyout.strategyCodeHelp')}</p>
               </div>
               <Button
                 variant="outline"
@@ -471,7 +473,7 @@ export default function NewsWorkflowSettingsFlyout({
                 className="gap-1.5 text-[10px] h-7"
               >
                 <ExternalLink className="w-3 h-3" />
-                Edit Strategy Code
+                {t('newsWorkflowSettingsFlyout.editStrategyCode')}
               </Button>
             </div>
           </Card>
