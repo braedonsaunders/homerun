@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ExternalLink,
@@ -78,20 +79,21 @@ function formatOutcomePriceSummary(market: Opportunity['markets'][number]): stri
 }
 
 export default function OpportunityTable({ opportunities, onOpenCopilot }: Props) {
+  const { t } = useTranslation()
   return (
     <div className="border border-border/50 rounded-lg overflow-hidden">
       {/* Table Header */}
       <div className="grid grid-cols-[36px_minmax(0,1fr)_72px_76px_64px_64px_64px_64px_72px_52px] gap-0 bg-muted/50 border-b border-border/50 text-[9px] text-muted-foreground uppercase tracking-wider font-medium">
-        <div className="px-2 py-2">Stg</div>
-        <div className="px-2 py-2">Market</div>
-        <div className="px-2 py-2">Trend</div>
-        <div className="px-2 py-2 text-right">ROI</div>
-        <div className="px-2 py-2 text-right">Net</div>
-        <div className="px-2 py-2 text-right">Cost</div>
-        <div className="px-2 py-2 text-right">Risk</div>
-        <div className="px-2 py-2 text-right">Liq</div>
-        <div className="px-2 py-2 text-center">AI</div>
-        <div className="px-2 py-2 text-right">Age</div>
+        <div className="px-2 py-2">{t('opportunityTable.header.stg')}</div>
+        <div className="px-2 py-2">{t('opportunityTable.header.market')}</div>
+        <div className="px-2 py-2">{t('opportunityTable.header.trend')}</div>
+        <div className="px-2 py-2 text-right">{t('opportunityTable.header.roi')}</div>
+        <div className="px-2 py-2 text-right">{t('opportunityTable.header.net')}</div>
+        <div className="px-2 py-2 text-right">{t('opportunityTable.header.cost')}</div>
+        <div className="px-2 py-2 text-right">{t('opportunityTable.header.risk')}</div>
+        <div className="px-2 py-2 text-right">{t('opportunityTable.header.liq')}</div>
+        <div className="px-2 py-2 text-center">{t('opportunityTable.header.ai')}</div>
+        <div className="px-2 py-2 text-right">{t('opportunityTable.header.age')}</div>
       </div>
 
       {/* Table Body */}
@@ -115,10 +117,14 @@ const TableRow = memo(function TableRow({
   opportunity: Opportunity
   onOpenCopilot?: (opportunity: Opportunity) => void
 }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [aiExpanded, setAiExpanded] = useState(false)
   const themeMode = useAtomValue(themeAtom)
   const queryClient = useQueryClient()
+  const translateRecommendation = (rec: string): string => rec
+    ? t(`opportunityCard.recommendation.${rec}`, { defaultValue: rec.replace('_', ' ').toUpperCase() })
+    : ''
 
   const inlineAnalysis = opportunity.ai_analysis
   const forceWeatherLlm = (
@@ -173,12 +179,12 @@ const TableRow = memo(function TableRow({
         prices: marketOutcomes.prices,
         yesPrice: market?.yes_price,
         noPrice: market?.no_price,
-        yesLabel: marketOutcomes.labels[0] || 'Yes',
-        noLabel: marketOutcomes.labels[1] || 'No',
+        yesLabel: marketOutcomes.labels[0] || t('opportunityCard.yes'),
+        noLabel: marketOutcomes.labels[1] || t('opportunityCard.no'),
         preferIndexedKeys: marketOutcomes.labels.length > 2 || marketOutcomes.prices.length > 2,
       }),
     ),
-    [market, marketOutcomes],
+    [market, marketOutcomes, t],
   )
   const nowSec = useMemo(() => Math.floor(Date.now() / 1000), [sparkSeries])
   const livelineSeries = useMemo<LivelineSeries[]>(
@@ -313,7 +319,7 @@ const TableRow = memo(function TableRow({
 
         {/* Time */}
         <div className="px-2 py-1.5 text-right">
-          <span className="text-[10px] font-data text-muted-foreground">{timeAgo(opportunity.detected_at)}</span>
+          <span className="text-[10px] font-data text-muted-foreground">{timeAgo(opportunity.detected_at, t)}</span>
         </div>
       </div>
 
@@ -371,7 +377,7 @@ const TableRow = memo(function TableRow({
                   <div className="flex items-center gap-1.5">
                     <Brain className="w-3 h-3 text-purple-400" />
                     <Badge variant="outline" className={cn("text-[9px] px-1 py-0 font-bold", RECOMMENDATION_COLORS[recommendation])}>
-                      {recommendation.replace('_', ' ').toUpperCase()}
+                      {translateRecommendation(recommendation)}
                     </Badge>
                     <span className="text-[9px] font-data text-purple-300 ml-auto">
                       {(judgment.overall_score * 100).toFixed(0)}/100
@@ -387,7 +393,7 @@ const TableRow = memo(function TableRow({
                     <p
                       className={`text-[9px] text-muted-foreground cursor-pointer hover:text-muted-foreground/80 transition-colors ${!aiExpanded ? 'line-clamp-2' : ''}`}
                       onClick={(e) => { e.stopPropagation(); setAiExpanded(!aiExpanded) }}
-                      title={aiExpanded ? "Click to collapse" : "Click to expand full analysis"}
+                      title={aiExpanded ? t('opportunityCard.clickToCollapse') : t('opportunityCard.clickToExpand')}
                     >
                       {judgment.reasoning}
                     </p>
@@ -401,7 +407,7 @@ const TableRow = memo(function TableRow({
                   <div className="flex items-center gap-1">
                     <Shield className="w-2.5 h-2.5 text-muted-foreground" />
                     <Badge variant="outline" className={cn('text-[8px] px-1 py-0', RECOMMENDATION_COLORS[resolutions[0].recommendation])}>
-                      {resolutions[0].recommendation}
+                      {translateRecommendation(resolutions[0].recommendation)}
                     </Badge>
                   </div>
                   <p className="text-[9px] text-muted-foreground mt-0.5 line-clamp-2">{resolutions[0].summary}</p>
@@ -445,7 +451,7 @@ const TableRow = memo(function TableRow({
                     disabled={judgeMutation.isPending}
                     className="inline-flex items-center gap-0.5 h-5 px-1.5 text-[9px] rounded border bg-purple-500/10 text-purple-400 border-purple-500/20 hover:bg-purple-500/20 transition-colors"
                   >
-                    <Brain className="w-2 h-2" /> {judgeMutation.isPending ? '...' : 'Analyze'}
+                    <Brain className="w-2 h-2" /> {judgeMutation.isPending ? '...' : t('opportunityTable.analyze')}
                   </button>
                 )}
                 <BuyButton opportunity={opportunity} className="ml-auto w-24" />

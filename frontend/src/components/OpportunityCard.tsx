@@ -1,4 +1,6 @@
 import { memo, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -189,10 +191,10 @@ const SPARKLINE_TEXT_CLASSES = [
 
 // ─── Utilities ────────────────────────────────────────────
 
-export function timeAgo(dateStr: string): string {
+export function timeAgo(dateStr: string, t?: TFunction): string {
   if (!dateStr) return '—'
   const diffMs = Date.now() - new Date(dateStr).getTime()
-  if (diffMs < 0 || Number.isNaN(diffMs)) return 'now'
+  if (diffMs < 0 || Number.isNaN(diffMs)) return t ? t('opportunityCard.now') : 'now'
   const sec = Math.floor(diffMs / 1000)
   if (sec < 60) return `${sec}s`
   const min = Math.floor(sec / 60)
@@ -218,11 +220,11 @@ function resolveOpportunityFreshnessTimestamp(opportunity: Opportunity): string 
 }
 
 /** Format a resolution date as a human-readable "time remaining" string */
-function timeUntil(dateStr?: string | null): string {
+function timeUntil(dateStr: string | null | undefined, t: TFunction): string {
   if (!dateStr) return '—'
   const diffMs = new Date(dateStr).getTime() - Date.now()
   if (Number.isNaN(diffMs)) return '—'
-  if (diffMs <= 0) return 'Ended'
+  if (diffMs <= 0) return t('opportunityCard.ended')
   const days = Math.floor(diffMs / 86_400_000)
   if (days > 365) return `${Math.floor(days / 365)}y`
   if (days > 30) return `${Math.floor(days / 30)}mo`
@@ -389,10 +391,17 @@ function OpportunityCard({
   isModalView = false,
   onCloseModal,
 }: Props) {
+  const { t } = useTranslation()
   const [aiExpanded, setAiExpanded] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const themeMode = useAtomValue(themeAtom)
   const queryClient = useQueryClient()
+  const strategyLabel = STRATEGY_NAMES[opportunity.strategy]
+    ? t(`opportunityCard.strategyName.${opportunity.strategy}`, { defaultValue: STRATEGY_NAMES[opportunity.strategy] })
+    : opportunity.strategy
+  const translateRecommendation = (rec: string): string => rec
+    ? t(`opportunityCard.recommendation.${rec}`, { defaultValue: rec.replace('_', ' ').toUpperCase() })
+    : ''
 
   // Temperature unit preference
   const { data: weatherSettings } = useQuery({
@@ -562,8 +571,8 @@ function OpportunityCard({
   )
   const singleMarketOutcomes = useMemo(() => resolveMarketOutcomes(market), [market])
   const marketOutcomes = multiMarketOutcomes ?? singleMarketOutcomes
-  const primaryOutcomeLabel = marketOutcomes.labels[0] || 'Yes'
-  const secondaryOutcomeLabel = marketOutcomes.labels[1] || 'No'
+  const primaryOutcomeLabel = marketOutcomes.labels[0] || t('opportunityCard.yes')
+  const secondaryOutcomeLabel = marketOutcomes.labels[1] || t('opportunityCard.no')
   const sparkSeries = useMemo(
     () => {
       if (isMultiMarket && multiMarketOutcomes) {
@@ -655,13 +664,13 @@ function OpportunityCard({
           prices: singleMarketOutcomes.prices,
           yesPrice: marketYesPrice,
           noPrice: marketNoPrice,
-          yesLabel: singleMarketOutcomes.labels[0] || 'Yes',
-          noLabel: singleMarketOutcomes.labels[1] || 'No',
+          yesLabel: singleMarketOutcomes.labels[0] || t('opportunityCard.yes'),
+          noLabel: singleMarketOutcomes.labels[1] || t('opportunityCard.no'),
           preferIndexedKeys: singleMarketOutcomes.labels.length > 2 || singleMarketOutcomes.prices.length > 2,
         }),
       )
     },
-    [market, marketYesPrice, marketNoPrice, isMultiMarket, multiMarketOutcomes, singleMarketOutcomes, opportunity.markets],
+    [market, marketYesPrice, marketNoPrice, isMultiMarket, multiMarketOutcomes, singleMarketOutcomes, opportunity.markets, t],
   )
   const hasSparkline = (
     sparkSeries.length > 0
@@ -702,7 +711,7 @@ function OpportunityCard({
           data: mktData,
           value: weatherMarketProbability,
           color: SPARKLINE_COLORS[0],
-          label: 'Market',
+          label: t('opportunityCard.field.market'),
         })
       }
       if (modelProbability != null) {
@@ -713,7 +722,7 @@ function OpportunityCard({
             data: modelData,
             value: modelProbability,
             color: '#06b6d4', // cyan-500 for weather model
-            label: 'Model',
+            label: t('opportunityCard.field.model'),
           })
         }
       }
@@ -729,7 +738,7 @@ function OpportunityCard({
       color: SPARKLINE_COLORS[index % SPARKLINE_COLORS.length],
       label: row.label,
     }))
-  }, [sparkSeries, nowSec, isWeatherOpportunity, market, marketProbability, marketYesPrice, modelProbability])
+  }, [sparkSeries, nowSec, isWeatherOpportunity, market, marketProbability, marketYesPrice, modelProbability, t])
   const primaryLivelineData = livelineSeries[0]?.data ?? []
   const primaryLivelineValue = livelineSeries[0]?.value ?? 0
   const livelineWindow = primaryLivelineData.length >= 2
@@ -803,7 +812,7 @@ function OpportunityCard({
                   {headerTitle}
                 </h3>
                 <Badge variant="outline" className={cn("h-5 px-1.5 text-[10px]", STRATEGY_COLORS[opportunity.strategy])}>
-                  {STRATEGY_NAMES[opportunity.strategy] || opportunity.strategy}
+                  {strategyLabel}
                 </Badge>
                 {opportunity.category && (
                   <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-border/80 bg-muted/60 text-muted-foreground">
@@ -827,7 +836,7 @@ function OpportunityCard({
                 onClick={(e) => { e.stopPropagation(); onCloseModal?.() }}
               >
                 <Minimize2 className="w-3 h-3 mr-1" />
-                Close
+                {t('opportunityCard.close')}
               </Button>
             </div>
           </div>
@@ -851,7 +860,7 @@ function OpportunityCard({
             )}
             {!isSearch && !isWeatherOpportunity && (
               <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", STRATEGY_COLORS[opportunity.strategy])}>
-                {STRATEGY_NAMES[opportunity.strategy] || opportunity.strategy}
+                {strategyLabel}
               </Badge>
             )}
             {isSearch && (
@@ -863,7 +872,7 @@ function OpportunityCard({
               <Badge
                 variant="outline"
                 className="max-w-[170px] truncate text-[9px] px-1.5 py-0 font-mono border-border/50 bg-muted/25 text-muted-foreground"
-                title={`StrategySDK: ${strategySdk}`}
+                title={t('opportunityCard.sdkTooltip', { sdk: strategySdk })}
               >
                 SDK {strategySdk}
               </Badge>
@@ -875,12 +884,12 @@ function OpportunityCard({
             )}
             {judgment && (
               <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0 font-bold", RECOMMENDATION_COLORS[recommendation])}>
-                {recommendation.replace('_', ' ').toUpperCase()}
+                {translateRecommendation(recommendation)}
               </Badge>
             )}
             {isPending && !judgeMutation.isPending && (
               <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                <RefreshCw className="w-2.5 h-2.5 animate-spin" /> queued
+                <RefreshCw className="w-2.5 h-2.5 animate-spin" /> {t('opportunityCard.queued')}
               </span>
             )}
           </div>
@@ -902,7 +911,7 @@ function OpportunityCard({
                   )}
                 </div>
                 <p className="text-[10px] text-muted-foreground font-data mt-0.5">
-                  {formatCompact(opportunity.volume ?? opportunity.min_liquidity)} vol
+                  {t('opportunityCard.volSuffix', { value: formatCompact(opportunity.volume ?? opportunity.min_liquidity) })}
                 </p>
               </>
             ) : (
@@ -917,7 +926,7 @@ function OpportunityCard({
                   </span>
                 </div>
                 <p className="text-[10px] text-muted-foreground font-data mt-0.5">
-                  {formatCompact(opportunity.net_profit)} net
+                  {t('opportunityCard.netSuffix', { value: formatCompact(opportunity.net_profit) })}
                 </p>
               </>
             )}
@@ -984,11 +993,11 @@ function OpportunityCard({
           {/* Metrics Grid */}
           {isSearch ? (
             <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-              <MiniMetric label="Volume" value={formatCompact(opportunity.volume ?? opportunity.min_liquidity)} />
-              <MiniMetric label="Liquidity" value={formatCompact(opportunity.min_liquidity)} />
-              <MiniMetric label="Ends" value={timeUntil(opportunity.resolution_date)} />
+              <MiniMetric label={t('opportunityCard.metrics.volume')} value={formatCompact(opportunity.volume ?? opportunity.min_liquidity)} />
+              <MiniMetric label={t('opportunityCard.metrics.liquidity')} value={formatCompact(opportunity.min_liquidity)} />
+              <MiniMetric label={t('opportunityCard.metrics.ends')} value={timeUntil(opportunity.resolution_date, t)} />
               <MiniMetric
-                label="Competitive"
+                label={t('opportunityCard.metrics.competitive')}
                 value={market ? `${safeFixed(Math.abs(marketYesPrice - 0.5) * 200, 0)}%` : '—'}
                 valueClass={market && Math.abs(marketYesPrice - 0.5) < 0.1 ? 'text-green-400' : undefined}
               />
@@ -997,35 +1006,35 @@ function OpportunityCard({
             isWeatherOpportunity ? (
               <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
                 <MiniMetric
-                  label="Market Px"
+                  label={t('opportunityCard.metrics.marketPx')}
                   value={marketProbability != null ? `${safeFixed(marketProbability * 100, 1)}¢` : '—'}
                 />
                 <MiniMetric
-                  label="Model Px"
+                  label={t('opportunityCard.metrics.modelPx')}
                   value={modelProbability != null ? `${safeFixed(modelProbability * 100, 1)}¢` : '—'}
                 />
                 <MiniMetric
-                  label="Temp Delta"
+                  label={t('opportunityCard.metrics.tempDelta')}
                   value={tempDelta != null ? `${tempDelta >= 0 ? '+' : ''}${safeFixed(tempDelta, 1)}°${tempUnit}` : '—'}
                   valueClass={tempDelta != null ? (tempDelta >= 0 ? 'text-cyan-700 dark:text-cyan-300' : 'text-orange-600 dark:text-orange-300') : undefined}
                 />
                 <MiniMetric
-                  label="Sources"
-                  value={`${weather?.source_count ?? weatherSources.length ?? 0} src`}
+                  label={t('opportunityCard.metrics.sources')}
+                  value={t('opportunityCard.srcCount', { n: weather?.source_count ?? weatherSources.length ?? 0 })}
                 />
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                <MiniMetric label="Cost" value={formatCompact(opportunity.total_cost)} />
-                <MiniMetric label="Liq" value={formatCompact(opportunity.min_liquidity)} />
+                <MiniMetric label={t('opportunityCard.metrics.cost')} value={formatCompact(opportunity.total_cost)} />
+                <MiniMetric label={t('opportunityCard.metrics.liq')} value={formatCompact(opportunity.min_liquidity)} />
                 <MiniMetric
-                  label="Risk"
+                  label={t('opportunityCard.metrics.risk')}
                   value={`${safeFixed((opportunity.risk_score ?? 0) * 100, 0)}%`}
                   valueClass={riskColor}
                   bar={opportunity.risk_score}
                   barClass={riskBarColor}
                 />
-                <MiniMetric label="Max Pos" value={formatCompact(opportunity.max_position_size)} />
+                <MiniMetric label={t('opportunityCard.metrics.maxPos')} value={formatCompact(opportunity.max_position_size)} />
               </div>
             )
           )}
@@ -1034,10 +1043,10 @@ function OpportunityCard({
         {isWeatherOpportunity && (
           <div className="flex items-center justify-between rounded-md border border-cyan-600/20 dark:border-cyan-500/20 bg-cyan-500/[0.06] px-2 py-1">
             <span className="text-[10px] text-cyan-700 dark:text-cyan-300/90 font-medium truncate">
-              Mkt {formatTemp(marketImpliedTemp, tempUnit)} vs Consensus {formatTemp(consensusTemp, tempUnit)}
+              {t('opportunityCard.mktVsConsensus', { mkt: formatTemp(marketImpliedTemp, tempUnit), consensus: formatTemp(consensusTemp, tempUnit) })}
             </span>
             <span className="text-[10px] font-data text-muted-foreground ml-2 shrink-0">
-              Edge {signalEdgePercent != null ? `${signalEdgePercent >= 0 ? '+' : ''}${safeFixed(signalEdgePercent, 1)}%` : '—'}
+              {t('opportunityCard.edgeLabel', { value: signalEdgePercent != null ? `${signalEdgePercent >= 0 ? '+' : ''}${safeFixed(signalEdgePercent, 1)}%` : '—' })}
             </span>
           </div>
         )}
@@ -1057,10 +1066,10 @@ function OpportunityCard({
             </span>
             <Separator orientation="vertical" className="h-3 bg-purple-500/20" />
             <div className="flex gap-1.5 text-[9px] font-data text-muted-foreground shrink-0">
-              <span title="Profit">P{safeFixed((judgment.profit_viability ?? 0) * 100, 0)}</span>
-              <span title="Resolution">R{safeFixed((judgment.resolution_safety ?? 0) * 100, 0)}</span>
-              <span title="Execution">E{safeFixed((judgment.execution_feasibility ?? 0) * 100, 0)}</span>
-              <span title="Efficiency">M{safeFixed((judgment.market_efficiency ?? 0) * 100, 0)}</span>
+              <span title={t('opportunityCard.profitTooltip')}>P{safeFixed((judgment.profit_viability ?? 0) * 100, 0)}</span>
+              <span title={t('opportunityCard.resolutionTooltip')}>R{safeFixed((judgment.resolution_safety ?? 0) * 100, 0)}</span>
+              <span title={t('opportunityCard.executionTooltip')}>E{safeFixed((judgment.execution_feasibility ?? 0) * 100, 0)}</span>
+              <span title={t('opportunityCard.efficiencyTooltip')}>M{safeFixed((judgment.market_efficiency ?? 0) * 100, 0)}</span>
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); judgeMutation.mutate() }}
@@ -1073,14 +1082,14 @@ function OpportunityCard({
         ) : !isPending ? (
           <div className="flex items-center justify-between bg-muted/30 rounded-md px-2 py-1.5 border border-border/50">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1.5">
-              <Brain className="w-3 h-3" /> No AI analysis
+              <Brain className="w-3 h-3" /> {t('opportunityCard.noAiAnalysis')}
             </span>
             <button
               onClick={(e) => { e.stopPropagation(); judgeMutation.mutate() }}
               disabled={judgeMutation.isPending}
               className="text-[10px] text-purple-400 hover:text-purple-300 font-medium transition-colors"
             >
-              {judgeMutation.isPending ? 'Analyzing...' : 'Analyze'}
+              {judgeMutation.isPending ? t('opportunityCard.analyzing') : t('opportunityCard.analyze')}
             </button>
           </div>
         ) : null}
@@ -1092,7 +1101,7 @@ function OpportunityCard({
               !aiExpanded && "line-clamp-2"
             )}
             onClick={(e) => { e.stopPropagation(); setAiExpanded(!aiExpanded) }}
-            title={aiExpanded ? "Click to collapse" : "Click to expand full analysis"}
+            title={aiExpanded ? t('opportunityCard.clickToCollapse') : t('opportunityCard.clickToExpand')}
           >
             {judgment.reasoning}
           </p>
@@ -1149,8 +1158,8 @@ function OpportunityCard({
             )}
             <span className="flex items-center gap-0.5">
               <Clock className="w-2.5 h-2.5" />
-              <span title={`First detected ${timeAgo(firstDetectedTimestamp)} ago`}>
-                {timeAgo(freshnessTimestamp)}
+              <span title={t('opportunityCard.firstDetectedAgo', { time: timeAgo(firstDetectedTimestamp, t) })}>
+                {timeAgo(freshnessTimestamp, t)}
               </span>
             </span>
           </div>
@@ -1195,19 +1204,19 @@ function OpportunityCard({
             <button
               onClick={(e) => { e.stopPropagation(); onSearchNews(opportunity) }}
               className="inline-flex items-center gap-1 h-6 px-2 text-[10px] rounded border bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/20 transition-colors font-medium"
-              title="Search related news articles"
+              title={t('opportunityCard.searchNewsTooltip')}
             >
               <Newspaper className="w-2.5 h-2.5" />
-              News
+              {t('opportunityCard.newsButton')}
             </button>
           )}
         </div>
 
         {judgeMutation.error && (
           <div className="text-[10px] text-red-400">
-            Analysis failed{(judgeMutation.error as any)?.code === 'ECONNABORTED'
-              ? ' (request timed out — try again)'
-              : `: ${(judgeMutation.error as Error).message}`}
+            {(judgeMutation.error as any)?.code === 'ECONNABORTED'
+              ? t('opportunityCard.analyzeFailedTimeout')
+              : t('opportunityCard.analyzeFailedWithMessage', { message: (judgeMutation.error as Error).message })}
           </div>
         )}
       </div>
@@ -1228,31 +1237,31 @@ function OpportunityCard({
               <>
                 {/* ── Search result expanded: Market Details ── */}
                 <div className="bg-muted/30 rounded-lg p-3 border border-border/50">
-                  <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">Market Details</h4>
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">{t('opportunityCard.sections.marketDetails')}</h4>
                   <div className="grid grid-cols-3 gap-3 text-xs">
                     <div>
-                      <p className="text-[10px] text-muted-foreground">{compactOutcomeLabel(primaryOutcomeLabel, 16)} Price</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.outcomePrice', { outcome: compactOutcomeLabel(primaryOutcomeLabel, 16) })}</p>
                       <p className="font-data text-green-400">{safeFixed(marketYesPrice * 100, 1)}¢</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">{compactOutcomeLabel(secondaryOutcomeLabel, 16)} Price</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.outcomePrice', { outcome: compactOutcomeLabel(secondaryOutcomeLabel, 16) })}</p>
                       <p className="font-data text-red-400">{safeFixed(marketNoPrice * 100, 1)}¢</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Spread</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.spread')}</p>
                       <p className="font-data text-foreground">{market ? safeFixed(Math.abs(1 - marketYesPrice - marketNoPrice) * 100, 1) : '—'}¢</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Volume</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.volume')}</p>
                       <p className="font-data text-foreground">{formatCompact(opportunity.volume ?? 0)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Liquidity</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.liquidity')}</p>
                       <p className="font-data text-foreground">{formatCompact(opportunity.min_liquidity)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Ends</p>
-                      <p className="font-data text-foreground">{timeUntil(opportunity.resolution_date)}</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.ends')}</p>
+                      <p className="font-data text-foreground">{timeUntil(opportunity.resolution_date, t)}</p>
                     </div>
                   </div>
                 </div>
@@ -1266,7 +1275,7 @@ function OpportunityCard({
                       <div className="min-w-0 flex-1">
                         <p className="text-[11px] text-foreground/80 truncate">{mkt.question}</p>
                         <p className="text-[9px] text-muted-foreground font-data mt-0.5">
-                          {formatOutcomePriceSummary(mkt)} Vol:{formatCompact((mkt as any).volume)} Liq:{formatCompact((mkt as any).liquidity || mkt.liquidity)}
+                          {t('opportunityCard.outcomeVolLiq', { outcomes: formatOutcomePriceSummary(mkt), vol: formatCompact((mkt as any).volume), liq: formatCompact((mkt as any).liquidity || mkt.liquidity) })}
                         </p>
                       </div>
                       {url && (
@@ -1288,30 +1297,30 @@ function OpportunityCard({
               <>
                 {isWeatherOpportunity && weather && (
                   <div className="bg-cyan-500/[0.06] rounded-lg p-3 border border-cyan-600/20 dark:border-cyan-500/20">
-                    <h4 className="text-[10px] font-medium text-cyan-700 dark:text-cyan-300 mb-2 uppercase tracking-wider">Weather Intelligence</h4>
+                    <h4 className="text-[10px] font-medium text-cyan-700 dark:text-cyan-300 mb-2 uppercase tracking-wider">{t('opportunityCard.sections.weatherIntelligence')}</h4>
                     <div className="grid grid-cols-3 gap-3 text-xs">
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Location</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.location')}</p>
                         <p className="font-data text-foreground truncate">{weather.location || '—'}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Contract</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.contract')}</p>
                         <p className="font-data text-foreground">{weatherContractLabel}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Target</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.target')}</p>
                         <p className="font-data text-foreground">{weatherTargetLabel}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Market</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.market')}</p>
                         <p className="font-data text-foreground">{marketProbability != null ? `${safeFixed(marketProbability * 100, 1)}%` : '—'}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Model</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.model')}</p>
                         <p className="font-data text-cyan-700 dark:text-cyan-300">{modelProbability != null ? `${safeFixed(modelProbability * 100, 1)}%` : '—'}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Edge</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.edge')}</p>
                         <p className={cn(
                           "font-data",
                           signalEdgePercent != null && signalEdgePercent >= 0 ? 'text-green-400' : 'text-red-400'
@@ -1320,21 +1329,21 @@ function OpportunityCard({
                         </p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Market-Implied Temp</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.marketImpliedTemp')}</p>
                         <p className="font-data text-foreground">{formatTemp(marketImpliedTemp, tempUnit)}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Consensus Temp</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.consensusTemp')}</p>
                         <p className="font-data text-cyan-700 dark:text-cyan-300">{formatTemp(consensusTemp, tempUnit)}</p>
                       </div>
                       <div>
-                        <p className="text-[10px] text-muted-foreground">Model Agreement</p>
+                        <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.modelAgreement')}</p>
                         <p className="font-data text-foreground">{formatPct(weather.agreement)}</p>
                       </div>
                     </div>
                     {weatherSources.length > 0 && (
                       <div className="mt-3 space-y-1.5">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Forecast Sources ({weatherSources.length})</p>
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('opportunityCard.forecastSourcesCount', { n: weatherSources.length })}</p>
                         {weatherSources.map((src) => (
                           <div key={src.source_id} className="flex items-center justify-between gap-2 rounded-md border border-border/50 bg-muted/40 px-2.5 py-1.5">
                             <div className="min-w-0">
@@ -1342,11 +1351,11 @@ function OpportunityCard({
                                 {src.provider}:{src.model}
                               </p>
                               <p className="text-[9px] text-muted-foreground font-data">
-                                Temp {formatTemp(tempUnit === 'C' ? (src.value_c ?? (src.value_f != null ? fToC(src.value_f) : null)) : (src.value_f ?? (src.value_c != null ? cToF(src.value_c) : null)), tempUnit)} · Prob {formatPct(src.probability)}
+                                {t('opportunityCard.tempProbInline', { temp: formatTemp(tempUnit === 'C' ? (src.value_c ?? (src.value_f != null ? fToC(src.value_f) : null)) : (src.value_f ?? (src.value_c != null ? cToF(src.value_c) : null)), tempUnit), prob: formatPct(src.probability) })}
                               </p>
                             </div>
                             <span className="text-[10px] text-cyan-700 dark:text-cyan-300 font-data shrink-0">
-                              {src.weight != null ? `w ${safeFixed(src.weight * 100, 0)}%` : 'w —'}
+                              {src.weight != null ? t('opportunityCard.weightShort', { value: safeFixed(src.weight * 100, 0) }) : t('opportunityCard.weightShortEmpty')}
                             </span>
                           </div>
                         ))}
@@ -1358,7 +1367,7 @@ function OpportunityCard({
                 {/* ── Arbitrage opportunity expanded: Positions + Profit ── */}
                 {/* Positions to Take */}
                 <div>
-                  <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Positions</h4>
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">{t('opportunityCard.sections.positions')}</h4>
                     <div className="space-y-1.5">
                       {opportunity.positions_to_take.map((pos, idx) => {
                         const platform = (pos as any).platform
@@ -1390,30 +1399,30 @@ function OpportunityCard({
 
                 {/* Profit Breakdown */}
                 <div className="bg-muted/30 rounded-lg p-3 border border-border/50">
-                  <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">Profit Breakdown</h4>
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-2 uppercase tracking-wider">{t('opportunityCard.sections.profitBreakdown')}</h4>
                   <div className="grid grid-cols-3 gap-3 text-xs">
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Cost</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.cost')}</p>
                       <p className="font-data text-foreground">${safeFixed(opportunity.total_cost, 4)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Payout</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.payout')}</p>
                       <p className="font-data text-foreground">${safeFixed(opportunity.expected_payout, 4)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Gross</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.gross')}</p>
                       <p className="font-data text-foreground">${safeFixed(opportunity.gross_profit, 4)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Fee (2%)</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.fee2pct')}</p>
                       <p className="font-data text-red-400">-${safeFixed(opportunity.fee, 4)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Net</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.net')}</p>
                       <p className="font-data text-green-400">${safeFixed(opportunity.net_profit, 4)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">ROI</p>
+                      <p className="text-[10px] text-muted-foreground">{t('opportunityCard.field.roi')}</p>
                       <p className="font-data text-green-400">{safeFixed(opportunity.roi_percent, 2)}%</p>
                     </div>
                   </div>
@@ -1421,7 +1430,7 @@ function OpportunityCard({
 
                 {/* Markets */}
                 <div>
-                  <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Markets ({opportunity.markets.length})</h4>
+                  <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">{t('opportunityCard.sections.marketsCount', { n: opportunity.markets.length })}</h4>
                   <div className="space-y-1.5">
                     {opportunity.markets.map((mkt, idx) => {
                       const marketLink = opportunityLinks.marketLinks[idx]
@@ -1431,7 +1440,7 @@ function OpportunityCard({
                           <div className="min-w-0 flex-1">
                             <p className="text-[11px] text-foreground/80 truncate">{mkt.question}</p>
                             <p className="text-[9px] text-muted-foreground font-data mt-0.5">
-                              {formatOutcomePriceSummary(mkt)} Liq:{formatCompact(mkt.liquidity)}
+                              {t('opportunityCard.outcomeLiq', { outcomes: formatOutcomePriceSummary(mkt), liq: formatCompact(mkt.liquidity) })}
                             </p>
                           </div>
                           {url && (
@@ -1456,7 +1465,7 @@ function OpportunityCard({
             {/* Risk Factors */}
             {opportunity.risk_factors.length > 0 && (
               <div>
-                <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Risk Factors</h4>
+                <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">{t('opportunityCard.sections.riskFactors')}</h4>
                 <div className="flex flex-wrap gap-1">
                   {opportunity.risk_factors.map((f, i) => (
                     <span key={i} className="inline-flex items-center gap-1 text-[10px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded border border-yellow-500/10">
@@ -1471,13 +1480,13 @@ function OpportunityCard({
             {/* Resolution Analysis */}
             {resolutions.length > 0 && resolutions[0].summary && (
               <div>
-                <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">Resolution</h4>
+                <h4 className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">{t('opportunityCard.sections.resolution')}</h4>
                 {resolutions.map((r: any, i: number) => (
                   <div key={i} className="bg-muted/30 rounded-md p-2 space-y-1 border border-border/50">
                     <div className="flex items-center gap-1.5">
                       <Shield className="w-2.5 h-2.5 text-muted-foreground" />
                       <Badge variant="outline" className={cn('text-[9px] px-1.5 py-0', RECOMMENDATION_COLORS[r.recommendation])}>
-                        {r.recommendation}
+                        {translateRecommendation(r.recommendation)}
                       </Badge>
                       <span className="text-[9px] text-muted-foreground/60 font-data">
                         C:{safeFixed((r.clarity_score ?? 0) * 100, 0)} R:{safeFixed((r.risk_score ?? 0) * 100, 0)}
@@ -1518,7 +1527,7 @@ function OpportunityCard({
                 className="relative z-10"
                 role="dialog"
                 aria-modal="true"
-                aria-label={`Expanded opportunity: ${headerTitle}`}
+                aria-label={t('opportunityCard.expandedOpportunityAria', { title: headerTitle })}
                 initial={{ scale: 0.94, opacity: 0, y: 22 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 14 }}
