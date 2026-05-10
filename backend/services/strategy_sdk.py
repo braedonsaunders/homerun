@@ -404,10 +404,8 @@ class StrategySDK:
         "retry_limit": 2,
         "retry_backoff_ms": 250,
         "allow_averaging": False,
-        "use_dynamic_sizing": True,
         "halt_on_consecutive_losses": True,
         "max_consecutive_losses": 4,
-        "circuit_breaker_drawdown_pct": 12.0,
         "max_entry_drift_pct": 10.0,
         "max_market_data_age_ms": None,
         "allow_taker_limit_buy_above_signal": False,
@@ -440,16 +438,8 @@ class StrategySDK:
         {"key": "retry_limit", "label": "Retry Limit", "type": "integer", "min": 0, "max": 50},
         {"key": "retry_backoff_ms", "label": "Retry Backoff (ms)", "type": "integer", "min": 0, "max": 60000},
         {"key": "allow_averaging", "label": "Allow Averaging", "type": "boolean"},
-        {"key": "use_dynamic_sizing", "label": "Dynamic Position Sizing", "type": "boolean"},
         {"key": "halt_on_consecutive_losses", "label": "Halt on Loss Streak", "type": "boolean"},
         {"key": "max_consecutive_losses", "label": "Max Consecutive Losses", "type": "integer", "min": 0, "max": 1000},
-        {
-            "key": "circuit_breaker_drawdown_pct",
-            "label": "Circuit Breaker Drawdown (%)",
-            "type": "number",
-            "min": 0,
-            "max": 100,
-        },
         {
             "key": "max_entry_drift_pct",
             "label": "Max Entry Drift From Signal (%)",
@@ -1928,12 +1918,8 @@ class StrategySDK:
         cfg["retry_limit"] = StrategySDK._coerce_int(cfg.get("retry_limit"), 2, 0, 50)
         cfg["retry_backoff_ms"] = StrategySDK._coerce_int(cfg.get("retry_backoff_ms"), 250, 0, 60_000)
         cfg["allow_averaging"] = _coerce_bool(cfg.get("allow_averaging"), False)
-        cfg["use_dynamic_sizing"] = _coerce_bool(cfg.get("use_dynamic_sizing"), True)
         cfg["halt_on_consecutive_losses"] = _coerce_bool(cfg.get("halt_on_consecutive_losses"), True)
         cfg["max_consecutive_losses"] = StrategySDK._coerce_int(cfg.get("max_consecutive_losses"), 4, 0, 1000)
-        cfg["circuit_breaker_drawdown_pct"] = StrategySDK._coerce_float(
-            cfg.get("circuit_breaker_drawdown_pct"), 12.0, 0.0, 100.0
-        )
         cfg["max_entry_drift_pct"] = StrategySDK._coerce_float(
             cfg.get("max_entry_drift_pct"), 10.0, 0.0, 100.0
         )
