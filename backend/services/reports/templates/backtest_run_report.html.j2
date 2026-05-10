@@ -144,6 +144,127 @@
 
     /* Avoid awkward page breaks in the metric grid + equity curve */
     .metric-grid, .equity-curve, .two-col { page-break-inside: avoid; }
+
+    /* ── Compact data tables (regime, fold runs, etc.) ─────────── */
+    .data-table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+    .data-table th { font-family: -apple-system, sans-serif;
+                     font-size: 7.5pt; letter-spacing: 0.06em;
+                     text-transform: uppercase; color: #6b7280;
+                     text-align: left; padding: 4pt 6pt;
+                     border-bottom: 1px solid #e5e7eb; }
+    .data-table td { padding: 3pt 6pt; border-bottom: 1px solid #f3f4f6;
+                     font-family: "SF Mono", monospace; font-size: 8.5pt; }
+    .data-table td.r { text-align: right; }
+    .data-table td.pos { color: #047857; }
+    .data-table td.neg { color: #b91c1c; }
+
+    /* Quadrant / 4-up grids for regime + diagnostics */
+    .quad { display: grid; grid-template-columns: 1fr 1fr;
+            gap: 10pt; margin-top: 6pt; }
+    .quad .panel { border: 1px solid #e5e7eb; border-radius: 5pt;
+                   padding: 8pt; background: #fafafa; }
+    .quad .panel h3 { font-family: -apple-system, sans-serif;
+                      font-size: 8pt; letter-spacing: 0.1em;
+                      text-transform: uppercase; color: #6b7280;
+                      margin: 0 0 4pt; font-weight: 600; }
+
+    /* Win-rate row in regime panels: bucket label, mini-bar, pct */
+    .regime-row { display: grid;
+                  grid-template-columns: 60pt 1fr 28pt;
+                  gap: 4pt; align-items: center;
+                  font-size: 8.5pt; padding: 1.5pt 0; }
+    .regime-row .b { font-family: "SF Mono", monospace;
+                     color: #4b5563; }
+    .regime-row .bar { height: 4pt; background: #e5e7eb;
+                       border-radius: 2pt; position: relative;
+                       overflow: hidden; }
+    .regime-row .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; }
+    .regime-row .bar .fill.good { background: #10b981; }
+    .regime-row .bar .fill.warn { background: #f59e0b; }
+    .regime-row .bar .fill.bad { background: #f43f5e; }
+    .regime-row .v { font-family: "SF Mono", monospace;
+                     text-align: right; font-size: 8.5pt; }
+
+    /* Hazard ratio bars (Cox PH) — diverging from x=1.0 */
+    .hr-row { display: grid;
+              grid-template-columns: 90pt 1fr 36pt;
+              gap: 4pt; align-items: center;
+              font-size: 8.5pt; padding: 1.5pt 0; }
+    .hr-row .l { color: #6b7280; font-family: -apple-system, sans-serif;
+                 font-size: 8pt; }
+    .hr-row .bar { height: 4pt; background: #f3f4f6;
+                   border-radius: 2pt; position: relative; }
+    .hr-row .bar .center { position: absolute; left: 50%; top: 0;
+                            bottom: 0; width: 1px; background: #9ca3af; }
+    .hr-row .bar .fill-pos { position: absolute; left: 50%; top: 0;
+                             bottom: 0; background: #10b981;
+                             opacity: 0.7; }
+    .hr-row .bar .fill-neg { position: absolute; right: 50%; top: 0;
+                             bottom: 0; background: #f43f5e;
+                             opacity: 0.7; }
+    .hr-row .v { font-family: "SF Mono", monospace;
+                  text-align: right; font-size: 8.5pt; }
+
+    /* Correlation heatmap cell coloring — lighter borders, smaller text */
+    .corr-table { border-collapse: collapse; font-size: 7pt;
+                  font-family: "SF Mono", monospace; margin-top: 6pt; }
+    .corr-table th, .corr-table td {
+      border: 1px solid #f3f4f6; padding: 0; width: 22pt; height: 22pt;
+      text-align: center; vertical-align: middle;
+    }
+    .corr-table th { background: #fafafa; color: #6b7280;
+                     font-size: 6.5pt; font-weight: 600; }
+
+    /* Ensemble-band p10/p50/p90 row */
+    .band-row { display: grid;
+                grid-template-columns: 14pt 1fr 1fr 1fr;
+                gap: 4pt; align-items: center;
+                font-family: "SF Mono", monospace;
+                font-size: 8.5pt; padding: 2pt 0;
+                border-bottom: 1px solid #f3f4f6; }
+    .band-row .idx { color: #9ca3af; }
+    .band-row .cell { padding: 1pt 5pt; border-radius: 3pt;
+                      text-align: center; }
+    .band-row .cell.p10 { background: #fef2f2; color: #b91c1c; }
+    .band-row .cell.p50 { background: #fefce8; color: #92400e; }
+    .band-row .cell.p90 { background: #ecfdf5; color: #047857; }
+
+    /* Counterfactual row */
+    .cf-row { font-family: "SF Mono", monospace; font-size: 8pt;
+              padding: 3pt 6pt; border-bottom: 1px solid #f3f4f6;
+              display: grid;
+              grid-template-columns: 1fr auto;
+              gap: 6pt; align-items: baseline; }
+    .cf-row .meta { color: #6b7280; font-size: 7.5pt; }
+    .cf-row .pill { font-size: 7.5pt; padding: 1pt 5pt;
+                    border-radius: 8pt; font-family: -apple-system, sans-serif; }
+    .cf-row .pill.ok { background: #ecfdf5; color: #047857; }
+    .cf-row .pill.warn { background: #fefce8; color: #92400e; }
+
+    /* Drift severity tile */
+    .drift-tile {
+      border: 1px solid #e5e7eb; border-radius: 5pt;
+      padding: 6pt 8pt; text-align: center;
+    }
+    .drift-tile .l { font-size: 7.5pt; color: #6b7280;
+                     letter-spacing: 0.08em; text-transform: uppercase;
+                     font-family: -apple-system, sans-serif; }
+    .drift-tile .v { font-size: 14pt; font-weight: 700;
+                     font-family: "SF Mono", monospace; margin-top: 2pt; }
+    .drift-tile.stable .v { color: #047857; }
+    .drift-tile.improved .v { color: #0369a1; }
+    .drift-tile.degraded .v { color: #b91c1c; }
+    .drift-tile.stale .v { color: #6b7280; }
+
+    /* All sub-section blocks should avoid breaking mid-element */
+    .quad, .data-table, .corr-table, .hr-row, .regime-row,
+    .band-row, .cf-row, .drift-tile {
+      page-break-inside: avoid;
+    }
+
+    h3 { font-family: -apple-system, sans-serif;
+         font-size: 9pt; font-weight: 600; color: #374151;
+         margin: 12pt 0 4pt; }
   </style>
 </head>
 <body>
@@ -356,8 +477,8 @@
   </div>
   <div class="metric">
     <div class="l">P(SR &gt; SR₀ overfit)</div>
-    <div class="v {{ 'pos' if run.deflated_sharpe >= 0.95 else ('neg' if run.deflated_sharpe < 0.7 else '') }}">
-      {{ '%.1f' | format((run.deflated_sharpe or 0) * 100) }}%
+    <div class="v {{ 'pos' if run.deflated_sharpe_value >= 0.95 else ('neg' if run.deflated_sharpe_value < 0.7 else '') }}">
+      {{ '%.1f' | format((run.deflated_sharpe_value or 0) * 100) }}%
     </div>
     <div class="sub">{{ run.n_trials or 1 }} trial(s) · SR₀ {{ '%.2f' | format(run.sr_zero or 0) }}</div>
   </div>
@@ -387,33 +508,609 @@
   </div>
 </div>
 
-{# ── Outcome netting + Trade-order MC (when present) ─────────── #}
-{% if run.gross_exposure_usd is not none or run.tom_realized_sharpe is not none %}
-<h2>Risk decomposition</h2>
-<table class="metric-rows">
-  {% if run.gross_exposure_usd is not none %}
-  <tr><td class="label">Gross exposure</td>
-      <td class="value">{{ run.gross_exposure_usd | money_compact }}</td>
-      <td class="ci">total contracts open</td></tr>
-  <tr><td class="label">Net exposure</td>
-      <td class="value">{{ run.net_exposure_usd | money_compact }}</td>
-      <td class="ci">after offsetting positions in same outcome group</td></tr>
-  {% if run.capital_efficiency_pct is not none %}
-  <tr><td class="label">Capital efficiency</td>
-      <td class="value">{{ '%.1f' | format(run.capital_efficiency_pct) }}%</td>
-      <td class="ci">savings vs naïve no-netting</td></tr>
+{# ════════════════ ROBUSTNESS ════════════════════════════════ #}
+
+{# ── Trade-order Monte Carlo (full block) ─────────────────────── #}
+{% if run.tom_realized_sharpe is not none and not run.tom_skipped_reason %}
+<h2>Trade-order Monte Carlo</h2>
+<div class="metric-grid">
+  <div class="metric">
+    <div class="l">Realized SR</div>
+    <div class="v">{{ '%.2f' | format(run.tom_realized_sharpe) }}</div>
+    <div class="sub">{{ run.tom_n_trades or 0 }} trades</div>
+  </div>
+  <div class="metric">
+    <div class="l">Shuffle median</div>
+    <div class="v">{{ '%.2f' | format(run.tom_distribution.get('p50') or 0) }}</div>
+    <div class="sub">p5 {{ '%.2f' | format(run.tom_distribution.get('p5') or 0) }} · p95 {{ '%.2f' | format(run.tom_distribution.get('p95') or 0) }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Stdev</div>
+    <div class="v">{{ '%.2f' | format(run.tom_distribution.get('stdev') or 0) }}</div>
+    <div class="sub">{{ run.tom_n_resamples or 0 }} resamples</div>
+  </div>
+  <div class="metric">
+    <div class="l">Position</div>
+    <div class="v {% if run.tom_interpretation == 'sequence-driven' %}neg{% else %}pos{% endif %}">
+      {% if run.tom_position_pct is not none %}{{ '%.0f' | format(run.tom_position_pct) }}th{% else %}—{% endif %}
+    </div>
+    <div class="sub">{{ run.tom_interpretation or '' }}</div>
+  </div>
+</div>
+<p style="font-size: 8.5pt; color: #6b7280; margin-top: 4pt;">
+  Shuffles the trade order N times and recomputes Sharpe.  A position
+  &lt; 50th percentile means the realized SR was unlucky in ordering;
+  &gt; 50th means it benefited.  Interpretation labels:
+  ``sequence-driven`` = Sharpe depends materially on ordering (fragile);
+  ``order-robust`` = Sharpe is stable across permutations.
+</p>
+{% endif %}
+
+{# ── Regime decomposition (4-quadrant) ────────────────────────── #}
+{% if run.regime_by_hour or run.regime_by_dow or run.regime_by_ttr or run.regime_by_size %}
+<h2>Regime decomposition</h2>
+<p style="font-size: 8.5pt; color: #6b7280; margin: -4pt 0 4pt;">
+  Win-rate broken out by hour-of-day, day-of-week, time-to-revenue
+  bucket, and size bucket.  Bars scale to per-bucket sample size.
+</p>
+<div class="quad">
+  {% set _regimes = [
+    ('By hour of day', run.regime_by_hour),
+    ('By day of week', run.regime_by_dow),
+    ('By time to revenue', run.regime_by_ttr),
+    ('By trade size', run.regime_by_size),
+  ] %}
+  {% for title, rows in _regimes %}
+    {% if rows %}
+    <div class="panel">
+      <h3>{{ title }}</h3>
+      {% set _max_n = (rows | map(attribute='n') | max) or 1 %}
+      {% for r in rows | sort(attribute='n', reverse=True) %}
+        {% set _winpct = (r.win_rate or 0) * 100 %}
+        {% set _tone = 'good' if _winpct >= 60 else ('warn' if _winpct >= 40 else 'bad') %}
+        {% set _w = (((r.n or 0) / _max_n) * 100) | round(0, 'floor') %}
+        <div class="regime-row">
+          <span class="b">{{ r.bucket }}</span>
+          <span class="bar">
+            <span class="fill {{ _tone }}" style="width: {{ _w }}%"></span>
+          </span>
+          <span class="v">{% if r.n and r.n >= 1 %}{{ _winpct | round(0) | int }}%{% else %}—{% endif %}</span>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Triangulation (live cross-mode comparison) ───────────────── #}
+{% if triangulation %}
+<h2>Triangulation: backtest vs shadow vs live</h2>
+<div class="metric-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+  <div class="metric">
+    <div class="l">Backtest PnL</div>
+    <div class="v {{ 'pos' if run.net_pnl_usd >= 0 else 'neg' }}">
+      {{ run.net_pnl_usd | money_signed }}
+    </div>
+    <div class="sub">{{ run.trade_count }} trades · {{ run.total_return_pct | pct_signed }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Shadow PnL</div>
+    <div class="v {{ 'pos' if (triangulation.shadow_realized_pnl_usd or 0) >= 0 else 'neg' }}">
+      {{ triangulation.shadow_realized_pnl_usd | money_signed }}
+    </div>
+    <div class="sub">{{ triangulation.shadow_orders or 0 }} orders · {{ triangulation.shadow_filled or 0 }} filled</div>
+  </div>
+  <div class="metric">
+    <div class="l">Live PnL</div>
+    <div class="v {{ 'pos' if (triangulation.live_realized_pnl_usd or 0) >= 0 else 'neg' }}">
+      {{ triangulation.live_realized_pnl_usd | money_signed }}
+    </div>
+    <div class="sub">{{ triangulation.live_orders or 0 }} orders · {{ triangulation.live_filled or 0 }} filled</div>
+  </div>
+</div>
+<p style="font-size: 8.5pt; color: #6b7280; margin-top: 4pt;">
+  {{ triangulation.window_days or 30 }}-day window.  Big divergence
+  between any two columns ⇒ fill model is the prime suspect.  Aligned
+  numbers ⇒ the strategy generalizes from backtest to live.
+</p>
+{% endif %}
+
+{# ════════════════ EXECUTION QUALITY ════════════════════════════ #}
+
+{# ── Ensemble bands (p10/p50/p90 sample) ──────────────────────── #}
+{% if run.ensemble_band %}
+<h2>Ensemble bands ({{ run.ensemble_band | length }}/{{ run.ensemble_total }} fills)</h2>
+<p style="font-size: 8.5pt; color: #6b7280; margin: -4pt 0 4pt;">
+  Each row simulates the same fill 100× under fill-model uncertainty
+  and reports p10/p50/p90 outcome rates.  Cox PH–based when a model is
+  loaded; heuristic otherwise.
+</p>
+{% for b in run.ensemble_band %}
+<div class="band-row">
+  <span class="idx">#{{ loop.index }}</span>
+  <span class="cell p10">p10 {{ '%.1f' | format((b.pessimistic or 0) * 100) }}%</span>
+  <span class="cell p50">p50 {{ '%.1f' | format((b.realistic or 0) * 100) }}%</span>
+  <span class="cell p90">p90 {{ '%.1f' | format((b.optimistic or 0) * 100) }}%</span>
+</div>
+{% endfor %}
+{% endif %}
+
+{# ── Counterfactual replays ──────────────────────────────────── #}
+{% if run.counterfactuals %}
+<h2>Counterfactual replays ({{ run.counterfactuals | length }}/{{ run.counterfactuals_total }} samples)</h2>
+<p style="font-size: 8.5pt; color: #6b7280; margin: -4pt 0 4pt;">
+  Sample of fills replayed against actual book state to validate the
+  matcher would have filled the same way.
+</p>
+{% for row in run.counterfactuals %}
+{% set _r = row.result %}
+{% set _ratio = (_r.filled_shares / row.fill.size) if (row.fill and row.fill.size and row.fill.size > 0) else 0 %}
+{% set _expired = _r.expired %}
+<div class="cf-row">
+  <span>
+    <strong>{{ row.fill.side | upper }}</strong>
+    ${{ '%.4f' | format(row.fill.price or 0) }} × {{ '%.1f' | format(row.fill.size or 0) }}
+    <span class="meta">
+      queue {{ '%.0f' | format(_r.final_queue_ahead or 0) }} ·
+      trades-ahead {{ '%.0f' | format(_r.trades_ahead_observed or 0) }} ·
+      cancels-ahead {{ '%.0f' | format(_r.cancels_ahead_observed or 0) }}
+      {% if _r.time_to_fill_seconds is not none %}· ttf {{ '%.1f' | format(_r.time_to_fill_seconds) }}s{% endif %}
+    </span>
+  </span>
+  <span class="pill {{ 'warn' if _expired else 'ok' }}">
+    {% if _expired %}expired{% else %}filled {{ (_ratio * 100) | round(0) | int }}%{% endif %}
+  </span>
+</div>
+{% endfor %}
+{% endif %}
+
+{# ── Partial fill aggregates (full block) ──────────────────────── #}
+{% if run.n_orders %}
+<h2>Partial fill aggregates</h2>
+<div class="metric-grid">
+  <div class="metric">
+    <div class="l">Instant fill rate</div>
+    <div class="v {% if (run.instant_fill_rate or 0) >= 0.7 %}pos{% elif (run.instant_fill_rate or 0) < 0.4 %}neg{% endif %}">
+      {{ ((run.instant_fill_rate or 0) * 100) | round(0) | int }}%
+    </div>
+    <div class="sub">{{ run.n_instant_fills or 0 }} of {{ run.n_orders }} orders</div>
+  </div>
+  <div class="metric">
+    <div class="l">Avg children</div>
+    <div class="v">{{ '%.2f' | format(run.mean_children_per_order or 0) }}</div>
+    <div class="sub">max {{ run.max_children_per_order or 0 }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Intra-order span</div>
+    <div class="v">
+      {% if (run.mean_intra_order_seconds or 0) > 0 %}
+        {{ '%.1f' | format(run.mean_intra_order_seconds) }}s
+      {% else %}—{% endif %}
+    </div>
+    <div class="sub">first → last child</div>
+  </div>
+  <div class="metric">
+    <div class="l">VWAP dispersion</div>
+    <div class="v {% if (run.mean_vwap_dispersion_bps or 0) > 50 %}neg{% endif %}">
+      {{ '%.1f' | format(run.mean_vwap_dispersion_bps or 0) }} bps
+    </div>
+    <div class="sub">across child fills</div>
+  </div>
+</div>
+{% if run.child_count_distribution and (run.child_count_distribution | length) > 1 %}
+<h3>Child-count distribution</h3>
+<table class="data-table">
+  <thead><tr><th>Children</th><th class="r">Orders</th><th class="r">% of orders</th></tr></thead>
+  <tbody>
+    {% for d in run.child_count_distribution %}
+    {% set _pct = (d.n_orders / run.n_orders * 100) if run.n_orders else 0 %}
+    <tr>
+      <td>{{ d.children }}</td>
+      <td class="r">{{ d.n_orders }}</td>
+      <td class="r">{{ '%.1f' | format(_pct) }}%</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+
+{# ── Data quality (acceptance, gaps, drops, rejects) ──────────── #}
+{% if run.dq_total_attempts %}
+<h2>Data quality</h2>
+<div class="metric-grid">
+  <div class="metric">
+    <div class="l">Accept rate</div>
+    <div class="v {% if (run.dq_accept_rate or 1) >= 0.99 %}pos{% elif (run.dq_accept_rate or 1) < 0.95 %}neg{% endif %}">
+      {{ '%.1f' | format((run.dq_accept_rate or 0) * 100) }}%
+    </div>
+    <div class="sub">{{ '{:,}'.format(run.dq_accepted_books or 0) }} / {{ '{:,}'.format(run.dq_total_attempts or 0) }}</div>
+  </div>
+  <div class="metric">
+    <div class="l">Sequence gaps</div>
+    <div class="v">{{ '{:,}'.format(run.dq_sequence_gaps or 0) }}</div>
+    <div class="sub">across {{ run.dq_tokens_tracked or 0 }} tokens</div>
+  </div>
+  <div class="metric">
+    <div class="l">Queue dropped</div>
+    <div class="v {% if (run.dq_queue_dropped or 0) > 0 %}neg{% endif %}">
+      {{ '{:,}'.format(run.dq_queue_dropped or 0) }}
+    </div>
+    <div class="sub">snapshots discarded</div>
+  </div>
+  <div class="metric">
+    <div class="l">Total rejects</div>
+    <div class="v">
+      {% set _total_rejects = (run.dq_rejects_by_reason.values() | sum) if run.dq_rejects_by_reason else 0 %}
+      {{ '{:,}'.format(_total_rejects) }}
+    </div>
+    <div class="sub">all reasons combined</div>
+  </div>
+</div>
+{% if run.dq_rejects_by_reason %}
+{% set _has_rejects = run.dq_rejects_by_reason.values() | select | list | length > 0 %}
+{% if _has_rejects %}
+<h3>Rejects by reason</h3>
+<table class="data-table">
+  <thead><tr><th>Reason</th><th class="r">Count</th></tr></thead>
+  <tbody>
+    {% for reason, n in run.dq_rejects_by_reason.items() | sort(attribute='1', reverse=True) %}
+    {% if n > 0 %}
+    <tr>
+      <td style="font-family: -apple-system, sans-serif;">{{ reason }}</td>
+      <td class="r neg">{{ '{:,}'.format(n) }}</td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+{% endif %}
+
+{# ── Fill model (Cox PH snapshot) ──────────────────────────────── #}
+{% if run.fill_model_loaded %}
+<h2>Fill model (Cox PH)</h2>
+<div class="two-col">
+  <div class="metric">
+    <div class="l">C-index</div>
+    <div class="v {% if (run.concordance_index or 0) > 0.62 %}pos{% elif (run.concordance_index or 0) <= 0.55 %}neg{% endif %}">
+      {% if run.concordance_index is not none %}{{ '%.3f' | format(run.concordance_index) }}{% else %}—{% endif %}
+    </div>
+    <div class="sub">{{ run.fill_model_family }} · concordance vs random = 0.5</div>
+  </div>
+  <div class="metric">
+    <div class="l">Training events</div>
+    <div class="v">{{ '{:,}'.format(run.fill_model_n_events or 0) }}</div>
+    <div class="sub">fills used to fit hazard ratios</div>
+  </div>
+</div>
+{% if run.hazard_ratios %}
+<h3>Top hazard ratios</h3>
+<p style="font-size: 8.5pt; color: #6b7280; margin: -2pt 0 4pt;">
+  HR &gt; 1 increases fill probability; HR &lt; 1 decreases.  Bars
+  scale to |log₂(HR)|.  Top 8 by influence.
+</p>
+{% for h in run.hazard_ratios %}
+{% set _is_pos = h.hr >= 1.0 %}
+{% set _bar_pct = ((((h.hr | log2 | abs) if h.hr > 0 else 0) * 100) | round(0)) if false else 0 %}
+<div class="hr-row">
+  <span class="l">{{ h.covariate }}</span>
+  <span class="bar">
+    <span class="center"></span>
+    {% if _is_pos %}
+      <span class="fill-pos" style="width: {{ ((h.hr - 1.0) * 60) | round(0) | int | abs }}%; max-width: 50%;"></span>
+    {% else %}
+      <span class="fill-neg" style="width: {{ ((1.0 - h.hr) * 60) | round(0) | int | abs }}%; max-width: 50%;"></span>
+    {% endif %}
+  </span>
+  <span class="v {% if _is_pos %}pos{% else %}neg{% endif %}">{{ '%.2f' | format(h.hr) }}×</span>
+</div>
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{# ── Latency distribution ─────────────────────────────────────── #}
+{% if run.latency_p50_ms is not none %}
+<h2>Latency distribution</h2>
+<div class="metric-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+  <div class="metric">
+    <div class="l">p50</div>
+    <div class="v">{{ '%.0f' | format(run.latency_p50_ms or 0) }} ms</div>
+  </div>
+  <div class="metric">
+    <div class="l">p95</div>
+    <div class="v {% if (run.latency_p95_ms or 0) > 800 %}neg{% endif %}">
+      {{ '%.0f' | format(run.latency_p95_ms or 0) }} ms
+    </div>
+  </div>
+  <div class="metric">
+    <div class="l">p99</div>
+    <div class="v {% if (run.latency_p99_ms or 0) > 1500 %}neg{% endif %}">
+      {{ '%.0f' | format(run.latency_p99_ms or 0) }} ms
+    </div>
+  </div>
+</div>
+<p style="font-size: 8.5pt; color: #6b7280; margin-top: 4pt;">
+  {% if run.latency_sample_count and run.latency_sample_count > 0 %}
+    Measured from {{ '{:,}'.format(run.latency_sample_count) }} live submits ·
+    pessimistic {{ '%.0f' | format(run.latency_pessimistic_ms or 0) }} /
+    realistic {{ '%.0f' | format(run.latency_realistic_ms or 0) }} /
+    optimistic {{ '%.0f' | format(run.latency_optimistic_ms or 0) }} ms
+  {% else %}
+    Default percentiles — no live samples measured for this run.
   {% endif %}
+</p>
+{% endif %}
+
+{# ════════════════ CROSS-STRATEGY ═══════════════════════════════ #}
+
+{# ── Outcome netting (full block) ─────────────────────────────── #}
+{% if run.gross_exposure_usd is not none %}
+<h2>Outcome netting &amp; capital lockup</h2>
+<div class="metric-grid">
+  <div class="metric">
+    <div class="l">Gross exposure</div>
+    <div class="v">{{ run.gross_exposure_usd | money_compact }}</div>
+    <div class="sub">all open contracts</div>
+  </div>
+  <div class="metric">
+    <div class="l">Net exposure</div>
+    <div class="v {% if (run.rebate_estimate_usd or 0) > 0 %}pos{% endif %}">
+      {{ run.net_exposure_usd | money_compact }}
+    </div>
+    <div class="sub">
+      {% if (run.rebate_estimate_usd or 0) > 0 %}
+        rebate ≈ {{ run.rebate_estimate_usd | money_compact }}
+      {% else %}
+        no offsetting positions
+      {% endif %}
+    </div>
+  </div>
+  <div class="metric">
+    <div class="l">Capital efficiency</div>
+    <div class="v {% if (run.capital_efficiency_pct or 0) >= 20 %}pos{% endif %}">
+      {% if run.capital_efficiency_pct is not none %}{{ '%.1f' | format(run.capital_efficiency_pct) }}%{% else %}—{% endif %}
+    </div>
+    <div class="sub">savings vs naïve</div>
+  </div>
+  <div class="metric">
+    <div class="l">Locked capital</div>
+    <div class="v">{{ run.locked_capital_usd | money_compact }}</div>
+    <div class="sub">{{ run.open_positions or 0 }} open positions</div>
+  </div>
+</div>
+{% if run.outcome_groups %}
+<h3>Outcome groups</h3>
+<div class="metric-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+  <div class="metric">
+    <div class="l">Full coverage</div>
+    <div class="v pos">{{ run.outcome_groups.get('full_coverage', 0) }}</div>
+    <div class="sub">every outcome bought</div>
+  </div>
+  <div class="metric">
+    <div class="l">Partial</div>
+    <div class="v">{{ run.outcome_groups.get('partial', 0) }}</div>
+    <div class="sub">some outcomes covered</div>
+  </div>
+  <div class="metric">
+    <div class="l">Single</div>
+    <div class="v">{{ run.outcome_groups.get('single', 0) }}</div>
+    <div class="sub">one outcome only</div>
+  </div>
+</div>
+{% endif %}
+{% if run.avg_lockup_seconds is not none or run.max_lockup_seconds is not none %}
+<table class="data-table" style="margin-top: 6pt;">
+  <tr>
+    <td style="font-family: -apple-system, sans-serif; color: #6b7280;">Avg lockup</td>
+    <td class="r">
+      {% if run.avg_lockup_seconds is not none %}{{ '%.1f' | format(run.avg_lockup_seconds / 86400) }} d{% else %}—{% endif %}
+    </td>
+    <td style="font-family: -apple-system, sans-serif; color: #6b7280;">Max lockup</td>
+    <td class="r">
+      {% if run.max_lockup_seconds is not none %}{{ '%.1f' | format(run.max_lockup_seconds / 86400) }} d{% else %}—{% endif %}
+    </td>
+  </tr>
+</table>
+{% endif %}
+{% endif %}
+
+{# ── Portfolio correlation heatmap ─────────────────────────────── #}
+{% if portfolio %}
+<h2>Portfolio correlation ({{ portfolio.window_days or 30 }}-day window)</h2>
+<div class="metric-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+  <div class="metric">
+    <div class="l">Diversification</div>
+    <div class="v {% if (portfolio.summary.get('diversification_ratio') or 0) >= 0.7 %}pos{% elif (portfolio.summary.get('diversification_ratio') or 0) < 0.4 %}neg{% endif %}">
+      {{ '%.0f' | format((portfolio.summary.get('diversification_ratio') or 0) * 100) }}%
+    </div>
+    <div class="sub">higher = less concentrated risk</div>
+  </div>
+  <div class="metric">
+    <div class="l">Mean |ρ|</div>
+    <div class="v {% if (portfolio.summary.get('mean_abs_pairwise_correlation') or 0) >= 0.5 %}neg{% elif (portfolio.summary.get('mean_abs_pairwise_correlation') or 0) < 0.3 %}pos{% endif %}">
+      {{ '%.2f' | format(portfolio.summary.get('mean_abs_pairwise_correlation') or 0) }}
+    </div>
+    <div class="sub">
+      min {{ '%.2f' | format(portfolio.summary.get('min_pairwise_correlation') or 0) }} ·
+      max {{ '%.2f' | format(portfolio.summary.get('max_pairwise_correlation') or 0) }}
+    </div>
+  </div>
+  <div class="metric">
+    <div class="l">Strategies</div>
+    <div class="v">{{ portfolio.summary.get('n_strategies', 0) }}</div>
+    <div class="sub">{{ portfolio.summary.get('n_days', 0) }} days of PnL</div>
+  </div>
+</div>
+{% if portfolio.matrix %}
+<h3>Pairwise correlation</h3>
+<table class="corr-table">
+  <thead>
+    <tr>
+      <th></th>
+      {% for s in portfolio.strategies %}
+      <th title="{{ s }}">{{ s[:8] }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row_strat in portfolio.strategies %}
+    <tr>
+      <th style="text-align: right; padding-right: 4pt;" title="{{ row_strat }}">{{ row_strat[:10] }}</th>
+      {% for j in range(portfolio.strategies | length) %}
+        {% set _r = portfolio.matrix[loop.index0][j] if (portfolio.matrix | length) > loop.index0 else 0 %}
+        {% if _r is none %}{% set _r = 0 %}{% endif %}
+        {% set _bg =
+          'rgba(239, 68, 68, 0.7)' if _r >= 0.7 else
+          'rgba(249, 115, 22, 0.5)' if _r >= 0.4 else
+          'rgba(245, 158, 11, 0.35)' if _r >= 0.1 else
+          'rgba(120, 120, 120, 0.18)' if _r >= -0.1 else
+          'rgba(34, 197, 94, 0.35)' if _r >= -0.4 else
+          'rgba(34, 197, 94, 0.55)' if _r >= -0.7 else
+          'rgba(34, 197, 94, 0.75)' %}
+        <td style="background: {{ _bg }};">{{ '%.2f' | format(_r) }}</td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p style="font-size: 7.5pt; color: #9ca3af; margin-top: 4pt;">
+  Red = high positive correlation (concentrated risk).
+  Green = negative correlation (natural hedge).
+</p>
+{% endif %}
+{% endif %}
+
+{# ── Drift monitor (live vs backtest) ─────────────────────────── #}
+{% if drift %}
+<h2>Drift monitor ({{ drift.window_days or 30 }}-day window)</h2>
+<div class="metric-grid">
+  {% set _by = drift.summary.get('by_severity') or {} %}
+  <div class="drift-tile stable">
+    <div class="l">Stable</div>
+    <div class="v">{{ _by.get('stable', 0) }}</div>
+  </div>
+  <div class="drift-tile improved">
+    <div class="l">Improved</div>
+    <div class="v">{{ _by.get('improved', 0) }}</div>
+  </div>
+  <div class="drift-tile degraded">
+    <div class="l">Degraded</div>
+    <div class="v">{{ _by.get('degraded', 0) }}</div>
+  </div>
+  <div class="drift-tile stale">
+    <div class="l">Stale</div>
+    <div class="v">{{ _by.get('stale', 0) }}</div>
+  </div>
+</div>
+{% if drift.summary.get('worst_offender') %}
+<p style="font-size: 9pt; margin-top: 6pt; padding: 6pt 8pt;
+          background: #fef2f2; color: #991b1b; border-radius: 4pt;">
+  <strong>Worst offender:</strong>
+  <span style="font-family: 'SF Mono', monospace;">{{ drift.summary.worst_offender.get('strategy_slug') }}</span>
+  — {{ drift.summary.worst_offender.get('reason') }}
+</p>
+{% endif %}
+{% if drift.strategies %}
+<h3>Strategy-by-strategy</h3>
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Strategy</th>
+      <th class="r">BT SR</th>
+      <th class="r">Live SR</th>
+      <th class="r">Δ</th>
+      <th class="r">Live PnL</th>
+      <th class="r">Live trades</th>
+      <th>Severity</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in drift.strategies %}
+    <tr>
+      <td>{{ s.strategy_slug }}</td>
+      <td class="r">{% if s.backtest_sharpe is not none %}{{ '%.2f' | format(s.backtest_sharpe) }}{% else %}—{% endif %}</td>
+      <td class="r">{% if s.live_sharpe is not none %}{{ '%.2f' | format(s.live_sharpe) }}{% else %}—{% endif %}</td>
+      <td class="r {% if (s.sharpe_delta or 0) < -0.5 %}neg{% elif (s.sharpe_delta or 0) > 0.5 %}pos{% endif %}">
+        {% if s.sharpe_delta is not none %}
+          {{ '%+.2f' | format(s.sharpe_delta) }}
+        {% else %}—{% endif %}
+      </td>
+      <td class="r">{{ (s.live_total_pnl_usd or 0) | money_compact }}</td>
+      <td class="r">{{ s.live_trade_count or 0 }}</td>
+      <td style="font-family: -apple-system, sans-serif; font-size: 7.5pt;
+                 text-transform: uppercase; letter-spacing: 0.05em;
+                 {% if s.severity == 'stable' %}color: #047857;
+                 {% elif s.severity == 'improved' %}color: #0369a1;
+                 {% elif s.severity == 'degraded' %}color: #b91c1c;
+                 {% else %}color: #6b7280;{% endif %}">
+        {{ s.severity }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+
+{# ════════════════ DIAGNOSTICS ══════════════════════════════════ #}
+
+{# ── Trade-vs-cancel decomposition ─────────────────────────────── #}
+{% if run.decomp_trade_count is not none %}
+<h2>Trade vs cancel decomposition ({{ run.decomp_window_hours or 24 }}h window)</h2>
+<div class="metric-grid" style="grid-template-columns: 1fr 1fr;">
+  <div class="metric">
+    <div class="l">Trades</div>
+    <div class="v pos">{{ '{:,}'.format(run.decomp_trade_count or 0) }}</div>
+    <div class="sub">
+      {% if run.decomp_trade_count_pct is not none %}{{ '%.1f' | format(run.decomp_trade_count_pct) }}% of book events{% endif %}
+    </div>
+  </div>
+  <div class="metric">
+    <div class="l">Cancels</div>
+    <div class="v {% if (run.decomp_trade_count_pct or 100) < 30 %}neg{% endif %}">
+      {{ '{:,}'.format(run.decomp_cancel_count or 0) }}
+    </div>
+    <div class="sub">
+      {% if run.decomp_trade_count_pct is not none %}{{ '%.1f' | format(100 - run.decomp_trade_count_pct) }}% of book events{% endif %}
+    </div>
+  </div>
+</div>
+<p style="font-size: 8.5pt; color: #6b7280; margin-top: 4pt;">
+  High cancel rates ⇒ liquidity is thin: most book changes are makers
+  pulling, not trades printing.  The fill model accounts for this via
+  the cancel-rate covariate when computing fill probabilities.
+</p>
+{% endif %}
+
+{# ── Empirical constants ──────────────────────────────────────── #}
+{% if run.empirical_values %}
+<h2>Empirical constants
+  <span style="font-size: 8pt; font-weight: 400; letter-spacing: 0;
+               text-transform: none; color: {% if run.empirical_measured %}#047857{% else %}#92400e{% endif %};">
+    {% if run.empirical_measured %}measured{% else %}defaults{% endif %}
+  </span>
+</h2>
+<p style="font-size: 8.5pt; color: #6b7280; margin: -4pt 0 4pt;">
+  Per-platform constants (gas, slippage thresholds, latency floor)
+  used by the fill simulator.  ``measured`` = collected from live data;
+  ``defaults`` = fall-back when no samples have been observed yet.
+  {% if run.empirical_sample_count %}
+    Sample size: {{ '{:,}'.format(run.empirical_sample_count) }}.
   {% endif %}
-  {% if run.tom_realized_sharpe is not none %}
-  <tr><td class="label">Trade-order MC: realized SR</td>
-      <td class="value">{{ '%.2f' | format(run.tom_realized_sharpe) }}</td>
-      <td class="ci">vs shuffled-order distribution</td></tr>
-  {% if run.tom_position_pct is not none %}
-  <tr><td class="label">Position in distribution</td>
-      <td class="value">{{ '%.0f' | format(run.tom_position_pct) }}th pct</td>
-      <td class="ci">{{ run.tom_interpretation or '' }}</td></tr>
-  {% endif %}
-  {% endif %}
+</p>
+<table class="data-table">
+  <thead><tr><th>Constant</th><th class="r">Value</th></tr></thead>
+  <tbody>
+    {% for k, v in run.empirical_values.items() %}
+    <tr>
+      <td style="font-family: -apple-system, sans-serif;">{{ k | replace('_', ' ') }}</td>
+      <td class="r">{{ '%.3f' | format(v) if v is number else v }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
 </table>
 {% endif %}
 

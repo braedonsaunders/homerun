@@ -358,15 +358,27 @@ def render_analytical_report(
 _BACKTEST_TEMPLATE_NAME = "backtest_run_report.html.j2"
 
 
-def render_backtest_run_report(*, run_row: Any, result: dict[str, Any]) -> bytes:
+def render_backtest_run_report(
+    *,
+    run_row: Any,
+    result: dict[str, Any],
+    triangulation: Optional[dict[str, Any]] = None,
+    portfolio_correlation: Optional[dict[str, Any]] = None,
+    drift: Optional[dict[str, Any]] = None,
+) -> bytes:
     """Render an executive PDF for a single completed backtest run.
 
     ``run_row`` is the ORM ``BacktestRun`` row (provides id, strategy
     metadata, started_at, status, etc.); ``result`` is the parsed
     ``result_json`` blob (the rich UnifiedBacktestResult shape the
-    studio's Inspect tab consumes).  We pass both so the template can
-    fall back gracefully when the result blob is incomplete (e.g. a
-    failed run that wrote an error-only payload).
+    studio's Inspect tab consumes).
+
+    ``triangulation``, ``portfolio_correlation``, ``drift`` are the
+    three live cross-strategy/live-vs-backtest queries that the studio
+    fetches separately from the run row.  They're optional — when the
+    operator generates the PDF without those fetched, the
+    corresponding sections are simply omitted.  When provided, the
+    PDF is a 1:1 mirror of the studio Inspect view.
     """
     if platform.system() == "Windows":
         _ensure_windows_gtk_runtime_on_path()
@@ -389,6 +401,9 @@ def render_backtest_run_report(*, run_row: Any, result: dict[str, Any]) -> bytes
     template = env.get_template(_BACKTEST_TEMPLATE_NAME)
     html_text = template.render(
         run=_backtest_run_view(run_row, result),
+        triangulation=_triangulation_view(triangulation),
+        portfolio=_portfolio_correlation_view(portfolio_correlation),
+        drift=_drift_view(drift),
         generated_at=utcnow(),
     )
 
@@ -401,16 +416,82 @@ def render_backtest_run_report(*, run_row: Any, result: dict[str, Any]) -> bytes
     return pdf_bytes
 
 
+def _triangulation_view(payload: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Adapt /backtest/triangulation response into a flat view.  The
+    studio's Robustness section reads this verbatim; we keep the
+    structure simple so the template stays declarative."""
+    if not payload or not isinstance(payload, dict):
+        return None
+    modes = payload.get("modes") or {}
+    shadow = modes.get("shadow") or {}
+    live = modes.get("live") or {}
+    return {
+        "shadow_realized_pnl_usd": shadow.get("realized_pnl_usd"),
+        "shadow_orders": shadow.get("orders"),
+        "shadow_filled": shadow.get("filled"),
+        "live_realized_pnl_usd": live.get("realized_pnl_usd"),
+        "live_orders": live.get("orders"),
+        "live_filled": live.get("filled"),
+        "window_days": payload.get("window_days"),
+    }
+
+
+def _portfolio_correlation_view(payload: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Adapt /backtest/portfolio-correlation response.  Returns None
+    when fewer than 2 strategies — there's nothing to show."""
+    if not payload or not isinstance(payload, dict):
+        return None
+    strategies = payload.get("strategies") or []
+    if len(strategies) < 2:
+        return None
+    return {
+        "strategies": list(strategies),
+        "matrix": payload.get("correlation_matrix") or [],
+        "summary": payload.get("summary") or {},
+        "window_days": payload.get("window_days"),
+    }
+
+
+def _drift_view(payload: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Adapt /backtest/drift response.  Returns None when no
+    strategies tracked."""
+    if not payload or not isinstance(payload, dict):
+        return None
+    strategies = payload.get("strategies") or []
+    if not strategies:
+        return None
+    return {
+        "strategies": list(strategies),
+        "summary": payload.get("summary") or {},
+        "window_days": payload.get("window_days"),
+    }
+
+
 def _backtest_run_view(run_row: Any, result: dict[str, Any]) -> dict[str, Any]:
     """Flatten the run row + result blob into a single template-friendly
-    dict.  All defensive: missing nested keys collapse to None / 0 so
-    the template never KeyErrors on partial payloads."""
+    dict.  All defensive: missing nested keys collapse to None / 0 / []
+    so the template never KeyErrors on partial payloads.  This view is
+    the COMPLETE 1:1 mirror of every UI section that's backed by
+    result_json — regime, ensemble bands, counterfactuals, data
+    quality, fill model, latency, decomposition, empirical constants,
+    full partial-fill aggregates, full outcome netting.  Sections
+    backed by live cross-strategy queries (triangulation, portfolio
+    correlation, drift) are passed through separately to the
+    renderer."""
     exec_d = result.get("execution") or {}
     coverage = result.get("data_coverage") or {}
     deflated = result.get("deflated_sharpe") or {}
     partial = result.get("partial_fills") or {}
     outcome = result.get("outcome_netting") or {}
     tom = result.get("trade_order_monte_carlo") or {}
+    regime = result.get("regime_breakdown") or {}
+    ensemble = result.get("ensemble_band") or []
+    counterfactuals = result.get("counterfactuals") or []
+    data_quality = result.get("data_quality") or {}
+    fill_model = result.get("fill_model") or {}
+    latency = result.get("latency") or {}
+    decomposition = result.get("decomposition") or {}
+    empirical = result.get("empirical_constants") or {}
 
     def _ci(m: Any) -> dict[str, Any]:
         if not isinstance(m, dict):
@@ -437,6 +518,22 @@ def _backtest_run_view(run_row: Any, result: dict[str, Any]) -> dict[str, Any]:
     else:
         sampled = list(raw_curve or [])
 
+    # Cap ensemble + counterfactual sample lists so the PDF stays
+    # compact even when the operator ran with sample_size=64.
+    ensemble_capped = ensemble[:16] if isinstance(ensemble, list) else []
+    counterfactuals_capped = counterfactuals[:16] if isinstance(counterfactuals, list) else []
+
+    # Hazard ratios (Cox PH coefficients) — top 8 by |log(hr)| so the
+    # most influential covariates lead the table.  Mirrors the
+    # studio's UI sort.
+    coefs = fill_model.get("coefficients") or {}
+    hazard_ratios: list[dict[str, Any]] = []
+    if isinstance(coefs, dict) and coefs:
+        import math
+        items = [(name, float(hr)) for name, hr in coefs.items() if hr and hr > 0]
+        items.sort(key=lambda kv: abs(math.log(kv[1])) if kv[1] > 0 else 0, reverse=True)
+        hazard_ratios = [{"covariate": n, "hr": hr} for n, hr in items[:8]]
+
     return {
         "id": run_row.id,
         "strategy_slug": run_row.strategy_slug,
@@ -447,37 +544,40 @@ def _backtest_run_view(run_row: Any, result: dict[str, Any]) -> dict[str, Any]:
         "total_time_ms": float(run_row.total_time_ms or 0.0),
         "trade_count": int(run_row.trade_count or 0),
         "total_return_pct": float(run_row.total_return_pct or 0.0),
-        # Headline KPIs — duplicated for template convenience.
+        # ── Headline KPIs ──
         "initial_capital_usd": initial_cap,
         "final_equity_usd": final_eq,
         "net_pnl_usd": net_pnl,
-        # Risk-adjusted CIs.
+        # ── Risk-adjusted (with bootstrap CIs) ──
         "sharpe": _ci(exec_d.get("sharpe")),
         "sortino": _ci(exec_d.get("sortino")),
         "calmar": _ci(exec_d.get("calmar")),
         "hit_rate": _ci(exec_d.get("hit_rate")),
         "profit_factor": _ci(exec_d.get("profit_factor")),
         "expectancy_usd": _ci(exec_d.get("expectancy_usd")),
-        # Tail risk.
+        # ── Tail risk ──
         "expected_shortfall_5pct": _ci(exec_d.get("expected_shortfall_5pct")),
         "expected_shortfall_1pct": _ci(exec_d.get("expected_shortfall_1pct")),
         "tail_ratio": _ci(exec_d.get("tail_ratio")),
         "gain_to_pain": _ci(exec_d.get("gain_to_pain")),
-        # Singles.
+        # ── Trade economics + drawdown ──
         "max_drawdown_pct": float(exec_d.get("max_drawdown_pct") or 0.0),
         "max_drawdown_usd": float(exec_d.get("max_drawdown_usd") or 0.0),
+        "drawdown_duration_seconds": float(exec_d.get("drawdown_duration_seconds") or 0.0),
         "avg_win_usd": float(exec_d.get("avg_win_usd") or 0.0),
         "avg_loss_usd": float(exec_d.get("avg_loss_usd") or 0.0),
         "fees_paid_usd": float(exec_d.get("fees_paid_usd") or 0.0),
+        "fees_per_fill_usd": float(exec_d.get("fees_per_fill_usd") or 0.0),
+        "fees_resolution_usd": float(exec_d.get("fees_resolution_usd") or 0.0),
         "total_fills": int(exec_d.get("total_fills") or 0),
         "rejected_orders": int(exec_d.get("rejected_orders") or 0),
         "cancelled_orders": int(exec_d.get("cancelled_orders") or 0),
         "replay_source": exec_d.get("replay_source"),
         "discovery_mode": exec_d.get("discovery_mode"),
         "runtime_error": exec_d.get("runtime_error"),
-        # Curve for the embedded chart.
+        # ── Equity curve sample for embedded SVG ──
         "equity_curve_sample": sampled,
-        # Coverage banner.
+        # ── Coverage / data fidelity banner ──
         "fidelity_rating": coverage.get("fidelity_rating"),
         "tokens_with_snapshots": coverage.get("tokens_with_snapshots"),
         "tokens_with_deltas": coverage.get("tokens_with_deltas"),
@@ -485,22 +585,81 @@ def _backtest_run_view(run_row: Any, result: dict[str, Any]) -> dict[str, Any]:
         "median_snaps_per_token_per_hour": coverage.get("median_snaps_per_token_per_hour"),
         "median_deltas_per_token_per_hour": coverage.get("median_deltas_per_token_per_hour"),
         "fidelity_recommendation": coverage.get("recommended_action"),
-        # Deflated Sharpe.
+        # ── Deflated Sharpe (López de Prado) ──
         "probabilistic_sharpe": deflated.get("probabilistic_sharpe"),
-        "deflated_sharpe": deflated.get("deflated_sharpe"),
+        "deflated_sharpe_value": deflated.get("deflated_sharpe"),
         "n_trials": deflated.get("n_trials"),
         "observed_sharpe": deflated.get("observed_sharpe"),
         "sr_zero": deflated.get("sr_zero"),
-        # Partial-fill aggregates.
+        # ── Trade-order Monte Carlo (full block) ──
+        "tom_skipped_reason": tom.get("skipped_reason"),
+        "tom_realized_sharpe": tom.get("realized_sharpe"),
+        "tom_n_trades": tom.get("n_trades"),
+        "tom_n_resamples": tom.get("n_resamples"),
+        "tom_distribution": tom.get("sharpe_distribution") or {},
+        "tom_observed_vs_distribution": tom.get("observed_vs_distribution") or {},
+        "tom_position_pct": (tom.get("observed_vs_distribution") or {}).get("position_pct"),
+        "tom_interpretation": (tom.get("observed_vs_distribution") or {}).get("interpretation"),
+        # ── Regime decomposition (4 quadrants) ──
+        "regime_by_hour": regime.get("by_hour") or [],
+        "regime_by_dow": regime.get("by_dow") or [],
+        "regime_by_ttr": regime.get("by_ttr") or [],
+        "regime_by_size": regime.get("by_size") or [],
+        # ── Ensemble bands (sample of fills with p10/p50/p90) ──
+        "ensemble_band": ensemble_capped,
+        "ensemble_total": len(ensemble) if isinstance(ensemble, list) else 0,
+        # ── Counterfactual replays (sample list) ──
+        "counterfactuals": counterfactuals_capped,
+        "counterfactuals_total": len(counterfactuals) if isinstance(counterfactuals, list) else 0,
+        # ── Partial-fill aggregates (full block) ──
         "instant_fill_rate": partial.get("instant_fill_rate"),
         "n_orders": partial.get("n_orders"),
+        "n_instant_fills": partial.get("n_instant_fills"),
         "mean_children_per_order": partial.get("mean_children_per_order"),
-        # Outcome netting.
+        "max_children_per_order": partial.get("max_children_per_order"),
+        "mean_intra_order_seconds": partial.get("mean_intra_order_seconds"),
+        "mean_vwap_dispersion_bps": partial.get("mean_vwap_dispersion_bps"),
+        "child_count_distribution": partial.get("child_count_distribution") or [],
+        # ── Data quality (acceptance, gaps, drops, rejects breakdown) ──
+        "dq_accept_rate": data_quality.get("accept_rate"),
+        "dq_accepted_books": data_quality.get("accepted_books"),
+        "dq_total_attempts": data_quality.get("total_attempts"),
+        "dq_sequence_gaps": data_quality.get("sequence_gaps_observed"),
+        "dq_tokens_tracked": data_quality.get("tokens_tracked"),
+        "dq_queue_dropped": data_quality.get("queue_dropped"),
+        "dq_rejects_by_reason": data_quality.get("rejects_by_reason") or {},
+        # ── Outcome netting (full block) ──
         "gross_exposure_usd": outcome.get("gross_exposure_usd"),
         "net_exposure_usd": outcome.get("net_exposure_usd"),
         "capital_efficiency_pct": outcome.get("capital_efficiency_pct"),
-        # Trade-order MC.
-        "tom_realized_sharpe": tom.get("realized_sharpe"),
-        "tom_position_pct": (tom.get("observed_vs_distribution") or {}).get("position_pct"),
-        "tom_interpretation": (tom.get("observed_vs_distribution") or {}).get("interpretation"),
+        "rebate_estimate_usd": outcome.get("rebate_estimate_usd"),
+        "locked_capital_usd": outcome.get("locked_capital_usd"),
+        "open_positions": outcome.get("open_positions"),
+        "outcome_groups": outcome.get("outcome_groups") or {},
+        "avg_lockup_seconds": outcome.get("avg_lockup_seconds"),
+        "max_lockup_seconds": outcome.get("max_lockup_seconds"),
+        # ── Fill model (Cox PH snapshot) ──
+        "fill_model_loaded": bool(fill_model.get("loaded")),
+        "fill_model_family": fill_model.get("family"),
+        "fill_model_n_events": fill_model.get("n_events"),
+        "concordance_index": fill_model.get("concordance_index"),
+        "hazard_ratios": hazard_ratios,
+        "calibration_bins": fill_model.get("calibration_bins") or [],
+        # ── Latency distribution ──
+        "latency_p50_ms": latency.get("p50_ms"),
+        "latency_p95_ms": latency.get("p95_ms"),
+        "latency_p99_ms": latency.get("p99_ms"),
+        "latency_sample_count": latency.get("sample_count"),
+        "latency_pessimistic_ms": latency.get("pessimistic_ms"),
+        "latency_realistic_ms": latency.get("realistic_ms"),
+        "latency_optimistic_ms": latency.get("optimistic_ms"),
+        # ── Trade-vs-cancel decomposition ──
+        "decomp_trade_count": decomposition.get("trade_count"),
+        "decomp_cancel_count": decomposition.get("cancel_count"),
+        "decomp_trade_count_pct": decomposition.get("trade_count_pct"),
+        "decomp_window_hours": decomposition.get("window_hours"),
+        # ── Empirical constants ──
+        "empirical_measured": bool(empirical.get("measured")),
+        "empirical_sample_count": empirical.get("sample_count"),
+        "empirical_values": empirical.get("values") or {},
     }

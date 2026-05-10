@@ -315,13 +315,57 @@ async def get_run_pdf(run_id: str) -> Response:
     if row is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
+    # Fetch the three live cross-strategy / live-vs-backtest queries
+    # the studio's Inspect view shows alongside the run.  Each one is
+    # best-effort: if it fails (e.g. live trades table empty for the
+    # strategy), we pass None and the template skips that section
+    # rather than failing the whole PDF.  Keeping these fetches in the
+    # route (vs the renderer) means the renderer stays pure-CPU and
+    # doesn't reach for the DB.
+    triangulation_payload = None
+    portfolio_payload = None
+    drift_payload = None
+    if row.strategy_slug:
+        try:
+            # Call the existing /fill-model/triangulation/{slug} route
+            # handler directly as a coroutine — it's just an async fn.
+            # Avoids re-implementing the bucket-by-mode aggregation here.
+            from api.routes_fill_model import get_triangulation
+            triangulation_payload = await get_triangulation(
+                strategy_slug=row.strategy_slug, days=30
+            )
+        except Exception:
+            logger.exception("triangulation fetch failed for run %s", run_id)
+    try:
+        from services.backtest.portfolio_correlation import (
+            compute_portfolio_correlation,
+        )
+        port_result = await compute_portfolio_correlation(
+            window_days=30, min_strategy_trades=5
+        )
+        portfolio_payload = port_result.to_dict() if port_result else None
+    except Exception:
+        logger.exception("portfolio correlation fetch failed for run %s", run_id)
+    try:
+        from services.backtest.drift import compute_drift
+        drift_result = await compute_drift(window_days=30)
+        drift_payload = drift_result.to_dict() if drift_result else None
+    except Exception:
+        logger.exception("drift monitor fetch failed for run %s", run_id)
+
     try:
         from services.reports.wallet_strategy_report import (
             ReportRenderError,
             render_backtest_run_report,
         )
         result_blob = row.result_json or {}
-        pdf_bytes = render_backtest_run_report(run_row=row, result=result_blob)
+        pdf_bytes = render_backtest_run_report(
+            run_row=row,
+            result=result_blob,
+            triangulation=triangulation_payload,
+            portfolio_correlation=portfolio_payload,
+            drift=drift_payload,
+        )
     except ReportRenderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
