@@ -5404,15 +5404,15 @@
       "timeframeMode": "タイムフレーム / モード"
     },
     "confirmLive": {
-      "accountMode": "text-muted-foreground",
-      "blockNewOrders": "text-muted-foreground",
+      "accountMode": "アカウントモード",
+      "blockNewOrders": "新規注文をブロック (キルスイッチ)",
       "confirmStart": "開始を確認",
-      "description": "説明",
+      "description": "このアカウントでライブ取引を有効化しようとしています。実行中のすべてのボットは、Polymarket で実際の残高を使った実際の注文の送信を開始します。",
       "off": "オフ",
       "on": "オン",
       "title": "ライブ取引開始の確認",
       "updating": "更新中",
-      "warning": "警告"
+      "warning": "ライブ取引は実際の資金を使用します。続行する前に、アカウント、キルスイッチ、ボットのポジション上限を確認してください。この操作はダイアログを閉じても取り消せません。"
     },
     "controls": {
       "activate": "有効化",

@@ -5404,15 +5404,15 @@
       "timeframeMode": "时间周期 / 模式"
     },
     "confirmLive": {
-      "accountMode": "text-muted-foreground",
-      "blockNewOrders": "text-muted-foreground",
+      "accountMode": "账户模式",
+      "blockNewOrders": "阻止新订单 (紧急停止开关)",
       "confirmStart": "确认启动",
-      "description": "说明",
+      "description": "您即将为此账户启用实盘下单。所有正在运行的机器人将开始使用 Polymarket 上的真实余额提交真实订单。",
       "off": "关",
       "on": "开",
       "title": "确认开始实盘交易",
       "updating": "更新中",
-      "warning": "警告"
+      "warning": "实盘交易使用真实资金。继续之前,请确认账户、紧急停止开关以及您机器人的持仓限制。此操作无法通过关闭对话框来撤销。"
     },
     "controls": {
       "activate": "激活",

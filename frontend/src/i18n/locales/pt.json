@@ -5404,15 +5404,15 @@
       "timeframeMode": "Timeframe / Modo"
     },
     "confirmLive": {
-      "accountMode": "text-muted-foreground",
-      "blockNewOrders": "text-muted-foreground",
+      "accountMode": "Modo da conta",
+      "blockNewOrders": "Bloquear novas ordens (kill-switch)",
       "confirmStart": "Confirmar início",
-      "description": "Descrição",
+      "description": "Você está prestes a habilitar a colocação de ordens ao vivo nesta conta.  Todos os bots em execução começarão a enviar ordens reais contra saldos reais no Polymarket.",
       "off": "OFF",
       "on": "ON",
       "title": "Confirmar início de trading ao vivo",
       "updating": "ATUALIZANDO",
-      "warning": "Aviso"
+      "warning": "O trading ao vivo usa dinheiro real.  Verifique a conta, o kill-switch e os limites de posição dos seus bots antes de continuar.  Esta ação não pode ser desfeita fechando o diálogo."
     },
     "controls": {
       "activate": "Ativar",

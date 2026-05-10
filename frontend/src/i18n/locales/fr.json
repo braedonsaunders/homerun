@@ -5404,15 +5404,15 @@
       "timeframeMode": "Période / Mode"
     },
     "confirmLive": {
-      "accountMode": "text-muted-foreground",
-      "blockNewOrders": "text-muted-foreground",
+      "accountMode": "Mode du compte",
+      "blockNewOrders": "Bloquer les nouveaux ordres (coupe-circuit)",
       "confirmStart": "Confirmer le démarrage",
-      "description": "Description",
+      "description": "Vous êtes sur le point d'activer le placement d'ordres en direct sur ce compte.  Tous les bots en cours d'exécution commenceront à soumettre de vrais ordres avec de vrais soldes sur Polymarket.",
       "off": "ARRÊT",
       "on": "MARCHE",
       "title": "Confirmer le démarrage du trading en direct",
       "updating": "MISE À JOUR",
-      "warning": "Avertissement"
+      "warning": "Le trading en direct utilise de l'argent réel.  Vérifiez le compte, le coupe-circuit et les limites de position de vos bots avant de continuer.  Cette action ne peut pas être annulée en fermant la boîte de dialogue."
     },
     "controls": {
       "activate": "Activer",

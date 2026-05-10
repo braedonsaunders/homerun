@@ -5404,15 +5404,15 @@
       "timeframeMode": "Zeitrahmen / Modus"
     },
     "confirmLive": {
-      "accountMode": "text-muted-foreground",
-      "blockNewOrders": "text-muted-foreground",
+      "accountMode": "Kontomodus",
+      "blockNewOrders": "Neue Orders blockieren (Kill-Switch)",
       "confirmStart": "Start bestätigen",
-      "description": "Beschreibung",
+      "description": "Sie sind dabei, die Live-Orderplatzierung für dieses Konto zu aktivieren.  Alle laufenden Bots beginnen, echte Orders mit echten Guthaben auf Polymarket zu senden.",
       "off": "AUS",
       "on": "EIN",
       "title": "Live-Trading-Start bestätigen",
       "updating": "AKTUALISIERUNG",
-      "warning": "Warnung"
+      "warning": "Live-Trading verwendet echtes Geld.  Überprüfen Sie das Konto, den Kill-Switch und die Positionslimits Ihrer Bots, bevor Sie fortfahren.  Diese Aktion kann nicht rückgängig gemacht werden, indem Sie den Dialog schließen."
     },
     "controls": {
       "activate": "Aktivieren",
