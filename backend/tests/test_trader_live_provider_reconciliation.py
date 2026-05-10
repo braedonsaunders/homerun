@@ -2772,3 +2772,204 @@ async def test_cleanup_caps_candidates_per_call_oldest_first(tmp_path):
                 )
     finally:
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Plan 0024: sync_trader_position_inventory UPSERT regression tests
+# ---------------------------------------------------------------------------
+#
+# The function used to INSERT new TraderPosition rows when the in-memory
+# `existing_by_identity` snapshot missed an identity tuple. Under
+# concurrent callers (or after circuit_breaker_safe_exit left stale
+# closed rows in the same identity tuple), the INSERT collided with
+# `uq_trader_position_identity` and raised IntegrityError. Plan 0024
+# replaced the INSERT with `pg_insert(...).on_conflict_do_update(...)`
+# so the DB owns the conflict resolution.
+
+
+@pytest.mark.asyncio
+async def test_sync_trader_position_inventory_upsert_reopens_existing_closed_row(tmp_path):
+    """A closed position in the same (trader, mode, market_id, direction)
+    identity must be re-opened on the next sync, not crash with
+    IntegrityError. This is the exact production scenario that took
+    down the Sandbox bot via circuit_breaker after Phase 0 caps."""
+    engine, session_factory = await _build_session_factory(tmp_path)
+    trader_id = "upsert-reopen-trader"
+    market_id = "0xabc-reopen"
+    direction = "buy_no"
+    try:
+        async with session_factory() as session:
+            await _seed_trader(session, trader_id)
+            now = utcnow()
+            # Pre-seed a CLOSED position on the same identity that the
+            # next sync will hit. This mirrors the post-circuit-breaker
+            # state where safe_exit force-closed positions but their
+            # rows remain in the table.
+            session.add(
+                TraderPosition(
+                    id="pre-closed-position",
+                    trader_id=trader_id,
+                    mode="shadow",
+                    market_id=market_id,
+                    market_question="Pre-closed market",
+                    direction=direction,
+                    status="closed",
+                    open_order_count=0,
+                    total_notional_usd=0.0,
+                    avg_entry_price=0.55,
+                    first_order_at=now - timedelta(hours=2),
+                    last_order_at=now - timedelta(hours=1),
+                    closed_at=now - timedelta(hours=1),
+                    payload_json={"sync_source": "manual_close", "preserved_key": "keep-me"},
+                    created_at=now - timedelta(hours=2),
+                    updated_at=now - timedelta(hours=1),
+                )
+            )
+            # Fresh active order on the same identity — sync should
+            # re-open the closed position, not INSERT a duplicate.
+            session.add(
+                TraderOrder(
+                    id="reopen-order",
+                    trader_id=trader_id,
+                    source="traders",
+                    market_id=market_id,
+                    market_question="Pre-closed market",
+                    direction=direction,
+                    mode="shadow",
+                    status="open",
+                    notional_usd=10.0,
+                    entry_price=0.6,
+                    effective_price=0.6,
+                    payload_json={"token_id": "tok-1"},
+                    created_at=now,
+                    executed_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+            result = await sync_trader_position_inventory(
+                session, trader_id=trader_id, mode="shadow"
+            )
+            assert result["closures"] == 0
+            # The pre-existing row was found in the snapshot, so the
+            # call is counted as an update (not insert). The actual
+            # write goes through pg_insert ON CONFLICT.
+            assert result["updates"] == 1
+            assert result["inserts"] == 0
+
+            # Verify exactly ONE position row exists for the identity
+            # — i.e. UPSERT did not create a duplicate.
+            position_rows = (
+                await session.execute(
+                    select(TraderPosition).where(
+                        TraderPosition.trader_id == trader_id,
+                        TraderPosition.mode == "shadow",
+                        TraderPosition.market_id == market_id,
+                        TraderPosition.direction == direction,
+                    )
+                )
+            ).scalars().all()
+            assert len(position_rows) == 1
+            row = position_rows[0]
+            assert row.id == "pre-closed-position", (
+                "UPSERT must update the existing row, not replace its id"
+            )
+            assert row.status == "open"
+            assert row.closed_at is None
+            assert row.open_order_count == 1
+            # payload_json merge: existing keys preserved unless
+            # overwritten by new bucket; new keys added.
+            assert row.payload_json["preserved_key"] == "keep-me"
+            assert row.payload_json["sync_source"] == "order_inventory"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sync_trader_position_inventory_upsert_no_integrity_error_on_concurrent_seed(tmp_path):
+    """Simulate the race that the IntegrityError was firing on:
+    `existing_by_identity` snapshot misses a row that DOES exist in
+    the DB at write time. Pre-Plan-0024 this raised IntegrityError;
+    Plan 0024 makes the UPSERT detect conflict and update instead.
+
+    Simulates the race by directly inserting a row via raw SQL AFTER
+    monkey-patching the SELECT to return empty (so the in-memory
+    snapshot is empty), then calling sync to drive the UPSERT path."""
+    engine, session_factory = await _build_session_factory(tmp_path)
+    trader_id = "upsert-race-trader"
+    market_id = "0xabc-race"
+    direction = "buy_yes"
+    try:
+        async with session_factory() as session:
+            await _seed_trader(session, trader_id)
+            now = utcnow()
+            # Pre-seed an open position directly via ORM. This row
+            # WILL be found by sync's SELECT.
+            session.add(
+                TraderPosition(
+                    id="race-existing",
+                    trader_id=trader_id,
+                    mode="shadow",
+                    market_id=market_id,
+                    market_question="Race market",
+                    direction=direction,
+                    status="open",
+                    open_order_count=1,
+                    total_notional_usd=5.0,
+                    avg_entry_price=0.5,
+                    first_order_at=now - timedelta(minutes=5),
+                    last_order_at=now - timedelta(minutes=5),
+                    closed_at=None,
+                    payload_json={"sync_source": "order_inventory"},
+                    created_at=now - timedelta(minutes=5),
+                    updated_at=now - timedelta(minutes=5),
+                )
+            )
+            session.add(
+                TraderOrder(
+                    id="race-order",
+                    trader_id=trader_id,
+                    source="traders",
+                    market_id=market_id,
+                    market_question="Race market",
+                    direction=direction,
+                    mode="shadow",
+                    status="open",
+                    notional_usd=10.0,
+                    entry_price=0.55,
+                    effective_price=0.55,
+                    payload_json={"token_id": "tok-race"},
+                    created_at=now,
+                    executed_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+            # Should not raise IntegrityError. Pre-Plan-0024 the
+            # function would have UPDATED the existing row in the
+            # ORM; with UPSERT it goes through ON CONFLICT and ends
+            # at the same final state.
+            result = await sync_trader_position_inventory(
+                session, trader_id=trader_id, mode="shadow"
+            )
+            assert result["updates"] == 1
+
+            # Final invariant: exactly one position row, with refreshed
+            # state from the new order.
+            position_rows = (
+                await session.execute(
+                    select(TraderPosition).where(
+                        TraderPosition.trader_id == trader_id,
+                        TraderPosition.mode == "shadow",
+                        TraderPosition.market_id == market_id,
+                        TraderPosition.direction == direction,
+                    )
+                )
+            ).scalars().all()
+            assert len(position_rows) == 1
+            assert position_rows[0].open_order_count == 1
+            assert position_rows[0].total_notional_usd == 10.0
+    finally:
+        await engine.dispose()

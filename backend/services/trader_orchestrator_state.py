@@ -8565,42 +8565,60 @@ async def sync_trader_position_inventory(
         if isinstance(exit_config, dict) and exit_config:
             position_payload["strategy_exit_config"] = exit_config
 
-        if row is None:
-            row = TraderPosition(
-                id=_new_id(),
-                trader_id=trader_id,
-                mode=str(bucket["mode"]),
-                market_id=str(bucket["market_id"]),
-                market_question=bucket.get("market_question"),
-                direction=str(bucket.get("direction") or ""),
-                status=ACTIVE_POSITION_STATUS,
-                open_order_count=int(bucket.get("open_order_count") or 0),
-                total_notional_usd=float(bucket.get("total_notional_usd") or 0.0),
-                avg_entry_price=avg_entry_price,
-                first_order_at=bucket.get("first_order_at"),
-                last_order_at=bucket.get("last_order_at"),
-                closed_at=None,
-                payload_json=position_payload,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(row)
-            inserts += 1
-            continue
+        # Idempotent at the DB level (Plan 0024) — concurrent callers
+        # no longer race on the in-memory `existing_by_identity`
+        # snapshot. Conflict resolution mirrors the previous UPDATE
+        # branch (re-open closed positions, refresh sizing/timing
+        # fields, merge payload_json with new keys overriding old).
+        # Pre-merge payload_json in Python so the on_conflict set_
+        # writes a single dict; the surrounding code computes both
+        # sides from the same trader_orders aggregation, so any
+        # losing-race transaction would have produced equivalent data
+        # anyway.
+        if row is not None:
+            merged_payload = dict(row.payload_json or {})
+            merged_payload.update(position_payload)
+        else:
+            merged_payload = position_payload
 
-        row.market_question = bucket.get("market_question")
-        row.status = ACTIVE_POSITION_STATUS
-        row.open_order_count = int(bucket.get("open_order_count") or 0)
-        row.total_notional_usd = float(bucket.get("total_notional_usd") or 0.0)
-        row.avg_entry_price = avg_entry_price
-        row.first_order_at = bucket.get("first_order_at")
-        row.last_order_at = bucket.get("last_order_at")
-        row.closed_at = None
-        existing_payload = dict(row.payload_json or {})
-        existing_payload.update(position_payload)
-        row.payload_json = existing_payload
-        row.updated_at = now
-        updates += 1
+        stmt = pg_insert(TraderPosition.__table__).values(
+            id=_new_id(),
+            trader_id=trader_id,
+            mode=str(bucket["mode"]),
+            market_id=str(bucket["market_id"]),
+            market_question=bucket.get("market_question"),
+            direction=str(bucket.get("direction") or ""),
+            status=ACTIVE_POSITION_STATUS,
+            open_order_count=int(bucket.get("open_order_count") or 0),
+            total_notional_usd=float(bucket.get("total_notional_usd") or 0.0),
+            avg_entry_price=avg_entry_price,
+            first_order_at=bucket.get("first_order_at"),
+            last_order_at=bucket.get("last_order_at"),
+            closed_at=None,
+            payload_json=merged_payload,
+            created_at=now,
+            updated_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_trader_position_identity",
+            set_={
+                "market_question": stmt.excluded.market_question,
+                "status": stmt.excluded.status,
+                "open_order_count": stmt.excluded.open_order_count,
+                "total_notional_usd": stmt.excluded.total_notional_usd,
+                "avg_entry_price": stmt.excluded.avg_entry_price,
+                "first_order_at": stmt.excluded.first_order_at,
+                "last_order_at": stmt.excluded.last_order_at,
+                "closed_at": stmt.excluded.closed_at,
+                "payload_json": stmt.excluded.payload_json,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+        await session.execute(stmt)
+        if row is None:
+            inserts += 1
+        else:
+            updates += 1
 
     grouped_keys = set(grouped.keys())
     for identity, row in existing_by_identity.items():
