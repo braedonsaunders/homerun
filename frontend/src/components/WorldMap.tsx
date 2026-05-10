@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import { useAtomValue } from 'jotai'
 import maplibregl from 'maplibre-gl'
@@ -1413,9 +1414,9 @@ function truncateText(value: string, maxLength = 84): string {
   return `${value.slice(0, maxLength - 1).trimEnd()}...`
 }
 
-function formatSignalTypeLabel(value: string): string {
+function formatSignalTypeLabel(value: string, t?: (k: string) => string): string {
   const normalized = value.replace(/_/g, ' ').trim()
-  if (!normalized) return 'Unknown'
+  if (!normalized) return t ? t('worldMap.unknown') : 'Unknown'
   return normalized.charAt(0).toUpperCase() + normalized.slice(1)
 }
 
@@ -1431,16 +1432,17 @@ function summarizeTopCounts(
     .join(', ')
 }
 
-function formatAgeLabel(timestamp: string | null | undefined): string {
-  if (!timestamp) return 'Unknown time'
+function formatAgeLabel(timestamp: string | null | undefined, t?: (k: string, opts?: Record<string, unknown>) => string): string {
+  const unknownTime = t ? t('worldMap.unknownTime') : 'Unknown time'
+  if (!timestamp) return unknownTime
   const value = Date.parse(timestamp)
-  if (!Number.isFinite(value)) return 'Unknown time'
+  if (!Number.isFinite(value)) return unknownTime
   const deltaHours = Math.max(0, (Date.now() - value) / 3_600_000)
-  if (deltaHours < 1) return '<1h ago'
-  if (deltaHours < 24) return `${Math.round(deltaHours)}h ago`
+  if (deltaHours < 1) return t ? t('worldMap.ageLessThanHour') : '<1h ago'
+  if (deltaHours < 24) return t ? t('worldMap.ageHours', { count: Math.round(deltaHours) }) : `${Math.round(deltaHours)}h ago`
   const deltaDays = deltaHours / 24
-  if (deltaDays < 7) return `${Math.round(deltaDays)}d ago`
-  return `${Math.round(deltaDays / 7)}w ago`
+  if (deltaDays < 7) return t ? t('worldMap.ageDays', { count: Math.round(deltaDays) }) : `${Math.round(deltaDays)}d ago`
+  return t ? t('worldMap.ageWeeks', { count: Math.round(deltaDays / 7) }) : `${Math.round(deltaDays / 7)}w ago`
 }
 
 function resolveStoryUrl(metadata: Record<string, unknown>): string | undefined {
@@ -1478,29 +1480,30 @@ function countryRiskTone(
   instabilityScore: number,
   tensionScore: number,
   criticalSignals: number,
-  signalCount: number
+  signalCount: number,
+  t: (k: string) => string,
 ): { tone: CountryRiskTone; label: string } {
   const maxScore = Math.max(instabilityScore, tensionScore)
   if (criticalSignals >= 3 || maxScore >= 75) {
-    return { tone: 'critical', label: 'Critical watch' }
+    return { tone: 'critical', label: t('worldMap.riskCriticalWatch') }
   }
   if (criticalSignals >= 1 || maxScore >= 45 || signalCount >= 8) {
-    return { tone: 'elevated', label: 'Elevated risk' }
+    return { tone: 'elevated', label: t('worldMap.riskElevated') }
   }
   return signalCount > 0 || maxScore >= 20
-    ? { tone: 'stable', label: 'Active monitoring' }
-    : { tone: 'stable', label: 'Low activity' }
+    ? { tone: 'stable', label: t('worldMap.riskActiveMonitoring') }
+    : { tone: 'stable', label: t('worldMap.riskLowActivity') }
 }
 
-const LAYER_LABELS: Record<string, string> = {
-  countryIntensity: 'Country intensity',
-  tensionBorders: 'Tension borders',
-  tensionArcs: 'Tension arcs',
-  countryBoundaries: 'Country boundaries',
-  conflictZones: 'Conflict zones',
-  signals: 'Signals',
-  hotspots: 'Hotspots',
-  chokepoints: 'Chokepoints',
+const LAYER_LABEL_KEYS: Record<string, string> = {
+  countryIntensity: 'countryIntensity',
+  tensionBorders: 'tensionBorders',
+  tensionArcs: 'tensionArcs',
+  countryBoundaries: 'countryBoundaries',
+  conflictZones: 'conflictZones',
+  signals: 'signals',
+  hotspots: 'hotspots',
+  chokepoints: 'chokepoints',
 }
 
 const LAYER_SHORT_LABELS: Record<string, string> = {
@@ -1600,12 +1603,12 @@ function sourceToneClass(tone: SourceHealthTone): string {
   return 'text-slate-400'
 }
 
-function sourceToneLabel(tone: SourceHealthTone, count: number): string {
-  if (tone === 'ok') return `ok (${count})`
-  if (tone === 'degraded') return `degraded (${count})`
-  if (tone === 'error') return 'error'
-  if (tone === 'disabled') return 'disabled'
-  return 'unknown'
+function sourceToneLabel(tone: SourceHealthTone, count: number, t: (k: string, opts?: Record<string, unknown>) => string): string {
+  if (tone === 'ok') return t('worldMap.sourceTone.ok', { count })
+  if (tone === 'degraded') return t('worldMap.sourceTone.degraded', { count })
+  if (tone === 'error') return t('worldMap.sourceTone.error')
+  if (tone === 'disabled') return t('worldMap.sourceTone.disabled')
+  return t('worldMap.sourceTone.unknown')
 }
 
 function resolveEventSourceHealthKey(source: UnifiedDataSource): string | null {
@@ -1677,6 +1680,7 @@ function MapRightDock({
   onToggleSource: (canonicalKey: string) => void
   sourceError: string | null
 }) {
+  const { t } = useTranslation()
   const signalLabel = `${signalCount}`
   const typeEntries = Object.entries(byType)
     .filter(([, count]) => count > 0)
@@ -1722,7 +1726,7 @@ function MapRightDock({
             type="button"
             onClick={() => onExpandedChange(!expanded)}
             className="w-full h-8 rounded-lg border border-border bg-background text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/45 transition-colors"
-            title={expanded ? 'Collapse' : 'Expand'}
+            title={expanded ? t('worldMap.collapse') : t('worldMap.expand')}
           >
             {expanded ? '<' : '>'}
           </button>
@@ -1731,9 +1735,9 @@ function MapRightDock({
             type="button"
             onClick={openContext}
             className={`relative w-full h-9 rounded-lg border text-[10px] font-semibold tracking-wide transition-colors ${tab === 'context' && expanded ? 'border-blue-500/45 bg-blue-500/15 text-blue-300' : 'border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/45'}`}
-            title="Selected context"
+            title={t('worldMap.selectedContext')}
           >
-            CTX
+            {t('worldMap.tabShort.ctx')}
             {selection ? <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-emerald-400" /> : null}
           </button>
 
@@ -1741,22 +1745,22 @@ function MapRightDock({
             type="button"
             onClick={openLayers}
             className={`w-full h-9 rounded-lg border text-[10px] font-semibold tracking-wide transition-colors ${tab === 'layers' && expanded ? 'border-orange-500/45 bg-orange-500/15 text-orange-300' : 'border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/45'}`}
-            title="Layer controls"
+            title={t('worldMap.layerControls')}
           >
-            LYR
+            {t('worldMap.tabShort.lyr')}
           </button>
 
           <button
             type="button"
             onClick={openSources}
             className={`w-full h-9 rounded-lg border text-[10px] font-semibold tracking-wide transition-colors ${tab === 'sources' && expanded ? 'border-cyan-500/45 bg-cyan-500/15 text-cyan-300' : 'border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/45'}`}
-            title="Data sources"
+            title={t('worldMap.dataSources')}
           >
-            SRC
+            {t('worldMap.tabShort.src')}
           </button>
 
           <div className="rounded-lg border border-border/70 bg-background/80 px-1 py-1.5 text-center">
-            <div className="text-[8px] leading-none text-muted-foreground uppercase">sig</div>
+            <div className="text-[8px] leading-none text-muted-foreground uppercase">{t('worldMap.sigShort')}</div>
             <div className="mt-1 text-[10px] leading-none font-semibold text-foreground">{signalLabel}</div>
           </div>
         </div>
@@ -1765,15 +1769,15 @@ function MapRightDock({
           <div className="flex-1 min-w-0 h-full flex flex-col">
             <div className="shrink-0 border-b border-border/70 px-4 py-3 bg-gradient-to-r from-card/90 via-card/90 to-muted/55">
               <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                {tab === 'context' ? 'Selected Context' : tab === 'layers' ? 'Layer Control' : 'Data Source Control'}
+                {tab === 'context' ? t('worldMap.selectedContextHeader') : tab === 'layers' ? t('worldMap.layerControlHeader') : t('worldMap.dataSourceControlHeader')}
               </div>
               <div className="mt-1 flex items-center justify-between gap-2">
                 <div className="text-sm font-semibold text-foreground">
                   {tab === 'context'
-                    ? (selection ? `${selection.category} intelligence` : 'Nothing selected')
+                    ? (selection ? t('worldMap.categoryIntelligence', { category: selection.category }) : t('worldMap.nothingSelected'))
                     : tab === 'layers'
-                      ? 'Map layers and signal legend'
-                      : 'Configured data sources'}
+                      ? t('worldMap.layersAndLegend')
+                      : t('worldMap.configuredDataSources')}
                 </div>
                 {tab === 'context' && selection ? (
                   <button
@@ -1781,7 +1785,7 @@ function MapRightDock({
                     onClick={onCloseSelection}
                     className="rounded-md border border-border px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                   >
-                    Clear
+                    {t('worldMap.clear')}
                   </button>
                 ) : null}
               </div>
@@ -1820,17 +1824,17 @@ function MapRightDock({
 
                             {countryDetails.topSignalMix ? (
                               <div className="text-[10px] text-muted-foreground">
-                                <span className="text-foreground/90">Signal mix:</span> {countryDetails.topSignalMix}
+                                <span className="text-foreground/90">{t('worldMap.signalMix')}:</span> {countryDetails.topSignalMix}
                               </div>
                             ) : null}
                             {countryDetails.topSources ? (
                               <div className="text-[10px] text-muted-foreground">
-                                <span className="text-foreground/90">Top sources:</span> {countryDetails.topSources}
+                                <span className="text-foreground/90">{t('worldMap.topSources')}:</span> {countryDetails.topSources}
                               </div>
                             ) : null}
                             {countryDetails.arcContext ? (
                               <div className="text-[10px] text-muted-foreground">
-                                <span className="text-foreground/90">Bilateral context:</span> {countryDetails.arcContext}
+                                <span className="text-foreground/90">{t('worldMap.bilateralContext')}:</span> {countryDetails.arcContext}
                               </div>
                             ) : null}
                             {countryDetails.coordinates || countryDetails.lastSignalUpdate ? (
@@ -1851,7 +1855,7 @@ function MapRightDock({
 
                           <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
                             <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                              Signals ({countryDetails.signalRows.length})
+                              {t('worldMap.signalsHeader', { count: countryDetails.signalRows.length })}
                             </div>
                             {countryDetails.signalRows.length > 0 ? countryDetails.signalRows.slice(0, 8).map((row) => (
                               <div key={row.id} className="rounded-md border border-border/55 bg-background/70 px-2 py-1.5 space-y-0.5">
@@ -1864,19 +1868,19 @@ function MapRightDock({
                               </div>
                             )) : (
                               <div className="rounded-md border border-dashed border-border/60 bg-background/65 px-2 py-2 text-[11px] text-muted-foreground">
-                                No non-story signals for this country.
+                                {t('worldMap.noSignalsForCountry')}
                               </div>
                             )}
                             {countryDetails.signalRows.length > 8 ? (
                               <div className="text-[10px] text-muted-foreground">
-                                +{countryDetails.signalRows.length - 8} more signals
+                                +{t('worldMap.moreSignals', { count: countryDetails.signalRows.length - 8 })}
                               </div>
                             ) : null}
                           </div>
 
                           <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
                             <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                              Stories ({countryDetails.storyRows.length})
+                              {t('worldMap.storiesHeader', { count: countryDetails.storyRows.length })}
                             </div>
                             {countryDetails.storyRows.length > 0 ? countryDetails.storyRows.slice(0, 8).map((story) => (
                               <div key={story.id} className="rounded-md border border-border/55 bg-background/70 px-2 py-1.5 space-y-0.5">
@@ -1889,7 +1893,7 @@ function MapRightDock({
                                       rel="noreferrer"
                                       className="shrink-0 text-[10px] text-blue-300 hover:text-blue-200 underline"
                                     >
-                                      Open
+                                      {t('worldMap.openLink')}
                                     </a>
                                   ) : null}
                                 </div>
@@ -1903,12 +1907,12 @@ function MapRightDock({
                               </div>
                             )) : (
                               <div className="rounded-md border border-dashed border-border/60 bg-background/65 px-2 py-2 text-[11px] text-muted-foreground">
-                                No story items for this country.
+                                {t('worldMap.noStoriesForCountry')}
                               </div>
                             )}
                             {countryDetails.storyRows.length > 8 ? (
                               <div className="text-[10px] text-muted-foreground">
-                                +{countryDetails.storyRows.length - 8} more stories
+                                +{t('worldMap.moreStories', { count: countryDetails.storyRows.length - 8 })}
                               </div>
                             ) : null}
                           </div>
@@ -1954,11 +1958,11 @@ function MapRightDock({
                       )}
 
                       <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
-                        <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Nearby and Related</div>
+                        <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{t('worldMap.nearbyAndRelated')}</div>
                         {relatedEvents.length > 0 ? relatedEvents.map((event) => (
                           <div key={event.id} className="rounded-md border border-border/55 bg-background/70 px-2 py-1.5 space-y-0.5">
                             <div className="flex items-center gap-2">
-                              <span className="text-[9px] uppercase tracking-wide text-muted-foreground">{event.kind}</span>
+                              <span className="text-[9px] uppercase tracking-wide text-muted-foreground">{t(`worldMap.eventKind.${event.kind}`, { defaultValue: event.kind })}</span>
                               <span className="ml-auto text-[10px] font-semibold text-foreground">{Math.round(event.score)}</span>
                             </div>
                             <div className="text-[11px] text-foreground leading-4">{event.title}</div>
@@ -1966,14 +1970,14 @@ function MapRightDock({
                           </div>
                         )) : (
                           <div className="rounded-md border border-dashed border-border/60 bg-background/65 px-2 py-2 text-[11px] text-muted-foreground">
-                            No nearby or related events found for this selection.
+                            {t('worldMap.noRelatedEvents')}
                           </div>
                         )}
                       </div>
                     </div>
                   ) : (
                     <div className="rounded-xl border border-dashed border-border/70 bg-card/35 px-3 py-3 text-[11px] text-muted-foreground">
-                      Click a country, signal, hotspot, chokepoint, or arc to open context here.
+                      {t('worldMap.clickToOpenContext')}
                     </div>
                   )}
                 </>
@@ -1983,29 +1987,29 @@ function MapRightDock({
                 <>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="rounded-lg border border-border/70 bg-card/70 px-2.5 py-2">
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Signals</div>
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('worldMap.statSignals')}</div>
                       <div className="mt-1 text-[14px] font-semibold text-foreground">{signalLabel}</div>
                     </div>
                     <div className="rounded-lg border border-border/70 bg-card/70 px-2.5 py-2">
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Critical</div>
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('worldMap.statCritical')}</div>
                       <div className={`mt-1 text-[14px] font-semibold ${criticalCount > 0 ? 'text-red-400' : 'text-foreground'}`}>{criticalCount}</div>
                     </div>
                     <div className="rounded-lg border border-border/70 bg-card/70 px-2.5 py-2">
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Geocoded</div>
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('worldMap.statGeocoded')}</div>
                       <div className="mt-1 text-[14px] font-semibold text-emerald-400">{geocodedSignalCount}</div>
                     </div>
                     <div className="rounded-lg border border-border/70 bg-card/70 px-2.5 py-2">
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Convergences</div>
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('worldMap.statConvergences')}</div>
                       <div className="mt-1 text-[14px] font-semibold text-purple-400">{convergenceCount}</div>
                     </div>
                     <div className="rounded-lg border border-border/70 bg-card/70 px-2.5 py-2 col-span-2">
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Hotspots</div>
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('worldMap.statHotspots')}</div>
                       <div className="mt-1 text-[14px] font-semibold text-blue-400">{hotspotCount}</div>
                     </div>
                   </div>
 
                   <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
-                    <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Layer Matrix</div>
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{t('worldMap.layerMatrix')}</div>
                     {layerItems.map((item) => {
                       const enabled = toggles[item.key]
                       return (
@@ -2021,7 +2025,7 @@ function MapRightDock({
                             <span className="text-[11px] text-foreground">{item.label}</span>
                           </span>
                           <span className={enabled ? 'text-[10px] font-semibold text-emerald-400' : 'text-[10px] text-muted-foreground'}>
-                            {enabled ? 'ON' : 'OFF'}
+                            {enabled ? t('worldMap.toggleOn') : t('worldMap.toggleOff')}
                           </span>
                         </button>
                       )
@@ -2029,7 +2033,7 @@ function MapRightDock({
                   </div>
 
                   <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
-                    <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Source Layers</div>
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{t('worldMap.sourceLayers')}</div>
                     {sourceItems.length > 0 ? sourceItems.map((source) => {
                       const visible = sourceVisibility[source.canonicalKey] ?? source.enabled
                       return (
@@ -2046,17 +2050,17 @@ function MapRightDock({
                             <span className="text-[11px] text-foreground truncate">{source.name}</span>
                           </span>
                           <span className={visible ? 'text-[10px] font-semibold text-emerald-400' : 'text-[10px] text-muted-foreground'}>
-                            {visible ? 'ON' : 'OFF'}
+                            {visible ? t('worldMap.toggleOn') : t('worldMap.toggleOff')}
                           </span>
                         </button>
                       )
                     }) : (
-                      <div className="text-[11px] text-muted-foreground">No configured sources.</div>
+                      <div className="text-[11px] text-muted-foreground">{t('worldMap.noConfiguredSources')}</div>
                     )}
                   </div>
 
                   <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
-                    <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Signal Legend</div>
+                    <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{t('worldMap.signalLegend')}</div>
                     {typeEntries.length > 0 ? typeEntries.map(([type, count]) => (
                       <div key={type} className="flex items-center gap-2 text-[11px]">
                         <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: colors[type] || '#64748b' }} />
@@ -2064,7 +2068,7 @@ function MapRightDock({
                         <span className="ml-auto font-semibold text-foreground">{count}</span>
                       </div>
                     )) : (
-                      <div className="text-[11px] text-muted-foreground">No active signals.</div>
+                      <div className="text-[11px] text-muted-foreground">{t('worldMap.noActiveSignals')}</div>
                     )}
                   </div>
                 </>
@@ -2072,7 +2076,7 @@ function MapRightDock({
 
               {tab === 'sources' ? (
                 <div className="rounded-xl border border-border/70 bg-card/70 p-2.5 space-y-1.5">
-                  <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Data SDK Sources</div>
+                  <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{t('worldMap.dataSdkSources')}</div>
                   {sourceError ? (
                     <div className="rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-400">
                       {sourceError}
@@ -2083,26 +2087,26 @@ function MapRightDock({
                       <div className="flex items-center justify-between gap-2 min-w-0">
                         <div className="text-[11px] text-foreground truncate">{source.name}</div>
                         <div className={`text-[10px] font-semibold shrink-0 ${sourceToneClass(source.tone)}`}>
-                          {sourceToneLabel(source.tone, source.count)}
+                          {sourceToneLabel(source.tone, source.count, t)}
                         </div>
                       </div>
                       <div className="text-[10px] text-muted-foreground truncate flex items-center justify-between gap-2">
                         <span className="truncate">{source.sourceKey} / {source.slug}</span>
-                        <span className="shrink-0">{source.signalCount} {source.sourceKey === 'events' ? 'signals' : 'records'}</span>
+                        <span className="shrink-0">{source.signalCount} {source.sourceKey === 'events' ? t('worldMap.signalsLower') : t('worldMap.recordsLower')}</span>
                       </div>
                       <div className="text-[10px] text-muted-foreground flex items-center justify-between gap-2">
-                        <span>{source.enabled ? 'enabled' : 'disabled'} / {source.status}</span>
+                        <span>{source.enabled ? t('worldMap.enabledLower') : t('worldMap.disabledLower')} / {source.status}</span>
                         <button
                           type="button"
                           onClick={() => onToggleSource(source.canonicalKey)}
                           className={`rounded border px-1.5 py-0.5 transition-colors ${((sourceVisibility[source.canonicalKey] ?? source.enabled) ? 'border-emerald-500/35 text-emerald-400 bg-emerald-500/10' : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted/40')}`}
                         >
-                          {(sourceVisibility[source.canonicalKey] ?? source.enabled) ? 'Shown' : 'Hidden'}
+                          {(sourceVisibility[source.canonicalKey] ?? source.enabled) ? t('worldMap.shown') : t('worldMap.hidden')}
                         </button>
                       </div>
                     </div>
                   )) : (
-                    <div className="text-[11px] text-muted-foreground">No configured data sources.</div>
+                    <div className="text-[11px] text-muted-foreground">{t('worldMap.noConfiguredDataSources')}</div>
                   )}
                 </div>
               ) : null}
@@ -2127,6 +2131,7 @@ function militaryEntityKey(signal: WorldSignal): string {
 }
 
 export default function WorldMap({ isConnected = true }: { isConnected?: boolean }) {
+  const { t } = useTranslation()
   const theme = useAtomValue(themeAtom)
 
   const { data: unifiedDataSourcesData } = useQuery({
@@ -2382,7 +2387,8 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
   const layerDockItems = useMemo<LayerDockItem[]>(() => {
     // Static structural items
     const items: LayerDockItem[] = (Object.keys(STRUCTURAL_LAYER_GROUPS) as string[]).map((key) => {
-      const label = LAYER_LABELS[key] || formatLayerLabelFromKey(key)
+      const labelKey = LAYER_LABEL_KEYS[key]
+      const label = labelKey ? t(`worldMap.layerLabels.${labelKey}`) : formatLayerLabelFromKey(key)
       return {
         key,
         label,
@@ -2402,7 +2408,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       items.push({ key: `dsrc_${source.slug}`, label, short, color })
     }
     return items
-  }, [unifiedDataSourcesData])
+  }, [unifiedDataSourcesData, t])
 
   const sourceSignalCounts = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -2605,8 +2611,8 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       rows.push({
         id: `signal:${signal.signal_id}`,
         kind: 'signal',
-        title: signal.title || `${formatSignalTypeLabel(signal.signal_type || 'signal')} signal`,
-        subtitle: `${formatSignalTypeLabel(signal.signal_type || 'signal')} · ${signal.source || 'unknown'}${ageLabel ? ` · ${ageLabel}` : ''}`,
+        title: signal.title || t('worldMap.signalTitleFallback', { type: formatSignalTypeLabel(signal.signal_type || 'signal', t) }),
+        subtitle: `${formatSignalTypeLabel(signal.signal_type || 'signal', t)} · ${signal.source || t('worldMap.unknownLower')}${ageLabel ? ` · ${ageLabel}` : ''}`,
         score,
       })
     }
@@ -2639,7 +2645,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         id: `tension:${isoA}:${isoB}`,
         kind: 'tension',
         title: formatCountryPair(isoA, isoB),
-        subtitle: `Tension arc · ${Number(pair.tension_score || 0).toFixed(1)} · ${String(pair.trend || 'stable')}`,
+        subtitle: `${t('worldMap.tensionArcLabel')} · ${Number(pair.tension_score || 0).toFixed(1)} · ${String(pair.trend || 'stable')}`,
         score,
       })
     }
@@ -2661,15 +2667,15 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       rows.push({
         id: `convergence:${convergence.grid_key}`,
         kind: 'convergence',
-        title: `${formatCountry(convergence.country || convergenceIso || 'Unknown')} convergence`,
-        subtitle: `${Number(convergence.signal_count || 0)} signals · urgency ${Math.round(Number(convergence.urgency_score || 0))}`,
+        title: t('worldMap.convergenceTitle', { country: formatCountry(convergence.country || convergenceIso || 'Unknown') }),
+        subtitle: t('worldMap.convergenceSubtitle', { signals: Number(convergence.signal_count || 0), urgency: Math.round(Number(convergence.urgency_score || 0)) }),
         score,
       })
     }
 
     rows.sort((a, b) => b.score - a.score)
     return rows.slice(0, 8)
-  }, [countryCentroids, convergences, flyoutSelection, signals, tensions])
+  }, [countryCentroids, convergences, flyoutSelection, signals, tensions, t])
 
   const signalCountByIso3 = useMemo(() => {
     const out: Record<string, number> = {}
@@ -2999,25 +3005,25 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
 
       let metaDetails = ''
       if (signalType === 'conflict') {
-        const fatalities = meta.fatalities != null ? `Fatalities: ${meta.fatalities}` : ''
+        const fatalities = meta.fatalities != null ? `${t('worldMap.popupLabels.fatalities')}: ${meta.fatalities}` : ''
         const eventType = meta.event_type ? String(meta.event_type) : ''
         const subType = meta.sub_event_type ? String(meta.sub_event_type) : ''
         metaDetails = [eventType, subType, fatalities].filter(Boolean).join(' · ')
       } else if (signalType === 'tension') {
-        const trend = meta.trend ? `Trend: ${meta.trend}` : ''
-        const count = meta.event_count != null ? `${meta.event_count} events` : ''
+        const trend = meta.trend ? `${t('worldMap.popupLabels.trend')}: ${meta.trend}` : ''
+        const count = meta.event_count != null ? t('worldMap.eventsCount', { count: meta.event_count as number }) : ''
         metaDetails = [trend, count].filter(Boolean).join(' · ')
       } else if (signalType === 'earthquake') {
         const mag = meta.magnitude != null ? `M${Number(meta.magnitude).toFixed(1)}` : ''
-        const depth = meta.depth_km != null ? `${Number(meta.depth_km).toFixed(0)}km depth` : ''
-        const tsunami = meta.tsunami ? '⚠ Tsunami warning' : ''
-        const alert = meta.alert ? `Alert: ${meta.alert}` : ''
+        const depth = meta.depth_km != null ? t('worldMap.depthKm', { value: Number(meta.depth_km).toFixed(0) }) : ''
+        const tsunami = meta.tsunami ? `⚠ ${t('worldMap.tsunamiWarning')}` : ''
+        const alert = meta.alert ? `${t('worldMap.popupLabels.alert')}: ${meta.alert}` : ''
         metaDetails = [mag, depth, tsunami, alert].filter(Boolean).join(' · ')
       } else if (signalType === 'fire') {
         const frp = meta.frp != null ? `FRP: ${Number(meta.frp).toFixed(1)} MW` : ''
-        const bright = meta.bright_ti4 != null ? `Brightness: ${Number(meta.bright_ti4).toFixed(1)}K` : ''
-        const confidence = meta.confidence ? `Confidence: ${meta.confidence}` : ''
-        const daynight = meta.daynight === 'D' ? 'Daytime' : meta.daynight === 'N' ? 'Nighttime' : ''
+        const bright = meta.bright_ti4 != null ? `${t('worldMap.popupLabels.brightness')}: ${Number(meta.bright_ti4).toFixed(1)}K` : ''
+        const confidence = meta.confidence ? `${t('worldMap.popupLabels.confidence')}: ${meta.confidence}` : ''
+        const daynight = meta.daynight === 'D' ? t('worldMap.daytime') : meta.daynight === 'N' ? t('worldMap.nighttime') : ''
         metaDetails = [frp, bright, confidence, daynight].filter(Boolean).join(' · ')
       } else if (signalType === 'military') {
         const aircraft = meta.aircraft_type ? String(meta.aircraft_type) : ''
@@ -3026,7 +3032,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         metaDetails = [aircraft, actType, region].filter(Boolean).join(' · ')
       } else if (signalType === 'convergence') {
         const types = Array.isArray(meta.signal_types) ? meta.signal_types.join(', ') : ''
-        const count = meta.signal_count != null ? `${meta.signal_count} signals` : ''
+        const count = meta.signal_count != null ? t('worldMap.signalsCount', { count: meta.signal_count as number }) : ''
         metaDetails = [types, count].filter(Boolean).join(' · ')
       } else if (signalType === 'news') {
         const url = meta.url ? String(meta.url).replace(/^https?:\/\//, '').split('/')[0] : ''
@@ -3035,7 +3041,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       }
 
       const bodyParts = [
-        `${signalType}${props.activity_type ? `/${String(props.activity_type)}` : ''} · ${severity}% severity`,
+        `${signalType}${props.activity_type ? `/${String(props.activity_type)}` : ''} · ${t('worldMap.severityPercent', { value: severity })}`,
         metaDetails,
         ageLabel,
       ].filter(Boolean)
@@ -3047,9 +3053,9 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         const relatedMarkets = relatedMarketsRaw
           ? relatedMarketsRaw.split(',').map((value) => value.trim()).filter(Boolean)
           : []
-        const relatedMarketsLabel = `${relatedMarketCount} related market${relatedMarketCount === 1 ? '' : 's'}`
-        const relevanceLabel = marketRelevance > 0 ? `relevance ${Math.round(marketRelevance * 100)}%` : ''
-        const previewLabel = relatedMarkets.length > 0 ? `top: ${relatedMarkets.slice(0, 3).join(', ')}` : ''
+        const relatedMarketsLabel = t('worldMap.relatedMarketsCount', { count: relatedMarketCount })
+        const relevanceLabel = marketRelevance > 0 ? t('worldMap.relevancePercent', { value: Math.round(marketRelevance * 100) }) : ''
+        const previewLabel = relatedMarkets.length > 0 ? t('worldMap.topMarkets', { list: relatedMarkets.slice(0, 3).join(', ') }) : ''
         bodyParts.push([relatedMarketsLabel, relevanceLabel, previewLabel].filter(Boolean).join(' · '))
       }
 
@@ -3065,8 +3071,8 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       const hasSignalCoordinates = Number.isFinite(signalLat) && Number.isFinite(signalLon)
 
       openSelection({
-        category: 'Signal',
-        title: String(props.title || 'Signal'),
+        category: t('worldMap.categories.signal'),
+        title: String(props.title || t('worldMap.categories.signal')),
         subtitle: `${props.country_name ? `${String(props.country_name)} · ` : ''}${String(props.source || '')}`,
         body: bodyParts.join(' · '),
         iso3: signalIso3,
@@ -3077,7 +3083,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         signalType,
       })
     },
-    [openSelection]
+    [openSelection, t]
   )
 
   const handleHotspotClick = useCallback(
@@ -3116,21 +3122,21 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       const activityTypes = String(props.activity_types || '')
 
       const body = hasBounds
-        ? `Bounds: ${latMin.toFixed(1)}-${latMax.toFixed(1)} lat, ${lonMin.toFixed(1)}-${lonMax.toFixed(1)} lon · Events: ${eventCount || signalsInZone} · Signals: ${signalsInZone} · Convergences: ${convergencesInZone}${activityTypes ? ` · Types: ${activityTypes}` : ''}${lastDetectedAt ? ` · Last: ${new Date(lastDetectedAt).toLocaleTimeString()}` : ''}`
-        : 'No bounding data available for this zone.'
+        ? `${t('worldMap.popupLabels.bounds')}: ${latMin.toFixed(1)}-${latMax.toFixed(1)} lat, ${lonMin.toFixed(1)}-${lonMax.toFixed(1)} lon · ${t('worldMap.popupLabels.events')}: ${eventCount || signalsInZone} · ${t('worldMap.popupLabels.signals')}: ${signalsInZone} · ${t('worldMap.popupLabels.convergences')}: ${convergencesInZone}${activityTypes ? ` · ${t('worldMap.popupLabels.types')}: ${activityTypes}` : ''}${lastDetectedAt ? ` · ${t('worldMap.popupLabels.last')}: ${new Date(lastDetectedAt).toLocaleTimeString()}` : ''}`
+        : t('worldMap.noBoundingData')
       const zoneLat = hasBounds ? (latMin + latMax) / 2 : event.lngLat?.lat
       const zoneLon = hasBounds ? normalizeLongitude((lonMin + lonMax) / 2) : event.lngLat?.lng
 
       openSelection({
-        category: 'Hotspot',
-        title: String(props.name || 'Hotspot'),
-        subtitle: 'Military monitoring hotspot',
+        category: t('worldMap.categories.hotspot'),
+        title: String(props.name || t('worldMap.categories.hotspot')),
+        subtitle: t('worldMap.militaryMonitoringHotspot'),
         body,
         lat: Number.isFinite(Number(zoneLat)) ? Number(zoneLat) : undefined,
         lon: Number.isFinite(Number(zoneLon)) ? Number(zoneLon) : undefined,
       })
     },
-    [convergences, geocodedSignalPoints, openSelection]
+    [convergences, geocodedSignalPoints, openSelection, t]
   )
 
   const handleChokepointClick = useCallback(
@@ -3150,16 +3156,16 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       const chokepointLon = Number(props.longitude)
       const hasChokepointCoordinates = Number.isFinite(chokepointLat) && Number.isFinite(chokepointLon)
       openSelection({
-        category: 'Chokepoint',
-        title: String(props.name || 'Chokepoint'),
-        subtitle: `Global trade chokepoint · Risk ${risk.toFixed(1)}`,
-        body: `Nearby signals: ${nearbySignals}${dailyTransit > 0 ? ` · Daily transit: ${dailyTransit}` : ''}${dailyCapacity > 0 ? ` · Capacity: ${dailyCapacity.toLocaleString()}` : ''}${chokepointSource ? ` · Base source: ${chokepointSource}` : ''}${source ? ` · Risk source: ${source}` : ''}${dailyMetricsDate ? ` · Daily feed: ${new Date(dailyMetricsDate).toLocaleDateString()}` : ''}${lastUpdated ? ` · Updated: ${new Date(lastUpdated).toLocaleTimeString()}` : ''}`,
+        category: t('worldMap.categories.chokepoint'),
+        title: String(props.name || t('worldMap.categories.chokepoint')),
+        subtitle: `${t('worldMap.globalTradeChokepoint')} · ${t('worldMap.popupLabels.risk')} ${risk.toFixed(1)}`,
+        body: `${t('worldMap.popupLabels.nearbySignals')}: ${nearbySignals}${dailyTransit > 0 ? ` · ${t('worldMap.popupLabels.dailyTransit')}: ${dailyTransit}` : ''}${dailyCapacity > 0 ? ` · ${t('worldMap.popupLabels.capacity')}: ${dailyCapacity.toLocaleString()}` : ''}${chokepointSource ? ` · ${t('worldMap.popupLabels.baseSource')}: ${chokepointSource}` : ''}${source ? ` · ${t('worldMap.popupLabels.riskSource')}: ${source}` : ''}${dailyMetricsDate ? ` · ${t('worldMap.popupLabels.dailyFeed')}: ${new Date(dailyMetricsDate).toLocaleDateString()}` : ''}${lastUpdated ? ` · ${t('worldMap.popupLabels.updated')}: ${new Date(lastUpdated).toLocaleTimeString()}` : ''}`,
         lat: hasChokepointCoordinates ? chokepointLat : undefined,
         lon: hasChokepointCoordinates ? chokepointLon : undefined,
         source: source || undefined,
       })
     },
-    [openSelection]
+    [openSelection, t]
   )
 
   const handleCountryHover = useCallback(
@@ -3250,7 +3256,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         const isStory = signalType === 'news' || sourceToken.includes('news') || sourceToken.includes('story')
         signalRowsForCountry.push({
           id: String(signal.signal_id || `${signalType}:${source}:${signal.detected_at || ''}`),
-          title: String(signal.title || formatSignalTypeLabel(signalType)),
+          title: String(signal.title || formatSignalTypeLabel(signalType, t)),
           description: truncateText(String(signal.description || '').trim(), 120),
           signalType,
           source,
@@ -3278,16 +3284,16 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         .filter((row) => !row.isStory)
         .map((row) => {
           const subheaderParts = [
-            formatSignalTypeLabel(row.signalType),
+            formatSignalTypeLabel(row.signalType, t),
             row.source,
-            formatAgeLabel(row.detectedAt),
-            row.relatedMarketCount > 0 ? `${row.relatedMarketCount} market${row.relatedMarketCount === 1 ? '' : 's'}` : '',
+            formatAgeLabel(row.detectedAt, t),
+            row.relatedMarketCount > 0 ? t('worldMap.marketsCount', { count: row.relatedMarketCount }) : '',
           ].filter(Boolean)
           return {
             id: row.id,
             title: row.title,
             subheader: subheaderParts.join(' · '),
-            severityLabel: `${Math.round(row.severity * 100)}% severity`,
+            severityLabel: t('worldMap.severityPercent', { value: Math.round(row.severity * 100) }),
             description: row.description || undefined,
           }
         })
@@ -3298,8 +3304,8 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         .map((row) => {
           const subheaderParts = [
             row.source,
-            formatAgeLabel(row.detectedAt),
-            `${Math.round(row.severity * 100)}% severity`,
+            formatAgeLabel(row.detectedAt, t),
+            t('worldMap.severityPercent', { value: Math.round(row.severity * 100) }),
           ].filter(Boolean)
           return {
             id: `${row.id}:story`,
@@ -3322,7 +3328,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
 
       const trackedSignals = signalRowsForCountry.length
       const uniqueSources = Object.keys(sourceCounts).length
-      const topSignalMix = summarizeTopCounts(typeCounts, 3, formatSignalTypeLabel)
+      const topSignalMix = summarizeTopCounts(typeCounts, 3, (value) => formatSignalTypeLabel(value, t))
       const topSources = summarizeTopCounts(sourceCounts, 3)
       const arcContext = popupSummary?.arcPreviews.length
         ? popupSummary.arcPreviews.join(' | ')
@@ -3333,43 +3339,44 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
           .reduce((highest, value) => Math.max(highest, value), Number.NEGATIVE_INFINITY)
         : Number.NEGATIVE_INFINITY
       const latestSignalLabel = Number.isFinite(latestSignalTimestamp)
-        ? `Latest signal ${new Date(latestSignalTimestamp).toLocaleString()}`
+        ? t('worldMap.latestSignal', { time: new Date(latestSignalTimestamp).toLocaleString() })
         : undefined
       const riskState = countryRiskTone(
         metrics.instability_score,
         metrics.tension_score,
         criticalSignals,
-        trackedSignals
+        trackedSignals,
+        t,
       )
       const coordinatesLabel = countryCenter
-        ? `Center ${countryCenter.latitude.toFixed(2)}, ${countryCenter.longitude.toFixed(2)}`
+        ? t('worldMap.centerCoords', { lat: countryCenter.latitude.toFixed(2), lon: countryCenter.longitude.toFixed(2) })
         : undefined
       const metricChips: CountryMetricChip[] = [
-        { label: 'Signals', value: `${trackedSignals}` },
-        { label: 'Stories', value: `${storyRows.length}`, tone: storyRows.length > 0 ? 'info' : 'default' },
-        { label: 'Critical', value: `${criticalSignals}`, tone: criticalSignals > 0 ? 'critical' : 'default' },
-        { label: 'Instability', value: metrics.instability_score.toFixed(1), tone: metrics.instability_score >= 45 ? 'warn' : 'default' },
-        { label: 'Tension', value: metrics.tension_score.toFixed(1), tone: metrics.tension_score >= 45 ? 'warn' : 'default' },
-        { label: 'Sources', value: `${uniqueSources}` },
+        { label: t('worldMap.chipLabels.signals'), value: `${trackedSignals}` },
+        { label: t('worldMap.chipLabels.stories'), value: `${storyRows.length}`, tone: storyRows.length > 0 ? 'info' : 'default' },
+        { label: t('worldMap.chipLabels.critical'), value: `${criticalSignals}`, tone: criticalSignals > 0 ? 'critical' : 'default' },
+        { label: t('worldMap.chipLabels.instability'), value: metrics.instability_score.toFixed(1), tone: metrics.instability_score >= 45 ? 'warn' : 'default' },
+        { label: t('worldMap.chipLabels.tension'), value: metrics.tension_score.toFixed(1), tone: metrics.tension_score >= 45 ? 'warn' : 'default' },
+        { label: t('worldMap.chipLabels.sources'), value: `${uniqueSources}` },
       ]
       if (popupSummary?.tensionArcCount && popupSummary.tensionArcCount > 0) {
-        metricChips.push({ label: 'Arcs', value: `${popupSummary.tensionArcCount}`, tone: 'warn' })
+        metricChips.push({ label: t('worldMap.chipLabels.arcs'), value: `${popupSummary.tensionArcCount}`, tone: 'warn' })
       }
       if (popupSummary?.convergenceCount && popupSummary.convergenceCount > 0) {
-        metricChips.push({ label: 'Convergences', value: `${popupSummary.convergenceCount}`, tone: 'info' })
+        metricChips.push({ label: t('worldMap.chipLabels.convergences'), value: `${popupSummary.convergenceCount}`, tone: 'info' })
       }
 
       openSelection({
-        category: 'Country',
+        category: t('worldMap.categories.country'),
         title: metrics.country_name || formatCountry(iso3),
-        subtitle: `ISO3 ${iso3} · ${trackedSignals} tracked · ${signalRows.length} signals · ${storyRows.length} stories`,
+        subtitle: t('worldMap.countrySubtitle', { iso3, tracked: trackedSignals, signals: signalRows.length, stories: storyRows.length }),
         body: [
-          `Instability: ${metrics.instability_score.toFixed(1)}`,
-          `Tension: ${metrics.tension_score.toFixed(1)}`,
-          uniqueSources > 0 ? `Sources: ${uniqueSources}` : '',
-          topSignalMix ? `Signal mix: ${topSignalMix}` : '',
-          topSources ? `Top sources: ${topSources}` : '',
-          arcContext ? `Bilateral context: ${arcContext}` : '',
+          `${t('worldMap.popupLabels.instability')}: ${metrics.instability_score.toFixed(1)}`,
+          `${t('worldMap.popupLabels.tension')}: ${metrics.tension_score.toFixed(1)}`,
+          uniqueSources > 0 ? `${t('worldMap.popupLabels.sources')}: ${uniqueSources}` : '',
+          topSignalMix ? `${t('worldMap.popupLabels.signalMix')}: ${topSignalMix}` : '',
+          topSources ? `${t('worldMap.popupLabels.topSources')}: ${topSources}` : '',
+          arcContext ? `${t('worldMap.popupLabels.bilateralContext')}: ${arcContext}` : '',
         ].filter(Boolean).join(' · '),
         iso3,
         countryName: metrics.country_name || formatCountry(iso3),
@@ -3389,7 +3396,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         },
       })
     },
-    [countryCentroids, countryMetricsByIso3, countryPopupSummaryByIso3, openSelection, signals]
+    [countryCentroids, countryMetricsByIso3, countryPopupSummaryByIso3, openSelection, signals, t]
   )
 
   const handleTensionArcClick = useCallback(
@@ -3404,16 +3411,16 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       const lastUpdated = String(props.last_updated || '')
       const pairCodes = parseCountryPair(String(props.country_pair || props.pair_name || props.pair || ''))
       openSelection({
-        category: 'Tension Arc',
-        title: String(props.pair_name || 'Tension Arc'),
-        subtitle: `Score ${score.toFixed(1)} · ${trend}`,
-        body: `Events: ${eventCount}${eventTypes ? ` · Types: ${eventTypes}` : ''}${lastUpdated ? ` · Updated: ${new Date(lastUpdated).toLocaleTimeString()}` : ''}`,
+        category: t('worldMap.categories.tensionArc'),
+        title: String(props.pair_name || t('worldMap.categories.tensionArc')),
+        subtitle: `${t('worldMap.popupLabels.score')} ${score.toFixed(1)} · ${trend}`,
+        body: `${t('worldMap.popupLabels.events')}: ${eventCount}${eventTypes ? ` · ${t('worldMap.popupLabels.types')}: ${eventTypes}` : ''}${lastUpdated ? ` · ${t('worldMap.popupLabels.updated')}: ${new Date(lastUpdated).toLocaleTimeString()}` : ''}`,
         iso3: pairCodes?.[0] || undefined,
         lat: event.lngLat?.lat,
         lon: event.lngLat?.lng,
       })
     },
-    [openSelection]
+    [openSelection, t]
   )
 
   const handleConflictClick = useCallback(
@@ -3429,10 +3436,10 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         || ''
       )) || undefined
       openSelection({
-        category: 'Conflict',
-        title: String(props.title || 'Conflict Signal'),
-        subtitle: `${String(props.country_name || 'Unknown')} · ${String(props.source || 'unknown')}`,
-        body: `Severity: ${Math.round((Number(props.severity) || 0) * 100)}%`,
+        category: t('worldMap.categories.conflict'),
+        title: String(props.title || t('worldMap.conflictSignal')),
+        subtitle: `${String(props.country_name || t('worldMap.unknown'))} · ${String(props.source || t('worldMap.unknownLower'))}`,
+        body: `${t('worldMap.popupLabels.severity')}: ${Math.round((Number(props.severity) || 0) * 100)}%`,
         iso3: conflictIso3,
         countryName: props.country_name ? String(props.country_name) : undefined,
         lat: Number.isFinite(Number(props.latitude)) ? Number(props.latitude) : undefined,
@@ -3441,7 +3448,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
         signalType: 'conflict',
       })
     },
-    [openSelection]
+    [openSelection, t]
   )
 
   const handleMapBackgroundClick = useCallback((event: LayerClickEvent & { point?: { x: number; y: number } }) => {
@@ -3575,7 +3582,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       {coreError ? (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20">
           <div className="px-3 py-2 rounded-md border border-red-500/30 bg-red-500/10 text-xs text-red-500">
-            Map data unavailable. Check events status.
+            {t('worldMap.mapDataUnavailable')}
           </div>
         </div>
       ) : null}
@@ -3583,7 +3590,7 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
       {!loading && !coreError && signals.length === 0 ? (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20">
           <div className="px-3 py-2 rounded-md border border-border bg-background/90 text-xs text-muted-foreground">
-            No active event signals detected yet.
+            {t('worldMap.noActiveSignalsDetected')}
           </div>
         </div>
       ) : null}
@@ -3596,12 +3603,12 @@ export default function WorldMap({ isConnected = true }: { isConnected?: boolean
           <div className="font-semibold text-foreground text-[11px]">{hoverTooltip.name}</div>
           {hoverTooltip.instability > 0 ? (
             <div className="text-muted-foreground font-mono">
-              Instability: <span className="text-orange-400">{hoverTooltip.instability.toFixed(1)}</span>
+              {t('worldMap.popupLabels.instability')}: <span className="text-orange-400">{hoverTooltip.instability.toFixed(1)}</span>
             </div>
           ) : null}
           {hoverTooltip.tension > 0 ? (
             <div className="text-muted-foreground font-mono">
-              Tension: <span className="text-red-400">{hoverTooltip.tension.toFixed(1)}</span>
+              {t('worldMap.popupLabels.tension')}: <span className="text-red-400">{hoverTooltip.tension.toFixed(1)}</span>
             </div>
           ) : null}
         </div>

@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, lazy, Suspense } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -34,65 +35,65 @@ import {
 
 type WorldSubView = 'map' | 'signals' | 'countries' | 'tensions' | 'convergences' | 'anomalies'
 
-const SIGNAL_TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; label: string }> = {
-  conflict: { icon: Swords, color: 'text-red-400', label: 'Conflict' },
-  tension: { icon: Activity, color: 'text-orange-400', label: 'Tension' },
-  instability: { icon: AlertTriangle, color: 'text-yellow-400', label: 'Instability' },
-  convergence: { icon: Radio, color: 'text-purple-400', label: 'Convergence' },
-  anomaly: { icon: Zap, color: 'text-cyan-400', label: 'Anomaly' },
-  military: { icon: Shield, color: 'text-blue-400', label: 'Military' },
-  infrastructure: { icon: Wifi, color: 'text-emerald-400', label: 'Infrastructure' },
-  earthquake: { icon: Zap, color: 'text-amber-400', label: 'Earthquake' },
-  news: { icon: Radio, color: 'text-violet-400', label: 'News' },
+const SIGNAL_TYPE_CONFIG: Record<string, { icon: React.ElementType; color: string; labelKey: string }> = {
+  conflict: { icon: Swords, color: 'text-red-400', labelKey: 'conflict' },
+  tension: { icon: Activity, color: 'text-orange-400', labelKey: 'tension' },
+  instability: { icon: AlertTriangle, color: 'text-yellow-400', labelKey: 'instability' },
+  convergence: { icon: Radio, color: 'text-purple-400', labelKey: 'convergence' },
+  anomaly: { icon: Zap, color: 'text-cyan-400', labelKey: 'anomaly' },
+  military: { icon: Shield, color: 'text-blue-400', labelKey: 'military' },
+  infrastructure: { icon: Wifi, color: 'text-emerald-400', labelKey: 'infrastructure' },
+  earthquake: { icon: Zap, color: 'text-amber-400', labelKey: 'earthquake' },
+  news: { icon: Radio, color: 'text-violet-400', labelKey: 'news' },
 }
 
-const METADATA_CHIPS_CONFIG: Record<string, Array<{ key: string; label: string; format?: (v: unknown) => string }>> = {
+const METADATA_CHIPS_CONFIG: Record<string, Array<{ key: string; labelKey: string; format?: (v: unknown, t: (k: string) => string) => string }>> = {
   earthquake: [
-    { key: 'magnitude', label: 'Mag', format: (v) => `M${Number(v).toFixed(1)}` },
-    { key: 'depth_km', label: 'Depth', format: (v) => `${Number(v).toFixed(0)}km` },
-    { key: 'tsunami', label: 'Tsunami', format: (v) => v ? 'Yes' : 'No' },
-    { key: 'alert', label: 'Alert' },
+    { key: 'magnitude', labelKey: 'mag', format: (v) => `M${Number(v).toFixed(1)}` },
+    { key: 'depth_km', labelKey: 'depth', format: (v) => `${Number(v).toFixed(0)}km` },
+    { key: 'tsunami', labelKey: 'tsunami', format: (v, t) => v ? t('eventsPanel.yes') : t('eventsPanel.no') },
+    { key: 'alert', labelKey: 'alert' },
   ],
   military: [
-    { key: 'activity_type', label: 'Type' },
-    { key: 'callsign', label: 'Callsign' },
-    { key: 'aircraft_type', label: 'Aircraft' },
-    { key: 'region', label: 'Region' },
-    { key: 'is_unusual', label: 'Unusual', format: (v) => v ? 'Yes' : 'No' },
+    { key: 'activity_type', labelKey: 'type' },
+    { key: 'callsign', labelKey: 'callsign' },
+    { key: 'aircraft_type', labelKey: 'aircraft' },
+    { key: 'region', labelKey: 'region' },
+    { key: 'is_unusual', labelKey: 'unusual', format: (v, t) => v ? t('eventsPanel.yes') : t('eventsPanel.no') },
   ],
   anomaly: [
-    { key: 'z_score', label: 'Z', format: (v) => Number(v).toFixed(1) },
-    { key: 'current_value', label: 'Current', format: (v) => String(v) },
-    { key: 'baseline_mean', label: 'Baseline', format: (v) => Number(v).toFixed(1) },
+    { key: 'z_score', labelKey: 'z', format: (v) => Number(v).toFixed(1) },
+    { key: 'current_value', labelKey: 'current', format: (v) => String(v) },
+    { key: 'baseline_mean', labelKey: 'baseline', format: (v) => Number(v).toFixed(1) },
   ],
   infrastructure: [
-    { key: 'event_type', label: 'Type' },
-    { key: 'affected_services', label: 'Services', format: (v) => Array.isArray(v) ? v.join(', ') : String(v) },
-    { key: 'cascade_risk_score', label: 'Cascade', format: (v) => `${(Number(v) * 100).toFixed(0)}%` },
+    { key: 'event_type', labelKey: 'type' },
+    { key: 'affected_services', labelKey: 'services', format: (v) => Array.isArray(v) ? v.join(', ') : String(v) },
+    { key: 'cascade_risk_score', labelKey: 'cascade', format: (v) => `${(Number(v) * 100).toFixed(0)}%` },
   ],
   conflict: [
-    { key: 'event_type', label: 'Type' },
-    { key: 'sub_event_type', label: 'Sub-type' },
-    { key: 'fatalities', label: 'Fatalities', format: (v) => String(v) },
+    { key: 'event_type', labelKey: 'type' },
+    { key: 'sub_event_type', labelKey: 'subType' },
+    { key: 'fatalities', labelKey: 'fatalities', format: (v) => String(v) },
   ],
   tension: [
-    { key: 'trend', label: 'Trend' },
-    { key: 'event_count', label: 'Events', format: (v) => String(v) },
+    { key: 'trend', labelKey: 'trend' },
+    { key: 'event_count', labelKey: 'events', format: (v) => String(v) },
   ],
   convergence: [
-    { key: 'signal_count', label: 'Signals', format: (v) => String(v) },
+    { key: 'signal_count', labelKey: 'signals', format: (v) => String(v) },
   ],
 }
 
 type SignalsGroupBy = 'none' | 'type' | 'country' | 'severity' | 'source'
 type SignalsLayout = 'list' | 'cards'
 
-const SIGNAL_GROUP_OPTIONS: Array<{ value: SignalsGroupBy; label: string }> = [
-  { value: 'none', label: 'No grouping' },
-  { value: 'type', label: 'Signal type' },
-  { value: 'country', label: 'Country' },
-  { value: 'severity', label: 'Severity' },
-  { value: 'source', label: 'Source' },
+const SIGNAL_GROUP_OPTIONS: Array<{ value: SignalsGroupBy; labelKey: string }> = [
+  { value: 'none', labelKey: 'noGrouping' },
+  { value: 'type', labelKey: 'signalType' },
+  { value: 'country', labelKey: 'country' },
+  { value: 'severity', labelKey: 'severity' },
+  { value: 'source', labelKey: 'source' },
 ]
 
 function severityLevel(severity: number): 'critical' | 'high' | 'medium' | 'low' {
@@ -108,7 +109,11 @@ function detectedAtValue(detectedAt: string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY
 }
 
-function buildSignalGroups(signals: WorldSignal[], groupBy: SignalsGroupBy): Array<{
+function buildSignalGroups(
+  signals: WorldSignal[],
+  groupBy: SignalsGroupBy,
+  t: (key: string) => string,
+): Array<{
   key: string
   label: string
   order: number
@@ -118,35 +123,35 @@ function buildSignalGroups(signals: WorldSignal[], groupBy: SignalsGroupBy): Arr
 
   for (const signal of signals) {
     let key = 'all'
-    let label = 'All signals'
+    let label = t('eventsPanel.allSignals')
     let order = 0
 
     if (groupBy === 'type') {
       const typeConfig = SIGNAL_TYPE_CONFIG[signal.signal_type] || SIGNAL_TYPE_CONFIG.conflict
       key = `type:${signal.signal_type}`
-      label = typeConfig.label
+      label = t(`eventsPanel.signalTypes.${typeConfig.labelKey}`)
     } else if (groupBy === 'country') {
       const normalizedCountry = signal.country ? normalizeCountryCode(signal.country) || signal.country.toUpperCase() : 'UNKNOWN'
       key = `country:${normalizedCountry}`
-      label = signal.country ? formatCountry(signal.country) : 'Unknown location'
+      label = signal.country ? formatCountry(signal.country) : t('eventsPanel.unknownLocation')
     } else if (groupBy === 'severity') {
       const level = severityLevel(signal.severity)
       key = `severity:${level}`
       if (level === 'critical') {
-        label = 'Critical (80%+)'
+        label = t('eventsPanel.severityRanges.critical')
         order = 0
       } else if (level === 'high') {
-        label = 'High (60-79%)'
+        label = t('eventsPanel.severityRanges.high')
         order = 1
       } else if (level === 'medium') {
-        label = 'Medium (30-59%)'
+        label = t('eventsPanel.severityRanges.medium')
         order = 2
       } else {
-        label = 'Low (<30%)'
+        label = t('eventsPanel.severityRanges.low')
         order = 3
       }
     } else if (groupBy === 'source') {
-      const source = signal.source || 'Unknown source'
+      const source = signal.source || t('eventsPanel.unknownSource')
       key = `source:${source.toLowerCase()}`
       label = source
     }
@@ -210,6 +215,7 @@ function MarketRelevanceBadge({ score }: { score: number | null }) {
 }
 
 function SignalCard({ signal, layout }: { signal: WorldSignal; layout: SignalsLayout }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const config = SIGNAL_TYPE_CONFIG[signal.signal_type] || SIGNAL_TYPE_CONFIG.conflict
   const Icon = config.icon
@@ -222,10 +228,10 @@ function SignalCard({ signal, layout }: { signal: WorldSignal; layout: SignalsLa
       .filter((def) => meta[def.key] != null && meta[def.key] !== '')
       .map((def) => ({
         key: def.key,
-        label: def.label,
-        value: def.format ? def.format(meta[def.key]) : String(meta[def.key]),
+        label: t(`eventsPanel.chipLabels.${def.labelKey}`),
+        value: def.format ? def.format(meta[def.key], t) : String(meta[def.key]),
       }))
-  }, [signal.signal_type, signal.metadata])
+  }, [signal.signal_type, signal.metadata, t])
 
   const contextParts = useMemo(() => {
     const parts: string[] = []
@@ -251,7 +257,7 @@ function SignalCard({ signal, layout }: { signal: WorldSignal; layout: SignalsLa
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-sm font-medium leading-5">{signal.title}</span>
             <Badge variant="outline" className={cn('text-[9px] h-4 px-1.5 font-data', config.color, 'border-current/20')}>
-              {config.label}
+              {t(`eventsPanel.signalTypes.${config.labelKey}`)}
             </Badge>
             <SeverityBadge severity={signal.severity} />
             <MarketRelevanceBadge score={signal.market_relevance_score} />
@@ -264,7 +270,7 @@ function SignalCard({ signal, layout }: { signal: WorldSignal; layout: SignalsLa
           {signal.related_market_ids && signal.related_market_ids.length > 0 && (
             <div className="flex items-center gap-1 mt-1">
               <MapPin className="w-3 h-3 text-primary" />
-              <span className="text-[10px] text-primary">{signal.related_market_ids.length} related market{signal.related_market_ids.length > 1 ? 's' : ''}</span>
+              <span className="text-[10px] text-primary">{t('eventsPanel.relatedMarkets', { count: signal.related_market_ids.length })}</span>
             </div>
           )}
         </div>
@@ -298,6 +304,7 @@ function SignalCard({ signal, layout }: { signal: WorldSignal; layout: SignalsLa
 }
 
 function SignalTypeSummaryBar({ signals }: { signals: WorldSignal[] }) {
+  const { t } = useTranslation()
   const counts = useMemo(() => {
     const map: Record<string, number> = {}
     for (const s of signals) {
@@ -314,7 +321,7 @@ function SignalTypeSummaryBar({ signals }: { signals: WorldSignal[] }) {
         const config = SIGNAL_TYPE_CONFIG[type] || SIGNAL_TYPE_CONFIG.conflict
         return (
           <Badge key={type} variant="outline" className={cn('text-[9px] h-5 px-1.5 gap-1 font-data', config.color, 'bg-transparent border-current/20')}>
-            {config.label} {count}
+            {t(`eventsPanel.signalTypes.${config.labelKey}`)} {count}
           </Badge>
         )
       })}
@@ -325,6 +332,7 @@ function SignalTypeSummaryBar({ signals }: { signals: WorldSignal[] }) {
 // ==================== SIGNALS SUB-VIEW ====================
 
 function SignalsView({ isConnected }: { isConnected: boolean }) {
+  const { t } = useTranslation()
   const [typeFilter, setTypeFilter] = useState<string>('')
   const [pageSize, setPageSize] = useState<number>(100)
   const [page, setPage] = useState<number>(1)
@@ -337,7 +345,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
     refetchInterval: isConnected ? false : 120000,
   })
   const signals = data?.signals || []
-  const groupedSignals = useMemo(() => buildSignalGroups(signals, groupBy), [signals, groupBy])
+  const groupedSignals = useMemo(() => buildSignalGroups(signals, groupBy, t), [signals, groupBy, t])
   const totalSignals = Math.max(Number(data?.total || 0), signals.length)
   const totalPages = Math.max(1, Math.ceil(totalSignals / pageSize))
   const currentPage = Math.min(page, totalPages)
@@ -363,13 +371,13 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
             }}
           >
             <SelectTrigger className="h-8 w-[180px] text-xs">
-              <SelectValue placeholder="Signal type" />
+              <SelectValue placeholder={t('eventsPanel.signalTypePlaceholder')} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All signal types</SelectItem>
+              <SelectItem value="all">{t('eventsPanel.allSignalTypes')}</SelectItem>
               {Object.entries(SIGNAL_TYPE_CONFIG).map(([type, config]) => (
                 <SelectItem key={type} value={type}>
-                  {config.label}
+                  {t(`eventsPanel.signalTypes.${config.labelKey}`)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -382,25 +390,25 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
             }}
           >
           <SelectTrigger className="h-8 w-[180px] text-xs">
-            <SelectValue placeholder="Page size" />
+            <SelectValue placeholder={t('eventsPanel.pageSizePlaceholder')} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="25">25 rows</SelectItem>
-            <SelectItem value="50">50 rows</SelectItem>
-            <SelectItem value="100">100 rows</SelectItem>
-            <SelectItem value="250">250 rows</SelectItem>
-            <SelectItem value="500">500 rows</SelectItem>
-            <SelectItem value="1000">1000 rows</SelectItem>
+            <SelectItem value="25">{t('eventsPanel.rows', { count: 25 })}</SelectItem>
+            <SelectItem value="50">{t('eventsPanel.rows', { count: 50 })}</SelectItem>
+            <SelectItem value="100">{t('eventsPanel.rows', { count: 100 })}</SelectItem>
+            <SelectItem value="250">{t('eventsPanel.rows', { count: 250 })}</SelectItem>
+            <SelectItem value="500">{t('eventsPanel.rows', { count: 500 })}</SelectItem>
+            <SelectItem value="1000">{t('eventsPanel.rows', { count: 1000 })}</SelectItem>
           </SelectContent>
         </Select>
           <Select value={groupBy} onValueChange={(value) => setGroupBy(value as SignalsGroupBy)}>
             <SelectTrigger className="h-8 w-[170px] text-xs">
-              <SelectValue placeholder="Group by" />
+              <SelectValue placeholder={t('eventsPanel.groupByPlaceholder')} />
             </SelectTrigger>
             <SelectContent>
               {SIGNAL_GROUP_OPTIONS.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
-                  {option.label}
+                  {t(`eventsPanel.groupOptions.${option.labelKey}`)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -412,7 +420,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
               className="h-6 px-2 text-[11px]"
               onClick={() => setLayout('list')}
             >
-              List
+              {t('eventsPanel.layoutList')}
             </Button>
             <Button
               variant={layout === 'cards' ? 'secondary' : 'ghost'}
@@ -420,7 +428,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
               className="h-6 px-2 text-[11px]"
               onClick={() => setLayout('cards')}
             >
-              Cards
+              {t('eventsPanel.layoutCards')}
             </Button>
           </div>
         </div>
@@ -431,7 +439,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
 
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
           <span className="font-data">
-            Showing {pageStart}-{pageEnd} of {totalSignals}
+            {t('eventsPanel.showingRange', { start: pageStart, end: pageEnd, total: totalSignals })}
           </span>
           <div className="flex items-center gap-1">
             <Button
@@ -441,7 +449,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
               onClick={() => setPage(1)}
               disabled={currentPage <= 1 || isLoading}
             >
-              First
+              {t('eventsPanel.first')}
             </Button>
             <Button
               variant="outline"
@@ -450,7 +458,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
               onClick={() => setPage((prev) => Math.max(1, prev - 1))}
               disabled={currentPage <= 1 || isLoading}
             >
-              Prev
+              {t('eventsPanel.prev')}
             </Button>
             <span className="px-2 text-[11px] font-mono">
               {currentPage} / {totalPages}
@@ -462,7 +470,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
               onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
               disabled={currentPage >= totalPages || isLoading}
             >
-              Next
+              {t('eventsPanel.next')}
             </Button>
             <Button
               variant="outline"
@@ -471,7 +479,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
               onClick={() => setPage(totalPages)}
               disabled={currentPage >= totalPages || isLoading}
             >
-              Last
+              {t('eventsPanel.last')}
             </Button>
           </div>
         </div>
@@ -479,9 +487,9 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
 
       <div className="flex-1 min-h-0 overflow-y-auto pt-3 pr-1">
         {isLoading ? (
-          <div className="text-center text-muted-foreground py-8">Loading signals...</div>
+          <div className="text-center text-muted-foreground py-8">{t('eventsPanel.loadingSignals')}</div>
         ) : isError ? (
-          <div className="text-center text-red-400 py-8">Failed to load signals</div>
+          <div className="text-center text-red-400 py-8">{t('eventsPanel.failedSignals')}</div>
         ) : (
           <div className="space-y-3">
             {groupedSignals.map((group) => (
@@ -510,7 +518,7 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
               </section>
             ))}
             {groupedSignals.length === 0 && (
-              <div className="text-center text-muted-foreground py-8">No signals matching filter</div>
+              <div className="text-center text-muted-foreground py-8">{t('eventsPanel.noSignalsMatchingFilter')}</div>
             )}
           </div>
         )}
@@ -522,24 +530,25 @@ function SignalsView({ isConnected }: { isConnected: boolean }) {
 // ==================== COUNTRIES SUB-VIEW ====================
 
 function CountriesView({ isConnected }: { isConnected: boolean }) {
+  const { t } = useTranslation()
   const { data, isLoading, isError } = useQuery({
     queryKey: ['world-instability'],
     queryFn: () => getInstabilityScores({ min_score: 0, limit: 100 }),
     refetchInterval: isConnected ? false : 180000,
   })
 
-  if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading instability scores...</div>
-  if (isError) return <div className="text-center text-red-400 py-8">Failed to load instability scores</div>
+  if (isLoading) return <div className="text-center text-muted-foreground py-8">{t('eventsPanel.loadingInstability')}</div>
+  if (isError) return <div className="text-center text-red-400 py-8">{t('eventsPanel.failedInstability')}</div>
 
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-12 gap-2 px-2 text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-        <div className="col-span-1">ISO3</div>
-        <div className="col-span-3">Country</div>
-        <div className="col-span-2 text-right">CII Score</div>
-        <div className="col-span-1 text-center">Trend</div>
-        <div className="col-span-2 text-right">24h Change</div>
-        <div className="col-span-3">Top Factor</div>
+        <div className="col-span-1">{t('eventsPanel.countriesTable.iso3')}</div>
+        <div className="col-span-3">{t('eventsPanel.countriesTable.country')}</div>
+        <div className="col-span-2 text-right">{t('eventsPanel.countriesTable.ciiScore')}</div>
+        <div className="col-span-1 text-center">{t('eventsPanel.countriesTable.trend')}</div>
+        <div className="col-span-2 text-right">{t('eventsPanel.countriesTable.change24h')}</div>
+        <div className="col-span-3">{t('eventsPanel.countriesTable.topFactor')}</div>
       </div>
       {(data?.scores || []).map((s) => (
         <div key={s.iso3} className="grid grid-cols-12 gap-2 px-2 py-1.5 rounded bg-card border border-border items-center">
@@ -561,7 +570,7 @@ function CountriesView({ isConnected }: { isConnected: boolean }) {
       ))}
       {(!data?.scores || data.scores.length === 0) && (
         <div className="text-center text-muted-foreground py-8">
-          No instability scores available yet. Check source health in Overview.
+          {t('eventsPanel.noInstability')}
         </div>
       )}
     </div>
@@ -571,43 +580,44 @@ function CountriesView({ isConnected }: { isConnected: boolean }) {
 // ==================== TENSIONS SUB-VIEW ====================
 
 function TensionsView({ isConnected }: { isConnected: boolean }) {
+  const { t } = useTranslation()
   const { data, isLoading, isError } = useQuery({
     queryKey: ['world-tensions'],
     queryFn: () => getTensionPairs({ min_tension: 0, limit: 20 }),
     refetchInterval: isConnected ? false : 180000,
   })
 
-  if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading tension data...</div>
-  if (isError) return <div className="text-center text-red-400 py-8">Failed to load tension data</div>
+  if (isLoading) return <div className="text-center text-muted-foreground py-8">{t('eventsPanel.loadingTensions')}</div>
+  if (isError) return <div className="text-center text-red-400 py-8">{t('eventsPanel.failedTensions')}</div>
 
   return (
     <div className="space-y-2">
-      {(data?.tensions || []).map((t) => (
-        <div key={`${t.country_a}-${t.country_b}`} className="p-3 rounded-lg bg-card border border-border">
+      {(data?.tensions || []).map((tensionRow) => (
+        <div key={`${tensionRow.country_a}-${tensionRow.country_b}`} className="p-3 rounded-lg bg-card border border-border">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <Swords className="w-4 h-4 text-orange-400" />
-              <span className="text-sm font-bold">{formatCountry(t.country_a_name || t.country_a_iso3 || t.country_a)}</span>
+              <span className="text-sm font-bold">{formatCountry(tensionRow.country_a_name || tensionRow.country_a_iso3 || tensionRow.country_a)}</span>
               <ChevronRight className="w-3 h-3 text-muted-foreground" />
-              <span className="text-sm font-bold">{formatCountry(t.country_b_name || t.country_b_iso3 || t.country_b)}</span>
+              <span className="text-sm font-bold">{formatCountry(tensionRow.country_b_name || tensionRow.country_b_iso3 || tensionRow.country_b)}</span>
             </div>
             <div className="flex items-center gap-2">
-              <TrendIndicator trend={t.trend} />
-              <span className={cn('font-mono text-lg font-bold', t.tension_score >= 70 ? 'text-red-400' : t.tension_score >= 40 ? 'text-orange-400' : 'text-yellow-400')}>
-                {t.tension_score.toFixed(0)}
+              <TrendIndicator trend={tensionRow.trend} />
+              <span className={cn('font-mono text-lg font-bold', tensionRow.tension_score >= 70 ? 'text-red-400' : tensionRow.tension_score >= 40 ? 'text-orange-400' : 'text-yellow-400')}>
+                {tensionRow.tension_score.toFixed(0)}
               </span>
             </div>
           </div>
           <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-            <span>{t.event_count} events</span>
-            {t.avg_goldstein_scale != null && <span>Goldstein: {t.avg_goldstein_scale.toFixed(1)}</span>}
-            {t.top_event_types?.length > 0 && <span>{t.top_event_types.slice(0, 3).join(', ')}</span>}
+            <span>{t('eventsPanel.eventsCount', { count: tensionRow.event_count })}</span>
+            {tensionRow.avg_goldstein_scale != null && <span>{t('eventsPanel.goldsteinLabel')}: {tensionRow.avg_goldstein_scale.toFixed(1)}</span>}
+            {tensionRow.top_event_types?.length > 0 && <span>{tensionRow.top_event_types.slice(0, 3).join(', ')}</span>}
           </div>
         </div>
       ))}
       {(!data?.tensions || data.tensions.length === 0) && (
         <div className="text-center text-muted-foreground py-8">
-          No tension pairs available yet. Check source health in Overview.
+          {t('eventsPanel.noTensions')}
         </div>
       )}
     </div>
@@ -617,19 +627,20 @@ function TensionsView({ isConnected }: { isConnected: boolean }) {
 // ==================== CONVERGENCES SUB-VIEW ====================
 
 function ConvergencesView({ isConnected }: { isConnected: boolean }) {
+  const { t } = useTranslation()
   const { data, isLoading, isError } = useQuery({
     queryKey: ['world-convergences'],
     queryFn: getConvergenceZones,
     refetchInterval: isConnected ? false : 180000,
   })
 
-  if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading convergence data...</div>
-  if (isError) return <div className="text-center text-red-400 py-8">Failed to load convergence data</div>
+  if (isLoading) return <div className="text-center text-muted-foreground py-8">{t('eventsPanel.loadingConvergences')}</div>
+  if (isError) return <div className="text-center text-red-400 py-8">{t('eventsPanel.failedConvergences')}</div>
 
   return (
     <div className="space-y-2">
       {(data?.zones || []).length === 0 && (
-        <div className="text-center text-muted-foreground py-8">No active convergence zones detected</div>
+        <div className="text-center text-muted-foreground py-8">{t('eventsPanel.noConvergences')}</div>
       )}
       {(data?.zones || []).map((z) => (
         <div key={z.grid_key} className="p-3 rounded-lg bg-card border border-border">
@@ -639,7 +650,7 @@ function ConvergencesView({ isConnected }: { isConnected: boolean }) {
               <span className="text-sm font-medium">{z.country ? formatCountry(z.country) : `${z.latitude.toFixed(1)}, ${z.longitude.toFixed(1)}`}</span>
             </div>
             <Badge variant="outline" className={cn('text-[10px] font-mono', z.urgency_score >= 70 ? 'bg-red-500/20 text-red-400' : z.urgency_score >= 40 ? 'bg-orange-500/20 text-orange-400' : 'bg-yellow-500/20 text-yellow-400')}>
-              Urgency: {z.urgency_score.toFixed(0)}
+              {t('eventsPanel.urgencyLabel')}: {z.urgency_score.toFixed(0)}
             </Badge>
           </div>
           <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -647,13 +658,13 @@ function ConvergencesView({ isConnected }: { isConnected: boolean }) {
               const config = SIGNAL_TYPE_CONFIG[type] || SIGNAL_TYPE_CONFIG.conflict
               return (
                 <Badge key={type} variant="outline" className={cn('text-[10px]', config.color)}>
-                  {config.label}
+                  {t(`eventsPanel.signalTypes.${config.labelKey}`)}
                 </Badge>
               )
             })}
           </div>
           <div className="text-[10px] text-muted-foreground">
-            {z.signal_count} signals · {z.nearby_markets?.length || 0} related markets
+            {t('eventsPanel.convergenceFooter', { signals: z.signal_count, markets: z.nearby_markets?.length || 0 })}
           </div>
         </div>
       ))}
@@ -664,19 +675,20 @@ function ConvergencesView({ isConnected }: { isConnected: boolean }) {
 // ==================== ANOMALIES SUB-VIEW ====================
 
 function AnomaliesView({ isConnected }: { isConnected: boolean }) {
+  const { t } = useTranslation()
   const { data, isLoading, isError } = useQuery({
     queryKey: ['world-anomalies'],
     queryFn: () => getTemporalAnomalies({ min_severity: 'medium' }),
     refetchInterval: isConnected ? false : 180000,
   })
 
-  if (isLoading) return <div className="text-center text-muted-foreground py-8">Loading anomaly data...</div>
-  if (isError) return <div className="text-center text-red-400 py-8">Failed to load anomaly data</div>
+  if (isLoading) return <div className="text-center text-muted-foreground py-8">{t('eventsPanel.loadingAnomalies')}</div>
+  if (isError) return <div className="text-center text-red-400 py-8">{t('eventsPanel.failedAnomalies')}</div>
 
   return (
     <div className="space-y-2">
       {(data?.anomalies || []).length === 0 && (
-        <div className="text-center text-muted-foreground py-8">No significant anomalies detected</div>
+        <div className="text-center text-muted-foreground py-8">{t('eventsPanel.noAnomalies')}</div>
       )}
       {(data?.anomalies || []).map((a, i) => (
         <div key={i} className="p-3 rounded-lg bg-card border border-border">
@@ -686,14 +698,14 @@ function AnomaliesView({ isConnected }: { isConnected: boolean }) {
               <span className="text-sm font-medium">{formatCountry(a.country)} — {a.signal_type.replace(/_/g, ' ')}</span>
             </div>
             <Badge variant="outline" className={cn('text-[10px] font-mono uppercase', a.severity === 'critical' ? 'bg-red-500/20 text-red-400' : a.severity === 'high' ? 'bg-orange-500/20 text-orange-400' : 'bg-yellow-500/20 text-yellow-400')}>
-              {a.severity}
+              {t(`eventsPanel.severity.${a.severity}`)}
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground mb-1">{a.description}</p>
           <div className="flex items-center gap-3 text-[10px] text-muted-foreground font-mono">
             <span>z={a.z_score.toFixed(1)}</span>
-            <span>current={a.current_value}</span>
-            <span>baseline={a.baseline_mean.toFixed(1)} ± {a.baseline_std.toFixed(1)}</span>
+            <span>{t('eventsPanel.anomalyCurrent')}={a.current_value}</span>
+            <span>{t('eventsPanel.anomalyBaseline')}={a.baseline_mean.toFixed(1)} ± {a.baseline_std.toFixed(1)}</span>
           </div>
         </div>
       ))}
@@ -703,9 +715,9 @@ function AnomaliesView({ isConnected }: { isConnected: boolean }) {
 
 // ==================== MAIN COMPONENT ====================
 
-const SUB_NAV: { id: WorldSubView; label: string; icon: React.ElementType }[] = [
-  { id: 'map', label: 'Map', icon: MapIcon },
-  { id: 'signals', label: 'Signals', icon: Radio },
+const SUB_NAV: { id: WorldSubView; labelKey: string; icon: React.ElementType }[] = [
+  { id: 'map', labelKey: 'map', icon: MapIcon },
+  { id: 'signals', labelKey: 'signals', icon: Radio },
 ]
 
 export default function EventsPanel({
@@ -715,13 +727,14 @@ export default function EventsPanel({
   isConnected?: boolean
   eventsOnly?: boolean
 }) {
+  const { t } = useTranslation()
   const [subView, setSubView] = useState<WorldSubView>(eventsOnly ? 'signals' : 'map')
 
   if (eventsOnly) {
     return (
       <div className="h-full min-h-0 flex flex-col overflow-hidden">
         <div className="flex-1 min-h-0 p-4">
-          <ErrorBoundary fallback={<div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">This events view failed to render.</div>}>
+          <ErrorBoundary fallback={<div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">{t('eventsPanel.eventsViewFailed')}</div>}>
             <SignalsView isConnected={isConnected} />
           </ErrorBoundary>
         </div>
@@ -742,7 +755,7 @@ export default function EventsPanel({
             className="h-7 text-xs gap-1 shrink-0"
           >
             <item.icon className="w-3 h-3" />
-            {item.label}
+            {t(`eventsPanel.subNav.${item.labelKey}`)}
           </Button>
         ))}
       </div>
@@ -750,7 +763,7 @@ export default function EventsPanel({
       {/* Content */}
       {subView === 'map' ? (
         <div className="flex-1 min-h-0 relative overflow-hidden">
-          <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">Map view crashed.</div>}>
+          <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">{t('eventsPanel.mapViewCrashed')}</div>}>
             <Suspense fallback={<div className="h-full w-full" />}>
               <WorldMap isConnected={isConnected} />
             </Suspense>
@@ -758,7 +771,7 @@ export default function EventsPanel({
         </div>
       ) : (
         <div className={cn('flex-1 p-4', subView === 'signals' ? 'min-h-0' : 'overflow-y-auto')}>
-          <ErrorBoundary fallback={<div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">This events view failed to render.</div>}>
+          <ErrorBoundary fallback={<div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">{t('eventsPanel.eventsViewFailed')}</div>}>
             {subView === 'signals' && <SignalsView isConnected={isConnected} />}
             {subView === 'countries' && <CountriesView isConnected={isConnected} />}
             {subView === 'tensions' && <TensionsView isConnected={isConnected} />}
