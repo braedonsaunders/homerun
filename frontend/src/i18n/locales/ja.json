@@ -3579,5 +3579,172 @@
       "hoursAgo": "{{n}}時間前",
       "daysAgo": "{{n}}日前"
     }
+  },
+  "cryptoMarketsPanel": {
+    "loading": "暗号資産マーケットを読み込み中...",
+    "countdown": {
+      "resolving": "解決中",
+      "mins": "分",
+      "secs": "秒"
+    },
+    "oracle": {
+      "oracleSource": "オラクルソース",
+      "priceToBeat": "目標価格",
+      "currentPrice": "現在価格",
+      "sourceView": "ソースビュー",
+      "waitingWindow": "ウィンドウ開始を待機中...",
+      "source": {
+        "chainlink": "chainlink (決済)",
+        "binanceDirect": "binance ダイレクト (ws)",
+        "binanceRelay": "binance リレー (rtds)"
+      },
+      "delta": {
+        "binanceDirectVsChainlink": "binance ダイレクト - chainlink",
+        "binanceRelayVsChainlink": "binance リレー - chainlink"
+      }
+    },
+    "card": {
+      "upOrDownTitle": "{{asset}} アップまたはダウン",
+      "strategySdkTooltip": "StrategySDK: {{sdk}}",
+      "sdkLabel": "SDK {{sdk}}",
+      "live": "ライブ",
+      "next": "次",
+      "expandTooltip": "このカードを展開",
+      "returnToGridTooltip": "グリッドに戻る",
+      "cycleView": "サイクルビュー",
+      "cycleViewTooltip": "オラクルライン上にUP/DOWNミッドと追跡ウォレットの取引マーカーを重ねて表示",
+      "priceToBeatLabel": "目標価格",
+      "waitingForPrice": "価格データを待機中...",
+      "up": "アップ",
+      "down": "ダウン",
+      "combinedCost": "合計コスト",
+      "spreadPct": "({{value}}% スプレッド)",
+      "upBidAsk": "アップ買い: ${{bid}} / アップ売り: ${{ask}}",
+      "bookSpread": "板スプレッド: ${{value}}",
+      "upcoming": "今後",
+      "expandedAria": "展開された暗号マーケット: {{asset}} {{timeframe}}"
+    },
+    "stats": {
+      "liquidity": "流動性",
+      "volume": "出来高",
+      "takerFee": "Taker手数料",
+      "lastTrade": "直近の取引"
+    },
+    "timeframe": {
+      "all": "すべて"
+    },
+    "header": {
+      "settings": "設定",
+      "markets": "マーケット",
+      "liveCount": "{{n}} ライブ",
+      "seriesLiquidity": "シリーズ流動性",
+      "series24hVol": "シリーズ24時間出来高",
+      "seriesCount": "{{n}} シリーズ",
+      "avgSpread": "平均スプレッド",
+      "mktsCount": "{{n}} マーケット",
+      "takerFee": "Taker手数料",
+      "maxPct": "最大 {{value}}%"
+    },
+    "wsStatus": {
+      "paused": "更新を一時停止",
+      "live": "WebSocket ライブ",
+      "connected": "WebSocket 接続済み",
+      "polling": "ポーリング 2秒"
+    },
+    "empty": {
+      "allTitle": "実行可能な暗号資産機会が見つかりません",
+      "timeframeTitle": "この時間帯の暗号資産機会が見つかりません",
+      "allDescription": "新しいウィンドウを待つか、設定でシリーズIDを確認してください",
+      "timeframeDescription": "時間帯フィルターを切り替えるか、新しいウィンドウを待ってください"
+    }
+  },
+  "searchResultsView": {
+    "back": "戻る",
+    "globalSearch": "グローバル検索",
+    "searchPlaceholder": "マーケット、トレーダー、戦略、ニュース、ウォレット — 何でも検索…",
+    "clear": "クリア",
+    "sortLabel": "並べ替え",
+    "allFilter": "すべて",
+    "resultFor": "件の結果",
+    "resultsFor": "件の結果",
+    "searching": "検索中…",
+    "startTyping": "入力して検索を開始してください。",
+    "sort": {
+      "relevance": "関連性",
+      "mostRecent": "最新",
+      "mostLiquid": "流動性が高い順"
+    },
+    "type": {
+      "market": { "label": "マーケット", "plural": "マーケット" },
+      "event": { "label": "イベント", "plural": "イベント" },
+      "category": { "label": "カテゴリ", "plural": "カテゴリ" },
+      "opportunity": { "label": "機会", "plural": "機会" },
+      "strategy": { "label": "戦略", "plural": "戦略" },
+      "dataSource": { "label": "データソース", "plural": "データソース" },
+      "trader": { "label": "トレーダー", "plural": "トレーダー" },
+      "wallet": { "label": "ウォレット", "plural": "ウォレット" },
+      "news": { "label": "ニュース", "plural": "ニュース" },
+      "alert": { "label": "アラート", "plural": "アラート" },
+      "research": { "label": "リサーチ", "plural": "リサーチ" },
+      "fallback": { "label": "アイテム", "plural": "アイテム" }
+    },
+    "time": {
+      "justNow": "たった今",
+      "minutesAgo": "{{n}}分前",
+      "hoursAgo": "{{n}}時間前",
+      "daysAgo": "{{n}}日前",
+      "weeksAgo": "{{n}}週間前"
+    },
+    "market": {
+      "yes": "YES",
+      "no": "NO",
+      "liq": "流動",
+      "vol": "出来高"
+    },
+    "opportunity": {
+      "roi": "ROI",
+      "risk": "リスク",
+      "profitable": "利益",
+      "loss": "損失"
+    },
+    "event": {
+      "marketCount": "{{n}} マーケット",
+      "marketsCount": "{{n}} マーケット"
+    },
+    "category": {
+      "activeCount": "{{n}} アクティブ"
+    },
+    "trader": {
+      "status": {
+        "paused": "一時停止",
+        "live": "ライブ",
+        "off": "オフ"
+      }
+    },
+    "wallet": {
+      "flagged": "フラグ付き",
+      "trades": "取引",
+      "win": "勝率",
+      "pnl": "損益"
+    },
+    "strategy": {
+      "system": "システム"
+    },
+    "dataSource": {
+      "disabled": "無効"
+    },
+    "alert": {
+      "resolved": "解決済み"
+    },
+    "empty": {
+      "title": "システム全体を検索",
+      "description": "マーケット、トレーダー、戦略、ニュース、ウォレット、アラート、リサーチ — すべてのエンティティがインデックス化され、関連性、時系列、流動性でランク付けされます。"
+    },
+    "noResults": {
+      "title": "\"{{query}}\" に一致する結果がありません",
+      "descriptionPrefix": "別のキーワード、少ない用語を試すか、タイプフィルターを削除してください。検索はORをサポート",
+      "descriptionMiddle": "および除外",
+      "retry": "再試行"
+    }
   }
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Search,
   X,
@@ -40,8 +41,10 @@ import { Badge } from './ui/badge'
 // =======================================================================
 
 interface TypeMeta {
-  label: string
-  plural: string
+  /** i18n key for singular label */
+  labelKey: string
+  /** i18n key for plural label */
+  pluralKey: string
   icon: React.ReactNode
   fg: string
   bg: string
@@ -59,8 +62,8 @@ const dispatch = (eventName: string, item: SearchResultItem) => {
 
 const TYPE_META: Record<string, TypeMeta> = {
   market: {
-    label: 'Market',
-    plural: 'Markets',
+    labelKey: 'searchResultsView.type.market.label',
+    pluralKey: 'searchResultsView.type.market.plural',
     icon: <Shield className="w-4 h-4" />,
     fg: 'text-emerald-400',
     bg: 'bg-emerald-500/10',
@@ -71,8 +74,8 @@ const TYPE_META: Record<string, TypeMeta> = {
       dispatch('market-selected', { ...item, ...(item.metadata ?? {}) } as any),
   },
   event: {
-    label: 'Event',
-    plural: 'Events',
+    labelKey: 'searchResultsView.type.event.label',
+    pluralKey: 'searchResultsView.type.event.plural',
     icon: <Calendar className="w-4 h-4" />,
     fg: 'text-cyan-400',
     bg: 'bg-cyan-500/10',
@@ -82,8 +85,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('event-selected', i),
   },
   category: {
-    label: 'Category',
-    plural: 'Categories',
+    labelKey: 'searchResultsView.type.category.label',
+    pluralKey: 'searchResultsView.type.category.plural',
     icon: <Tag className="w-4 h-4" />,
     fg: 'text-amber-400',
     bg: 'bg-amber-500/10',
@@ -93,8 +96,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('category-selected', i),
   },
   opportunity: {
-    label: 'Opportunity',
-    plural: 'Opportunities',
+    labelKey: 'searchResultsView.type.opportunity.label',
+    pluralKey: 'searchResultsView.type.opportunity.plural',
     icon: <Zap className="w-4 h-4" />,
     fg: 'text-yellow-400',
     bg: 'bg-yellow-500/10',
@@ -104,8 +107,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('opportunity-selected', i),
   },
   strategy: {
-    label: 'Strategy',
-    plural: 'Strategies',
+    labelKey: 'searchResultsView.type.strategy.label',
+    pluralKey: 'searchResultsView.type.strategy.plural',
     icon: <TrendingUp className="w-4 h-4" />,
     fg: 'text-cyan-400',
     bg: 'bg-cyan-500/10',
@@ -115,8 +118,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('strategy-selected', i),
   },
   data_source: {
-    label: 'Data source',
-    plural: 'Data sources',
+    labelKey: 'searchResultsView.type.dataSource.label',
+    pluralKey: 'searchResultsView.type.dataSource.plural',
     icon: <Database className="w-4 h-4" />,
     fg: 'text-blue-400',
     bg: 'bg-blue-500/10',
@@ -126,8 +129,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('data-source-selected', i),
   },
   trader: {
-    label: 'Trader',
-    plural: 'Traders',
+    labelKey: 'searchResultsView.type.trader.label',
+    pluralKey: 'searchResultsView.type.trader.plural',
     icon: <Bot className="w-4 h-4" />,
     fg: 'text-purple-400',
     bg: 'bg-purple-500/10',
@@ -137,8 +140,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('trader-selected', i),
   },
   wallet: {
-    label: 'Wallet',
-    plural: 'Wallets',
+    labelKey: 'searchResultsView.type.wallet.label',
+    pluralKey: 'searchResultsView.type.wallet.plural',
     icon: <Wallet className="w-4 h-4" />,
     fg: 'text-indigo-400',
     bg: 'bg-indigo-500/10',
@@ -148,8 +151,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('wallet-selected', i),
   },
   news: {
-    label: 'News',
-    plural: 'News',
+    labelKey: 'searchResultsView.type.news.label',
+    pluralKey: 'searchResultsView.type.news.plural',
     icon: <Newspaper className="w-4 h-4" />,
     fg: 'text-orange-400',
     bg: 'bg-orange-500/10',
@@ -159,8 +162,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('news-selected', i),
   },
   alert: {
-    label: 'Alert',
-    plural: 'Alerts',
+    labelKey: 'searchResultsView.type.alert.label',
+    pluralKey: 'searchResultsView.type.alert.plural',
     icon: <AlertTriangle className="w-4 h-4" />,
     fg: 'text-red-400',
     bg: 'bg-red-500/10',
@@ -170,8 +173,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     navigate: (i) => dispatch('alert-selected', i),
   },
   research: {
-    label: 'Research',
-    plural: 'Research',
+    labelKey: 'searchResultsView.type.research.label',
+    pluralKey: 'searchResultsView.type.research.plural',
     icon: <Brain className="w-4 h-4" />,
     fg: 'text-violet-400',
     bg: 'bg-violet-500/10',
@@ -183,8 +186,8 @@ const TYPE_META: Record<string, TypeMeta> = {
 }
 
 const FALLBACK_META: TypeMeta = {
-  label: 'Item',
-  plural: 'Items',
+  labelKey: 'searchResultsView.type.fallback.label',
+  pluralKey: 'searchResultsView.type.fallback.plural',
   icon: <FileText className="w-4 h-4" />,
   fg: 'text-muted-foreground',
   bg: 'bg-muted/40',
@@ -224,16 +227,16 @@ function formatCompact(n: number | null | undefined): string {
   return n.toFixed(0)
 }
 
-function formatRelative(iso: string | null | undefined): string {
+function formatRelative(iso: string | null | undefined, t: (k: string, opts?: any) => string): string {
   if (!iso) return ''
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   const sec = (Date.now() - d.getTime()) / 1000
-  if (sec < 60) return 'just now'
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`
-  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`
-  if (sec < 86400 * 7) return `${Math.floor(sec / 86400)}d ago`
-  if (sec < 86400 * 30) return `${Math.floor(sec / 86400 / 7)}w ago`
+  if (sec < 60) return t('searchResultsView.time.justNow')
+  if (sec < 3600) return t('searchResultsView.time.minutesAgo', { n: Math.floor(sec / 60) })
+  if (sec < 86400) return t('searchResultsView.time.hoursAgo', { n: Math.floor(sec / 3600) })
+  if (sec < 86400 * 7) return t('searchResultsView.time.daysAgo', { n: Math.floor(sec / 86400) })
+  if (sec < 86400 * 30) return t('searchResultsView.time.weeksAgo', { n: Math.floor(sec / 86400 / 7) })
   return d.toLocaleDateString()
 }
 
@@ -264,10 +267,10 @@ function shortAddress(addr: string): string {
 // =======================================================================
 
 type SortMode = 'relevance' | 'recency' | 'liquidity'
-const SORT_OPTIONS: Array<{ key: SortMode; label: string; icon: React.ReactNode }> = [
-  { key: 'relevance', label: 'Relevance', icon: <Sparkles className="w-3.5 h-3.5" /> },
-  { key: 'recency', label: 'Most recent', icon: <Clock className="w-3.5 h-3.5" /> },
-  { key: 'liquidity', label: 'Most liquid', icon: <Layers className="w-3.5 h-3.5" /> },
+const SORT_OPTIONS: Array<{ key: SortMode; labelKey: string; icon: React.ReactNode }> = [
+  { key: 'relevance', labelKey: 'searchResultsView.sort.relevance', icon: <Sparkles className="w-3.5 h-3.5" /> },
+  { key: 'recency', labelKey: 'searchResultsView.sort.mostRecent', icon: <Clock className="w-3.5 h-3.5" /> },
+  { key: 'liquidity', labelKey: 'searchResultsView.sort.mostLiquid', icon: <Layers className="w-3.5 h-3.5" /> },
 ]
 
 function sortItems(items: SearchResultItem[], mode: SortMode): SearchResultItem[] {
@@ -300,6 +303,7 @@ export default function SearchResultsView({
   onClose,
   onQueryChange,
 }: SearchResultsViewProps) {
+  const { t } = useTranslation()
   const [draftQuery, setDraftQuery] = useState(query)
   const [enabledTypes, setEnabledTypes] = useState<Set<string> | null>(null)
   const [sortMode, setSortMode] = useState<SortMode>('relevance')
@@ -400,9 +404,9 @@ export default function SearchResultsView({
               className="text-muted-foreground hover:text-foreground"
             >
               <ArrowLeft className="w-4 h-4 mr-1.5" />
-              Back
+              {t('searchResultsView.back')}
             </Button>
-            <div className="text-xs text-muted-foreground">Global search</div>
+            <div className="text-xs text-muted-foreground">{t('searchResultsView.globalSearch')}</div>
           </div>
 
           {/* Search input */}
@@ -418,7 +422,7 @@ export default function SearchResultsView({
                   submitDraft()
                 }
               }}
-              placeholder="Search markets, traders, strategies, news, wallets — anything…"
+              placeholder={t('searchResultsView.searchPlaceholder')}
               className="flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
             />
             {(isLoading || isFetching) && (
@@ -431,7 +435,7 @@ export default function SearchResultsView({
                   inputRef.current?.focus()
                 }}
                 className="p-1 rounded-md hover:bg-muted text-muted-foreground"
-                title="Clear"
+                title={t('searchResultsView.clear')}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -447,7 +451,9 @@ export default function SearchResultsView({
                     {allResultsCount}
                   </span>
                   <span className="text-muted-foreground">
-                    result{allResultsCount === 1 ? '' : 's'} for
+                    {allResultsCount === 1
+                      ? t('searchResultsView.resultFor')
+                      : t('searchResultsView.resultsFor')}
                   </span>
                   <span className="text-foreground font-medium">"{query}"</span>
                   <Badge variant="secondary" className="text-[10px] tabular-nums">
@@ -455,15 +461,15 @@ export default function SearchResultsView({
                   </Badge>
                 </>
               ) : isLoading ? (
-                <span className="text-muted-foreground">Searching…</span>
+                <span className="text-muted-foreground">{t('searchResultsView.searching')}</span>
               ) : (
-                <span className="text-muted-foreground">Start typing to search.</span>
+                <span className="text-muted-foreground">{t('searchResultsView.startTyping')}</span>
               )}
             </div>
 
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Sort
+                {t('searchResultsView.sortLabel')}
               </span>
               {SORT_OPTIONS.map((opt) => (
                 <button
@@ -477,7 +483,7 @@ export default function SearchResultsView({
                   )}
                 >
                   {opt.icon}
-                  {opt.label}
+                  {t(opt.labelKey)}
                 </button>
               ))}
             </div>
@@ -495,17 +501,17 @@ export default function SearchResultsView({
                     : 'border-border text-muted-foreground hover:bg-muted'
                 )}
               >
-                All <span className="opacity-60">· {allResultsCount}</span>
+                {t('searchResultsView.allFilter')} <span className="opacity-60">· {allResultsCount}</span>
               </button>
-              {TYPE_ORDER.map((t) => {
-                const count = perTypeCounts[t] ?? 0
+              {TYPE_ORDER.map((typeKey) => {
+                const count = perTypeCounts[typeKey] ?? 0
                 if (count === 0) return null
-                const meta = getMeta(t)
-                const active = enabledTypes !== null && enabledTypes.has(t)
+                const meta = getMeta(typeKey)
+                const active = enabledTypes !== null && enabledTypes.has(typeKey)
                 return (
                   <button
-                    key={t}
-                    onClick={() => toggleType(t)}
+                    key={typeKey}
+                    onClick={() => toggleType(typeKey)}
                     className={cn(
                       'flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border transition-all',
                       active
@@ -514,7 +520,7 @@ export default function SearchResultsView({
                     )}
                   >
                     <span className={meta.fg}>{meta.icon}</span>
-                    {meta.plural}
+                    {t(meta.pluralKey)}
                     <span className="opacity-60 tabular-nums">· {count}</span>
                   </button>
                 )
@@ -562,6 +568,7 @@ interface CardRowProps {
 }
 
 function CardRow({ entityType, items, onNavigate }: CardRowProps) {
+  const { t } = useTranslation()
   const meta = getMeta(entityType)
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [canLeft, setCanLeft] = useState(false)
@@ -606,7 +613,7 @@ function CardRow({ entityType, items, onNavigate }: CardRowProps) {
         <span className={cn('flex items-center justify-center w-7 h-7 rounded-lg', meta.bg, meta.fg)}>
           {meta.icon}
         </span>
-        <h3 className="text-sm font-medium text-foreground tracking-wide">{meta.plural}</h3>
+        <h3 className="text-sm font-medium text-foreground tracking-wide">{t(meta.pluralKey)}</h3>
         <span className="text-xs text-muted-foreground tabular-nums">{items.length}</span>
         <div className="ml-auto flex items-center gap-1 opacity-0 group-hover/row:opacity-100 transition-opacity">
           <button
@@ -769,6 +776,7 @@ function HighlightedTitle({
 // =======================================================================
 
 function MarketCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('market')
   const md = item.metadata ?? {}
   const yes = typeof md.yes_price === 'number' ? md.yes_price : null
@@ -790,7 +798,7 @@ function MarketCard({ item, onNavigate }: BaseCardProps) {
           {item.recency && (
             <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
               <Clock className="w-2.5 h-2.5" />
-              {formatRelative(item.recency)}
+              {formatRelative(item.recency, t)}
             </span>
           )}
         </div>
@@ -801,7 +809,7 @@ function MarketCard({ item, onNavigate }: BaseCardProps) {
           {/* YES bar */}
           {yes !== null && (
             <div className="flex items-center gap-2 text-[10px] tabular-nums">
-              <span className="w-7 text-emerald-400 font-medium">YES</span>
+              <span className="w-7 text-emerald-400 font-medium">{t('searchResultsView.market.yes')}</span>
               <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
                 <div
                   className="h-full bg-emerald-500"
@@ -813,7 +821,7 @@ function MarketCard({ item, onNavigate }: BaseCardProps) {
           )}
           {no !== null && (
             <div className="flex items-center gap-2 text-[10px] tabular-nums">
-              <span className="w-7 text-red-400 font-medium">NO</span>
+              <span className="w-7 text-red-400 font-medium">{t('searchResultsView.market.no')}</span>
               <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
                 <div
                   className="h-full bg-red-500"
@@ -826,12 +834,12 @@ function MarketCard({ item, onNavigate }: BaseCardProps) {
           <div className="flex items-center gap-3 text-[10px] text-muted-foreground tabular-nums pt-0.5">
             {liq !== null && (
               <span>
-                LIQ <span className="text-foreground">${formatCompact(liq)}</span>
+                {t('searchResultsView.market.liq')} <span className="text-foreground">${formatCompact(liq)}</span>
               </span>
             )}
             {vol !== null && (
               <span>
-                VOL <span className="text-foreground">${formatCompact(vol)}</span>
+                {t('searchResultsView.market.vol')} <span className="text-foreground">${formatCompact(vol)}</span>
               </span>
             )}
           </div>
@@ -846,6 +854,7 @@ function MarketCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function OpportunityResultCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('opportunity')
   const md = item.metadata ?? {}
   const roi = typeof md.expected_roi === 'number' ? md.expected_roi : null
@@ -868,7 +877,7 @@ function OpportunityResultCard({ item, onNavigate }: BaseCardProps) {
           {item.recency && (
             <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
               <Clock className="w-2.5 h-2.5" />
-              {formatRelative(item.recency)}
+              {formatRelative(item.recency, t)}
             </span>
           )}
         </div>
@@ -878,14 +887,14 @@ function OpportunityResultCard({ item, onNavigate }: BaseCardProps) {
         <div className="mt-auto flex items-center gap-3 text-[11px] tabular-nums">
           {roi !== null && (
             <Stat
-              label="ROI"
+              label={t('searchResultsView.opportunity.roi')}
               value={`${roi.toFixed(2)}%`}
               accent={roi >= 0 ? 'text-emerald-400' : 'text-red-400'}
             />
           )}
           {risk !== null && (
             <Stat
-              label="Risk"
+              label={t('searchResultsView.opportunity.risk')}
               value={risk.toFixed(2)}
               accent={
                 risk > 0.7
@@ -904,7 +913,7 @@ function OpportunityResultCard({ item, onNavigate }: BaseCardProps) {
                 profitable ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'
               )}
             >
-              {profitable ? 'profitable' : 'loss'}
+              {profitable ? t('searchResultsView.opportunity.profitable') : t('searchResultsView.opportunity.loss')}
             </Badge>
           )}
         </div>
@@ -918,6 +927,7 @@ function OpportunityResultCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function EventCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('event')
   const md = item.metadata ?? {}
   const marketCount = typeof md.market_count === 'number' ? md.market_count : null
@@ -935,7 +945,9 @@ function EventCard({ item, onNavigate }: BaseCardProps) {
           )}
           {marketCount !== null && (
             <span className="ml-auto">
-              {marketCount} {marketCount === 1 ? 'market' : 'markets'}
+              {marketCount === 1
+                ? t('searchResultsView.event.marketCount', { n: marketCount })
+                : t('searchResultsView.event.marketsCount', { n: marketCount })}
             </span>
           )}
         </div>
@@ -949,6 +961,7 @@ function EventCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function CategoryCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('category')
   const md = item.metadata ?? {}
   const oppCount = typeof md.opportunity_count === 'number' ? md.opportunity_count : null
@@ -960,7 +973,7 @@ function CategoryCard({ item, onNavigate }: BaseCardProps) {
         <div className="text-sm font-medium text-foreground truncate w-full">{item.title}</div>
         {oppCount !== null && (
           <div className="text-[10px] text-muted-foreground tabular-nums">
-            {oppCount} active
+            {t('searchResultsView.category.activeCount', { n: oppCount })}
           </div>
         )}
       </div>
@@ -973,6 +986,7 @@ function CategoryCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function TraderCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('trader')
   const md = item.metadata ?? {}
   const mode = (md.mode as string) || ''
@@ -980,10 +994,10 @@ function TraderCard({ item, onNavigate }: BaseCardProps) {
   const paused = md.is_paused as boolean | undefined
 
   const status: { color: string; label: string } = paused
-    ? { color: 'bg-amber-500', label: 'paused' }
+    ? { color: 'bg-amber-500', label: t('searchResultsView.trader.status.paused') }
     : enabled
-      ? { color: 'bg-emerald-500', label: 'live' }
-      : { color: 'bg-muted', label: 'off' }
+      ? { color: 'bg-emerald-500', label: t('searchResultsView.trader.status.live') }
+      : { color: 'bg-muted', label: t('searchResultsView.trader.status.off') }
 
   return (
     <CardShell meta={meta} onClick={() => onNavigate(item)}>
@@ -1040,6 +1054,7 @@ function TraderCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function WalletCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('wallet')
   const md = item.metadata ?? {}
   const trades = typeof md.total_trades === 'number' ? md.total_trades : null
@@ -1063,7 +1078,7 @@ function WalletCard({ item, onNavigate }: BaseCardProps) {
               variant="secondary"
               className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-300"
             >
-              flagged
+              {t('searchResultsView.wallet.flagged')}
             </Badge>
           )}
         </div>
@@ -1077,7 +1092,7 @@ function WalletCard({ item, onNavigate }: BaseCardProps) {
         <div className="mt-auto grid grid-cols-3 gap-2 text-center text-[10px] tabular-nums">
           <div>
             <div className="text-muted-foreground/70 uppercase tracking-wide text-[9px]">
-              Trades
+              {t('searchResultsView.wallet.trades')}
             </div>
             <div className="text-foreground font-medium">
               {trades !== null ? formatCompact(trades) : '—'}
@@ -1085,7 +1100,7 @@ function WalletCard({ item, onNavigate }: BaseCardProps) {
           </div>
           <div>
             <div className="text-muted-foreground/70 uppercase tracking-wide text-[9px]">
-              Win
+              {t('searchResultsView.wallet.win')}
             </div>
             <div className="text-foreground font-medium">
               {winRate !== null ? `${(winRate * 100).toFixed(0)}%` : '—'}
@@ -1093,7 +1108,7 @@ function WalletCard({ item, onNavigate }: BaseCardProps) {
           </div>
           <div>
             <div className="text-muted-foreground/70 uppercase tracking-wide text-[9px]">
-              PnL
+              {t('searchResultsView.wallet.pnl')}
             </div>
             <div
               className={cn(
@@ -1119,6 +1134,7 @@ function WalletCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function StrategyCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('strategy')
   const md = item.metadata ?? {}
   const enabled = md.enabled as boolean | undefined
@@ -1160,7 +1176,7 @@ function StrategyCard({ item, onNavigate }: BaseCardProps) {
           )}
           {isSystem && (
             <span className="text-[9px] uppercase tracking-wide text-muted-foreground/60 ml-auto">
-              system
+              {t('searchResultsView.strategy.system')}
             </span>
           )}
         </div>
@@ -1174,6 +1190,7 @@ function StrategyCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function DataSourceCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('data_source')
   const md = item.metadata ?? {}
   const kind = (md.source_kind as string) || ''
@@ -1210,7 +1227,7 @@ function DataSourceCard({ item, onNavigate }: BaseCardProps) {
             </Badge>
           )}
           {enabled === false && (
-            <span className="text-[9px] uppercase text-muted-foreground/60">disabled</span>
+            <span className="text-[9px] uppercase text-muted-foreground/60">{t('searchResultsView.dataSource.disabled')}</span>
           )}
         </div>
       </div>
@@ -1223,6 +1240,7 @@ function DataSourceCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function NewsCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('news')
   const md = item.metadata ?? {}
   const source = (md.source as string) || (md.feed_source as string) || ''
@@ -1243,7 +1261,7 @@ function NewsCard({ item, onNavigate }: BaseCardProps) {
           {item.recency && (
             <span className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
               <Clock className="w-2.5 h-2.5" />
-              {formatRelative(item.recency)}
+              {formatRelative(item.recency, t)}
             </span>
           )}
         </div>
@@ -1274,6 +1292,7 @@ function NewsCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function AlertCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('alert')
   const md = item.metadata ?? {}
   const severity = (md.severity as string) || 'info'
@@ -1308,7 +1327,7 @@ function AlertCard({ item, onNavigate }: BaseCardProps) {
             </Badge>
             {resolved && (
               <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                resolved
+                {t('searchResultsView.alert.resolved')}
               </Badge>
             )}
           </div>
@@ -1318,7 +1337,7 @@ function AlertCard({ item, onNavigate }: BaseCardProps) {
           {item.recency && (
             <span className="mt-auto text-[10px] text-muted-foreground/70 flex items-center gap-1">
               <Clock className="w-2.5 h-2.5" />
-              {formatRelative(item.recency)}
+              {formatRelative(item.recency, t)}
             </span>
           )}
         </div>
@@ -1332,6 +1351,7 @@ function AlertCard({ item, onNavigate }: BaseCardProps) {
 // =======================================================================
 
 function ResearchCard({ item, onNavigate }: BaseCardProps) {
+  const { t } = useTranslation()
   const meta = getMeta('research')
   const md = item.metadata ?? {}
   const sessionType = (md.session_type as string) || item.subtitle || ''
@@ -1354,7 +1374,7 @@ function ResearchCard({ item, onNavigate }: BaseCardProps) {
           <span className={cn('w-1.5 h-1.5 rounded-full ml-auto', statusDot)} />
           {item.recency && (
             <span className="text-[10px] text-muted-foreground/70">
-              {formatRelative(item.recency)}
+              {formatRelative(item.recency, t)}
             </span>
           )}
         </div>
@@ -1422,16 +1442,16 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
 // =======================================================================
 
 function EmptyState({ onPick }: { onPick: (q: string) => void }) {
+  const { t } = useTranslation()
   const suggestions = ['trump', 'election', 'btc', 'arb', 'fed', 'kalshi']
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center mb-4 border border-border/40">
         <Search className="w-7 h-7 text-muted-foreground" />
       </div>
-      <h2 className="text-lg font-medium text-foreground mb-1">Search the entire system</h2>
+      <h2 className="text-lg font-medium text-foreground mb-1">{t('searchResultsView.empty.title')}</h2>
       <p className="text-sm text-muted-foreground max-w-md mb-6">
-        Markets, traders, strategies, news, wallets, alerts, research — every entity is indexed
-        and ranked by relevance, recency, and liquidity.
+        {t('searchResultsView.empty.description')}
       </p>
       <div className="flex flex-wrap items-center gap-2 justify-center">
         {suggestions.map((s) => (
@@ -1449,19 +1469,20 @@ function EmptyState({ onPick }: { onPick: (q: string) => void }) {
 }
 
 function NoResults({ query, onRetry }: { query: string; onRetry: () => void }) {
+  const { t } = useTranslation()
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
       <div className="w-16 h-16 rounded-2xl bg-muted/40 flex items-center justify-center mb-4 border border-border/40">
         <Search className="w-7 h-7 text-muted-foreground" />
       </div>
-      <h2 className="text-lg font-medium text-foreground mb-1">No matches for "{query}"</h2>
+      <h2 className="text-lg font-medium text-foreground mb-1">{t('searchResultsView.noResults.title', { query })}</h2>
       <p className="text-sm text-muted-foreground max-w-md mb-4">
-        Try different keywords, fewer terms, or remove type filters. Search supports OR (
-        <code className="text-xs bg-muted px-1 rounded">btc | eth</code>) and exclusion (
+        {t('searchResultsView.noResults.descriptionPrefix')} (
+        <code className="text-xs bg-muted px-1 rounded">btc | eth</code>) {t('searchResultsView.noResults.descriptionMiddle')} (
         <code className="text-xs bg-muted px-1 rounded">trump -biden</code>).
       </p>
       <Button variant="secondary" size="sm" onClick={onRetry}>
-        <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry
+        <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> {t('searchResultsView.noResults.retry')}
       </Button>
     </div>
   )

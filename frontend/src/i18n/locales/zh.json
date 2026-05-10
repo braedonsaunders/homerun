@@ -3579,5 +3579,172 @@
       "hoursAgo": "{{n}} 小时前",
       "daysAgo": "{{n}} 天前"
     }
+  },
+  "cryptoMarketsPanel": {
+    "loading": "正在加载加密货币市场...",
+    "countdown": {
+      "resolving": "解析中",
+      "mins": "分",
+      "secs": "秒"
+    },
+    "oracle": {
+      "oracleSource": "预言机来源",
+      "priceToBeat": "目标价格",
+      "currentPrice": "当前价格",
+      "sourceView": "来源视图",
+      "waitingWindow": "等待窗口开始...",
+      "source": {
+        "chainlink": "chainlink (结算)",
+        "binanceDirect": "binance 直连 (ws)",
+        "binanceRelay": "binance 中继 (rtds)"
+      },
+      "delta": {
+        "binanceDirectVsChainlink": "binance 直连 - chainlink",
+        "binanceRelayVsChainlink": "binance 中继 - chainlink"
+      }
+    },
+    "card": {
+      "upOrDownTitle": "{{asset}} 涨或跌",
+      "strategySdkTooltip": "StrategySDK：{{sdk}}",
+      "sdkLabel": "SDK {{sdk}}",
+      "live": "实时",
+      "next": "下一个",
+      "expandTooltip": "展开此卡片",
+      "returnToGridTooltip": "返回网格",
+      "cycleView": "周期视图",
+      "cycleViewTooltip": "在预言机线上叠加 涨/跌 中间价和被跟踪钱包的交易标记",
+      "priceToBeatLabel": "目标价格",
+      "waitingForPrice": "等待价格数据...",
+      "up": "涨",
+      "down": "跌",
+      "combinedCost": "合并成本",
+      "spreadPct": "({{value}}% 价差)",
+      "upBidAsk": "涨买价：${{bid}} / 涨卖价：${{ask}}",
+      "bookSpread": "盘口价差：${{value}}",
+      "upcoming": "即将到来",
+      "expandedAria": "展开的加密市场：{{asset}} {{timeframe}}"
+    },
+    "stats": {
+      "liquidity": "流动性",
+      "volume": "成交量",
+      "takerFee": "Taker 手续费",
+      "lastTrade": "最近成交"
+    },
+    "timeframe": {
+      "all": "全部"
+    },
+    "header": {
+      "settings": "设置",
+      "markets": "市场",
+      "liveCount": "{{n}} 个实时",
+      "seriesLiquidity": "系列流动性",
+      "series24hVol": "系列 24 小时成交量",
+      "seriesCount": "{{n}} 个系列",
+      "avgSpread": "平均价差",
+      "mktsCount": "{{n}} 个市场",
+      "takerFee": "Taker 手续费",
+      "maxPct": "最高 {{value}}%"
+    },
+    "wsStatus": {
+      "paused": "更新已暂停",
+      "live": "WebSocket 实时",
+      "connected": "WebSocket 已连接",
+      "polling": "轮询 2 秒"
+    },
+    "empty": {
+      "allTitle": "未找到可执行的加密机会",
+      "timeframeTitle": "在此时间段未找到加密机会",
+      "allDescription": "请等待新窗口或在设置中验证系列 ID",
+      "timeframeDescription": "尝试切换时间段筛选或等待新窗口"
+    }
+  },
+  "searchResultsView": {
+    "back": "返回",
+    "globalSearch": "全局搜索",
+    "searchPlaceholder": "搜索市场、交易者、策略、新闻、钱包 — 任何内容…",
+    "clear": "清除",
+    "sortLabel": "排序",
+    "allFilter": "全部",
+    "resultFor": "条结果",
+    "resultsFor": "条结果",
+    "searching": "搜索中…",
+    "startTyping": "开始输入以搜索。",
+    "sort": {
+      "relevance": "相关性",
+      "mostRecent": "最近",
+      "mostLiquid": "流动性最高"
+    },
+    "type": {
+      "market": { "label": "市场", "plural": "市场" },
+      "event": { "label": "事件", "plural": "事件" },
+      "category": { "label": "分类", "plural": "分类" },
+      "opportunity": { "label": "机会", "plural": "机会" },
+      "strategy": { "label": "策略", "plural": "策略" },
+      "dataSource": { "label": "数据源", "plural": "数据源" },
+      "trader": { "label": "交易者", "plural": "交易者" },
+      "wallet": { "label": "钱包", "plural": "钱包" },
+      "news": { "label": "新闻", "plural": "新闻" },
+      "alert": { "label": "警报", "plural": "警报" },
+      "research": { "label": "研究", "plural": "研究" },
+      "fallback": { "label": "项目", "plural": "项目" }
+    },
+    "time": {
+      "justNow": "刚刚",
+      "minutesAgo": "{{n}} 分钟前",
+      "hoursAgo": "{{n}} 小时前",
+      "daysAgo": "{{n}} 天前",
+      "weeksAgo": "{{n}} 周前"
+    },
+    "market": {
+      "yes": "是",
+      "no": "否",
+      "liq": "流动",
+      "vol": "成交"
+    },
+    "opportunity": {
+      "roi": "ROI",
+      "risk": "风险",
+      "profitable": "盈利",
+      "loss": "亏损"
+    },
+    "event": {
+      "marketCount": "{{n}} 个市场",
+      "marketsCount": "{{n}} 个市场"
+    },
+    "category": {
+      "activeCount": "{{n}} 个活跃"
+    },
+    "trader": {
+      "status": {
+        "paused": "已暂停",
+        "live": "实时",
+        "off": "关闭"
+      }
+    },
+    "wallet": {
+      "flagged": "已标记",
+      "trades": "交易",
+      "win": "胜率",
+      "pnl": "盈亏"
+    },
+    "strategy": {
+      "system": "系统"
+    },
+    "dataSource": {
+      "disabled": "已禁用"
+    },
+    "alert": {
+      "resolved": "已解决"
+    },
+    "empty": {
+      "title": "搜索整个系统",
+      "description": "市场、交易者、策略、新闻、钱包、警报、研究 — 每个实体都被索引并按相关性、时效性和流动性排序。"
+    },
+    "noResults": {
+      "title": "没有匹配 \"{{query}}\" 的结果",
+      "descriptionPrefix": "尝试不同的关键词、更少的词或移除类型筛选。搜索支持 OR",
+      "descriptionMiddle": "和排除",
+      "retry": "重试"
+    }
   }
 }

@@ -3579,5 +3579,172 @@
       "hoursAgo": "{{n}}시간 전",
       "daysAgo": "{{n}}일 전"
     }
+  },
+  "cryptoMarketsPanel": {
+    "loading": "암호화폐 마켓 로딩 중...",
+    "countdown": {
+      "resolving": "해결 중",
+      "mins": "분",
+      "secs": "초"
+    },
+    "oracle": {
+      "oracleSource": "오라클 소스",
+      "priceToBeat": "목표 가격",
+      "currentPrice": "현재 가격",
+      "sourceView": "소스 뷰",
+      "waitingWindow": "윈도우 시작 대기 중...",
+      "source": {
+        "chainlink": "chainlink (해결)",
+        "binanceDirect": "binance 직접 (ws)",
+        "binanceRelay": "binance 릴레이 (rtds)"
+      },
+      "delta": {
+        "binanceDirectVsChainlink": "binance 직접 - chainlink",
+        "binanceRelayVsChainlink": "binance 릴레이 - chainlink"
+      }
+    },
+    "card": {
+      "upOrDownTitle": "{{asset}} 상승 또는 하락",
+      "strategySdkTooltip": "StrategySDK: {{sdk}}",
+      "sdkLabel": "SDK {{sdk}}",
+      "live": "라이브",
+      "next": "다음",
+      "expandTooltip": "이 카드 확장",
+      "returnToGridTooltip": "그리드로 돌아가기",
+      "cycleView": "사이클 뷰",
+      "cycleViewTooltip": "오라클 라인에 UP/DOWN 미드와 추적된 지갑 거래 마커를 오버레이",
+      "priceToBeatLabel": "목표 가격",
+      "waitingForPrice": "가격 데이터 대기 중...",
+      "up": "상승",
+      "down": "하락",
+      "combinedCost": "총 비용",
+      "spreadPct": "({{value}}% 스프레드)",
+      "upBidAsk": "상승 매수: ${{bid}} / 상승 매도: ${{ask}}",
+      "bookSpread": "호가 스프레드: ${{value}}",
+      "upcoming": "예정",
+      "expandedAria": "확장된 암호화 마켓: {{asset}} {{timeframe}}"
+    },
+    "stats": {
+      "liquidity": "유동성",
+      "volume": "거래량",
+      "takerFee": "Taker 수수료",
+      "lastTrade": "최근 거래"
+    },
+    "timeframe": {
+      "all": "전체"
+    },
+    "header": {
+      "settings": "설정",
+      "markets": "마켓",
+      "liveCount": "{{n}}개 라이브",
+      "seriesLiquidity": "시리즈 유동성",
+      "series24hVol": "시리즈 24시간 거래량",
+      "seriesCount": "{{n}}개 시리즈",
+      "avgSpread": "평균 스프레드",
+      "mktsCount": "{{n}}개 마켓",
+      "takerFee": "Taker 수수료",
+      "maxPct": "최대 {{value}}%"
+    },
+    "wsStatus": {
+      "paused": "업데이트 일시정지",
+      "live": "WebSocket 라이브",
+      "connected": "WebSocket 연결됨",
+      "polling": "폴링 2초"
+    },
+    "empty": {
+      "allTitle": "실행 가능한 암호화폐 기회가 없습니다",
+      "timeframeTitle": "이 기간에 암호화폐 기회가 없습니다",
+      "allDescription": "새 윈도우를 기다리거나 설정에서 시리즈 ID를 확인하세요",
+      "timeframeDescription": "기간 필터를 변경하거나 새 윈도우를 기다리세요"
+    }
+  },
+  "searchResultsView": {
+    "back": "뒤로",
+    "globalSearch": "전체 검색",
+    "searchPlaceholder": "마켓, 트레이더, 전략, 뉴스, 지갑 — 무엇이든 검색…",
+    "clear": "지우기",
+    "sortLabel": "정렬",
+    "allFilter": "전체",
+    "resultFor": "개 결과",
+    "resultsFor": "개 결과",
+    "searching": "검색 중…",
+    "startTyping": "검색을 시작하려면 입력하세요.",
+    "sort": {
+      "relevance": "관련성",
+      "mostRecent": "최신순",
+      "mostLiquid": "유동성 높은 순"
+    },
+    "type": {
+      "market": { "label": "마켓", "plural": "마켓" },
+      "event": { "label": "이벤트", "plural": "이벤트" },
+      "category": { "label": "카테고리", "plural": "카테고리" },
+      "opportunity": { "label": "기회", "plural": "기회" },
+      "strategy": { "label": "전략", "plural": "전략" },
+      "dataSource": { "label": "데이터 소스", "plural": "데이터 소스" },
+      "trader": { "label": "트레이더", "plural": "트레이더" },
+      "wallet": { "label": "지갑", "plural": "지갑" },
+      "news": { "label": "뉴스", "plural": "뉴스" },
+      "alert": { "label": "알림", "plural": "알림" },
+      "research": { "label": "리서치", "plural": "리서치" },
+      "fallback": { "label": "항목", "plural": "항목" }
+    },
+    "time": {
+      "justNow": "방금 전",
+      "minutesAgo": "{{n}}분 전",
+      "hoursAgo": "{{n}}시간 전",
+      "daysAgo": "{{n}}일 전",
+      "weeksAgo": "{{n}}주 전"
+    },
+    "market": {
+      "yes": "YES",
+      "no": "NO",
+      "liq": "유동",
+      "vol": "거래량"
+    },
+    "opportunity": {
+      "roi": "ROI",
+      "risk": "위험",
+      "profitable": "수익",
+      "loss": "손실"
+    },
+    "event": {
+      "marketCount": "{{n}}개 마켓",
+      "marketsCount": "{{n}}개 마켓"
+    },
+    "category": {
+      "activeCount": "{{n}}개 활성"
+    },
+    "trader": {
+      "status": {
+        "paused": "일시정지",
+        "live": "라이브",
+        "off": "꺼짐"
+      }
+    },
+    "wallet": {
+      "flagged": "플래그됨",
+      "trades": "거래",
+      "win": "승률",
+      "pnl": "손익"
+    },
+    "strategy": {
+      "system": "시스템"
+    },
+    "dataSource": {
+      "disabled": "비활성화됨"
+    },
+    "alert": {
+      "resolved": "해결됨"
+    },
+    "empty": {
+      "title": "전체 시스템 검색",
+      "description": "마켓, 트레이더, 전략, 뉴스, 지갑, 알림, 리서치 — 모든 엔티티가 인덱싱되고 관련성, 최신성, 유동성으로 순위가 매겨집니다."
+    },
+    "noResults": {
+      "title": "\"{{query}}\"에 대한 일치 항목이 없습니다",
+      "descriptionPrefix": "다른 키워드, 더 적은 용어를 시도하거나 유형 필터를 제거하세요. 검색은 OR을 지원합니다",
+      "descriptionMiddle": "및 제외",
+      "retry": "재시도"
+    }
   }
 }

@@ -3579,5 +3579,172 @@
       "hoursAgo": "{{n}} ч назад",
       "daysAgo": "{{n}} д назад"
     }
+  },
+  "cryptoMarketsPanel": {
+    "loading": "Загрузка крипто рынков...",
+    "countdown": {
+      "resolving": "РАЗРЕШЕНИЕ",
+      "mins": "МИН",
+      "secs": "СЕК"
+    },
+    "oracle": {
+      "oracleSource": "источник оракула",
+      "priceToBeat": "цена для победы",
+      "currentPrice": "текущая цена",
+      "sourceView": "вид по источнику",
+      "waitingWindow": "ожидание начала окна...",
+      "source": {
+        "chainlink": "chainlink (разрешение)",
+        "binanceDirect": "binance прямой (ws)",
+        "binanceRelay": "binance ретранслятор (rtds)"
+      },
+      "delta": {
+        "binanceDirectVsChainlink": "binance прямой - chainlink",
+        "binanceRelayVsChainlink": "binance ретранслятор - chainlink"
+      }
+    },
+    "card": {
+      "upOrDownTitle": "{{asset}} Вверх или Вниз",
+      "strategySdkTooltip": "StrategySDK: {{sdk}}",
+      "sdkLabel": "SDK {{sdk}}",
+      "live": "ЖИВОЙ",
+      "next": "СЛЕДУЮЩИЙ",
+      "expandTooltip": "Развернуть эту карточку",
+      "returnToGridTooltip": "Вернуться к сетке",
+      "cycleView": "вид цикла",
+      "cycleViewTooltip": "Наложить средние ВВЕРХ/ВНИЗ и маркеры сделок отслеживаемых кошельков на линию оракула",
+      "priceToBeatLabel": "Цена для победы",
+      "waitingForPrice": "Ожидание данных о цене...",
+      "up": "Вверх",
+      "down": "Вниз",
+      "combinedCost": "Совокупная стоимость",
+      "spreadPct": "({{value}}% спред)",
+      "upBidAsk": "Вверх Бид: ${{bid}} / Вверх Аск: ${{ask}}",
+      "bookSpread": "Спред стакана: ${{value}}",
+      "upcoming": "Предстоящие",
+      "expandedAria": "Развернутый крипто рынок: {{asset}} {{timeframe}}"
+    },
+    "stats": {
+      "liquidity": "Ликвидность",
+      "volume": "Объём",
+      "takerFee": "Комиссия Taker",
+      "lastTrade": "Последняя сделка"
+    },
+    "timeframe": {
+      "all": "Все"
+    },
+    "header": {
+      "settings": "Настройки",
+      "markets": "Рынки",
+      "liveCount": "{{n}} в эфире",
+      "seriesLiquidity": "Ликвидность серии",
+      "series24hVol": "Серии 24ч объём",
+      "seriesCount": "{{n}} серий",
+      "avgSpread": "Сред. спред",
+      "mktsCount": "{{n}} ркт",
+      "takerFee": "Комиссия Taker",
+      "maxPct": "макс {{value}}%"
+    },
+    "wsStatus": {
+      "paused": "Обновления приостановлены",
+      "live": "WebSocket в эфире",
+      "connected": "WebSocket подключён",
+      "polling": "Опрос 2с"
+    },
+    "empty": {
+      "allTitle": "Исполнимые крипто возможности не найдены",
+      "timeframeTitle": "Крипто возможности для этого периода не найдены",
+      "allDescription": "Подождите новых окон или проверьте ID серий в Настройках",
+      "timeframeDescription": "Попробуйте сменить фильтры периода или дождитесь новых окон"
+    }
+  },
+  "searchResultsView": {
+    "back": "Назад",
+    "globalSearch": "Глобальный поиск",
+    "searchPlaceholder": "Поиск рынков, трейдеров, стратегий, новостей, кошельков — что угодно…",
+    "clear": "Очистить",
+    "sortLabel": "Сортировка",
+    "allFilter": "Все",
+    "resultFor": "результат по запросу",
+    "resultsFor": "результатов по запросу",
+    "searching": "Поиск…",
+    "startTyping": "Начните вводить для поиска.",
+    "sort": {
+      "relevance": "Релевантность",
+      "mostRecent": "Самые свежие",
+      "mostLiquid": "Самые ликвидные"
+    },
+    "type": {
+      "market": { "label": "Рынок", "plural": "Рынки" },
+      "event": { "label": "Событие", "plural": "События" },
+      "category": { "label": "Категория", "plural": "Категории" },
+      "opportunity": { "label": "Возможность", "plural": "Возможности" },
+      "strategy": { "label": "Стратегия", "plural": "Стратегии" },
+      "dataSource": { "label": "Источник данных", "plural": "Источники данных" },
+      "trader": { "label": "Трейдер", "plural": "Трейдеры" },
+      "wallet": { "label": "Кошелёк", "plural": "Кошельки" },
+      "news": { "label": "Новость", "plural": "Новости" },
+      "alert": { "label": "Оповещение", "plural": "Оповещения" },
+      "research": { "label": "Исследование", "plural": "Исследования" },
+      "fallback": { "label": "Элемент", "plural": "Элементы" }
+    },
+    "time": {
+      "justNow": "только что",
+      "minutesAgo": "{{n}} мин назад",
+      "hoursAgo": "{{n}} ч назад",
+      "daysAgo": "{{n}} д назад",
+      "weeksAgo": "{{n}} нед назад"
+    },
+    "market": {
+      "yes": "ДА",
+      "no": "НЕТ",
+      "liq": "ЛИК",
+      "vol": "ОБЪ"
+    },
+    "opportunity": {
+      "roi": "ROI",
+      "risk": "Риск",
+      "profitable": "прибыль",
+      "loss": "убыток"
+    },
+    "event": {
+      "marketCount": "{{n}} рынок",
+      "marketsCount": "{{n}} рынков"
+    },
+    "category": {
+      "activeCount": "{{n}} активных"
+    },
+    "trader": {
+      "status": {
+        "paused": "приостановлен",
+        "live": "в эфире",
+        "off": "выключен"
+      }
+    },
+    "wallet": {
+      "flagged": "помечен",
+      "trades": "Сделки",
+      "win": "Победа",
+      "pnl": "П&У"
+    },
+    "strategy": {
+      "system": "система"
+    },
+    "dataSource": {
+      "disabled": "отключён"
+    },
+    "alert": {
+      "resolved": "решено"
+    },
+    "empty": {
+      "title": "Поиск по всей системе",
+      "description": "Рынки, трейдеры, стратегии, новости, кошельки, оповещения, исследования — каждая сущность индексируется и ранжируется по релевантности, свежести и ликвидности."
+    },
+    "noResults": {
+      "title": "Совпадений по \"{{query}}\" не найдено",
+      "descriptionPrefix": "Попробуйте другие ключевые слова, меньше терминов или удалите фильтры типов. Поиск поддерживает OR",
+      "descriptionMiddle": "и исключение",
+      "retry": "Повторить"
+    }
   }
 }

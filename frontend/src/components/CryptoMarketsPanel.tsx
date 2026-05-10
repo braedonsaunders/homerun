@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAtomValue } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import {
   TrendingUp,
   TrendingDown,
@@ -241,11 +242,11 @@ function normalizeOracleSourceKey(value: string | null | undefined): string {
   return raw
 }
 
-function oracleSourceLabel(value: string | null | undefined): string {
+function oracleSourceLabel(value: string | null | undefined, t: (k: string) => string): string {
   const key = normalizeOracleSourceKey(value)
-  if (key === 'chainlink') return 'chainlink (resolution)'
-  if (key === 'binance_direct') return 'binance direct (ws)'
-  if (key === 'binance') return 'binance relay (rtds)'
+  if (key === 'chainlink') return t('cryptoMarketsPanel.oracle.source.chainlink')
+  if (key === 'binance_direct') return t('cryptoMarketsPanel.oracle.source.binanceDirect')
+  if (key === 'binance') return t('cryptoMarketsPanel.oracle.source.binanceRelay')
   return key.replace(/_/g, ' ')
 }
 
@@ -259,6 +260,7 @@ function oracleSourceSortOrder(value: string): number {
 // ─── Countdown Timer ─────────────────────────────────────
 
 function LiveCountdown({ endTime }: { endTime: string | null }) {
+  const { t } = useTranslation()
   const [now, setNow] = useState(Date.now())
 
   useEffect(() => {
@@ -276,18 +278,18 @@ function LiveCountdown({ endTime }: { endTime: string | null }) {
 
   const urgency = totalSec <= 0 ? 'text-red-500' : min < 2 ? 'text-red-400 animate-pulse' : min < 5 ? 'text-yellow-400' : 'text-green-400'
 
-  if (totalSec <= 0) return <span className="text-red-500 font-bold font-data">RESOLVING</span>
+  if (totalSec <= 0) return <span className="text-red-500 font-bold font-data">{t('cryptoMarketsPanel.countdown.resolving')}</span>
 
   return (
     <div className={cn("flex items-center gap-2 font-data", urgency)}>
       <div className="flex items-baseline gap-0.5">
         <span className="text-2xl font-bold tabular-nums">{String(min).padStart(2, '0')}</span>
-        <span className="text-xs text-muted-foreground">MINS</span>
+        <span className="text-xs text-muted-foreground">{t('cryptoMarketsPanel.countdown.mins')}</span>
       </div>
       <span className="text-lg font-bold text-muted-foreground/40">:</span>
       <div className="flex items-baseline gap-0.5">
         <span className="text-2xl font-bold tabular-nums">{String(sec).padStart(2, '0')}</span>
-        <span className="text-xs text-muted-foreground">SECS</span>
+        <span className="text-xs text-muted-foreground">{t('cryptoMarketsPanel.countdown.secs')}</span>
       </div>
     </div>
   )
@@ -316,17 +318,18 @@ function OraclePriceDisplay({
   >
   nowMs: number
 }) {
+  const { t } = useTranslation()
   if (price === null) return null
 
   const delta = (priceToBeat !== null && priceToBeat !== undefined) ? price - priceToBeat : null
   const isUp = delta !== null && delta >= 0
-  const sourceLabel = source ? oracleSourceLabel(source) : 'chainlink (resolution)'
+  const sourceLabel = source ? oracleSourceLabel(source, t) : t('cryptoMarketsPanel.oracle.source.chainlink')
 
   const sourceRows = Object.values(sourceMap || {})
     .filter((row) => row && typeof row.price === 'number')
     .map((row) => ({
       key: normalizeOracleSourceKey(row.source),
-      label: oracleSourceLabel(row.source),
+      label: oracleSourceLabel(row.source, t),
       price: row.price as number,
       age: typeof row.updated_at_ms === 'number' && Number.isFinite(row.updated_at_ms)
         ? Math.max(0, (nowMs - row.updated_at_ms) / 1000)
@@ -343,29 +346,29 @@ function OraclePriceDisplay({
   const binanceRelay = sourceRows.find((row) => row.key === 'binance')
   const sourceDeltas = chainlink
     ? [
-      ...(binanceDirect ? [{ label: 'binance direct - chainlink', value: binanceDirect.price - chainlink.price }] : []),
-      ...(binanceRelay ? [{ label: 'binance relay - chainlink', value: binanceRelay.price - chainlink.price }] : []),
+      ...(binanceDirect ? [{ label: t('cryptoMarketsPanel.oracle.delta.binanceDirectVsChainlink'), value: binanceDirect.price - chainlink.price }] : []),
+      ...(binanceRelay ? [{ label: t('cryptoMarketsPanel.oracle.delta.binanceRelayVsChainlink'), value: binanceRelay.price - chainlink.price }] : []),
     ]
     : []
 
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">oracle source</span>
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.oracle.oracleSource')}</span>
         <span className="text-[10px] font-medium text-muted-foreground">{sourceLabel}</span>
       </div>
       {/* Price to beat */}
       <div className="flex items-center justify-between">
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">price to beat</span>
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.oracle.priceToBeat')}</span>
         {priceToBeat !== null && priceToBeat !== undefined ? (
           <span className="text-sm font-bold font-data text-muted-foreground">{formatPrice(priceToBeat, 2)}</span>
         ) : (
-          <span className="text-[10px] text-muted-foreground/50 italic">waiting for window start...</span>
+          <span className="text-[10px] text-muted-foreground/50 italic">{t('cryptoMarketsPanel.oracle.waitingWindow')}</span>
         )}
       </div>
       {/* Current oracle price */}
       <div className="flex items-center justify-between">
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">current price</span>
+        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.oracle.currentPrice')}</span>
         <div className="flex items-center gap-2">
           <span className={cn("text-lg font-bold font-data tabular-nums", delta !== null ? (isUp ? 'text-green-400' : 'text-red-400') : 'text-foreground')}>
             {formatPrice(price, 2)}
@@ -381,7 +384,7 @@ function OraclePriceDisplay({
 
       {sourceRows.length > 0 && (
         <div className="space-y-1 pt-1 border-t border-border/30">
-          <div className="text-[10px] text-muted-foreground uppercase tracking-wider pt-1.5">source view</div>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-wider pt-1.5">{t('cryptoMarketsPanel.oracle.sourceView')}</div>
           {sourceRows.map((row) => (
             <div key={row.label} className="flex items-center justify-between gap-2">
               <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wide">{row.label}</span>
@@ -420,6 +423,7 @@ export function CryptoMarketCard({
   isModalView?: boolean
   onCloseModal?: () => void
 }) {
+  const { t } = useTranslation()
   const lastLivelineDataRef = useRef<LivelinePoint[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [chartMode, setChartMode] = useState<'line' | 'candle'>('line')
@@ -595,7 +599,7 @@ export function CryptoMarketCard({
           <div className="flex min-w-0 items-start gap-3">
             <img src={ASSET_ICONS[asset]} alt={asset} className="w-8 h-8 rounded-full shrink-0" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
             <div className="min-w-0">
-              <h3 className="text-base font-semibold text-foreground truncate">{asset} Up or Down</h3>
+              <h3 className="text-base font-semibold text-foreground truncate">{t('cryptoMarketsPanel.card.upOrDownTitle', { asset })}</h3>
               <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
                 <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-muted-foreground border-muted-foreground/20">
                   {market.timeframe.toUpperCase()}
@@ -603,17 +607,17 @@ export function CryptoMarketCard({
                 <Badge
                   variant="outline"
                   className="max-w-[170px] truncate text-[9px] px-1.5 py-0 font-mono border-border/50 bg-muted/25 text-muted-foreground"
-                  title={`StrategySDK: ${strategySdk}`}
+                  title={t('cryptoMarketsPanel.card.strategySdkTooltip', { sdk: strategySdk })}
                 >
-                  SDK {strategySdk}
+                  {t('cryptoMarketsPanel.card.sdkLabel', { sdk: strategySdk })}
                 </Badge>
                 {market.is_live ? (
                   <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-bold text-green-400 bg-green-500/15 border-green-500/25">
                     <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse mr-1" />
-                    LIVE
+                    {t('cryptoMarketsPanel.card.live')}
                   </Badge>
                 ) : (
-                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-yellow-400 bg-yellow-500/10 border-yellow-500/20">NEXT</Badge>
+                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-yellow-400 bg-yellow-500/10 border-yellow-500/20">{t('cryptoMarketsPanel.card.next')}</Badge>
                 )}
               </div>
               <p className="text-[11px] text-muted-foreground font-data truncate">{timeWindow}</p>
@@ -625,7 +629,7 @@ export function CryptoMarketCard({
                 type="button"
                 onClick={() => setModalOpen(true)}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/50 bg-background/40 text-muted-foreground transition-colors hover:border-border hover:bg-background/70 hover:text-foreground"
-                title="Expand this card"
+                title={t('cryptoMarketsPanel.card.expandTooltip')}
               >
                 <Maximize2 className="w-2.5 h-2.5" />
               </button>
@@ -634,7 +638,7 @@ export function CryptoMarketCard({
                 type="button"
                 onClick={() => onCloseModal?.()}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/50 bg-background/40 text-muted-foreground transition-colors hover:border-border hover:bg-background/70 hover:text-foreground"
-                title="Return to grid"
+                title={t('cryptoMarketsPanel.card.returnToGridTooltip')}
               >
                 <Minimize2 className="w-2.5 h-2.5" />
               </button>
@@ -669,9 +673,9 @@ export function CryptoMarketCard({
                   ? 'border-blue-500/40 bg-blue-500/10 text-blue-400'
                   : 'border-border/40 bg-background/40 text-muted-foreground hover:text-foreground',
               )}
-              title="Overlay UP/DOWN mids and tracked-wallet trade markers on the oracle line"
+              title={t('cryptoMarketsPanel.card.cycleViewTooltip')}
             >
-              {cycleChartEnabled ? '✓ ' : ''}cycle view
+              {cycleChartEnabled ? '✓ ' : ''}{t('cryptoMarketsPanel.card.cycleView')}
             </button>
           </div>
         )}
@@ -712,7 +716,7 @@ export function CryptoMarketCard({
                 padding={{ top: 8, right: 80, bottom: 24, left: 14 }}
                 tooltipOutline={isDarkTheme}
                 formatValue={(value) => formatPrice(value, 2)}
-                referenceLine={market.price_to_beat !== null ? { value: market.price_to_beat, label: 'Price to beat' } : undefined}
+                referenceLine={market.price_to_beat !== null ? { value: market.price_to_beat, label: t('cryptoMarketsPanel.card.priceToBeatLabel') } : undefined}
                 mode={chartMode}
                 candles={candleData}
                 candleWidth={candleIntervalSecs}
@@ -722,7 +726,7 @@ export function CryptoMarketCard({
               />
             ) : (
               <div className="flex items-center justify-center h-full text-[10px] text-muted-foreground/40">
-                Waiting for price data...
+                {t('cryptoMarketsPanel.card.waitingForPrice')}
               </div>
             )}
           </div>
@@ -749,7 +753,7 @@ export function CryptoMarketCard({
               />
             ) : (
               <div className="flex items-center justify-center h-full text-[10px] text-muted-foreground/40">
-                Waiting for price data...
+                {t('cryptoMarketsPanel.card.waitingForPrice')}
               </div>
             )}
           </div>
@@ -769,7 +773,7 @@ export function CryptoMarketCard({
               : 'bg-muted/20 border-border/30',
           )}>
             <div className="text-[10px] text-green-400 uppercase tracking-wider font-medium mb-1">
-              <TrendingUp className="w-3 h-3 inline mr-1" />Up
+              <TrendingUp className="w-3 h-3 inline mr-1" />{t('cryptoMarketsPanel.card.up')}
             </div>
             <div className="text-lg font-bold font-data tabular-nums text-green-400">
               {upPrice !== null ? `${(upPrice * 100).toFixed(0)}%` : '--'}
@@ -785,7 +789,7 @@ export function CryptoMarketCard({
               : 'bg-muted/20 border-border/30',
           )}>
             <div className="text-[10px] text-red-400 uppercase tracking-wider font-medium mb-1">
-              <TrendingDown className="w-3 h-3 inline mr-1" />Down
+              <TrendingDown className="w-3 h-3 inline mr-1" />{t('cryptoMarketsPanel.card.down')}
             </div>
             <div className="text-lg font-bold font-data tabular-nums text-red-400">
               {downPrice !== null ? `${(downPrice * 100).toFixed(0)}%` : '--'}
@@ -799,22 +803,22 @@ export function CryptoMarketCard({
         {/* Spread / Combined info */}
         <div className="space-y-1">
           <div className="flex items-center justify-between text-[10px]">
-            <span className="text-muted-foreground">Combined Cost</span>
+            <span className="text-muted-foreground">{t('cryptoMarketsPanel.card.combinedCost')}</span>
             <div className="flex items-center gap-2">
               <span className="font-data font-bold text-foreground">
                 {combined !== null ? `$${combined.toFixed(3)}` : '--'}
               </span>
               {spread !== null && spread > 0.001 && (
                 <span className={cn("font-data font-bold text-green-400")}>
-                  ({(spread * 100).toFixed(1)}% spread)
+                  {t('cryptoMarketsPanel.card.spreadPct', { value: (spread * 100).toFixed(1) })}
                 </span>
               )}
             </div>
           </div>
           {market.best_bid !== null && market.best_ask !== null && (
             <div className="flex justify-between text-[9px] text-muted-foreground/60 font-data">
-              <span>Up Bid: ${market.best_bid.toFixed(2)} / Up Ask: ${market.best_ask.toFixed(2)}</span>
-              <span>Book spread: ${(market.best_ask - market.best_bid).toFixed(2)}</span>
+              <span>{t('cryptoMarketsPanel.card.upBidAsk', { bid: market.best_bid.toFixed(2), ask: market.best_ask.toFixed(2) })}</span>
+              <span>{t('cryptoMarketsPanel.card.bookSpread', { value: (market.best_ask - market.best_bid).toFixed(2) })}</span>
             </div>
           )}
         </div>
@@ -822,15 +826,15 @@ export function CryptoMarketCard({
         {/* Stats */}
         <div className="grid grid-cols-4 gap-2 text-center">
           <div>
-            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Liquidity</div>
+            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.stats.liquidity')}</div>
             <div className="text-xs font-bold font-data text-foreground">{formatUsd(market.liquidity)}</div>
           </div>
           <div>
-            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Volume</div>
+            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.stats.volume')}</div>
             <div className="text-xs font-bold font-data text-foreground">{formatUsd(market.volume)}</div>
           </div>
           <div>
-            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Taker Fee</div>
+            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.stats.takerFee')}</div>
             <div className={cn(
               "text-xs font-bold font-data",
               takerFeePct !== null && takerFeePct > 0 ? 'text-orange-400' : 'text-muted-foreground',
@@ -839,7 +843,7 @@ export function CryptoMarketCard({
             </div>
           </div>
           <div>
-            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Last Trade</div>
+            <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.stats.lastTrade')}</div>
             <div className="text-xs font-bold font-data text-foreground">{market.last_trade_price !== null ? `$${market.last_trade_price.toFixed(2)}` : '--'}</div>
           </div>
         </div>
@@ -847,7 +851,7 @@ export function CryptoMarketCard({
         {/* Upcoming markets timeline */}
         {market.upcoming_markets && market.upcoming_markets.length > 0 && (
           <div className="space-y-1 pt-1 border-t border-border/20">
-            <div className="text-[9px] text-muted-foreground uppercase tracking-wider font-medium">Upcoming</div>
+            <div className="text-[9px] text-muted-foreground uppercase tracking-wider font-medium">{t('cryptoMarketsPanel.card.upcoming')}</div>
             {market.upcoming_markets.map((um, i) => {
               const umTime = um.event_title?.match(/(\d{1,2}:\d{2}[AP]M)-(\d{1,2}:\d{2}[AP]M)/)?.[0] || ''
               return (
@@ -896,7 +900,7 @@ export function CryptoMarketCard({
                 className="relative z-10"
                 role="dialog"
                 aria-modal="true"
-                aria-label={`Expanded crypto market: ${asset} ${market.timeframe}`}
+                aria-label={t('cryptoMarketsPanel.card.expandedAria', { asset, timeframe: market.timeframe })}
                 initial={{ scale: 0.94, opacity: 0, y: 22 }}
                 animate={{ scale: 1, opacity: 1, y: 0 }}
                 exit={{ scale: 0.97, opacity: 0, y: 14 }}
@@ -930,6 +934,7 @@ export default function CryptoMarketsPanel({
   onOpenCryptoSettings,
   showSettingsButton = true,
 }: Props) {
+  const { t } = useTranslation()
   const panelRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
   const themeMode = useAtomValue(themeAtom)
@@ -1193,21 +1198,21 @@ export default function CryptoMarketsPanel({
 
   const wsStatus = !isViewerActive
     ? {
-      label: 'Updates Paused',
+      label: t('cryptoMarketsPanel.wsStatus.paused'),
       toneClass: 'text-muted-foreground border-border/50 bg-card/70',
     }
     : isConnected
       ? hasFreshWsMarkets
         ? {
-          label: 'WebSocket Live',
+          label: t('cryptoMarketsPanel.wsStatus.live'),
           toneClass: 'text-green-400 border-green-500/30 bg-green-500/10',
         }
         : {
-          label: 'WebSocket Connected',
+          label: t('cryptoMarketsPanel.wsStatus.connected'),
           toneClass: 'text-blue-400 border-blue-500/30 bg-blue-500/10',
         }
       : {
-        label: 'Polling 2s',
+        label: t('cryptoMarketsPanel.wsStatus.polling'),
         toneClass: 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10',
       }
 
@@ -1218,7 +1223,7 @@ export default function CryptoMarketsPanel({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center rounded-lg border border-border/50 overflow-hidden p-0.5 bg-card/70">
               {([
-                { label: 'All', value: 'all', count: allMarkets.length },
+                { label: t('cryptoMarketsPanel.timeframe.all'), value: 'all', count: allMarkets.length },
                 { label: '5m', value: '5m', count: timeframeCounts['5m'] },
                 { label: '15m', value: '15m', count: timeframeCounts['15m'] },
                 { label: '1h', value: '1h', count: timeframeCounts['1h'] },
@@ -1243,7 +1248,7 @@ export default function CryptoMarketsPanel({
             {showSettingsButton && onOpenCryptoSettings && (
               <Button size="sm" variant="outline" onClick={onOpenCryptoSettings} className="h-7 px-2.5 text-xs gap-1.5">
                 <Settings className="w-3.5 h-3.5" />
-                Settings
+                {t('cryptoMarketsPanel.header.settings')}
               </Button>
             )}
             <Button type="button" size="sm" variant="outline" className={cn("h-7 px-2.5 text-xs", wsStatus.toneClass)}>
@@ -1255,40 +1260,40 @@ export default function CryptoMarketsPanel({
         <div className="mt-2 border-t border-border/30 pt-2">
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 md:grid-cols-5">
             <div className="min-w-0">
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Markets</div>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.header.markets')}</div>
               <div className="text-sm font-bold font-data leading-tight text-foreground">
                 {stats.total}
-                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.live} live</span>
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{t('cryptoMarketsPanel.header.liveCount', { n: stats.live })}</span>
               </div>
             </div>
             <div className="min-w-0">
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Series Liquidity</div>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.header.seriesLiquidity')}</div>
               <div className="text-sm font-bold font-data leading-tight text-foreground">
                 {formatUsd(stats.totalLiquidity)}
-                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.seriesCount} series</span>
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{t('cryptoMarketsPanel.header.seriesCount', { n: stats.seriesCount })}</span>
               </div>
             </div>
             <div className="min-w-0">
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Series 24h Vol</div>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.header.series24hVol')}</div>
               <div className="text-sm font-bold font-data leading-tight text-foreground">
                 {formatUsd(stats.totalVolume24h)}
-                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.seriesCount} series</span>
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{t('cryptoMarketsPanel.header.seriesCount', { n: stats.seriesCount })}</span>
               </div>
             </div>
             <div className="min-w-0">
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Avg Spread</div>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.header.avgSpread')}</div>
               <div className={cn("text-sm font-bold font-data leading-tight", stats.avgSpread > 0.005 ? 'text-green-400' : 'text-muted-foreground')}>
                 {(stats.avgSpread * 100).toFixed(2)}%
-                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{stats.spreadSampleCount} mkts</span>
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">{t('cryptoMarketsPanel.header.mktsCount', { n: stats.spreadSampleCount })}</span>
               </div>
             </div>
             <div className="min-w-0">
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">Taker Fee</div>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('cryptoMarketsPanel.header.takerFee')}</div>
               <div className={cn("text-sm font-bold font-data leading-tight", stats.avgTakerFeePct !== null && stats.avgTakerFeePct > 0 ? 'text-orange-400' : 'text-muted-foreground')}>
                 {stats.avgTakerFeePct !== null ? `${(stats.avgTakerFeePct * 100).toFixed(2)}%` : '--'}
                 {stats.maxTakerFeePct !== null && (
                   <span className="ml-1 text-[10px] font-medium text-muted-foreground">
-                    max {(stats.maxTakerFeePct * 100).toFixed(2)}%
+                    {t('cryptoMarketsPanel.header.maxPct', { value: (stats.maxTakerFeePct * 100).toFixed(2) })}
                   </span>
                 )}
               </div>
@@ -1301,19 +1306,19 @@ export default function CryptoMarketsPanel({
       {isLoading && !hasFreshWsMarkets ? (
         <div className="flex items-center justify-center py-16">
           <RefreshCw className="w-8 h-8 animate-spin text-orange-400" />
-          <span className="ml-3 text-muted-foreground">Loading crypto markets...</span>
+          <span className="ml-3 text-muted-foreground">{t('cryptoMarketsPanel.loading')}</span>
         </div>
       ) : filteredMarkets.length === 0 ? (
         <OpportunityEmptyState
           title={
             timeframeFilter === 'all'
-              ? 'No executable crypto opportunities found'
-              : 'No crypto opportunities found for this timeframe'
+              ? t('cryptoMarketsPanel.empty.allTitle')
+              : t('cryptoMarketsPanel.empty.timeframeTitle')
           }
           description={
             timeframeFilter === 'all'
-              ? 'Try waiting for new windows or verify series IDs in Settings'
-              : 'Try switching timeframe filters or wait for new windows'
+              ? t('cryptoMarketsPanel.empty.allDescription')
+              : t('cryptoMarketsPanel.empty.timeframeDescription')
           }
         />
       ) : (

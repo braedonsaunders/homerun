@@ -3579,5 +3579,172 @@
       "hoursAgo": "vor {{n}}h",
       "daysAgo": "vor {{n}}d"
     }
+  },
+  "cryptoMarketsPanel": {
+    "loading": "Krypto-Märkte werden geladen...",
+    "countdown": {
+      "resolving": "WIRD AUFGELÖST",
+      "mins": "MIN",
+      "secs": "SEK"
+    },
+    "oracle": {
+      "oracleSource": "Oracle-Quelle",
+      "priceToBeat": "zu schlagender Preis",
+      "currentPrice": "aktueller Preis",
+      "sourceView": "Quellenansicht",
+      "waitingWindow": "warte auf Fensterstart...",
+      "source": {
+        "chainlink": "chainlink (Auflösung)",
+        "binanceDirect": "binance direkt (ws)",
+        "binanceRelay": "binance Relay (rtds)"
+      },
+      "delta": {
+        "binanceDirectVsChainlink": "binance direkt - chainlink",
+        "binanceRelayVsChainlink": "binance Relay - chainlink"
+      }
+    },
+    "card": {
+      "upOrDownTitle": "{{asset}} Hoch oder Runter",
+      "strategySdkTooltip": "StrategySDK: {{sdk}}",
+      "sdkLabel": "SDK {{sdk}}",
+      "live": "LIVE",
+      "next": "NÄCHSTE",
+      "expandTooltip": "Diese Karte erweitern",
+      "returnToGridTooltip": "Zur Raster zurückkehren",
+      "cycleView": "Zyklus-Ansicht",
+      "cycleViewTooltip": "HOCH/RUNTER-Mittelwerte und Trade-Marker verfolgter Wallets über die Oracle-Linie überlagern",
+      "priceToBeatLabel": "Zu schlagender Preis",
+      "waitingForPrice": "Warte auf Preisdaten...",
+      "up": "Hoch",
+      "down": "Runter",
+      "combinedCost": "Gesamtkosten",
+      "spreadPct": "({{value}}% Spread)",
+      "upBidAsk": "Hoch Bid: ${{bid}} / Hoch Ask: ${{ask}}",
+      "bookSpread": "Orderbuch-Spread: ${{value}}",
+      "upcoming": "Bevorstehend",
+      "expandedAria": "Erweiterter Krypto-Markt: {{asset}} {{timeframe}}"
+    },
+    "stats": {
+      "liquidity": "Liquidität",
+      "volume": "Volumen",
+      "takerFee": "Taker-Gebühr",
+      "lastTrade": "Letzter Trade"
+    },
+    "timeframe": {
+      "all": "Alle"
+    },
+    "header": {
+      "settings": "Einstellungen",
+      "markets": "Märkte",
+      "liveCount": "{{n}} live",
+      "seriesLiquidity": "Serien-Liquidität",
+      "series24hVol": "Serien 24h Vol",
+      "seriesCount": "{{n}} Serien",
+      "avgSpread": "Ø Spread",
+      "mktsCount": "{{n}} Mkte",
+      "takerFee": "Taker-Gebühr",
+      "maxPct": "max {{value}}%"
+    },
+    "wsStatus": {
+      "paused": "Updates Pausiert",
+      "live": "WebSocket Live",
+      "connected": "WebSocket Verbunden",
+      "polling": "Polling 2s"
+    },
+    "empty": {
+      "allTitle": "Keine ausführbaren Krypto-Möglichkeiten gefunden",
+      "timeframeTitle": "Keine Krypto-Möglichkeiten für diesen Zeitraum gefunden",
+      "allDescription": "Warten Sie auf neue Fenster oder überprüfen Sie Serien-IDs in Einstellungen",
+      "timeframeDescription": "Versuchen Sie, Zeitfilter zu wechseln oder warten Sie auf neue Fenster"
+    }
+  },
+  "searchResultsView": {
+    "back": "Zurück",
+    "globalSearch": "Globale Suche",
+    "searchPlaceholder": "Märkte, Trader, Strategien, Nachrichten, Wallets — alles durchsuchen…",
+    "clear": "Löschen",
+    "sortLabel": "Sortieren",
+    "allFilter": "Alle",
+    "resultFor": "Ergebnis für",
+    "resultsFor": "Ergebnisse für",
+    "searching": "Suche…",
+    "startTyping": "Zum Suchen tippen.",
+    "sort": {
+      "relevance": "Relevanz",
+      "mostRecent": "Neueste",
+      "mostLiquid": "Liquideste"
+    },
+    "type": {
+      "market": { "label": "Markt", "plural": "Märkte" },
+      "event": { "label": "Ereignis", "plural": "Ereignisse" },
+      "category": { "label": "Kategorie", "plural": "Kategorien" },
+      "opportunity": { "label": "Chance", "plural": "Chancen" },
+      "strategy": { "label": "Strategie", "plural": "Strategien" },
+      "dataSource": { "label": "Datenquelle", "plural": "Datenquellen" },
+      "trader": { "label": "Trader", "plural": "Trader" },
+      "wallet": { "label": "Wallet", "plural": "Wallets" },
+      "news": { "label": "Nachricht", "plural": "Nachrichten" },
+      "alert": { "label": "Warnung", "plural": "Warnungen" },
+      "research": { "label": "Recherche", "plural": "Recherchen" },
+      "fallback": { "label": "Element", "plural": "Elemente" }
+    },
+    "time": {
+      "justNow": "gerade eben",
+      "minutesAgo": "vor {{n}}m",
+      "hoursAgo": "vor {{n}}h",
+      "daysAgo": "vor {{n}}d",
+      "weeksAgo": "vor {{n}}W"
+    },
+    "market": {
+      "yes": "JA",
+      "no": "NEIN",
+      "liq": "LIQ",
+      "vol": "VOL"
+    },
+    "opportunity": {
+      "roi": "ROI",
+      "risk": "Risiko",
+      "profitable": "profitabel",
+      "loss": "Verlust"
+    },
+    "event": {
+      "marketCount": "{{n}} Markt",
+      "marketsCount": "{{n}} Märkte"
+    },
+    "category": {
+      "activeCount": "{{n}} aktiv"
+    },
+    "trader": {
+      "status": {
+        "paused": "pausiert",
+        "live": "live",
+        "off": "aus"
+      }
+    },
+    "wallet": {
+      "flagged": "markiert",
+      "trades": "Trades",
+      "win": "Gewinn",
+      "pnl": "G&V"
+    },
+    "strategy": {
+      "system": "System"
+    },
+    "dataSource": {
+      "disabled": "deaktiviert"
+    },
+    "alert": {
+      "resolved": "gelöst"
+    },
+    "empty": {
+      "title": "Das gesamte System durchsuchen",
+      "description": "Märkte, Trader, Strategien, Nachrichten, Wallets, Warnungen, Recherche — jede Entität wird indiziert und nach Relevanz, Aktualität und Liquidität geordnet."
+    },
+    "noResults": {
+      "title": "Keine Treffer für \"{{query}}\"",
+      "descriptionPrefix": "Versuchen Sie andere Stichwörter, weniger Begriffe oder entfernen Sie Typfilter. Die Suche unterstützt OR",
+      "descriptionMiddle": "und Ausschluss",
+      "retry": "Wiederholen"
+    }
   }
 }
