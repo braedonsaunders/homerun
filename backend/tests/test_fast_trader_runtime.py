@@ -1094,6 +1094,10 @@ async def test_fast_trader_precycle_hydrates_consumed_set_from_db(monkeypatch):
         Base, "fast_runtime_coldstart_hydrate"
     )
 
+    # Wipe hot-state snapshots so a sibling test's cursor write does
+    # not pre-empt the cold-start branch via the early-return at
+    # ``cursor_runtime_sequence is not None``.
+    hot_state._snapshots.clear()
     monkeypatch.setattr(hot_state, "AsyncSessionLocal", session_factory)
     monkeypatch.setattr(hot_state, "AuditAsyncSessionLocal", session_factory)
     monkeypatch.setattr(fast_trader_runtime, "FastAsyncSessionLocal", session_factory)
@@ -1167,6 +1171,7 @@ async def test_fast_trader_precycle_falls_back_when_hydrate_query_raises(monkeyp
         Base, "fast_runtime_coldstart_hydrate_fail"
     )
 
+    hot_state._snapshots.clear()
     monkeypatch.setattr(hot_state, "AsyncSessionLocal", session_factory)
     monkeypatch.setattr(hot_state, "AuditAsyncSessionLocal", session_factory)
     monkeypatch.setattr(fast_trader_runtime, "FastAsyncSessionLocal", session_factory)

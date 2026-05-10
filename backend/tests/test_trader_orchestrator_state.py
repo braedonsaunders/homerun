@@ -35,7 +35,7 @@ def _seed_trader(session, trader_id: str = "fast-trader") -> None:
     session.add(
         Trader(
             id=trader_id,
-            name="Fast trader",
+            name=f"Fast trader {trader_id}",
             source_configs_json=[],
             risk_limits_json={},
             metadata_json={},
@@ -77,7 +77,8 @@ async def test_fetch_recent_consumed_signal_ids_filters_window_and_orders_desc()
     try:
         now = utcnow().replace(tzinfo=None)
         async with session_factory() as session:
-            _seed_trader(session)
+            _seed_trader(session, "fast-trader")
+            _seed_trader(session, "other-trader")
             session.add(
                 _make_consumption(
                     trader_id="fast-trader",
