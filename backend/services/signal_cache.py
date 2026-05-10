@@ -446,6 +446,30 @@ class SignalCache:
         with self._lock:
             return trader_id in self._consumed_hydrated
 
+    def consumed_ids_for(self, trader_id: str) -> frozenset[str]:
+        """Return a snapshot of the trader's consumed signal_ids.
+
+        Read-only surface used by the fast trader's hot path to filter
+        ``intent_runtime.list_unconsumed_signals`` results before
+        dispatching them to per-market workers, and by any other caller
+        that needs to consult the consumed-set without holding the
+        cache lock for longer than the copy. ``frozenset`` so the
+        caller cannot mutate cache state through the return value.
+
+        Empty frozenset if the trader has not been hydrated; callers
+        treat that as "filter disabled" rather than "everything is
+        unconsumed", since the absence of a hydrated set is itself
+        evidence that consumption history hasn't been consulted yet.
+        """
+        normalized = str(trader_id or "").strip()
+        if not normalized:
+            return frozenset()
+        with self._lock:
+            consumed = self._consumed_set.get(normalized)
+            if not consumed:
+                return frozenset()
+            return frozenset(consumed)
+
     def is_ready(self) -> bool:
         """True once the cache has been bootstrapped from DB at least once.
 

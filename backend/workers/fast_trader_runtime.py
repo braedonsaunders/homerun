@@ -159,6 +159,17 @@ class _FastTraderTask:
         self._cached_cursor_created_at: Optional[Any] = None
         self._cached_cursor_signal_id: Optional[str] = None
         self._cached_cursor_loaded: bool = False
+        # Plan 0032 Task 7: hydrate the per-trader consumed-set once at
+        # task lifetime, BEFORE the first intent_runtime fetch, so the
+        # post-fetch filter below sees an authoritative consumption
+        # history. The deploy-cycle restart of ``worker-trading``
+        # otherwise leaves the consumed-set empty until ``mark_consumed``
+        # populates it incrementally — and during that warm-up window
+        # ``intent_runtime`` happily re-presents every reactivated
+        # ``skipped`` scanner signal whose ``TraderOrder`` already
+        # exists, producing 200-400 "trader_order already exists"
+        # decisions/h on busy traders.
+        self._consumed_set_hydrated: bool = False
         # Throttle the "wallet state stale" warning — under degraded
         # conditions the fast trader's per-trader 250ms wake loop
         # would otherwise emit this hundreds of times per minute and
@@ -746,6 +757,49 @@ class _FastTraderTask:
         self._last_stage_timings_ms = {}
         stage_start = time.monotonic()
 
+        # Plan 0032 Task 7: hydrate the per-trader consumed-set BEFORE the
+        # first ``intent_runtime.list_unconsumed_signals`` call so the
+        # post-fetch filter below has authoritative consumption history.
+        # ``intent_runtime`` itself does not gate on consumption (see
+        # ``intent_runtime.list_unconsumed_signals`` which drops
+        # ``trader_id``); without this pre-hydrate every restart leaks
+        # the entire backlog of "trader_order already exists" decisions
+        # for signals the scanner keeps reactivating via the 180s
+        # ``_UNCHANGED_SCANNER_TERMINAL_REACTIVATION_COOLDOWN_SECONDS``
+        # cooldown. Soft-fail: a DB hiccup falls back to an empty set;
+        # ``fast_submit``'s ``(trader_id, signal_id)`` idempotency-guard
+        # still prevents double submission so the worst case is the
+        # pre-Plan-0032 behaviour for that one trader.
+        if not self._consumed_set_hydrated:
+            hydrate_t0 = time.monotonic()
+            consumed_ids: list[str] = []
+            try:
+                async with FastAsyncSessionLocal() as hydrate_session:
+                    consumed_ids = await fetch_recent_consumed_signal_ids(
+                        hydrate_session,
+                        trader_id=trader_id,
+                        hours=48,
+                        limit=50_000,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Fast trader pre-cycle consumed-set hydrate failed",
+                    trader_id=trader_id,
+                    exc_info=exc,
+                )
+            try:
+                from services import signal_cache as _signal_cache
+
+                _signal_cache.get_signal_cache().hydrate_trader_consumed_ids(
+                    trader_id, consumed_ids
+                )
+            except Exception:
+                pass
+            self._consumed_set_hydrated = True
+            self._last_stage_timings_ms["precycle_consumed_hydrate"] = round(
+                (time.monotonic() - hydrate_t0) * 1000.0, 1
+            )
+
         strategy_types_by_source = self._accepted_strategy_types_by_source()
         cursor_created_at = None
         cursor_signal_id = None
@@ -763,6 +817,33 @@ class _FastTraderTask:
         self._last_stage_timings_ms["runtime_list_signals"] = round(
             (time.monotonic() - stage_start) * 1000.0, 1
         )
+        # Plan 0032 Task 7: post-filter ``intent_runtime``'s output by the
+        # signal_cache's per-trader consumed-set. ``intent_runtime`` does
+        # not perform this filter itself — see the ``del trader_id`` at
+        # the top of ``IntentRuntime.list_unconsumed_signals``. Without
+        # this filter the scanner's 180s reactivation cooldown for
+        # ``skipped`` signals re-presents every ``TraderOrder``-already-
+        # exists case to the trader, producing the duplicate-decision
+        # spam Plan 0032 was opened against.
+        if runtime_signals:
+            try:
+                from services import signal_cache as _signal_cache
+
+                consumed_set = _signal_cache.get_signal_cache().consumed_ids_for(
+                    trader_id
+                )
+            except Exception:
+                consumed_set = frozenset()
+            if consumed_set:
+                before_count = len(runtime_signals)
+                runtime_signals = [
+                    sig
+                    for sig in runtime_signals
+                    if str(getattr(sig, "id", "") or "") not in consumed_set
+                ]
+                dropped = before_count - len(runtime_signals)
+                if dropped:
+                    self._last_stage_timings_ms["consumed_set_filtered"] = dropped
         if runtime_signals:
             mode = str(self._trader.get("mode", "shadow")).strip().lower() or "shadow"
             risk_limits = dict(self._trader.get("risk_limits") or {})
@@ -916,37 +997,12 @@ class _FastTraderTask:
                 self._last_stage_timings_ms["coldstart_db_list"] = round(
                     (time.monotonic() - db_t0) * 1000.0, 1
                 )
-                if not trader_hydrated:
-                    # Hydrate the per-trader consumed-set from the
-                    # ``trader_signal_consumption`` ledger so the very
-                    # first cycle after a worker restart already knows
-                    # which signals this bot has handled — eliminates
-                    # the post-restart "trader_order already exists"
-                    # skip burst (was 200-400/h on Sandbox - Tail-End,
-                    # Plan 0032). The hydrate is a strict optimisation:
-                    # if the query fails, fall back to the old empty
-                    # hydrate behaviour and let steady-state mark_consumed
-                    # plus the (trader_id, signal_id) idempotency-guard
-                    # in fast_submit absorb the duplicates.
-                    hydrate_t0 = time.monotonic()
-                    consumed_ids: list[str] = []
-                    try:
-                        consumed_ids = await fetch_recent_consumed_signal_ids(
-                            session,
-                            trader_id=trader_id,
-                            hours=48,
-                            limit=50_000,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Fast trader cold-start consumed-set hydrate failed",
-                            trader_id=trader_id,
-                            exc_info=exc,
-                        )
-                    cache.hydrate_trader_consumed_ids(trader_id, consumed_ids)
-                    self._last_stage_timings_ms["coldstart_consumed_hydrate"] = round(
-                        (time.monotonic() - hydrate_t0) * 1000.0, 1
-                    )
+                # Plan 0032 Task 7: per-trader consumed-set is now
+                # hydrated unconditionally at the top of ``_run_once_inner``
+                # before the first ``intent_runtime.list_unconsumed_signals``
+                # call. The cold-start fall-through no longer needs its
+                # own hydrate — re-running it here would just re-issue the
+                # same DB read for no benefit.
                 # Seed the cache so the NEXT cycle takes the fast path
                 # even if the eager bootstrap hasn't completed yet.
                 for db_sig in signals:

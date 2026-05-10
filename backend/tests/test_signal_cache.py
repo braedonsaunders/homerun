@@ -314,6 +314,25 @@ def test_consumed_set_lazy_prune_drops_terminal_old_snapshots(monkeypatch):
     assert "trigger" in consumed
 
 
+def test_consumed_ids_for_returns_frozenset_snapshot():
+    """Plan 0032 Task 7: ``consumed_ids_for`` is the read-only surface
+    used by ``intent_runtime``-result post-filter and any other caller
+    that needs to consult the consumed-set without taking a write lock.
+    Must return a ``frozenset`` (immutable, lock-free), copy the live
+    set so subsequent mutations do not leak, and return an empty
+    frozenset for unhydrated traders."""
+    cache = signal_cache.SignalCache(max_entries=10_000)
+    cache.hydrate_trader_consumed_ids("trader-A", ["s1", "s2"])
+    snapshot = cache.consumed_ids_for("trader-A")
+    assert isinstance(snapshot, frozenset)
+    assert snapshot == frozenset({"s1", "s2"})
+    cache.mark_consumed("trader-A", "s3")
+    assert snapshot == frozenset({"s1", "s2"})
+    assert cache.consumed_ids_for("trader-A") == frozenset({"s1", "s2", "s3"})
+    assert cache.consumed_ids_for("trader-B") == frozenset()
+    assert cache.consumed_ids_for("") == frozenset()
+
+
 def test_hydrate_trader_consumed_ids_marks_hydrated():
     cache = signal_cache.get_signal_cache()
     assert cache.is_trader_hydrated("trader-x") is False

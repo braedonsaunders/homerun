@@ -1053,15 +1053,21 @@ class _FakeColdStartCache:
     def __init__(self) -> None:
         self.hydrated_ids: list[str] | None = None
         self.upserts: list = []
+        self._consumed: dict[str, set[str]] = {}
 
     def is_ready(self) -> bool:
         return True
 
     def is_trader_hydrated(self, trader_id: str) -> bool:
-        return False
+        return trader_id in self._consumed
 
     def hydrate_trader_consumed_ids(self, trader_id, signal_ids):
-        self.hydrated_ids = [str(sid) for sid in signal_ids]
+        ids = [str(sid) for sid in signal_ids]
+        self.hydrated_ids = ids
+        self._consumed[str(trader_id or "")] = set(ids)
+
+    def consumed_ids_for(self, trader_id: str) -> frozenset[str]:
+        return frozenset(self._consumed.get(str(trader_id or ""), set()))
 
     def get_unconsumed_signals(self, **_kwargs):
         return []
@@ -1077,11 +1083,13 @@ def _shadow_fast_trader_config() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_fast_trader_coldstart_hydrates_consumed_set_from_db(monkeypatch):
-    """Plan 0032: cold-start MUST hydrate the consumed-set from the
-    ``trader_signal_consumption`` ledger so a worker restart does not
-    re-walk every pending signal that already has a TraderOrder and
-    emit thousands of "already exists" skip rows."""
+async def test_fast_trader_precycle_hydrates_consumed_set_from_db(monkeypatch):
+    """Plan 0032 Task 7: pre-cycle hydrate MUST populate the consumed-set
+    from ``trader_signal_consumption`` BEFORE the first
+    ``intent_runtime.list_unconsumed_signals`` call. Without this, the
+    scanner's 180s reactivation cooldown re-presents every signal whose
+    ``TraderOrder`` already exists and the trader writes a
+    ``trader_order already exists`` decision per cycle."""
     engine, session_factory = await build_postgres_session_factory(
         Base, "fast_runtime_coldstart_hydrate"
     )
@@ -1143,15 +1151,16 @@ async def test_fast_trader_coldstart_hydrates_consumed_set_from_db(monkeypatch):
         assert captured_query["called_with"]["limit"] == 50_000
 
         assert fake_cache.hydrated_ids == ["signal-already-consumed"]
-        assert "coldstart_consumed_hydrate" in runner._last_stage_timings_ms
+        assert "precycle_consumed_hydrate" in runner._last_stage_timings_ms
+        assert runner._consumed_set_hydrated is True
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_fast_trader_coldstart_falls_back_when_hydrate_query_raises(monkeypatch):
-    """Plan 0032: hydrate query failure must NEVER block the cold-start
-    path. Falling back to an empty hydrate keeps the worker live;
+async def test_fast_trader_precycle_falls_back_when_hydrate_query_raises(monkeypatch):
+    """Plan 0032 Task 7: hydrate query failure must NEVER block the
+    cycle. Falling back to an empty hydrate keeps the worker live;
     ``fast_submit``'s ``(trader_id, signal_id)`` idempotency-guard
     re-absorbs duplicates."""
     engine, session_factory = await build_postgres_session_factory(
@@ -1188,6 +1197,91 @@ async def test_fast_trader_coldstart_falls_back_when_hydrate_query_raises(monkey
         await runner._run_once_inner("fast-trader", ["generic-source"])
 
         assert fake_cache.hydrated_ids == []
-        assert "coldstart_consumed_hydrate" in runner._last_stage_timings_ms
+        assert "precycle_consumed_hydrate" in runner._last_stage_timings_ms
+        assert runner._consumed_set_hydrated is True
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_fast_trader_filters_intent_runtime_signals_by_consumed_set(monkeypatch):
+    """Plan 0032 Task 7: signals returned from
+    ``intent_runtime.list_unconsumed_signals`` must be post-filtered by
+    the in-process ``signal_cache`` consumed-set. Without this, the
+    scanner's 180s reactivation cooldown re-presents previously
+    submitted signals every cooldown window and the trader emits a
+    ``trader_order already exists`` decision for each."""
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "fast_runtime_intent_consumed_filter"
+    )
+
+    hot_state._snapshots.clear()
+    monkeypatch.setattr(hot_state, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(hot_state, "AuditAsyncSessionLocal", session_factory)
+    monkeypatch.setattr(fast_trader_runtime, "FastAsyncSessionLocal", session_factory)
+
+    fake_cache = _FakeColdStartCache()
+    fake_cache.hydrate_trader_consumed_ids("fast-trader", ["already-consumed-signal"])
+
+    import services.signal_cache as _signal_cache
+
+    monkeypatch.setattr(_signal_cache, "get_signal_cache", lambda: fake_cache)
+
+    async def empty_fetch(*_args, **_kwargs):
+        return ["already-consumed-signal"]
+
+    monkeypatch.setattr(fast_trader_runtime, "fetch_recent_consumed_signal_ids", empty_fetch)
+
+    intent_signals = [
+        SimpleNamespace(
+            id="already-consumed-signal",
+            source="generic-source",
+            market_id="market-A",
+            runtime_sequence=10,
+            status="pending",
+            payload_json={},
+            strategy_context_json={},
+        ),
+        SimpleNamespace(
+            id="fresh-signal",
+            source="generic-source",
+            market_id="market-B",
+            runtime_sequence=11,
+            status="pending",
+            payload_json={},
+            strategy_context_json={},
+        ),
+    ]
+
+    class _FakeIntentRuntime:
+        async def list_unconsumed_signals(self, **kwargs):
+            return list(intent_signals)
+
+    monkeypatch.setattr(fast_trader_runtime, "get_intent_runtime", lambda: _FakeIntentRuntime())
+
+    processed: list[list] = []
+
+    async def spy_process(self, signals, *, mode, default_size_usd):
+        processed.append(list(signals))
+
+    monkeypatch.setattr(
+        fast_trader_runtime._FastTraderTask,
+        "_process_signals_parallel_by_market",
+        spy_process,
+    )
+
+    try:
+        async with session_factory() as session:
+            await _seed_trader_and_signal(session, "fresh-signal")
+
+        runner = fast_trader_runtime._FastTraderTask(
+            _shadow_fast_trader_config(), asyncio.Event()
+        )
+        await runner._run_once_inner("fast-trader", ["generic-source"])
+
+        assert len(processed) == 1
+        forwarded_ids = [str(getattr(sig, "id", "")) for sig in processed[0]]
+        assert forwarded_ids == ["fresh-signal"]
+        assert runner._last_stage_timings_ms.get("consumed_set_filtered") == 1
     finally:
         await engine.dispose()
