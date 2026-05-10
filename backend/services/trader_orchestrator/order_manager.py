@@ -442,6 +442,42 @@ def _compute_book_spread_bps(book_payload: dict[str, Any] | None) -> float | Non
     return (best_ask - best_bid) / mid * 10_000.0
 
 
+def _check_slippage_bps(
+    *,
+    signal_price: float | None,
+    intended_price: float | None,
+    risk_limits: dict[str, Any] | None,
+) -> tuple[bool, float | None, float | None]:
+    """Returns (rejected, drift_bps, configured_cap_bps).
+
+    Compares intended fill price against signal.entry_price symmetrically.
+    Captures the "market moved between gate-time and submit-time and the
+    move exceeded my tolerance" case — distinct from max_entry_drift_pct
+    which fires at gate-time against live mid in percent.
+
+    Rejected only when configured cap > 0 AND both prices are positive AND
+    the absolute drift exceeds the cap. Signal-emitted strategies that
+    don't carry an entry_price → no-op (we can't measure drift).
+    """
+    if not isinstance(risk_limits, dict):
+        return False, None, None
+    cap_raw = risk_limits.get("slippage_bps")
+    if cap_raw is None:
+        return False, None, None
+    try:
+        cap = float(cap_raw)
+    except (TypeError, ValueError):
+        return False, None, None
+    if cap <= 0.0:
+        return False, None, cap
+    if signal_price is None or signal_price <= 0.0:
+        return False, None, cap
+    if intended_price is None or intended_price <= 0.0:
+        return False, None, cap
+    drift_bps = abs(intended_price - signal_price) / signal_price * 10_000.0
+    return (drift_bps > cap), drift_bps, cap
+
+
 def _check_max_spread_bps(
     *,
     book_payload: dict[str, Any] | None,
@@ -794,6 +830,42 @@ async def submit_execution_leg(
             payload={"mode": mode_key, "leg": dict(leg), "reason": "invalid_price_too_small"},
             shares=None,
             notional_usd=notional,
+        )
+
+    # Pre-trade slippage gate (per-trader risk_limits.slippage_bps).
+    # Distinct from max_entry_drift_pct: this fires at submit-time against
+    # the intended fill price (which may have drifted from the signal via
+    # chase-up, limit-policy resolution, etc.), in bps for finer precision.
+    # No-op when knob unset/zero or signal carries no entry_price.
+    _signal_entry_price = safe_float(getattr(signal, "entry_price", None), None)
+    _slip_rejected, _slip_drift_bps, _slip_cap = _check_slippage_bps(
+        signal_price=_signal_entry_price,
+        intended_price=price,
+        risk_limits=risk_limits,
+    )
+    if _slip_rejected:
+        return LegSubmitResult(
+            leg_id=leg_id,
+            status="skipped" if mode_key == "shadow" else "failed",
+            effective_price=price,
+            error_message=(
+                f"Intended price {price:.4f} drifted {_slip_drift_bps:.1f} bps from "
+                f"signal entry {_signal_entry_price:.4f} (cap {_slip_cap:.1f} bps)."
+            ),
+            payload={
+                "mode": mode_key,
+                "submission": "rejected",
+                "reason": "slippage_bps_exceeded",
+                "drift_bps": round(float(_slip_drift_bps), 2),
+                "slippage_bps": float(_slip_cap),
+                "signal_entry_price": float(_signal_entry_price),
+                "intended_price": float(price),
+                "leg": dict(leg),
+                "requested_notional_usd": notional,
+                "effective_notional_usd": 0.0,
+            },
+            shares=None,
+            notional_usd=0.0,
         )
 
     requested_shares = notional / price
