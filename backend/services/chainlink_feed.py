@@ -175,17 +175,34 @@ class ChainlinkFeed:
 
         This is used to determine the "price to beat" for a market whose
         ``eventStartTime`` is known.
+
+        2026-05-10: ``crypto_service.get_live_markets`` runs this on a
+        ``to_thread`` worker while the WS feed callbacks
+        (``update_from_chainlink_direct`` / ``update_from_binance_direct``)
+        ``append`` + ``popleft`` the same deque from the asyncio loop.
+        Python's deque raises ``RuntimeError: deque mutated during
+        iteration`` if the writer fires mid-iteration.  We snapshot
+        defensively via ``list(history)`` and fall back to ``None`` on
+        the rare collision; the next call (within ~5s for the
+        price-to-beat refresh loop) will succeed against a stable
+        snapshot.  Polymarket and Binance fallbacks already exist
+        downstream for missing prices, so a None here is graceful.
         """
         asset = asset.upper()
         history = self._history.get(asset)
         if not history:
             return None
 
+        try:
+            snapshot = list(history)
+        except RuntimeError:
+            return None
+
         target_ms = timestamp_s * 1000
         best_price = None
         best_dist = float("inf")
 
-        for ts_ms, price in history:
+        for ts_ms, price in snapshot:
             dist = abs(ts_ms - target_ms)
             if dist < best_dist:
                 best_dist = dist
@@ -207,16 +224,24 @@ class ChainlinkFeed:
 
         Returns None when no recorded price exists within ``max_delay_seconds``
         after the target timestamp.
+
+        See :meth:`get_price_at_time` for the deque-mutation defence
+        rationale; same pattern applies here.
         """
         asset = asset.upper()
         history = self._history.get(asset)
         if not history:
             return None
 
+        try:
+            snapshot = list(history)
+        except RuntimeError:
+            return None
+
         target_ms = int(float(timestamp_s) * 1000.0)
         max_delay_ms = max(0, int(float(max_delay_seconds) * 1000.0))
 
-        for ts_ms, price in history:
+        for ts_ms, price in snapshot:
             if ts_ms < target_ms:
                 continue
             if ts_ms - target_ms > max_delay_ms:

@@ -2874,6 +2874,9 @@ async def test_terminal_stale_order_watchdog_respects_alert_cooldown(monkeypatch
         async def execute(self, *_args, **_kwargs):
             return _Result()
 
+        async def commit(self):
+            return None
+
     create_event_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(trader_orchestrator_worker, "create_trader_event", create_event_mock)
     monkeypatch.setattr(

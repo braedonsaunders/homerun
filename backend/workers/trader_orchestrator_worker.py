@@ -4277,6 +4277,18 @@ async def _run_terminal_stale_order_watchdog(session: Any, *, now: datetime | No
     if not candidates:
         return {"checked": True, "stale": 0, "alerted": 0}
 
+    # 2026-05-10: ``load_market_info_for_orders`` does an 8-way
+    # concurrent Polymarket REST fan-out.  Holding the DB session
+    # across that fan-out caused 11s+ checkout invalidations
+    # (asyncpg ``connection is closed``) that broke the SELECT at
+    # line 4317 below — observed twice in the same soak with the
+    # same order_id 30 min apart, and reliably failing both watchdog
+    # passes.  ``session.commit()`` returns the underlying connection
+    # to the pool while keeping the session reusable
+    # (``expire_on_commit=False`` on AsyncSessionLocal); the next
+    # ``session.execute()`` acquires a fresh connection.
+    await session.commit()
+
     market_info_by_id = await load_market_info_for_orders(list(candidates))
     stale_rows: list[dict[str, Any]] = []
     for row in candidates:

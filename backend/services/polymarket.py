@@ -394,6 +394,20 @@ class PolymarketClient:
             if response.status_code == 429 or response.status_code >= 500:
                 last_response = response
                 if attempt < _MAX_RETRIES - 1:
+                    # 2026-05-10: short-circuit if a peer request stamped
+                    # an endpoint-level cooldown while we were retrying.
+                    # Without this check, concurrent in-flight requests
+                    # all burn their full _MAX_RETRIES budget against an
+                    # already-known-throttled endpoint — the cascade
+                    # observed in the soak when one
+                    # ``_stamp_endpoint_cooldown`` was followed by 16+
+                    # ``Market lookup failed ... Status/429`` warnings
+                    # from peer ``get_market_by_condition_id`` calls in
+                    # the same wall-clock second.  Returning the 429 we
+                    # already have lets the caller fall through to its
+                    # normal 429-handling branch immediately.
+                    if response.status_code == 429 and self._endpoint_cooldown_remaining(endpoint) > 0:
+                        return response
                     delay = min(_BASE_DELAY * (2**attempt), _MAX_DELAY)
                     delay *= 0.5 + random.random()
                     # Respect Retry-After header if present
