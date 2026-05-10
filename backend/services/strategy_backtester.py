@@ -1674,38 +1674,139 @@ def _backtest_evaluate_opportunity(
     opp: Any,
     pdata: dict[str, Any],
     initial_capital_usd: float,
+    live_context: dict[str, Any] | None = None,
 ) -> tuple[Any, Any] | None:
     """Run ``strategy.evaluate()`` on a backtest opportunity row.
 
     Mirrors the live orchestrator's gate at trader_orchestrator_worker
     line 6474 — the strategy's own ``evaluate()`` decides whether the
     intent should fire RIGHT NOW given current portfolio + market
-    context.  Without this call, backtests run a fundamentally
-    different strategy variant: ``detect()`` only, no execution-time
-    re-validation, no adaptive sizing, no custom_checks.
+    context.
 
-    Returns ``(decision_obj, signal_view)`` so the caller can hand both
-    to ``apply_platform_decision_gates`` for the post-strategy
-    orchestrator gates (signal staleness, trading schedule, risk
-    evaluator, occupied market guard, demoted-strategies, etc.) — that
-    pipeline is what live runs at trader_orchestrator_worker:6474.
-    Returns None if evaluate() raised — fall back to "passthrough" so
-    a bug in evaluate() doesn't tank the entire backtest.  Caller
-    treats decision_obj.decision == "selected" as accept, anything
-    else as skip.
+    When ``opp`` carries a real TradeSignal at ``_underlying_signal``
+    (the canonical replay path), wrap it in the production
+    ``RuntimeTradeSignalView`` so evaluate() reads the EXACT same view
+    live does — including the ``live_edge_percent`` /
+    ``live_selected_price`` overlay derived from market context.
+    The ``live_context`` argument is the historically-reconstructed
+    market context for this signal at its detected_at time (built by
+    ``_build_replay_live_context``); without it, signals from worker-
+    driven pipelines (which often persist with null edge_percent) get
+    rejected by evaluate's edge-floor check even when their LIVE
+    counterparts were selected, because live's runtime overlays the
+    edge from current mid.
+
+    Returns ``(decision_obj, signal_view)`` for the caller to hand to
+    ``apply_platform_decision_gates``.  Returns None if evaluate()
+    raised — fall back to "passthrough" so a strategy bug doesn't tank
+    the whole backtest.
     """
     if not hasattr(strategy, "evaluate"):
         return None
     try:
-        # Synthesize a signal-view that quacks like a TradeSignal so
-        # the strategy's evaluate() reads the right fields.  Strategies
-        # reach into many TradeSignal columns (source, strategy_type,
-        # liquidity, edge_percent, confidence, entry_price, market_id,
-        # payload_json, strategy_context_json) — we populate every one
-        # of them faithfully from the OpportunityHistory row + the
-        # nested positions_to_take payload.  Missing fields cause
-        # evaluate() to silently reject, which the user hit with 1323
-        # of 1323 opps skipped on tail_end_carry.
+        # Institutional-grade replay path: when the opp carries a
+        # real TradeSignal ORM row, use the production
+        # RuntimeTradeSignalView with the historically-reconstructed
+        # live_context.  This is the same wrapper class the live
+        # worker uses — same column access, same overlay semantics,
+        # same evaluate input.  No synthesis required.
+        underlying = getattr(opp, "_underlying_signal", None)
+        if underlying is not None:
+            from services.trader_orchestrator.live_market_context import (
+                RuntimeTradeSignalView,
+            )
+
+            signal = RuntimeTradeSignalView(
+                underlying, live_context=live_context or {}
+            )
+            # Time-sensitive evaluate gates (resolution_window,
+            # signal_staleness, days_to_resolution) compute against
+            # ``datetime.now(utc)``.  In replay we're evaluating signals
+            # from days ago — their original resolution_date is now in
+            # the past relative to wall clock, so every dtr-based check
+            # rejects.  Synthesize a forward-shifted resolution_date
+            # such that ``(synthetic_res - now)`` reproduces the dtr the
+            # signal had at its original detect-time.  This is the same
+            # trick the legacy ``_SignalView`` path used; we replicate
+            # it on the production wrapper so evaluate sees byte-
+            # equivalent time semantics.
+            try:
+                detected_at_orig = getattr(underlying, "created_at", None)
+                if isinstance(detected_at_orig, datetime):
+                    if detected_at_orig.tzinfo is None:
+                        detected_at_orig = detected_at_orig.replace(tzinfo=timezone.utc)
+                    base_payload = signal.payload_json or {}
+                    if not isinstance(base_payload, dict):
+                        base_payload = {}
+                    original_res = base_payload.get("resolution_date")
+                    if isinstance(original_res, str):
+                        try:
+                            from datetime import datetime as _dt
+                            res_parsed = _dt.fromisoformat(original_res.replace("Z", "+00:00"))
+                            if res_parsed.tzinfo is None:
+                                res_parsed = res_parsed.replace(tzinfo=timezone.utc)
+                            original_dtr_seconds = (res_parsed - detected_at_orig).total_seconds()
+                            if original_dtr_seconds > 0:
+                                synthetic_res = (
+                                    datetime.now(timezone.utc)
+                                    + (res_parsed - detected_at_orig)
+                                )
+                                # Build a patched payload (don't mutate
+                                # the ORM row's underlying dict — other
+                                # paths may share the reference).
+                                signal.payload_json = {
+                                    **base_payload,
+                                    "resolution_date": synthetic_res.isoformat(),
+                                }
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            ctx_lm = (
+                dict(live_context) if isinstance(live_context, dict) else {}
+            )
+            ctx: dict[str, Any] = {
+                "params": dict(getattr(strategy, "config", {}) or {}),
+                "trader": {
+                    "id": "backtest",
+                    "mode": "shadow",
+                    "risk_limits": {
+                        "max_trade_notional_usd": float(initial_capital_usd) * 0.10,
+                        "max_open_positions": 50,
+                    },
+                },
+                "mode": "shadow",
+                "live_market": ctx_lm,
+                "source_config": {},
+            }
+            decision = strategy.evaluate(signal, ctx)
+            if hasattr(decision, "decision"):
+                return (decision, signal)
+            if isinstance(decision, dict):
+                class _DecisionView:
+                    __slots__ = ("decision", "reason", "score", "size_usd", "checks", "payload")
+
+                    def __init__(self, d: dict[str, Any]):
+                        self.decision = str(d.get("decision") or "selected")
+                        self.reason = str(d.get("reason") or "")
+                        self.score = d.get("score")
+                        self.size_usd = float(d.get("size_usd") or 0.0)
+                        self.checks = list(d.get("checks") or [])
+                        self.payload = dict(d.get("payload") or {})
+                return (_DecisionView(decision), signal)
+            return None
+
+        # ── Legacy path (OpportunityHistory rows without an underlying
+        # TradeSignal ORM): synthesize a TradeSignal-quack object.
+        # Used by the discovery synthesis flow which builds opps from
+        # detect() output rather than persisted signals.  Here we
+        # don't have a real ORM row to wrap, so we reconstruct the
+        # TradeSignal contract field by field from the opp's
+        # positions_data.
+        opp_strategy_type = str(getattr(opp, "strategy_type", "") or "").strip().lower()
+        first_pos = (pdata.get("positions_to_take") or [{}])[0]
+        if not isinstance(first_pos, dict):
+            first_pos = {}
         opp_strategy_type = str(getattr(opp, "strategy_type", "") or "").strip().lower()
         first_pos = (pdata.get("positions_to_take") or [{}])[0]
         if not isinstance(first_pos, dict):
@@ -2005,6 +2106,338 @@ def _extract_scope_wallets(strategy: Any) -> set[str] | None:
 # wallet set) with headroom; if a window legitimately holds more we
 # warn rather than silently truncate.
 _REPLAY_WALLET_EVENT_CAP = 50000
+
+
+class _SignalAsOpp:
+    """Wrap a ``trade_signals`` row as an OpportunityHistory-quack object
+    for the execution-backtest loop.  TradeSignal is the canonical
+    record of what the live trader saw and decided on; the backtest
+    loop adapter exposes the ORM object plus the loop's expected
+    attribute surface (``id`` / ``strategy_type`` / ``detected_at`` /
+    ``positions_data``).
+
+    The original ORM row is preserved at ``_underlying_signal`` so the
+    evaluate path can build a ``RuntimeTradeSignalView`` from it —
+    same class live uses, ensuring evaluate() sees byte-identical
+    column access.  Without this, backtest would have to synthesise a
+    duplicate signal-shim that drifts from the live contract.
+    """
+
+    __slots__ = (
+        "id", "strategy_type", "detected_at", "positions_data",
+        "expected_roi", "risk_score", "title", "event_id",
+        "_synthetic_source", "_underlying_signal",
+    )
+
+    def __init__(
+        self,
+        *,
+        sid: str,
+        strategy_type: str,
+        detected_at: datetime,
+        positions_data: dict[str, Any],
+        expected_roi: float = 0.0,
+        risk_score: float = 0.0,
+        title: str = "",
+        event_id: str | None = None,
+        underlying_signal: Any = None,
+    ) -> None:
+        self.id = sid
+        self.strategy_type = strategy_type
+        self.detected_at = detected_at
+        self.positions_data = positions_data
+        self.expected_roi = expected_roi
+        self.risk_score = risk_score
+        self.title = title
+        self.event_id = event_id
+        self._synthetic_source = "trade_signals"
+        self._underlying_signal = underlying_signal
+
+
+async def _load_opps_from_trade_signals(
+    *,
+    session: Any,
+    slug: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    max_rows: int,
+) -> list[_SignalAsOpp]:
+    """Load trade_signals rows for ``slug`` in window and shape them
+    into OpportunityHistory-quack objects.  Used when opp_history has
+    no rows for a strategy (worker-driven flows like crypto_entropy_maker).
+    Filters to live-status signals only — ``filtered`` / ``failed`` /
+    ``skipped`` would have failed evaluate or risk gates in live and
+    would distort the backtest funnel by inflating ``opps_pulled``.
+    """
+    from sqlalchemy import select as _select
+    # The TradeSignal ORM model lives in models.database too.  Import
+    # locally to avoid circular import at module load.
+    from models.database import TradeSignal as _TS
+    import json as _json
+
+    stmt = (
+        _select(_TS)
+        .where(
+            _TS.created_at >= start_dt,
+            _TS.created_at <= end_dt,
+            _TS.strategy_type == slug,
+            # Signals the live trader actually considered actionable.
+            # ``expired`` is the dominant terminal status for many
+            # strategies (queue TTL ran out before execute) and IS a
+            # legitimate replay candidate — the backtest's matcher
+            # decides whether the resting order would have filled in
+            # the historical book.  Drop only the explicit-failure
+            # statuses where the live trader rejected the signal
+            # itself (filtered by quality-filter, failed during
+            # evaluate, skipped by deduplication).
+            _TS.status.notin_(["filtered", "failed", "skipped"]),
+        )
+        .order_by(_TS.created_at.asc())
+        .limit(max(1, int(max_rows)))
+    )
+    try:
+        rows = (await session.execute(stmt)).scalars().all()
+    except Exception:
+        return []
+
+    out: list[_SignalAsOpp] = []
+    for sig in rows:
+        payload = sig.payload_json
+        if isinstance(payload, str):
+            try:
+                payload = _json.loads(payload)
+            except Exception:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        ptt = payload.get("positions_to_take") or []
+        if not isinstance(ptt, list) or not ptt:
+            # Reconstruct a minimal single-position from top-level
+            # signal fields so worker-driven strategies that didn't
+            # serialize positions still produce a usable opp.
+            tok = (
+                str(payload.get("selected_token_id") or "").strip()
+                or str(payload.get("token_id") or "").strip()
+                or str(getattr(sig, "market_id", "") or "").strip()
+            )
+            side = "BUY"
+            direction = str(getattr(sig, "direction", "") or "").strip().upper()
+            if direction in {"SELL", "SHORT"}:
+                side = "SELL"
+            entry = float(getattr(sig, "entry_price", 0.0) or 0.0)
+            if not tok or entry <= 0.0:
+                continue
+            ptt = [
+                {
+                    "token_id": tok,
+                    "side": side,
+                    "action": side,
+                    "price": entry,
+                    "market_id": str(getattr(sig, "market_id", "") or ""),
+                    "market_question": str(getattr(sig, "market_question", "") or ""),
+                }
+            ]
+
+        positions_data = dict(payload)
+        positions_data["positions_to_take"] = ptt
+        # Ensure strategy_context lands in positions_data the same way
+        # OpportunityHistory rows carry it.
+        sc = getattr(sig, "strategy_context_json", None)
+        if isinstance(sc, dict) and sc and "strategy_context" not in positions_data:
+            positions_data["strategy_context"] = sc
+
+        out.append(
+            _SignalAsOpp(
+                sid=str(getattr(sig, "id", "") or ""),
+                strategy_type=str(getattr(sig, "strategy_type", "") or slug),
+                detected_at=sig.created_at,
+                positions_data=positions_data,
+                expected_roi=float(getattr(sig, "edge_percent", 0.0) or 0.0),
+                title=str(payload.get("title") or ""),
+                event_id=str(payload.get("event_id") or "") or None,
+                underlying_signal=sig,
+            )
+        )
+    return out
+
+
+class _BulkBookIndex:
+    """In-memory point-in-time book lookup for the eval loop.  Bulk-
+    pre-fetches every ``MarketMicrostructureSnapshot`` row for a token
+    universe over a window, then exposes ``snapshot_at(token, ts)``
+    backed by a binary search.  Avoids one DB round-trip per opp —
+    1500 opps × 1 query each at ~20ms is 30s of pure I/O versus a
+    single chunked bulk pull that finishes in seconds.
+
+    Quacks like ``BookReplay.snapshot_at`` (returns a ``BookSnapshot``
+    or ``None``) so ``_build_replay_live_context`` can use it
+    interchangeably with the streaming replays.
+    """
+
+    def __init__(self) -> None:
+        # token_id -> sorted list of (observed_at, BookSnapshot)
+        self._by_token: dict[str, list[tuple[datetime, Any]]] = {}
+
+    @classmethod
+    async def build(
+        cls,
+        *,
+        token_ids: list[str],
+        start_dt: datetime,
+        end_dt: datetime,
+        chunk: int = 50,
+    ) -> "_BulkBookIndex":
+        """Build the index using a SHORT-LIVED session per chunk.  The
+        production pool reaper force-invalidates any session held more
+        than 45s end-to-end (live's safety against checkout exhaustion);
+        a backtest that pulls a multi-day window across hundreds of
+        tokens will trip that ceiling on a single shared session.
+        Opening a fresh session per chunk keeps each checkout <1s
+        regardless of total wall-clock time.
+        """
+        from sqlalchemy import select as _select, text as _text
+        from models.database import (
+            AsyncSessionLocal as _Sess,
+            MarketMicrostructureSnapshot,
+        )
+        from services.backtest.book_replay import BookSnapshot, PriceLevel
+
+        idx = cls()
+        if not token_ids:
+            return idx
+        for i in range(0, len(token_ids), chunk):
+            sub = token_ids[i : i + chunk]
+            async with _Sess() as session:
+                try:
+                    await session.execute(_text("SET statement_timeout = 60000"))
+                except Exception:
+                    pass
+                # Pull just the columns the live_context build needs
+                # (best_bid / best_ask / spread_bps / observed_at).
+                # Skipping bids_json / asks_json shaves row size by ~10x.
+                try:
+                    rows = (await session.execute(
+                        _select(
+                            MarketMicrostructureSnapshot.token_id,
+                            MarketMicrostructureSnapshot.observed_at,
+                            MarketMicrostructureSnapshot.best_bid,
+                            MarketMicrostructureSnapshot.best_ask,
+                            MarketMicrostructureSnapshot.spread_bps,
+                        )
+                        .where(
+                            MarketMicrostructureSnapshot.token_id.in_(sub),
+                            MarketMicrostructureSnapshot.observed_at >= start_dt,
+                            MarketMicrostructureSnapshot.observed_at <= end_dt,
+                            MarketMicrostructureSnapshot.snapshot_type == "book",
+                        )
+                        .order_by(
+                            MarketMicrostructureSnapshot.token_id.asc(),
+                            MarketMicrostructureSnapshot.observed_at.asc(),
+                        )
+                    )).all()
+                except Exception:
+                    continue
+            for tid, observed, bb, ba, sp in rows:
+                if observed is None:
+                    continue
+                if observed.tzinfo is None:
+                    observed = observed.replace(tzinfo=timezone.utc)
+                bb_f = float(bb) if bb is not None else 0.0
+                ba_f = float(ba) if ba is not None else 0.0
+                snap = BookSnapshot(
+                    token_id=str(tid or ""),
+                    observed_at=observed,
+                    bids=(PriceLevel(price=bb_f, size=0.0),) if bb_f > 0 else (),
+                    asks=(PriceLevel(price=ba_f, size=0.0),) if ba_f > 0 else (),
+                    spread_bps=float(sp) if sp is not None else None,
+                )
+                idx._by_token.setdefault(str(tid or ""), []).append(
+                    (observed, snap)
+                )
+        return idx
+
+    async def snapshot_at(self, *, token_id: str, ts: datetime) -> Any:
+        bucket = self._by_token.get(token_id)
+        if not bucket:
+            return None
+        target = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+        # bisect_right on observed_at (the first tuple slot)
+        import bisect as _bisect
+        keys = [t[0] for t in bucket]
+        i = _bisect.bisect_right(keys, target) - 1
+        if i < 0:
+            return None
+        return bucket[i][1]
+
+
+async def _build_replay_live_context(
+    *,
+    signal: Any,
+    pdata: dict[str, Any],
+    book_replay: Any,
+    detected_at: datetime,
+) -> dict[str, Any]:
+    """Reconstruct the ``live_context`` shape the live worker builds
+    when it pulls a signal off the queue.  ``RuntimeTradeSignalView``
+    overlays the context's ``live_selected_price`` and
+    ``live_edge_percent`` on top of the persisted signal — without
+    that overlay, evaluate() reads ``signal.edge_percent`` which is
+    often null on signals from worker-driven pipelines (the live
+    runtime computes it fresh from current mid).
+
+    Replay needs the same overlay sourced from HISTORICAL book state:
+    look up the mid for the signal's selected token at the signal's
+    detected_at via the book replay (snapshots OR delta-replay,
+    whichever the run is using), compute live_edge from
+    model_probability, and shape the dict identically.
+    """
+    from services.trader_orchestrator.live_market_context import (
+        _extract_model_probability,
+    )
+
+    # Determine the selected token for this signal.
+    first_pos = (pdata.get("positions_to_take") or [{}])[0]
+    if not isinstance(first_pos, dict):
+        first_pos = {}
+    selected_token = (
+        str(pdata.get("selected_token_id") or "").strip()
+        or str(first_pos.get("token_id") or "").strip()
+        or str(getattr(signal, "market_id", "") or "").strip()
+    )
+    direction = str(getattr(signal, "direction", "") or "").strip().lower()
+
+    selected_live: float | None = None
+    if selected_token and book_replay is not None:
+        try:
+            snap = await book_replay.snapshot_at(token_id=selected_token, ts=detected_at)
+        except Exception:
+            snap = None
+        if snap is not None:
+            mid = snap.mid
+            if mid is None:
+                mid = snap.best_bid or snap.best_ask
+            if mid is not None and mid > 0.0:
+                selected_live = float(mid)
+
+    # Model probability: derived from the persisted signal (live's
+    # ``_extract_model_probability`` reads the same fields).
+    model_probability = _extract_model_probability(signal, direction=direction)
+    live_edge = None
+    if model_probability is not None and selected_live is not None:
+        live_edge = (model_probability - selected_live) * 100.0
+
+    return {
+        "available": bool(selected_live is not None),
+        "market_id": str(getattr(signal, "market_id", "") or ""),
+        "direction": direction,
+        "selected_token_id": selected_token,
+        "live_selected_price": selected_live,
+        "live_edge_percent": live_edge,
+        "model_probability": model_probability,
+        "signal_entry_price": float(getattr(signal, "entry_price", 0.0) or 0.0),
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "live_market_fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 async def _load_wallet_events_for_replay(
@@ -2983,24 +3416,24 @@ async def run_execution_backtest(
     # can render a live progress bar.  Sync callers leave it at None
     # and the engine treats that as "no callback".
     progress_callback: Any = None,
-    # ── Historical discovery replay ─────────────────────────────────
-    # When True (default), the backtest runs strategy.detect_async
-    # against historical market state at sampled time intervals
-    # across the window — independent of whether the live system
-    # ever surfaced opportunities.  This is what "backtest" actually
-    # means: re-run the WHOLE strategy pipeline on recorded data,
-    # including discovery.
+    # ── Historical discovery synthesis (additive to TradeSignal replay) ──
+    # Two complementary signal sources flow into evaluate / gates /
+    # matcher, deduped at the (token, 30-min bucket) level:
     #
-    # When False, the legacy path runs (read OpportunityHistory rows
-    # for slug-in-window only).  Useful as a fast cache when you
-    # want to test fill-model / risk-gate changes against the same
-    # opps live saw.
+    #   1. TradeSignal replay (always on) — every signal the live
+    #      trader emitted in the window.  Faithful "would my CURRENT
+    #      strategy code accept what live actually saw".  Param
+    #      tweaks to evaluate-time gates show up here immediately.
     #
-    # Both paths produce the same OpportunityHistory-shaped objects
-    # the existing evaluate / orchestrator / matcher pipeline
-    # consumes — so all advanced features (Cox PH, ensemble bands,
-    # CPCV, drift, regime decomp, latency MC, walk-forward) sit
-    # downstream of fills and continue working unchanged.
+    #   2. Discovery synthesis (this flag, default True) — re-runs the
+    #      strategy's detect() against historical book state at
+    #      sampled ticks, surfacing opps the live trader DIDN'T see.
+    #      Required for testing detect-time param changes (the
+    #      historical TradeSignals were filtered by the OLD config;
+    #      tightening / loosening detect's filters has no effect on
+    #      the replay path because those signals don't exist in the
+    #      DB).  Set False to scope the backtest strictly to what
+    #      live did.
     discover_from_history: bool = True,
     # Time grid resolution for historical discovery.  The default
     # 30-min cadence is a good balance: tighter than 30 min gives
@@ -3067,8 +3500,35 @@ async def run_execution_backtest(
     loader = StrategyLoader()
     bt_slug = f"_bt_exec_{slug}_{int(time.time())}"
     load_start = time.monotonic()
+    # Layer config exactly the way live does:
+    #   1. ``strategy.default_config`` (file-level baseline) —
+    #      automatically applied by ``StrategyLoader.load``.
+    #   2. ``strategies`` table ``config`` column (the live runtime
+    #      config the worker loads via ``refresh_from_db``).  This is
+    #      the layer the backtest USED to skip — and the reason the
+    #      crypto_entropy_maker funnel rejected 99% of signals on
+    #      ``edge >= 1.0%`` even though live's edge floor is set to
+    #      0.0 in the DB.  Without this layer the backtest evaluates
+    #      a strictly-tighter strategy variant than live runs.
+    #   3. caller-supplied ``config`` (typically the trader's
+    #      ``strategy_params``) — overrides DB on conflict, just like
+    #      the live ``_merged_eval_params`` layering at
+    #      ``trader_orchestrator_worker:6809``.
+    db_config: dict[str, Any] = {}
     try:
-        loaded = loader.load(bt_slug, source_code, config)
+        from sqlalchemy import select as _sel
+        from models.database import Strategy as _Strategy
+        async with AsyncSessionLocal() as _cfg_session:
+            _row = (await _cfg_session.execute(
+                _sel(_Strategy).where(_Strategy.slug == slug)
+            )).scalar_one_or_none()
+            if _row is not None and isinstance(_row.config, dict):
+                db_config = dict(_row.config)
+    except Exception as _cfg_exc:
+        logger.warning("backtest could not load DB strategy config for %s: %s", slug, _cfg_exc)
+    merged_runtime_config = {**db_config, **(config or {})}
+    try:
+        loaded = loader.load(bt_slug, source_code, merged_runtime_config)
         strategy = loaded.instance
         result.strategy_name = getattr(strategy, "name", bt_slug)
     except Exception as e:
@@ -3150,14 +3610,34 @@ async def run_execution_backtest(
             # Funnel diagnostics — surface the count at each stage so
             # the operator can see where opps are lost (recorder
             # coverage gap vs matching-engine throughput vs cap).
+            # ── Canonical opp source: TradeSignal ─────────────────────
+            # TradeSignal is the system's authoritative record of "what
+            # the live trader saw and decided on" — every strategy that
+            # executed in production produced TradeSignal rows.  The
+            # earlier OpportunityHistory primary was a downstream
+            # cache that some strategies populate (scanner-driven) and
+            # others don't (crypto-worker, news, copy-trade), which
+            # forced a chain of fallbacks (loose-window broaden,
+            # discovery synthesis, events-feeders) just to handle the
+            # gap.  Replacing it with TradeSignal removes the gap by
+            # construction: a strategy that didn't fire a signal
+            # didn't trade live, and there's nothing to replay.
+            #
+            # Status filter: drop only the live-rejected statuses
+            # (``filtered`` quality-gate, ``failed`` evaluate-error,
+            # ``skipped`` deduplication).  ``expired`` IS replay-
+            # eligible — the live trader's queue just ran out of TTL,
+            # which the backtest matcher will independently re-decide.
+            from models.database import TradeSignal as _TS
             opps_total_in_window = 0
             try:
                 opps_total_in_window = int(
                     (await session.execute(
-                        select(sa_func.count(Opportunity.id)).where(
-                            Opportunity.detected_at >= start_dt,
-                            Opportunity.detected_at <= end_dt,
-                            Opportunity.strategy_type == slug,
+                        select(sa_func.count(_TS.id)).where(
+                            _TS.created_at >= start_dt,
+                            _TS.created_at <= end_dt,
+                            _TS.strategy_type == slug,
+                            _TS.status.notin_(["filtered", "failed", "skipped"]),
                         )
                     )).scalar_one() or 0
                 )
@@ -3165,31 +3645,13 @@ async def run_execution_backtest(
                 opps_total_in_window = 0
 
             try:
-                opp_stmt = (
-                    select(Opportunity)
-                    .where(
-                        Opportunity.detected_at >= start_dt,
-                        Opportunity.detected_at <= end_dt,
-                        Opportunity.strategy_type == slug,
-                    )
-                    .order_by(Opportunity.detected_at.asc())
-                    .limit(int(max_intents))
+                opps = await _load_opps_from_trade_signals(
+                    session=session,
+                    slug=slug,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                    max_rows=int(max_intents),
                 )
-                opps = (await session.execute(opp_stmt)).scalars().all()
-                # Fallback: if the slug filter found nothing, broaden to
-                # window-only.  Covers strategy renames (slug changes
-                # don't backfill historical rows).
-                if not opps:
-                    opp_stmt_loose = (
-                        select(Opportunity)
-                        .where(
-                            Opportunity.detected_at >= start_dt,
-                            Opportunity.detected_at <= end_dt,
-                        )
-                        .order_by(Opportunity.detected_at.asc())
-                        .limit(int(max_intents))
-                    )
-                    opps = (await session.execute(opp_stmt_loose)).scalars().all()
             except Exception:
                 opps = []
 
@@ -3532,8 +3994,31 @@ async def run_execution_backtest(
             # already loaded by the StrategyLoader above (line 1701).
             # Same code path live uses; same custom_checks execute.
             evaluate_skips: dict[str, int] = {}
+            # Track WHY each non-selected decision rejected the opp.
+            # Strategies emit a free-form ``reason`` string on
+            # StrategyDecision; aggregating these is the cheapest way
+            # to see which custom_check is the dominant filter.  The
+            # top reasons surface in the funnel warning so the operator
+            # doesn't need to dig.
+            evaluate_skip_reasons: dict[str, int] = {}
+            # Per-check failure counts, harvested from
+            # ``StrategyDecision.checks``.  Most strategies set a
+            # generic ``reason="X filters not met"`` and put the real
+            # detail in the per-check list — without aggregating these,
+            # the operator just sees one opaque reason for thousands of
+            # rejections.  Strategies that don't populate checks
+            # contribute nothing here; the reasons map above still
+            # surfaces their reason strings.
+            evaluate_failed_checks: dict[str, int] = {}
             evaluate_total = 0
             evaluate_selected = 0
+            # Opps where evaluate() raised / returned an unknown shape
+            # (eval_pair is None).  Counted separately because they
+            # bypass the strategy-side gate but still hit the platform
+            # gates with decision_obj=None — a passthrough path that
+            # used to be silently lumped into "neither selected nor
+            # skipped" math, leaving the funnel arithmetic confusing.
+            evaluate_passthrough = 0
             # Platform gates funnel — accumulated from the orchestrator's
             # ``apply_platform_decision_gates`` (the canonical decision
             # pipeline live runs at trader_orchestrator_worker:6474).
@@ -3546,13 +4031,67 @@ async def run_execution_backtest(
             # risk evaluator + stacking guard.  Updated as intents
             # accumulate so each subsequent opp sees the realistic
             # gross exposure / occupied markets the previous intents
-            # consumed — same way live does cycle accounting before
-            # submission.
+            # consumed.
+            #
+            # CRITICAL: positions DECAY over time as they resolve.  Live
+            # gross_exposure / open_position counters drop when a
+            # position closes; the backtest must mirror that or the
+            # caps fire prematurely and we underfill the strategy by
+            # 10x+.  ``_bt_open_intents`` is a min-heap-style list of
+            # ``(close_at_dt, size_usd, market_id)`` records; before
+            # evaluating each opp's risk, we evict every record whose
+            # ``close_at_dt`` is <= the opp's ``detected_at`` and
+            # decrement the running aggregates by the evicted size.
+            # The close timestamp is detected_at + days_to_resolution
+            # (from the opp's _tail_end / strategy_context payload),
+            # falling back to a 24h default for strategies that don't
+            # publish a horizon.
             bt_gross_exposure_usd = 0.0
             bt_open_positions = 0
             bt_cycle_orders = 0
             bt_occupied_market_ids: set[str] = set()
             bt_per_market_exposure: dict[str, float] = {}
+            # Each entry: {"close_at": datetime, "size_usd": float, "market_id": str}
+            bt_open_intents: list[dict[str, Any]] = []
+            from datetime import timedelta as _td_decay
+            _DEFAULT_HOLDING_HOURS = 24.0  # safe default for strategies w/o resolution horizon
+
+            def _bt_release_resolved(opp_at: datetime) -> None:
+                """Decrement bt_* portfolio counters for any open intent
+                whose close_at <= ``opp_at``.  Mirrors how the live
+                trader's risk_manager sees gross_exposure decay as
+                positions resolve over the day.  O(open_count) per opp.
+                """
+                nonlocal bt_gross_exposure_usd, bt_open_positions
+                if not bt_open_intents:
+                    return
+                kept: list[dict[str, Any]] = []
+                for entry in bt_open_intents:
+                    close_at = entry.get("close_at")
+                    if isinstance(close_at, datetime) and close_at <= opp_at:
+                        # Position resolved.  Drop the size from the
+                        # gross + per-market accumulators; decrement
+                        # the open-position count.  Markets that fall
+                        # to zero exposure are removed from the
+                        # occupied-set so the stacking guard sees a
+                        # clean slate.
+                        bt_gross_exposure_usd = max(
+                            0.0, bt_gross_exposure_usd - float(entry.get("size_usd") or 0.0)
+                        )
+                        bt_open_positions = max(0, bt_open_positions - 1)
+                        market_id = str(entry.get("market_id") or "")
+                        if market_id:
+                            bt_per_market_exposure[market_id] = max(
+                                0.0,
+                                bt_per_market_exposure.get(market_id, 0.0)
+                                - float(entry.get("size_usd") or 0.0),
+                            )
+                            if bt_per_market_exposure[market_id] <= 1e-9:
+                                bt_per_market_exposure.pop(market_id, None)
+                                bt_occupied_market_ids.discard(market_id)
+                    else:
+                        kept.append(entry)
+                bt_open_intents[:] = kept
 
             global_limits = {
                 "max_gross_exposure_usd": (
@@ -3583,6 +4122,33 @@ async def run_execution_backtest(
                 else {}
             )
 
+            # Bulk-pre-fetch the per-opp historical book index used
+            # for evaluate-time live_context lookups.  Live's
+            # RuntimeTradeSignalView overlays ``live_selected_price``
+            # and ``live_edge_percent`` from current market state —
+            # without that overlay, evaluate rejects worker-driven
+            # signals (whose persisted ``edge_percent`` is null) on
+            # the edge floor.  We reconstruct the same overlay from
+            # the historical book at each signal's detected_at via
+            # an in-memory bisect (one bulk pull, O(log N) per opp),
+            # which is ~50× faster than constructing a streaming
+            # replay and calling snapshot_at per opp.
+            _eval_token_universe = list({
+                str(p.get("token_id") or "").strip()
+                for o in (opps or [])
+                for p in (
+                    (getattr(o, "positions_data", None) or {}).get("positions_to_take") or []
+                )
+                if isinstance(p, dict) and str(p.get("token_id") or "").strip()
+            })
+            _eval_book_replay: Any = None
+            if _eval_token_universe:
+                _eval_book_replay = await _BulkBookIndex.build(
+                    token_ids=_eval_token_universe,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                )
+
             for opp in opps or []:
                 # OpportunityHistory.positions_data is a JSON blob;
                 # positions_to_take lives under the "positions_to_take"
@@ -3611,12 +4177,46 @@ async def run_execution_backtest(
                 if detected.tzinfo is None:
                     detected = detected.replace(tzinfo=timezone.utc)
 
+                # Decay the running portfolio state by any positions
+                # that resolved BEFORE this opp's detected_at — keeps
+                # the gate's view of gross_exposure / open_positions
+                # honest as backtest time advances.
+                _bt_release_resolved(detected)
+
                 evaluate_total += 1
+                # Build the historically-reconstructed live_context for
+                # this signal — same shape live's worker passes to
+                # evaluate, but sourced from the historical book at the
+                # signal's detected_at instead of current mid.  This is
+                # the single change that takes evaluate() from
+                # synthetically-broken to byte-identical with live for
+                # worker-driven signals (crypto_*, news_edge, etc.)
+                # whose persisted ``edge_percent`` is null and gets
+                # overlaid at runtime.
+                _eval_live_context: dict[str, Any] = {}
+                if (
+                    _eval_book_replay is not None
+                    and getattr(opp, "_underlying_signal", None) is not None
+                ):
+                    try:
+                        _eval_live_context = await _build_replay_live_context(
+                            signal=opp._underlying_signal,
+                            pdata=pdata if isinstance(pdata, dict) else {},
+                            book_replay=_eval_book_replay,
+                            detected_at=detected,
+                        )
+                    except Exception as _ctx_exc:
+                        logger.debug(
+                            "live_context build failed for opp %s: %s",
+                            getattr(opp, "id", "?"),
+                            _ctx_exc,
+                        )
                 eval_pair = _backtest_evaluate_opportunity(
                     strategy=strategy,
                     opp=opp,
                     pdata=pdata if isinstance(pdata, dict) else {},
                     initial_capital_usd=initial_capital_usd,
+                    live_context=_eval_live_context,
                 )
                 # When evaluate() raised or produced an unknown shape,
                 # ``eval_pair`` is None — fall back to passthrough so
@@ -3624,11 +4224,60 @@ async def run_execution_backtest(
                 if eval_pair is None:
                     decision_obj = None
                     signal_view = None
+                    evaluate_passthrough += 1
                 else:
                     decision_obj, signal_view = eval_pair
                     eval_status = str(getattr(decision_obj, "decision", "selected") or "selected").lower()
                     if eval_status != "selected":
                         evaluate_skips[eval_status] = evaluate_skips.get(eval_status, 0) + 1
+                        # Aggregate the free-form reason so we can see
+                        # which custom_check is dominating rejections.
+                        # Trim long reason strings to keep the funnel
+                        # warning compact.
+                        reason = str(
+                            getattr(decision_obj, "reason", "") or ""
+                        ).strip() or "(no reason)"
+                        if len(reason) > 80:
+                            reason = reason[:77] + "..."
+                        evaluate_skip_reasons[reason] = (
+                            evaluate_skip_reasons.get(reason, 0) + 1
+                        )
+                        # Drill into the per-check list so a generic
+                        # reason like "Tail carry filters not met"
+                        # decomposes into ``edge=300 · confidence=200
+                        # · liquidity=173`` telling the operator which
+                        # individual filter is the dominant blocker.
+                        try:
+                            checks = getattr(decision_obj, "checks", None) or []
+                        except Exception:
+                            checks = []
+                        for chk in checks:
+                            try:
+                                passed = bool(getattr(chk, "passed", True))
+                                if passed:
+                                    continue
+                                # DecisionCheck.key is the canonical
+                                # identifier; fall back to label / name
+                                # for any non-standard check shape.
+                                name = (
+                                    str(
+                                        getattr(chk, "key", None)
+                                        or getattr(chk, "label", None)
+                                        or getattr(chk, "name", None)
+                                        or ""
+                                    ).strip()
+                                    or "(unnamed)"
+                                )
+                                detail = str(getattr(chk, "detail", "") or "").strip()
+                                if detail:
+                                    name = f"{name} [{detail}]"
+                                if len(name) > 80:
+                                    name = name[:77] + "..."
+                            except Exception:
+                                continue
+                            evaluate_failed_checks[name] = (
+                                evaluate_failed_checks.get(name, 0) + 1
+                            )
                         continue
 
                 # ----------------------------------------------------------
@@ -3756,11 +4405,32 @@ async def run_execution_backtest(
                             # tag matches what the operator would see in
                             # live's audit trail.
                             blocking_gate = "platform_gate"
+                            blocking_detail = ""
                             for g in gate_result.get("platform_gates") or []:
                                 if str(g.get("status") or "").lower() == "blocked":
                                     blocking_gate = str(g.get("gate") or "platform_gate")
+                                    blocking_detail = str(g.get("detail") or "")
                                     break
                             platform_skips[blocking_gate] = platform_skips.get(blocking_gate, 0) + 1
+                            # When the risk gate is the blocker, drill
+                            # into its sub-check key (cycle, notional,
+                            # gross_exposure, open_positions, market_
+                            # exposure...) so the operator sees WHICH
+                            # risk dimension is the bottleneck rather
+                            # than the catch-all "risk".  Detail looks
+                            # like "Risk blocked: trader_open_positions
+                            # (next=11 max=10)" — extract the sub-key.
+                            if blocking_gate == "risk" and blocking_detail:
+                                sub = blocking_detail
+                                if sub.startswith("Risk blocked: "):
+                                    sub = sub[len("Risk blocked: "):]
+                                # Trim trailing parenthetical detail to
+                                # keep the key small; full detail is in
+                                # the per-skip-reasons map below.
+                                sub_key = sub.split(" (", 1)[0].strip() or "(unknown)"
+                                platform_skips[f"risk:{sub_key}"] = (
+                                    platform_skips.get(f"risk:{sub_key}", 0) + 1
+                                )
                             gate_blocked = True
                         else:
                             size_after_gates = float(gate_result.get("size_usd") or opp_total_size_usd)
@@ -3775,19 +4445,59 @@ async def run_execution_backtest(
                     continue
                 evaluate_selected += 1
 
-                # Compute the proportional shrink factor when the gate
-                # capped the opp's economic notional.  Each position's
-                # original notional gets scaled by this so the relative
-                # mix the strategy emitted is preserved.
+                # Determine the per-intent USD size.  Two cases:
+                #
+                # 1. Positions carry their own ``notional_usd``: the
+                #    strategy emitted multi-position opps with explicit
+                #    weights.  Apply a proportional shrink so the gate-
+                #    capped total is distributed across positions in
+                #    the strategy's intended ratio.
+                #
+                # 2. Positions are sizeless (the common case for
+                #    single-position scanner strategies like
+                #    tail_end_carry — they emit ``action/outcome/price/
+                #    token_id`` and rely on the orchestrator to size).
+                #    Use the gate-determined ``size_after_gates`` (or
+                #    the strategy's ``decision.size_usd`` if the gates
+                #    didn't run).  Splitting across N positions equally
+                #    matches what live's orchestrator does at submit
+                #    time.  Previously the fallback was a hardcoded
+                #    ``$50`` which silently quadrupled live's actual
+                #    sizing (e.g. tail_end_carry's max_size_usd=$5),
+                #    inflating bt_gross_exposure_usd by 10x and
+                #    causing the global_gross_exposure cap to fire
+                #    after 10 intents instead of the realistic ~100.
+                positions_with_size = [
+                    p for p in positions_to_take
+                    if isinstance(p, dict) and float(p.get("notional_usd") or 0.0) > 0.0
+                ]
+                fallback_per_position_usd: float | None = None
                 shrink = 1.0
-                if size_after_gates is not None:
-                    opp_total_size_usd_check = sum(
-                        float(p.get("notional_usd") or 0.0)
-                        for p in positions_to_take
-                        if isinstance(p, dict)
+                if positions_with_size:
+                    if size_after_gates is not None:
+                        opp_total_size_usd_check = sum(
+                            float(p.get("notional_usd") or 0.0)
+                            for p in positions_with_size
+                        )
+                        if opp_total_size_usd_check > 0.0:
+                            shrink = max(0.0, min(1.0, size_after_gates / opp_total_size_usd_check))
+                else:
+                    # Strategy did not emit per-position notionals.
+                    # Source the size from the gate (preferred — already
+                    # respects per-trade caps + risk-evaluator clamps)
+                    # or from the strategy's decision.
+                    candidate_total = (
+                        float(size_after_gates)
+                        if size_after_gates is not None and size_after_gates > 0.0
+                        else float(getattr(decision_obj, "size_usd", 0.0) or 0.0)
+                        if decision_obj is not None
+                        else 0.0
                     )
-                    if opp_total_size_usd_check > 0.0:
-                        shrink = max(0.0, min(1.0, size_after_gates / opp_total_size_usd_check))
+                    sized_positions = [
+                        p for p in positions_to_take if isinstance(p, dict)
+                    ]
+                    if candidate_total > 0.0 and sized_positions:
+                        fallback_per_position_usd = candidate_total / len(sized_positions)
 
                 for idx, pos in enumerate(positions_to_take):
                     if not isinstance(pos, dict):
@@ -3799,7 +4509,18 @@ async def run_execution_backtest(
                     if side not in {"BUY", "SELL"}:
                         side = "BUY"
                     price = float(pos.get("price") or 0.5)
-                    size_usd = float(pos.get("notional_usd") or 50.0) * shrink
+                    pos_notional = float(pos.get("notional_usd") or 0.0)
+                    if pos_notional > 0.0:
+                        size_usd = pos_notional * shrink
+                    elif fallback_per_position_usd is not None:
+                        size_usd = fallback_per_position_usd
+                    else:
+                        # Last-resort guard — same conservative
+                        # default the orchestrator uses when it can't
+                        # determine a size.  Should be reached only
+                        # when strategy.evaluate didn't return a size
+                        # and the gates were skipped, which is rare.
+                        size_usd = 50.0
                     if size_usd <= 0.0:
                         continue
 
@@ -3870,6 +4591,65 @@ async def run_execution_backtest(
                         bt_per_market_exposure[market_id] = (
                             bt_per_market_exposure.get(market_id, 0.0) + size_usd
                         )
+                    # Compute the position's expected close timestamp
+                    # so the next opp sees this slot recycle when the
+                    # position resolves.  Sources, in priority order:
+                    #
+                    #  1. Underlying TradeSignal.expires_at — every
+                    #     signal carries the live trader's TTL; for
+                    #     short-horizon strategies (crypto 5-min binary
+                    #     options, news_edge minute decays) this is
+                    #     the right close time.  Without it, the 24h
+                    #     fallback pins crypto slots open forever and
+                    #     ``risk:trader_open_orders`` rejects every
+                    #     opp after the first ~50.
+                    #  2. tail_end_carry's ``_tail_end.days_to_resolution``
+                    #  3. crypto's ``_entropy.seconds_left`` (signal
+                    #     payload's hint for time-to-binary-resolution)
+                    #  4. strategy_context.exit_within_seconds variants
+                    #  5. 24h default — only as last resort
+                    horizon_seconds: float | None = None
+                    underlying_sig = getattr(opp, "_underlying_signal", None)
+                    if underlying_sig is not None:
+                        sig_expires = getattr(underlying_sig, "expires_at", None)
+                        if isinstance(sig_expires, datetime):
+                            sig_exp = sig_expires
+                            if sig_exp.tzinfo is None:
+                                sig_exp = sig_exp.replace(tzinfo=timezone.utc)
+                            ttl = (sig_exp - detected).total_seconds()
+                            if ttl > 0:
+                                horizon_seconds = float(ttl)
+                    tail_block = pos.get("_tail_end") if isinstance(pos.get("_tail_end"), dict) else None
+                    if horizon_seconds is None and isinstance(tail_block, dict):
+                        d = tail_block.get("days_to_resolution")
+                        if isinstance(d, (int, float)) and d > 0:
+                            horizon_seconds = float(d) * 86400.0
+                    entropy_block = pos.get("_entropy") if isinstance(pos.get("_entropy"), dict) else None
+                    if horizon_seconds is None and isinstance(entropy_block, dict):
+                        sl = entropy_block.get("seconds_left")
+                        if isinstance(sl, (int, float)) and sl > 0:
+                            horizon_seconds = float(sl)
+                    if horizon_seconds is None:
+                        sc = pdata.get("strategy_context") if isinstance(pdata, dict) else None
+                        if isinstance(sc, dict):
+                            for key in (
+                                "exit_within_seconds",
+                                "expected_holding_seconds",
+                                "expected_holding_minutes",
+                                "max_holding_seconds",
+                            ):
+                                v = sc.get(key)
+                                if isinstance(v, (int, float)) and v > 0:
+                                    horizon_seconds = (
+                                        float(v) * 60.0 if "minutes" in key else float(v)
+                                    )
+                                    break
+                    if horizon_seconds is None:
+                        horizon_seconds = _DEFAULT_HOLDING_HOURS * 3600.0
+                    close_at = detected + _td_decay(seconds=horizon_seconds)
+                    bt_open_intents.append(
+                        {"close_at": close_at, "size_usd": size_usd, "market_id": market_id}
+                    )
 
             if evaluate_total > 0:
                 # Surface the evaluate funnel so the operator can see
@@ -3881,7 +4661,44 @@ async def run_execution_backtest(
                 ]
                 for st, n in sorted(evaluate_skips.items(), key=lambda kv: -kv[1]):
                     eval_msg_parts.append(f"{st}={n}")
+                if evaluate_passthrough > 0:
+                    # eval_pair=None opps fall through to the gates with
+                    # decision_obj=None — surfaced separately so the
+                    # arithmetic ``selected + skipped + passthrough ==
+                    # total`` is always intact.
+                    eval_msg_parts.append(f"eval_raised_passthrough={evaluate_passthrough}")
                 result.validation_warnings.append(" · ".join(eval_msg_parts))
+
+                # Top reasons behind non-selected decisions.  Capped at
+                # 5 entries so the warning stays scannable; if a single
+                # reason dominates (the common case), it's the first
+                # one and tells the operator which custom_check or
+                # gate to relax.  Reasons are pulled directly from
+                # ``StrategyDecision.reason`` — same string the live
+                # audit trail records.
+                if evaluate_skip_reasons:
+                    top_reasons = sorted(
+                        evaluate_skip_reasons.items(), key=lambda kv: -kv[1]
+                    )[:5]
+                    parts = ["evaluate() top rejection reasons"]
+                    for reason, n in top_reasons:
+                        parts.append(f"  • {n}× {reason}")
+                    result.validation_warnings.append("\n".join(parts))
+
+                # Per-check failure breakdown — decomposes the generic
+                # reasons above into specific custom_check names so the
+                # operator can see whether ``edge``, ``confidence``,
+                # ``liquidity``, ``dtr_window``, etc. is the dominant
+                # blocker.  Top 10 keeps the warning useful without
+                # exploding for strategies with many checks.
+                if evaluate_failed_checks:
+                    top_checks = sorted(
+                        evaluate_failed_checks.items(), key=lambda kv: -kv[1]
+                    )[:10]
+                    parts = ["evaluate() failed-check breakdown"]
+                    for name, n in top_checks:
+                        parts.append(f"  • {n}× {name}")
+                    result.validation_warnings.append("\n".join(parts))
 
             if platform_skips:
                 # Platform-gate funnel — emitted directly from the
@@ -4021,10 +4838,17 @@ async def run_execution_backtest(
     run_start = time.monotonic()
     replay_for_run: Any = None
     try:
-        async with AsyncSessionLocal() as run_session:
+        # The book replays manage their own short-lived sessions per
+        # chunk (see book_replay.py — production pool reaper would
+        # otherwise kill any single session held >45s on a multi-day
+        # replay).  We pass session=None to opt into that path; the
+        # outer ``async with`` is no longer needed but kept as a
+        # placeholder for any future per-run resources we want
+        # scoped to the matcher's lifetime.
+        async with AsyncSessionLocal() as _matcher_run_scope:  # noqa: F841 — reserved for future per-run resources
             if use_delta_replay:
                 replay_for_run = _BookDeltaReplay(
-                    session=run_session,
+                    session=None,
                     token_ids=tokens,
                     start=start_dt,
                     end=end_dt,
@@ -4045,7 +4869,7 @@ async def run_execution_backtest(
                 )
             else:
                 replay_for_run = BookReplay(
-                    session=run_session,
+                    session=None,
                     token_ids=tokens,
                     start=start_dt,
                     end=end_dt,

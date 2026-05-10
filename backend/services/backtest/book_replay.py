@@ -213,7 +213,7 @@ class BookReplay:
     def __init__(
         self,
         *,
-        session: AsyncSession,
+        session: AsyncSession | None = None,
         token_ids: Sequence[str],
         start: datetime,
         end: datetime,
@@ -257,57 +257,75 @@ class BookReplay:
             self._timeout_raised = True  # don't retry every chunk
 
     async def iter_snapshots(self) -> AsyncIterator[BookSnapshot]:
-        """Yield snapshots in (observed_at, sequence) order."""
+        """Yield snapshots in (observed_at, sequence) order.
+
+        When a session was passed at construction (legacy / test path)
+        we use it.  Otherwise each chunk runs in its own short-lived
+        session, avoiding the production pool reaper's 45s checkout
+        limit — without that, multi-day replays get killed mid-stream.
+        """
         if not self._token_ids:
             return
-        await self._raise_session_timeout()
+        from contextlib import asynccontextmanager
+        from models.database import AsyncSessionLocal as _BTSession
+
+        # When a caller-provided session is set we run all chunks
+        # against it (legacy behaviour; preserves test stubs that
+        # mock the session).  Production callers pass None (the new
+        # default) to opt into the fresh-per-chunk path.
+        @asynccontextmanager
+        async def _session_for_chunk():
+            if self._session is not None:
+                yield self._session
+                return
+            async with _BTSession() as fresh:
+                try:
+                    await fresh.execute(
+                        text(f"SET statement_timeout = {int(_BACKTEST_STATEMENT_TIMEOUT_MS)}")
+                    )
+                except Exception:
+                    pass
+                yield fresh
+
         last_observed = self._start
         last_id: Optional[str] = None
         chunk_index = 0
         total_yielded = 0
+        if self._session is not None:
+            await self._raise_session_timeout()
         while True:
-            stmt = (
-                select(MarketMicrostructureSnapshot)
-                .where(
-                    MarketMicrostructureSnapshot.token_id.in_(self._token_ids),
-                    MarketMicrostructureSnapshot.observed_at >= last_observed,
-                    MarketMicrostructureSnapshot.observed_at <= self._end,
-                )
-                .order_by(
-                    MarketMicrostructureSnapshot.observed_at.asc(),
-                    MarketMicrostructureSnapshot.id.asc(),
-                )
-                .limit(self._chunk_size)
-            )
-            if self._snapshot_type:
-                stmt = stmt.where(
-                    MarketMicrostructureSnapshot.snapshot_type == self._snapshot_type
-                )
-            if last_id is not None:
-                stmt = stmt.where(MarketMicrostructureSnapshot.id != last_id)
             try:
-                rows = (await self._session.execute(stmt)).scalars().all()
+                async with _session_for_chunk() as session:
+                    stmt = (
+                        select(MarketMicrostructureSnapshot)
+                        .where(
+                            MarketMicrostructureSnapshot.token_id.in_(self._token_ids),
+                            MarketMicrostructureSnapshot.observed_at >= last_observed,
+                            MarketMicrostructureSnapshot.observed_at <= self._end,
+                        )
+                        .order_by(
+                            MarketMicrostructureSnapshot.observed_at.asc(),
+                            MarketMicrostructureSnapshot.id.asc(),
+                        )
+                        .limit(self._chunk_size)
+                    )
+                    if self._snapshot_type:
+                        stmt = stmt.where(
+                            MarketMicrostructureSnapshot.snapshot_type == self._snapshot_type
+                        )
+                    if last_id is not None:
+                        stmt = stmt.where(MarketMicrostructureSnapshot.id != last_id)
+                    rows = (await session.execute(stmt)).scalars().all()
             except Exception as exc:
-                # If a chunk fails (statement_timeout under load,
-                # network blip, etc.) log and stop streaming rather
-                # than nuking the entire backtest.  The matching
-                # engine handles a truncated replay gracefully — open
-                # positions just don't see further book updates and
-                # the result records whatever fills already happened.
+                # Per-chunk failure (statement_timeout, connection
+                # drop, reaper kill).  Log + truncate; the matching
+                # engine handles a truncated replay gracefully.
                 logger.warning(
                     "BookReplay chunk %d failed after %d snapshots; truncating replay: %s",
                     chunk_index, total_yielded, exc,
                 )
                 self.truncated = True
                 self.truncation_reason = str(exc)[:500]
-                # Roll back the failed transaction so the session can
-                # be returned cleanly when the caller's ``async with``
-                # exits.  Without this, asyncpg keeps the session in
-                # an aborted state.
-                try:
-                    await self._session.rollback()
-                except Exception:
-                    pass
                 break
             if not rows:
                 break
@@ -484,7 +502,7 @@ class BookDeltaReplay:
     def __init__(
         self,
         *,
-        session: AsyncSession,
+        session: AsyncSession | None = None,
         token_ids: Sequence[str],
         start: datetime,
         end: datetime,
@@ -520,38 +538,50 @@ class BookDeltaReplay:
     async def _load_anchors(self) -> dict[str, _RunningBook]:
         """For each token, fetch the most recent snapshot at-or-before
         ``start`` and seed a ``_RunningBook`` from it.  Tokens with no
-        anchor get an empty book (bootstrap mode).
+        anchor get an empty book (bootstrap mode).  Uses caller-
+        provided session when present (test path) or fresh sessions
+        per chunk (production reaper-avoidance).
         """
         anchors: dict[str, _RunningBook] = {}
         if not self._token_ids:
             return anchors
-        # Chunk by token to keep per-query plans bounded.  We do one
-        # subquery per chunk that finds (per token) the row with the
-        # max observed_at <= start, and then a join to fetch its
-        # bids_json / asks_json.
+        from contextlib import asynccontextmanager
+        from models.database import AsyncSessionLocal as _BTSession
+
+        @asynccontextmanager
+        async def _session_for_chunk():
+            if self._session is not None:
+                yield self._session
+                return
+            async with _BTSession() as fresh:
+                try:
+                    await fresh.execute(
+                        text(f"SET statement_timeout = {int(_BACKTEST_STATEMENT_TIMEOUT_MS)}")
+                    )
+                except Exception:
+                    pass
+                yield fresh
+
         CHUNK = 50
         for i in range(0, len(self._token_ids), CHUNK):
             chunk = self._token_ids[i : i + CHUNK]
             try:
-                stmt = (
-                    select(MarketMicrostructureSnapshot)
-                    .where(
-                        MarketMicrostructureSnapshot.token_id.in_(chunk),
-                        MarketMicrostructureSnapshot.observed_at <= self._start,
-                        MarketMicrostructureSnapshot.snapshot_type == "book",
+                async with _session_for_chunk() as session:
+                    stmt = (
+                        select(MarketMicrostructureSnapshot)
+                        .where(
+                            MarketMicrostructureSnapshot.token_id.in_(chunk),
+                            MarketMicrostructureSnapshot.observed_at <= self._start,
+                            MarketMicrostructureSnapshot.snapshot_type == "book",
+                        )
+                        .order_by(
+                            MarketMicrostructureSnapshot.token_id.asc(),
+                            MarketMicrostructureSnapshot.observed_at.desc(),
+                        )
                     )
-                    .order_by(
-                        MarketMicrostructureSnapshot.token_id.asc(),
-                        MarketMicrostructureSnapshot.observed_at.desc(),
-                    )
-                )
-                rows = (await self._session.execute(stmt)).scalars().all()
+                    rows = (await session.execute(stmt)).scalars().all()
             except Exception as exc:
                 logger.warning("Anchor lookup failed for chunk; using bootstrap: %s", exc)
-                try:
-                    await self._session.rollback()
-                except Exception:
-                    pass
                 continue
             # First row per token is the most recent (we sorted desc).
             seen: set[str] = set()
@@ -585,36 +615,53 @@ class BookDeltaReplay:
         """
         if not self._token_ids:
             return
-        await self._raise_session_timeout()
+        from contextlib import asynccontextmanager
+        from models.database import AsyncSessionLocal as _BTSession
 
         # Seed running state from anchors.  Tokens without anchors get
         # empty books and are populated lazily from delta queue_depth_before.
         running: dict[str, _RunningBook] = await self._load_anchors()
 
-        # Walk deltas in time order, batched.
+        @asynccontextmanager
+        async def _session_for_chunk():
+            if self._session is not None:
+                yield self._session
+                return
+            async with _BTSession() as fresh:
+                try:
+                    await fresh.execute(
+                        text(f"SET statement_timeout = {int(_BACKTEST_STATEMENT_TIMEOUT_MS)}")
+                    )
+                except Exception:
+                    pass
+                yield fresh
+
         BookDeltaEvent = self._BookDeltaEvent
         last_observed = self._start
         last_id: Optional[str] = None
         chunk_index = 0
         total_yielded = 0
+        if self._session is not None:
+            await self._raise_session_timeout()
         while True:
-            stmt = (
-                select(BookDeltaEvent)
-                .where(
-                    BookDeltaEvent.token_id.in_(self._token_ids),
-                    BookDeltaEvent.observed_at >= last_observed,
-                    BookDeltaEvent.observed_at <= self._end,
-                )
-                .order_by(
-                    BookDeltaEvent.observed_at.asc(),
-                    BookDeltaEvent.id.asc(),
-                )
-                .limit(self._chunk_size)
-            )
-            if last_id is not None:
-                stmt = stmt.where(BookDeltaEvent.id != last_id)
             try:
-                rows = (await self._session.execute(stmt)).scalars().all()
+                async with _session_for_chunk() as session:
+                    stmt = (
+                        select(BookDeltaEvent)
+                        .where(
+                            BookDeltaEvent.token_id.in_(self._token_ids),
+                            BookDeltaEvent.observed_at >= last_observed,
+                            BookDeltaEvent.observed_at <= self._end,
+                        )
+                        .order_by(
+                            BookDeltaEvent.observed_at.asc(),
+                            BookDeltaEvent.id.asc(),
+                        )
+                        .limit(self._chunk_size)
+                    )
+                    if last_id is not None:
+                        stmt = stmt.where(BookDeltaEvent.id != last_id)
+                    rows = (await session.execute(stmt)).scalars().all()
             except Exception as exc:
                 logger.warning(
                     "BookDeltaReplay chunk %d failed after %d snapshots; truncating: %s",
@@ -622,10 +669,6 @@ class BookDeltaReplay:
                 )
                 self.truncated = True
                 self.truncation_reason = str(exc)[:500]
-                try:
-                    await self._session.rollback()
-                except Exception:
-                    pass
                 break
             if not rows:
                 break
