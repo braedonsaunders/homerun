@@ -4747,5 +4747,397 @@
     "valid": "Валидно",
     "invalid": "Невалидно",
     "classLabel": "Класс:"
+  },
+  "aiCommandBar": {
+    "title": "Глобальный поиск",
+    "placeholders": {
+      "global": "Поиск рынков, трейдеров, стратегий, новостей, кошельков — чего угодно…",
+      "ask": "Спросите что угодно о рынках, стратегиях, рисках…",
+      "commands": "Поиск команд…"
+    },
+    "latencyMs": "{{ms}}мс",
+    "escButton": "ESC",
+    "allFilter": "Все",
+    "pinned": "Закреплённые",
+    "recentSearches": "Недавние запросы",
+    "quickActions": "Быстрые действия",
+    "noMatches": "Совпадений нет. Попробуйте другие ключевые слова или снимите фильтры по типу.",
+    "viewAllResultOne": "Показать {{count}} результат по",
+    "viewAllResultsOther": "Показать все {{count}} результатов по",
+    "thinking": "Думаю…",
+    "aiResponse": "Ответ ИИ",
+    "askPrompt": "Введите вопрос и нажмите Enter",
+    "yesPrice": "YES ${{price}}",
+    "liquidityShort": "Ликв ${{value}}",
+    "pin": "Закрепить",
+    "unpin": "Открепить",
+    "footer": {
+      "open": "открыть",
+      "navigate": "навигация",
+      "commands": "команды",
+      "close": "закрыть"
+    },
+    "commands": {
+      "askAi": {
+        "label": "Задать вопрос ИИ",
+        "description": "Чат с ИИ-копилотом"
+      },
+      "resolutionAnalysis": {
+        "label": "Анализ резолюции",
+        "description": "Проанализировать, как разрешится рынок"
+      },
+      "marketAnalysis": {
+        "label": "Анализ рынка",
+        "description": "Глубокий ИИ-анализ по любой теме"
+      },
+      "newsSentiment": {
+        "label": "Настроение новостей",
+        "description": "Поиск новостей и анализ настроений"
+      },
+      "openCopilot": {
+        "label": "Открыть ИИ-копилот",
+        "description": "Открыть панель ИИ-помощника"
+      }
+    },
+    "types": {
+      "market": {
+        "label": "Рынок",
+        "plural": "Рынки"
+      },
+      "event": {
+        "label": "Событие",
+        "plural": "События"
+      },
+      "category": {
+        "label": "Категория",
+        "plural": "Категории"
+      },
+      "strategy": {
+        "label": "Стратегия",
+        "plural": "Стратегии"
+      },
+      "dataSource": {
+        "label": "Источник данных",
+        "plural": "Источники данных"
+      },
+      "trader": {
+        "label": "Трейдер",
+        "plural": "Трейдеры"
+      },
+      "wallet": {
+        "label": "Кошелёк",
+        "plural": "Кошельки"
+      },
+      "news": {
+        "label": "Новость",
+        "plural": "Новости"
+      },
+      "alert": {
+        "label": "Оповещение",
+        "plural": "Оповещения"
+      },
+      "research": {
+        "label": "Исследование",
+        "plural": "Исследования"
+      },
+      "opportunity": {
+        "label": "Возможность",
+        "plural": "Возможности"
+      },
+      "fallback": {
+        "label": "Элемент",
+        "plural": "Элементы"
+      }
+    }
+  },
+  "aiCopilotPanel": {
+    "title": "ИИ-копилот",
+    "openInAiTab": "Открыть во вкладке ИИ",
+    "clearChat": "Очистить чат",
+    "chatLabel": "Чат",
+    "sessionsCountOne": "{{count}} сессия",
+    "sessionsCountOther": "{{count}} сессий",
+    "inputPlaceholder": "Спросить об этой возможности…",
+    "noResponse": "(Нет ответа)",
+    "errorPrefix": "Ошибка: {{message}}",
+    "failedToGetResponse": "Не удалось получить ответ",
+    "welcomeTitle": {
+      "strategy": "Спросите меня что угодно об этой стратегии",
+      "dataSource": "Спросите меня что угодно об этом источнике данных",
+      "default": "Спросите меня что угодно о ваших сделках"
+    },
+    "welcomeSubtitle": {
+      "strategy": "Я могу объяснить код, предложить улучшения и применять прямые правки стратегии по запросу.",
+      "dataSource": "Я могу анализировать логику ингеста, улучшать нормализацию и применять прямые правки источника по запросу.",
+      "default": "Я могу анализировать возможности, оценивать риски и помогать вам принимать решения."
+    },
+    "quickActions": {
+      "strategy": {
+        "explainCode": {
+          "label": "Объяснить код",
+          "prompt": "Объясните этот код стратегии от начала до конца: detect/evaluate/exit и основные компромиссы по риску."
+        },
+        "improveEvaluate": {
+          "label": "Улучшить evaluate()",
+          "prompt": "Улучшите evaluate(), чтобы ужесточить контроль рисков и выдавать более чёткие выходы DecisionCheck."
+        },
+        "addFeature": {
+          "label": "Добавить функцию",
+          "prompt": "Добавьте настраиваемый фильтр ликвидности рынка и подключите его к default_config + config_schema. Примените изменения кода напрямую."
+        },
+        "reviewSafety": {
+          "label": "Проверить безопасность",
+          "prompt": "Проверьте эту стратегию на потенциальные логические ошибки, риски исполнения и неверные предположения."
+        }
+      },
+      "dataSource": {
+        "explainSource": {
+          "label": "Объяснить источник",
+          "prompt": "Объясните пайплайн этого источника данных и где он может сбоить в продакшене."
+        },
+        "hardenParsing": {
+          "label": "Усилить парсинг",
+          "prompt": "Улучшите этот источник, чтобы лучше нормализовать таймстампы, ID и категории. Примените изменения кода напрямую."
+        },
+        "addGeotags": {
+          "label": "Добавить геотеги",
+          "prompt": "Добавьте надёжную поддержку геотегов и убедитесь, что выход следует контракту записи. Примените изменения кода напрямую."
+        },
+        "retentionReview": {
+          "label": "Анализ хранения",
+          "prompt": "Рекомендуйте изменения хранения/конфигурации для этого источника на основе ожидаемого объёма и использования."
+        }
+      },
+      "default": {
+        "analyzeRisk": {
+          "label": "Проанализировать риски",
+          "prompt": "Каковы основные факторы риска для этой возможности?"
+        },
+        "resolutionSafety": {
+          "label": "Безопасность резолюции",
+          "prompt": "Насколько безопасны критерии резолюции? Есть ли неоднозначности?"
+        },
+        "shouldITrade": {
+          "label": "Стоит ли торговать?",
+          "prompt": "Учитывая текущие данные, стоит ли мне выполнять эту сделку? Каковы плюсы и минусы?"
+        },
+        "explainStrategy": {
+          "label": "Объяснить стратегию",
+          "prompt": "Объясните, как работает эта арбитражная стратегия и почему существует эта возможность."
+        }
+      }
+    }
+  },
+  "aiCortexView": {
+    "enabled": "Включено",
+    "writeActions": "Действия записи",
+    "memoriesCount": "{{count}} воспоминаний",
+    "stop": "Стоп",
+    "runNow": "Запустить сейчас",
+    "errorBold": "Ошибка:",
+    "unknownError": "Неизвестная ошибка",
+    "tabs": {
+      "activity": "Активность",
+      "memory": "Память ({{count}})",
+      "settings": "Настройки"
+    },
+    "loadingActivity": "Загрузка активности...",
+    "noActivityYet": "Активности пока нет. Включите Cortex и запустите цикл.",
+    "clearHistory": "Очистить историю",
+    "runningNow": "Сейчас выполняется",
+    "startingCycle": "Запуск цикла...",
+    "memory": {
+      "allCategories": "Все категории",
+      "showExpired": "Показать истекшие",
+      "addMemory": "Добавить воспоминание",
+      "contentPlaceholder": "Содержание воспоминания...",
+      "save": "Сохранить",
+      "cancel": "Отмена",
+      "importanceLabel": "Важность:",
+      "accessedTimes": "Доступ {{count}} раз",
+      "empty": "Воспоминаний пока нет. Cortex научится со временем.",
+      "categories": {
+        "observation": "наблюдение",
+        "lesson": "урок",
+        "rule": "правило",
+        "preference": "предпочтение"
+      }
+    },
+    "settings": {
+      "loading": "Загрузка настроек...",
+      "configuration": "Конфигурация",
+      "model": "Модель",
+      "defaultModel": "По умолчанию (Настройки ИИ)",
+      "runIntervalSeconds": "Интервал запуска (секунды)",
+      "maxIterations": "Макс. итераций",
+      "temperature": "Температура",
+      "memoryLimit": "Лимит памяти (за запуск)",
+      "telegramNotifications": "Уведомления Telegram",
+      "onWriteActions": "при действиях записи",
+      "mandateTitle": "Мандат (Системный промпт)",
+      "mandatePlaceholder": "Оставьте пустым для мандата по умолчанию. Настройте, чтобы изменить приоритеты и поведение Cortex...",
+      "saveSettings": "Сохранить настройки",
+      "discard": "Отменить"
+    }
+  },
+  "aiChatToolWidgets": {
+    "boolYes": "да",
+    "boolNo": "нет",
+    "summaryWithParts": "{{label}} — {{parts}}",
+    "summaryComplete": "{{label}} завершено",
+    "notAvailable": "Н/Д",
+    "plusMore": "+{{count}} ещё",
+    "volumeShort": "Объём: ${{value}}",
+    "liquidityShort": "Ликв: ${{value}}",
+    "endsLabel": "Завершается: {{date}}",
+    "priceLabels": {
+      "yes": "YES",
+      "no": "NO"
+    },
+    "marketSearch": {
+      "noResults": "Рынков по запросу \"{{query}}\" не найдено",
+      "foundOne": "Найден {{count}} рынок по запросу \"{{query}}\"",
+      "foundOther": "Найдено {{count}} рынков по запросу \"{{query}}\""
+    },
+    "marketDetail": {
+      "defaultTitle": "Детали рынка"
+    },
+    "positions": {
+      "empty": "Нет открытых позиций",
+      "headerOne": "{{count}} открытая позиция",
+      "headerOther": "{{count}} открытых позиций"
+    },
+    "balance": {
+      "label": "Баланс: ${{value}}"
+    },
+    "news": {
+      "empty": "Новости не найдены",
+      "headerOne": "{{count}} новость",
+      "headerOther": "{{count}} новостей"
+    },
+    "sentiment": {
+      "title": "Анализ настроений",
+      "labels": {
+        "bullish": "бычий",
+        "bearish": "медвежий",
+        "neutral": "нейтральный",
+        "positive": "позитивный",
+        "negative": "негативный",
+        "mixed": "смешанный"
+      }
+    },
+    "webSearch": {
+      "empty": "Веб-результатов нет",
+      "headerOne": "{{count}} результат",
+      "headerOther": "{{count}} результатов"
+    },
+    "strategies": {
+      "loadedOne": "Загружена {{count}} стратегия",
+      "loadedOther": "Загружено {{count}} стратегий"
+    },
+    "performance": {
+      "pnl": "P&L: {{sign}}${{value}}",
+      "winRate": "Доля побед: {{value}}%"
+    },
+    "orderbook": {
+      "bids": "Биды: ${{value}}",
+      "asks": "Аски: ${{value}}",
+      "spread": "Спред: {{value}}c"
+    },
+    "traderOverview": {
+      "empty": "Трейдеры не найдены",
+      "headerOne": "{{count}} трейдер",
+      "headerOther": "{{count}} трейдеров",
+      "fallbackName": "Трейдер {{n}}",
+      "positionsShort": "{{count}} поз.",
+      "status": {
+        "active": "активный",
+        "paused": "приостановлен",
+        "stopped": "остановлен",
+        "idle": "бездействует"
+      }
+    },
+    "fleetStatus": {
+      "traders": "Трейдеры",
+      "active": "Активные",
+      "strategies": "Стратегии",
+      "pnl": "P&L",
+      "fallback": "Состояние флота: {{count}} полей"
+    },
+    "signals": {
+      "empty": "Активных сигналов нет",
+      "headerOne": "{{count}} активный сигнал",
+      "headerOther": "{{count}} активных сигналов",
+      "fallbackName": "Сигнал {{n}}"
+    },
+    "toolLabels": {
+      "search_markets": "Поиск рынков",
+      "get_market_details": "Получение деталей рынка",
+      "get_live_prices": "Получение цен в реальном времени",
+      "get_price_history": "Загрузка истории цен",
+      "check_orderbook": "Проверка стакана заявок",
+      "find_related_markets": "Поиск связанных рынков",
+      "get_market_regime": "Анализ режима рынка",
+      "get_active_markets_summary": "Сводка активных рынков",
+      "get_open_positions": "Загрузка позиций",
+      "get_open_orders": "Загрузка открытых ордеров",
+      "get_trade_history": "Получение истории сделок",
+      "get_account_balance": "Проверка баланса",
+      "get_portfolio_performance": "Загрузка производительности",
+      "place_order": "Размещение ордера",
+      "cancel_order": "Отмена ордера",
+      "cancel_all_orders": "Отмена всех ордеров",
+      "search_news": "Поиск новостей",
+      "get_news_edges": "Поиск преимуществ в новостях",
+      "analyze_market_sentiment": "Анализ настроений",
+      "analyze_resolution": "Анализ резолюции",
+      "web_search": "Поиск в вебе",
+      "fetch_webpage": "Получение веб-страницы",
+      "get_system_status": "Проверка состояния системы",
+      "get_settings": "Загрузка настроек",
+      "update_setting": "Обновление настройки",
+      "query_database": "Запрос к базе данных",
+      "list_strategies": "Список стратегий",
+      "get_strategy_details": "Загрузка стратегии",
+      "get_strategy_performance": "Проверка производительности",
+      "update_strategy_config": "Обновление конфигурации стратегии",
+      "validate_strategy_code": "Валидация стратегии",
+      "run_strategy_backtest": "Запуск бэктеста",
+      "create_strategy": "Создание стратегии",
+      "get_wallet_profile": "Загрузка профиля кошелька",
+      "get_wallet_leaderboard": "Получение рейтинга",
+      "get_smart_pool_stats": "Загрузка статистики смарт-пула",
+      "get_confluence_signals": "Проверка сигналов конфлюэнции",
+      "get_tracked_wallets": "Загрузка отслеживаемых кошельков",
+      "get_trader_groups": "Получение групп трейдеров",
+      "get_whale_clusters": "Обнаружение кластеров китов",
+      "get_active_signals": "Загрузка активных сигналов",
+      "get_recent_decisions": "Получение последних решений",
+      "get_trader_overview": "Загрузка обзора трейдера",
+      "detect_anomalies": "Обнаружение аномалий",
+      "get_cross_platform_arb": "Проверка кросс-платформенного арбитража",
+      "get_llm_usage_stats": "Загрузка статистики использования LLM",
+      "get_data_sources": "Список источников данных",
+      "query_data_source": "Запрос к источнику данных",
+      "cortex_recall": "Извлечение из памяти",
+      "cortex_remember": "Сохранение в памяти",
+      "cortex_expire_memory": "Истечение памяти",
+      "cortex_get_fleet_status": "Загрузка состояния флота",
+      "cortex_pause_trader": "Приостановка трейдера",
+      "cortex_enable_strategy": "Включение стратегии",
+      "cortex_update_risk_clamps": "Обновление лимитов риска"
+    }
+  },
+  "aiChatRendering": {
+    "stillWorking": "Ещё работаю...",
+    "thinkingLog": "Журнал размышлений"
+  },
+  "aiMarketCard": {
+    "yesPrice": "YES {{price}}c",
+    "noPrice": "NO {{price}}c",
+    "volume": "Объём: {{value}}",
+    "liquidity": "Ликв: {{value}}",
+    "ends": "Завершается: {{date}}",
+    "viewOnPolymarket": "Посмотреть на Polymarket"
   }
 }

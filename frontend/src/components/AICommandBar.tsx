@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useMutation } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Search,
   Brain,
@@ -68,10 +69,12 @@ interface TypeMeta {
   ) => void
 }
 
-const TYPE_META: Record<string, TypeMeta> = {
+type TFn = (key: string, opts?: Record<string, unknown>) => string
+
+const buildTypeMeta = (t: TFn): Record<string, TypeMeta> => ({
   market: {
-    label: 'Market',
-    plural: 'Markets',
+    label: t('aiCommandBar.types.market.label'),
+    plural: t('aiCommandBar.types.market.plural'),
     icon: <Shield className="w-4 h-4" />,
     color: 'text-green-400',
     navigate: (item, h) => {
@@ -94,8 +97,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   event: {
-    label: 'Event',
-    plural: 'Events',
+    label: t('aiCommandBar.types.event.label'),
+    plural: t('aiCommandBar.types.event.plural'),
     icon: <Calendar className="w-4 h-4" />,
     color: 'text-cyan-400',
     navigate: (item, h) => {
@@ -104,8 +107,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   category: {
-    label: 'Category',
-    plural: 'Categories',
+    label: t('aiCommandBar.types.category.label'),
+    plural: t('aiCommandBar.types.category.plural'),
     icon: <Tag className="w-4 h-4" />,
     color: 'text-amber-400',
     navigate: (item, h) => {
@@ -114,8 +117,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   strategy: {
-    label: 'Strategy',
-    plural: 'Strategies',
+    label: t('aiCommandBar.types.strategy.label'),
+    plural: t('aiCommandBar.types.strategy.plural'),
     icon: <TrendingUp className="w-4 h-4" />,
     color: 'text-cyan-400',
     navigate: (item, h) => {
@@ -124,8 +127,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   data_source: {
-    label: 'Data source',
-    plural: 'Data sources',
+    label: t('aiCommandBar.types.dataSource.label'),
+    plural: t('aiCommandBar.types.dataSource.plural'),
     icon: <Database className="w-4 h-4" />,
     color: 'text-blue-400',
     navigate: (item, h) => {
@@ -134,8 +137,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   trader: {
-    label: 'Trader',
-    plural: 'Traders',
+    label: t('aiCommandBar.types.trader.label'),
+    plural: t('aiCommandBar.types.trader.plural'),
     icon: <Bot className="w-4 h-4" />,
     color: 'text-purple-400',
     navigate: (item, h) => {
@@ -144,8 +147,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   wallet: {
-    label: 'Wallet',
-    plural: 'Wallets',
+    label: t('aiCommandBar.types.wallet.label'),
+    plural: t('aiCommandBar.types.wallet.plural'),
     icon: <Wallet className="w-4 h-4" />,
     color: 'text-indigo-400',
     navigate: (item, h) => {
@@ -154,8 +157,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   news: {
-    label: 'News',
-    plural: 'News',
+    label: t('aiCommandBar.types.news.label'),
+    plural: t('aiCommandBar.types.news.plural'),
     icon: <Newspaper className="w-4 h-4" />,
     color: 'text-orange-400',
     navigate: (item, h) => {
@@ -165,8 +168,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   alert: {
-    label: 'Alert',
-    plural: 'Alerts',
+    label: t('aiCommandBar.types.alert.label'),
+    plural: t('aiCommandBar.types.alert.plural'),
     icon: <AlertTriangle className="w-4 h-4" />,
     color: 'text-red-400',
     navigate: (item, h) => {
@@ -175,8 +178,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   research: {
-    label: 'Research',
-    plural: 'Research',
+    label: t('aiCommandBar.types.research.label'),
+    plural: t('aiCommandBar.types.research.plural'),
     icon: <Brain className="w-4 h-4" />,
     color: 'text-violet-400',
     navigate: (item, h) => {
@@ -185,8 +188,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     },
   },
   opportunity: {
-    label: 'Opportunity',
-    plural: 'Opportunities',
+    label: t('aiCommandBar.types.opportunity.label'),
+    plural: t('aiCommandBar.types.opportunity.plural'),
     icon: <Zap className="w-4 h-4" />,
     color: 'text-yellow-400',
     navigate: (item, h) => {
@@ -194,17 +197,25 @@ const TYPE_META: Record<string, TypeMeta> = {
       window.dispatchEvent(new CustomEvent('opportunity-selected', { detail: item }))
     },
   },
-}
+})
 
-const FALLBACK_META: TypeMeta = {
-  label: 'Item',
-  plural: 'Items',
+const buildFallbackMeta = (t: TFn): TypeMeta => ({
+  label: t('aiCommandBar.types.fallback.label'),
+  plural: t('aiCommandBar.types.fallback.plural'),
   icon: <FileText className="w-4 h-4" />,
   color: 'text-muted-foreground',
   navigate: (_item, h) => h.close(),
-}
+})
 
-const getTypeMeta = (entityType: string): TypeMeta => TYPE_META[entityType] ?? FALLBACK_META
+const useTypeMeta = () => {
+  const { t } = useTranslation()
+  const typeMeta = useMemo(() => buildTypeMeta(t), [t])
+  const fallbackMeta = useMemo(() => buildFallbackMeta(t), [t])
+  return useCallback(
+    (entityType: string): TypeMeta => typeMeta[entityType] ?? fallbackMeta,
+    [typeMeta, fallbackMeta]
+  )
+}
 
 // Display order — most user-relevant types first.
 const TYPE_DISPLAY_ORDER = [
@@ -259,6 +270,8 @@ export default function AICommandBar({
   onOpenCopilot,
   onOpenSearchPage,
 }: AICommandBarProps) {
+  const { t } = useTranslation()
+  const getTypeMeta = useTypeMeta()
   const [input, setInput] = useState('')
   const [mode, setMode] = useState<CommandMode>('global')
   const [searchData, setSearchData] = useState<SearchGlobalResponse | null>(null)
@@ -352,8 +365,8 @@ export default function AICommandBar({
     () => [
       {
         id: 'ask-ai',
-        label: 'Ask AI a question',
-        description: 'Chat with the AI copilot',
+        label: t('aiCommandBar.commands.askAi.label'),
+        description: t('aiCommandBar.commands.askAi.description'),
         icon: <MessageCircle className="w-4 h-4" />,
         color: 'text-purple-400',
         action: () => {
@@ -363,8 +376,8 @@ export default function AICommandBar({
       },
       {
         id: 'resolution-analysis',
-        label: 'Resolution Analysis',
-        description: 'Analyze how a market will resolve',
+        label: t('aiCommandBar.commands.resolutionAnalysis.label'),
+        description: t('aiCommandBar.commands.resolutionAnalysis.description'),
         icon: <Shield className="w-4 h-4" />,
         color: 'text-green-400',
         action: () => {
@@ -374,8 +387,8 @@ export default function AICommandBar({
       },
       {
         id: 'market-analysis',
-        label: 'Market Analysis',
-        description: 'Deep-dive AI analysis on any topic',
+        label: t('aiCommandBar.commands.marketAnalysis.label'),
+        description: t('aiCommandBar.commands.marketAnalysis.description'),
         icon: <TrendingUp className="w-4 h-4" />,
         color: 'text-cyan-400',
         action: () => {
@@ -385,8 +398,8 @@ export default function AICommandBar({
       },
       {
         id: 'news-sentiment',
-        label: 'News Sentiment',
-        description: 'Search news and analyze sentiment',
+        label: t('aiCommandBar.commands.newsSentiment.label'),
+        description: t('aiCommandBar.commands.newsSentiment.description'),
         icon: <Newspaper className="w-4 h-4" />,
         color: 'text-orange-400',
         action: () => {
@@ -396,8 +409,8 @@ export default function AICommandBar({
       },
       {
         id: 'open-copilot',
-        label: 'Open AI Copilot',
-        description: 'Open the AI assistant panel',
+        label: t('aiCommandBar.commands.openCopilot.label'),
+        description: t('aiCommandBar.commands.openCopilot.description'),
         icon: <Sparkles className="w-4 h-4" />,
         color: 'text-purple-400',
         action: () => {
@@ -406,7 +419,7 @@ export default function AICommandBar({
         },
       },
     ],
-    [onNavigateToAI, onClose, onOpenCopilot]
+    [t, onNavigateToAI, onClose, onOpenCopilot]
   )
 
   // ---------- ordered groups for rendering ----------
@@ -547,10 +560,10 @@ export default function AICommandBar({
   // ---------- render ----------
   const placeholder =
     mode === 'global'
-      ? 'Search markets, traders, strategies, news, wallets — anything…'
+      ? t('aiCommandBar.placeholders.global')
       : mode === 'ask'
-        ? 'Ask anything about markets, strategies, risk…'
-        : 'Search commands…'
+        ? t('aiCommandBar.placeholders.ask')
+        : t('aiCommandBar.placeholders.commands')
 
   const allRecents = useMemo(() => {
     // Merge local + server recents, dedup, cap.
@@ -574,7 +587,7 @@ export default function AICommandBar({
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent className="overflow-hidden p-0 shadow-2xl shadow-purple-500/10 max-w-2xl gap-0 border-border bg-background rounded-2xl top-[12%] translate-y-0">
-        <DialogTitle className="sr-only">Global Search</DialogTitle>
+        <DialogTitle className="sr-only">{t('aiCommandBar.title')}</DialogTitle>
 
         {/* Input row */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
@@ -602,7 +615,7 @@ export default function AICommandBar({
           )}
           {searchData && mode === 'global' && !searchLoading && (
             <span className="text-[10px] text-muted-foreground tabular-nums">
-              {searchData.total} · {searchData.latency_ms.toFixed(0)}ms
+              {searchData.total} · {t('aiCommandBar.latencyMs', { ms: searchData.latency_ms.toFixed(0) })}
             </span>
           )}
           {mode !== 'global' && (
@@ -615,7 +628,7 @@ export default function AICommandBar({
               }}
               className="text-xs h-7 px-2"
             >
-              ESC
+              {t('aiCommandBar.escButton')}
             </Button>
           )}
           <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8">
@@ -635,15 +648,15 @@ export default function AICommandBar({
                   : 'border-border text-muted-foreground hover:bg-muted'
               )}
             >
-              All
+              {t('aiCommandBar.allFilter')}
             </button>
-            {TYPE_DISPLAY_ORDER.map((t) => {
-              const meta = getTypeMeta(t)
-              const active = enabledTypes !== null && enabledTypes.has(t)
+            {TYPE_DISPLAY_ORDER.map((entityType) => {
+              const meta = getTypeMeta(entityType)
+              const active = enabledTypes !== null && enabledTypes.has(entityType)
               return (
                 <button
-                  key={t}
-                  onClick={() => toggleType(t)}
+                  key={entityType}
+                  onClick={() => toggleType(entityType)}
                   className={cn(
                     'text-[11px] px-2 py-0.5 rounded-full border transition-colors flex items-center gap-1',
                     active
@@ -667,7 +680,7 @@ export default function AICommandBar({
               {pinned.length > 0 && (
                 <div>
                   <div className="px-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                    <Pin className="w-3 h-3" /> Pinned
+                    <Pin className="w-3 h-3" /> {t('aiCommandBar.pinned')}
                   </div>
                   {pinned.map((item, i) => (
                     <ResultRow
@@ -684,7 +697,7 @@ export default function AICommandBar({
               {allRecents.length > 0 && (
                 <div>
                   <div className="px-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                    <History className="w-3 h-3" /> Recent searches
+                    <History className="w-3 h-3" /> {t('aiCommandBar.recentSearches')}
                   </div>
                   <div className="flex flex-wrap gap-1.5 px-2">
                     {allRecents.map((q) => (
@@ -701,7 +714,7 @@ export default function AICommandBar({
               )}
               <div>
                 <div className="px-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Quick actions
+                  {t('aiCommandBar.quickActions')}
                 </div>
                 {commands.map((cmd) => (
                   <button
@@ -725,7 +738,7 @@ export default function AICommandBar({
             <div className="p-2">
               {searchData && searchData.results.length === 0 && !searchLoading && (
                 <div className="text-center py-8 text-sm text-muted-foreground">
-                  No matches. Try different keywords or remove type filters.
+                  {t('aiCommandBar.noMatches')}
                 </div>
               )}
               {searchData &&
@@ -734,8 +747,8 @@ export default function AICommandBar({
                   // Compute the running flat-index offset so keyboard
                   // selection lights up the right row.
                   let flatBase = 0
-                  for (const [t, list] of orderedGroups) {
-                    if (t === entityType) break
+                  for (const [innerType, list] of orderedGroups) {
+                    if (innerType === entityType) break
                     flatBase += list.length
                   }
                   return (
@@ -768,7 +781,9 @@ export default function AICommandBar({
                 >
                   <span className="flex items-center gap-2 text-sm text-foreground">
                     <Search className="w-4 h-4 text-purple-400" />
-                    View all {searchData.total} {searchData.total === 1 ? 'result' : 'results'} for
+                    {searchData.total === 1
+                      ? t('aiCommandBar.viewAllResultOne', { count: searchData.total })
+                      : t('aiCommandBar.viewAllResultsOther', { count: searchData.total })}
                     <span className="font-medium">"{input.trim()}"</span>
                   </span>
                   <span className="text-[10px] text-muted-foreground flex items-center gap-1">
@@ -815,14 +830,14 @@ export default function AICommandBar({
               {askMutation.isPending && (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <RefreshCw className="w-4 h-4 animate-spin text-purple-400" />
-                  Thinking…
+                  {t('aiCommandBar.thinking')}
                 </div>
               )}
               {askMutation.data && (
                 <div className="bg-muted rounded-xl p-4 border border-border">
                   <div className="flex items-center gap-2 mb-2">
                     <Brain className="w-4 h-4 text-purple-400" />
-                    <Badge variant="secondary" className="text-xs">AI Response</Badge>
+                    <Badge variant="secondary" className="text-xs">{t('aiCommandBar.aiResponse')}</Badge>
                   </div>
                   <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                     {askMutation.data.response}
@@ -836,7 +851,7 @@ export default function AICommandBar({
               )}
               {!askMutation.isPending && !askMutation.data && !askMutation.error && (
                 <p className="text-sm text-muted-foreground text-center">
-                  Type your question and press Enter
+                  {t('aiCommandBar.askPrompt')}
                 </p>
               )}
             </div>
@@ -846,18 +861,18 @@ export default function AICommandBar({
         {/* Footer */}
         <div className="px-4 py-2 flex items-center gap-4 text-[10px] text-muted-foreground border-t border-border">
           <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.5 bg-muted rounded">↵</kbd> open
+            <kbd className="px-1 py-0.5 bg-muted rounded">↵</kbd> {t('aiCommandBar.footer.open')}
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.5 bg-muted rounded">↑↓</kbd> navigate
+            <kbd className="px-1 py-0.5 bg-muted rounded">↑↓</kbd> {t('aiCommandBar.footer.navigate')}
           </span>
           {mode === 'global' && (
             <span className="flex items-center gap-1">
-              <kbd className="px-1 py-0.5 bg-muted rounded">Tab</kbd> commands
+              <kbd className="px-1 py-0.5 bg-muted rounded">Tab</kbd> {t('aiCommandBar.footer.commands')}
             </span>
           )}
           <span className="flex items-center gap-1 ml-auto">
-            <kbd className="px-1 py-0.5 bg-muted rounded">Esc</kbd> close
+            <kbd className="px-1 py-0.5 bg-muted rounded">Esc</kbd> {t('aiCommandBar.footer.close')}
           </span>
         </div>
       </DialogContent>
@@ -879,6 +894,8 @@ interface ResultRowProps {
 }
 
 function ResultRow({ item, selected, pinned, onHover, onSelect, onTogglePin }: ResultRowProps) {
+  const { t } = useTranslation()
+  const getTypeMeta = useTypeMeta()
   const meta = getTypeMeta(item.entity_type)
   const liquidity = item.liquidity ?? item.metadata?.liquidity
   const yesPrice = item.metadata?.yes_price
@@ -908,9 +925,9 @@ function ResultRow({ item, selected, pinned, onHover, onSelect, onTogglePin }: R
           )}
           {showFinance && (
             <span className="tabular-nums whitespace-nowrap">
-              {typeof yesPrice === 'number' && <>YES ${yesPrice.toFixed(2)}</>}
+              {typeof yesPrice === 'number' && <>{t('aiCommandBar.yesPrice', { price: yesPrice.toFixed(2) })}</>}
               {typeof yesPrice === 'number' && typeof liquidity === 'number' && ' · '}
-              {typeof liquidity === 'number' && <>Liq ${formatCompact(liquidity)}</>}
+              {typeof liquidity === 'number' && <>{t('aiCommandBar.liquidityShort', { value: formatCompact(liquidity) })}</>}
             </span>
           )}
         </div>
@@ -925,7 +942,7 @@ function ResultRow({ item, selected, pinned, onHover, onSelect, onTogglePin }: R
           'opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md hover:bg-background',
           pinned && 'opacity-100'
         )}
-        title={pinned ? 'Unpin' : 'Pin'}
+        title={pinned ? t('aiCommandBar.unpin') : t('aiCommandBar.pin')}
       >
         {pinned ? (
           <PinOff className="w-3.5 h-3.5 text-muted-foreground" />

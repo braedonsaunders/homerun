@@ -5,6 +5,7 @@
 
 import { defineComponent } from '@openuidev/react-lang'
 import { z } from 'zod'
+import { useTranslation } from 'react-i18next'
 import {
   TrendingUp,
   TrendingDown,
@@ -30,6 +31,7 @@ export const MarketCard = defineComponent({
     'Rich market opportunity card with prices, metadata, and a link to Polymarket. ' +
     'Use when presenting individual market opportunities or recommendations.',
   component: ({ props }) => {
+    const { t } = useTranslation()
     const {
       question,
       slug,
@@ -63,7 +65,7 @@ export const MarketCard = defineComponent({
             }`}
           >
             <TrendingUp className="w-3 h-3" />
-            YES {yes_price}c
+            {t('aiMarketCard.yesPrice', { price: yes_price })}
           </span>
           <span
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold ${
@@ -73,7 +75,7 @@ export const MarketCard = defineComponent({
             }`}
           >
             <TrendingDown className="w-3 h-3" />
-            NO {no_price}c
+            {t('aiMarketCard.noPrice', { price: no_price })}
           </span>
         </div>
 
@@ -81,15 +83,15 @@ export const MarketCard = defineComponent({
         <div className="px-3 py-1.5 flex items-center gap-4 flex-wrap border-t border-purple-500/10 bg-muted/10">
           <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
             <BarChart3 className="w-3 h-3" />
-            Vol: {volume}
+            {t('aiMarketCard.volume', { value: volume })}
           </span>
           <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
             <Droplets className="w-3 h-3" />
-            Liq: {liquidity}
+            {t('aiMarketCard.liquidity', { value: liquidity })}
           </span>
           <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
             <Clock className="w-3 h-3" />
-            Ends: {end_date}
+            {t('aiMarketCard.ends', { date: end_date })}
           </span>
         </div>
 
@@ -111,7 +113,7 @@ export const MarketCard = defineComponent({
             className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium text-purple-400 hover:text-purple-300 hover:bg-purple-500/10 transition-colors"
           >
             <ExternalLink className="w-3 h-3" />
-            View on Polymarket
+            {t('aiMarketCard.viewOnPolymarket')}
           </a>
         </div>
       </div>

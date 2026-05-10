@@ -4747,5 +4747,397 @@
     "valid": "유효",
     "invalid": "무효",
     "classLabel": "클래스:"
+  },
+  "aiCommandBar": {
+    "title": "전체 검색",
+    "placeholders": {
+      "global": "시장, 트레이더, 전략, 뉴스, 지갑 등 무엇이든 검색…",
+      "ask": "시장, 전략, 위험 등 무엇이든 질문…",
+      "commands": "명령 검색…"
+    },
+    "latencyMs": "{{ms}}ms",
+    "escButton": "ESC",
+    "allFilter": "전체",
+    "pinned": "고정됨",
+    "recentSearches": "최근 검색",
+    "quickActions": "빠른 작업",
+    "noMatches": "일치하는 항목이 없습니다. 다른 키워드를 시도하거나 유형 필터를 제거하세요.",
+    "viewAllResultOne": "전체 {{count}}개 결과 보기",
+    "viewAllResultsOther": "전체 {{count}}개 결과 보기",
+    "thinking": "생각 중…",
+    "aiResponse": "AI 응답",
+    "askPrompt": "질문을 입력하고 Enter를 누르세요",
+    "yesPrice": "YES ${{price}}",
+    "liquidityShort": "유동성 ${{value}}",
+    "pin": "고정",
+    "unpin": "고정 해제",
+    "footer": {
+      "open": "열기",
+      "navigate": "이동",
+      "commands": "명령",
+      "close": "닫기"
+    },
+    "commands": {
+      "askAi": {
+        "label": "AI에게 질문",
+        "description": "AI 코파일럿과 채팅"
+      },
+      "resolutionAnalysis": {
+        "label": "결제 분석",
+        "description": "시장이 어떻게 결제될지 분석"
+      },
+      "marketAnalysis": {
+        "label": "시장 분석",
+        "description": "모든 주제에 대한 심층 AI 분석"
+      },
+      "newsSentiment": {
+        "label": "뉴스 감성",
+        "description": "뉴스 검색 및 감성 분석"
+      },
+      "openCopilot": {
+        "label": "AI 코파일럿 열기",
+        "description": "AI 어시스턴트 패널 열기"
+      }
+    },
+    "types": {
+      "market": {
+        "label": "시장",
+        "plural": "시장"
+      },
+      "event": {
+        "label": "이벤트",
+        "plural": "이벤트"
+      },
+      "category": {
+        "label": "카테고리",
+        "plural": "카테고리"
+      },
+      "strategy": {
+        "label": "전략",
+        "plural": "전략"
+      },
+      "dataSource": {
+        "label": "데이터 소스",
+        "plural": "데이터 소스"
+      },
+      "trader": {
+        "label": "트레이더",
+        "plural": "트레이더"
+      },
+      "wallet": {
+        "label": "지갑",
+        "plural": "지갑"
+      },
+      "news": {
+        "label": "뉴스",
+        "plural": "뉴스"
+      },
+      "alert": {
+        "label": "알림",
+        "plural": "알림"
+      },
+      "research": {
+        "label": "연구",
+        "plural": "연구"
+      },
+      "opportunity": {
+        "label": "기회",
+        "plural": "기회"
+      },
+      "fallback": {
+        "label": "항목",
+        "plural": "항목"
+      }
+    }
+  },
+  "aiCopilotPanel": {
+    "title": "AI 코파일럿",
+    "openInAiTab": "AI 탭에서 열기",
+    "clearChat": "채팅 지우기",
+    "chatLabel": "채팅",
+    "sessionsCountOne": "{{count}}개 세션",
+    "sessionsCountOther": "{{count}}개 세션",
+    "inputPlaceholder": "이 기회에 대해 질문…",
+    "noResponse": "(응답 없음)",
+    "errorPrefix": "오류: {{message}}",
+    "failedToGetResponse": "응답을 가져오지 못했습니다",
+    "welcomeTitle": {
+      "strategy": "이 전략에 대해 무엇이든 물어보세요",
+      "dataSource": "이 데이터 소스에 대해 무엇이든 물어보세요",
+      "default": "거래에 대해 무엇이든 물어보세요"
+    },
+    "welcomeSubtitle": {
+      "strategy": "코드 설명, 개선 제안, 요청 시 전략을 직접 편집할 수 있습니다.",
+      "dataSource": "수집 로직 분석, 정규화 개선, 요청 시 소스를 직접 편집할 수 있습니다.",
+      "default": "기회를 분석하고 위험을 평가하며 의사 결정을 도울 수 있습니다."
+    },
+    "quickActions": {
+      "strategy": {
+        "explainCode": {
+          "label": "코드 설명",
+          "prompt": "이 전략 코드를 처음부터 끝까지 설명하세요: detect/evaluate/exit 및 주요 위험 트레이드오프."
+        },
+        "improveEvaluate": {
+          "label": "evaluate() 개선",
+          "prompt": "evaluate()를 개선하여 위험 게이팅을 강화하고 더 명확한 DecisionCheck 출력을 생성하세요."
+        },
+        "addFeature": {
+          "label": "기능 추가",
+          "prompt": "시장 유동성에 대한 구성 가능한 필터를 추가하고 default_config + config_schema에 연결하세요. 코드 변경을 직접 적용하세요."
+        },
+        "reviewSafety": {
+          "label": "안전성 검토",
+          "prompt": "이 전략을 잠재적 로직 버그, 실행 위험, 잘못된 가정에 대해 검토하세요."
+        }
+      },
+      "dataSource": {
+        "explainSource": {
+          "label": "소스 설명",
+          "prompt": "이 데이터 소스 파이프라인과 프로덕션에서 실패할 수 있는 부분을 설명하세요."
+        },
+        "hardenParsing": {
+          "label": "파싱 강화",
+          "prompt": "이 소스를 개선하여 타임스탬프, ID, 카테고리를 더 잘 정규화하세요. 코드 변경을 직접 적용하세요."
+        },
+        "addGeotags": {
+          "label": "지오태그 추가",
+          "prompt": "강력한 지오태그 지원을 추가하고 출력이 레코드 계약을 따르도록 하세요. 코드 변경을 직접 적용하세요."
+        },
+        "retentionReview": {
+          "label": "보존 검토",
+          "prompt": "이 소스의 예상 볼륨 및 사용량에 따라 보존/구성 변경을 권장하세요."
+        }
+      },
+      "default": {
+        "analyzeRisk": {
+          "label": "위험 요인 분석",
+          "prompt": "이 기회의 주요 위험 요인은 무엇입니까?"
+        },
+        "resolutionSafety": {
+          "label": "결제 안전성",
+          "prompt": "결제 기준은 얼마나 안전합니까? 모호한 점이 있습니까?"
+        },
+        "shouldITrade": {
+          "label": "거래해야 할까요?",
+          "prompt": "현재 데이터를 고려할 때 이 거래를 실행해야 합니까? 장단점은 무엇입니까?"
+        },
+        "explainStrategy": {
+          "label": "전략 설명",
+          "prompt": "이 차익거래 전략이 어떻게 작동하고 왜 이 기회가 존재하는지 설명하세요."
+        }
+      }
+    }
+  },
+  "aiCortexView": {
+    "enabled": "활성화됨",
+    "writeActions": "쓰기 작업",
+    "memoriesCount": "{{count}}개 기억",
+    "stop": "중지",
+    "runNow": "지금 실행",
+    "errorBold": "오류:",
+    "unknownError": "알 수 없는 오류",
+    "tabs": {
+      "activity": "활동",
+      "memory": "기억 ({{count}})",
+      "settings": "설정"
+    },
+    "loadingActivity": "활동을 불러오는 중...",
+    "noActivityYet": "아직 활동이 없습니다. Cortex를 활성화하고 실행을 트리거하세요.",
+    "clearHistory": "기록 지우기",
+    "runningNow": "실행 중",
+    "startingCycle": "주기 시작 중...",
+    "memory": {
+      "allCategories": "모든 카테고리",
+      "showExpired": "만료된 항목 표시",
+      "addMemory": "기억 추가",
+      "contentPlaceholder": "기억 내용...",
+      "save": "저장",
+      "cancel": "취소",
+      "importanceLabel": "중요도:",
+      "accessedTimes": "{{count}}회 접근",
+      "empty": "아직 기억이 없습니다. Cortex는 시간이 지남에 따라 학습합니다.",
+      "categories": {
+        "observation": "관찰",
+        "lesson": "교훈",
+        "rule": "규칙",
+        "preference": "선호"
+      }
+    },
+    "settings": {
+      "loading": "설정을 불러오는 중...",
+      "configuration": "구성",
+      "model": "모델",
+      "defaultModel": "기본값 (AI 설정)",
+      "runIntervalSeconds": "실행 간격 (초)",
+      "maxIterations": "최대 반복 횟수",
+      "temperature": "온도",
+      "memoryLimit": "기억 제한 (실행당)",
+      "telegramNotifications": "Telegram 알림",
+      "onWriteActions": "쓰기 작업 시",
+      "mandateTitle": "매뉴얼 (시스템 프롬프트)",
+      "mandatePlaceholder": "기본 매뉴얼을 사용하려면 비워두세요. Cortex의 우선순위와 동작을 변경하려면 사용자 정의하세요...",
+      "saveSettings": "설정 저장",
+      "discard": "취소"
+    }
+  },
+  "aiChatToolWidgets": {
+    "boolYes": "예",
+    "boolNo": "아니오",
+    "summaryWithParts": "{{label}} — {{parts}}",
+    "summaryComplete": "{{label}} 완료",
+    "notAvailable": "해당 없음",
+    "plusMore": "+{{count}}개 더",
+    "volumeShort": "거래량: ${{value}}",
+    "liquidityShort": "유동성: ${{value}}",
+    "endsLabel": "종료: {{date}}",
+    "priceLabels": {
+      "yes": "YES",
+      "no": "NO"
+    },
+    "marketSearch": {
+      "noResults": "\"{{query}}\"에 대한 시장을 찾을 수 없습니다",
+      "foundOne": "\"{{query}}\"에 대한 {{count}}개 시장 발견",
+      "foundOther": "\"{{query}}\"에 대한 {{count}}개 시장 발견"
+    },
+    "marketDetail": {
+      "defaultTitle": "시장 세부정보"
+    },
+    "positions": {
+      "empty": "오픈 포지션 없음",
+      "headerOne": "{{count}}개의 오픈 포지션",
+      "headerOther": "{{count}}개의 오픈 포지션"
+    },
+    "balance": {
+      "label": "잔액: ${{value}}"
+    },
+    "news": {
+      "empty": "뉴스를 찾을 수 없습니다",
+      "headerOne": "{{count}}개의 뉴스 항목",
+      "headerOther": "{{count}}개의 뉴스 항목"
+    },
+    "sentiment": {
+      "title": "감성 분석",
+      "labels": {
+        "bullish": "강세",
+        "bearish": "약세",
+        "neutral": "중립",
+        "positive": "긍정",
+        "negative": "부정",
+        "mixed": "혼합"
+      }
+    },
+    "webSearch": {
+      "empty": "웹 결과 없음",
+      "headerOne": "{{count}}개의 결과",
+      "headerOther": "{{count}}개의 결과"
+    },
+    "strategies": {
+      "loadedOne": "{{count}}개의 전략 로드됨",
+      "loadedOther": "{{count}}개의 전략 로드됨"
+    },
+    "performance": {
+      "pnl": "P&L: {{sign}}${{value}}",
+      "winRate": "승률: {{value}}%"
+    },
+    "orderbook": {
+      "bids": "매수: ${{value}}",
+      "asks": "매도: ${{value}}",
+      "spread": "스프레드: {{value}}c"
+    },
+    "traderOverview": {
+      "empty": "트레이더를 찾을 수 없습니다",
+      "headerOne": "{{count}}명의 트레이더",
+      "headerOther": "{{count}}명의 트레이더",
+      "fallbackName": "트레이더 {{n}}",
+      "positionsShort": "{{count}}개 포지션",
+      "status": {
+        "active": "활성",
+        "paused": "일시중지",
+        "stopped": "중지됨",
+        "idle": "유휴"
+      }
+    },
+    "fleetStatus": {
+      "traders": "트레이더",
+      "active": "활성",
+      "strategies": "전략",
+      "pnl": "P&L",
+      "fallback": "플릿 상태: {{count}}개 필드"
+    },
+    "signals": {
+      "empty": "활성 시그널 없음",
+      "headerOne": "{{count}}개의 활성 시그널",
+      "headerOther": "{{count}}개의 활성 시그널",
+      "fallbackName": "시그널 {{n}}"
+    },
+    "toolLabels": {
+      "search_markets": "시장 검색 중",
+      "get_market_details": "시장 세부정보 가져오는 중",
+      "get_live_prices": "실시간 가격 가져오는 중",
+      "get_price_history": "가격 기록 로딩 중",
+      "check_orderbook": "오더북 확인 중",
+      "find_related_markets": "관련 시장 찾는 중",
+      "get_market_regime": "시장 레짐 분석 중",
+      "get_active_markets_summary": "활성 시장 요약 중",
+      "get_open_positions": "포지션 로딩 중",
+      "get_open_orders": "미체결 주문 로딩 중",
+      "get_trade_history": "거래 기록 가져오는 중",
+      "get_account_balance": "잔액 확인 중",
+      "get_portfolio_performance": "성과 로딩 중",
+      "place_order": "주문 발주 중",
+      "cancel_order": "주문 취소 중",
+      "cancel_all_orders": "모든 주문 취소 중",
+      "search_news": "뉴스 검색 중",
+      "get_news_edges": "뉴스 엣지 찾는 중",
+      "analyze_market_sentiment": "감성 분석 중",
+      "analyze_resolution": "결제 분석 중",
+      "web_search": "웹 검색 중",
+      "fetch_webpage": "웹페이지 가져오는 중",
+      "get_system_status": "시스템 상태 확인 중",
+      "get_settings": "설정 로딩 중",
+      "update_setting": "설정 업데이트 중",
+      "query_database": "데이터베이스 쿼리 중",
+      "list_strategies": "전략 목록 가져오는 중",
+      "get_strategy_details": "전략 로딩 중",
+      "get_strategy_performance": "성과 확인 중",
+      "update_strategy_config": "전략 구성 업데이트 중",
+      "validate_strategy_code": "전략 검증 중",
+      "run_strategy_backtest": "백테스트 실행 중",
+      "create_strategy": "전략 생성 중",
+      "get_wallet_profile": "지갑 프로필 로딩 중",
+      "get_wallet_leaderboard": "리더보드 가져오는 중",
+      "get_smart_pool_stats": "스마트 풀 통계 로딩 중",
+      "get_confluence_signals": "컨플루언스 시그널 확인 중",
+      "get_tracked_wallets": "추적 지갑 로딩 중",
+      "get_trader_groups": "트레이더 그룹 가져오는 중",
+      "get_whale_clusters": "고래 클러스터 감지 중",
+      "get_active_signals": "활성 시그널 로딩 중",
+      "get_recent_decisions": "최근 결정 가져오는 중",
+      "get_trader_overview": "트레이더 개요 로딩 중",
+      "detect_anomalies": "이상 감지 중",
+      "get_cross_platform_arb": "크로스 플랫폼 아비트라지 확인 중",
+      "get_llm_usage_stats": "LLM 사용 통계 로딩 중",
+      "get_data_sources": "데이터 소스 목록 가져오는 중",
+      "query_data_source": "데이터 소스 쿼리 중",
+      "cortex_recall": "기억에서 회상 중",
+      "cortex_remember": "기억에 저장 중",
+      "cortex_expire_memory": "기억 만료 중",
+      "cortex_get_fleet_status": "플릿 상태 로딩 중",
+      "cortex_pause_trader": "트레이더 일시중지 중",
+      "cortex_enable_strategy": "전략 활성화 중",
+      "cortex_update_risk_clamps": "위험 한도 업데이트 중"
+    }
+  },
+  "aiChatRendering": {
+    "stillWorking": "아직 작업 중...",
+    "thinkingLog": "사고 로그"
+  },
+  "aiMarketCard": {
+    "yesPrice": "YES {{price}}c",
+    "noPrice": "NO {{price}}c",
+    "volume": "거래량: {{value}}",
+    "liquidity": "유동성: {{value}}",
+    "ends": "종료: {{date}}",
+    "viewOnPolymarket": "Polymarket에서 보기"
   }
 }

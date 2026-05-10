@@ -4747,5 +4747,397 @@
     "valid": "Valid",
     "invalid": "Invalid",
     "classLabel": "Class:"
+  },
+  "aiCommandBar": {
+    "title": "Global Search",
+    "placeholders": {
+      "global": "Search markets, traders, strategies, news, wallets — anything…",
+      "ask": "Ask anything about markets, strategies, risk…",
+      "commands": "Search commands…"
+    },
+    "latencyMs": "{{ms}}ms",
+    "escButton": "ESC",
+    "allFilter": "All",
+    "pinned": "Pinned",
+    "recentSearches": "Recent searches",
+    "quickActions": "Quick actions",
+    "noMatches": "No matches. Try different keywords or remove type filters.",
+    "viewAllResultOne": "View all {{count}} result for",
+    "viewAllResultsOther": "View all {{count}} results for",
+    "thinking": "Thinking…",
+    "aiResponse": "AI Response",
+    "askPrompt": "Type your question and press Enter",
+    "yesPrice": "YES ${{price}}",
+    "liquidityShort": "Liq ${{value}}",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "footer": {
+      "open": "open",
+      "navigate": "navigate",
+      "commands": "commands",
+      "close": "close"
+    },
+    "commands": {
+      "askAi": {
+        "label": "Ask AI a question",
+        "description": "Chat with the AI copilot"
+      },
+      "resolutionAnalysis": {
+        "label": "Resolution Analysis",
+        "description": "Analyze how a market will resolve"
+      },
+      "marketAnalysis": {
+        "label": "Market Analysis",
+        "description": "Deep-dive AI analysis on any topic"
+      },
+      "newsSentiment": {
+        "label": "News Sentiment",
+        "description": "Search news and analyze sentiment"
+      },
+      "openCopilot": {
+        "label": "Open AI Copilot",
+        "description": "Open the AI assistant panel"
+      }
+    },
+    "types": {
+      "market": {
+        "label": "Market",
+        "plural": "Markets"
+      },
+      "event": {
+        "label": "Event",
+        "plural": "Events"
+      },
+      "category": {
+        "label": "Category",
+        "plural": "Categories"
+      },
+      "strategy": {
+        "label": "Strategy",
+        "plural": "Strategies"
+      },
+      "dataSource": {
+        "label": "Data source",
+        "plural": "Data sources"
+      },
+      "trader": {
+        "label": "Trader",
+        "plural": "Traders"
+      },
+      "wallet": {
+        "label": "Wallet",
+        "plural": "Wallets"
+      },
+      "news": {
+        "label": "News",
+        "plural": "News"
+      },
+      "alert": {
+        "label": "Alert",
+        "plural": "Alerts"
+      },
+      "research": {
+        "label": "Research",
+        "plural": "Research"
+      },
+      "opportunity": {
+        "label": "Opportunity",
+        "plural": "Opportunities"
+      },
+      "fallback": {
+        "label": "Item",
+        "plural": "Items"
+      }
+    }
+  },
+  "aiCopilotPanel": {
+    "title": "AI Copilot",
+    "openInAiTab": "Open in AI tab",
+    "clearChat": "Clear chat",
+    "chatLabel": "Chat",
+    "sessionsCountOne": "{{count}} session",
+    "sessionsCountOther": "{{count}} sessions",
+    "inputPlaceholder": "Ask about this opportunity...",
+    "noResponse": "(No response)",
+    "errorPrefix": "Error: {{message}}",
+    "failedToGetResponse": "Failed to get response",
+    "welcomeTitle": {
+      "strategy": "Ask me anything about this strategy",
+      "dataSource": "Ask me anything about this data source",
+      "default": "Ask me anything about your trades"
+    },
+    "welcomeSubtitle": {
+      "strategy": "I can explain the code, suggest improvements, and apply direct strategy edits when requested.",
+      "dataSource": "I can analyze ingestion logic, improve normalization, and apply direct source edits when requested.",
+      "default": "I can analyze opportunities, assess risk, and help you make decisions."
+    },
+    "quickActions": {
+      "strategy": {
+        "explainCode": {
+          "label": "Explain code",
+          "prompt": "Explain this strategy code end-to-end: detect/evaluate/exit and main risk tradeoffs."
+        },
+        "improveEvaluate": {
+          "label": "Improve evaluate()",
+          "prompt": "Improve evaluate() to tighten risk gating and produce clearer DecisionCheck outputs."
+        },
+        "addFeature": {
+          "label": "Add feature",
+          "prompt": "Add a configurable filter for market liquidity and wire it into default_config + config_schema. Apply the code changes directly."
+        },
+        "reviewSafety": {
+          "label": "Review safety",
+          "prompt": "Review this strategy for potential logic bugs, execution hazards, and invalid assumptions."
+        }
+      },
+      "dataSource": {
+        "explainSource": {
+          "label": "Explain source",
+          "prompt": "Explain this data source pipeline and where it may fail in production."
+        },
+        "hardenParsing": {
+          "label": "Harden parsing",
+          "prompt": "Improve this source to better normalize timestamps, IDs, and categories. Apply the code changes directly."
+        },
+        "addGeotags": {
+          "label": "Add geotags",
+          "prompt": "Add robust geotag support and ensure output follows the record contract. Apply the code changes directly."
+        },
+        "retentionReview": {
+          "label": "Retention review",
+          "prompt": "Recommend retention/config changes for this source based on its expected volume and usage."
+        }
+      },
+      "default": {
+        "analyzeRisk": {
+          "label": "Analyze risk factors",
+          "prompt": "What are the main risk factors for this opportunity?"
+        },
+        "resolutionSafety": {
+          "label": "Resolution safety",
+          "prompt": "How safe is the resolution criteria? Any ambiguities?"
+        },
+        "shouldITrade": {
+          "label": "Should I trade?",
+          "prompt": "Given the current data, should I execute this trade? What are the pros and cons?"
+        },
+        "explainStrategy": {
+          "label": "Explain strategy",
+          "prompt": "Explain how this arbitrage strategy works and why this opportunity exists."
+        }
+      }
+    }
+  },
+  "aiCortexView": {
+    "enabled": "Enabled",
+    "writeActions": "Write Actions",
+    "memoriesCount": "{{count}} memories",
+    "stop": "Stop",
+    "runNow": "Run Now",
+    "errorBold": "Error:",
+    "unknownError": "Unknown error",
+    "tabs": {
+      "activity": "Activity",
+      "memory": "Memory ({{count}})",
+      "settings": "Settings"
+    },
+    "loadingActivity": "Loading activity...",
+    "noActivityYet": "No activity yet. Enable Cortex and trigger a run.",
+    "clearHistory": "Clear History",
+    "runningNow": "Running now",
+    "startingCycle": "Starting cycle...",
+    "memory": {
+      "allCategories": "All Categories",
+      "showExpired": "Show expired",
+      "addMemory": "Add Memory",
+      "contentPlaceholder": "Memory content...",
+      "save": "Save",
+      "cancel": "Cancel",
+      "importanceLabel": "Importance:",
+      "accessedTimes": "Accessed {{count}}x",
+      "empty": "No memories yet. Cortex will learn over time.",
+      "categories": {
+        "observation": "observation",
+        "lesson": "lesson",
+        "rule": "rule",
+        "preference": "preference"
+      }
+    },
+    "settings": {
+      "loading": "Loading settings...",
+      "configuration": "Configuration",
+      "model": "Model",
+      "defaultModel": "Default (AI Settings)",
+      "runIntervalSeconds": "Run Interval (seconds)",
+      "maxIterations": "Max Iterations",
+      "temperature": "Temperature",
+      "memoryLimit": "Memory Limit (per run)",
+      "telegramNotifications": "Telegram Notifications",
+      "onWriteActions": "on write actions",
+      "mandateTitle": "Mandate (System Prompt)",
+      "mandatePlaceholder": "Leave empty for default mandate. Customize to change Cortex's priorities and behavior...",
+      "saveSettings": "Save Settings",
+      "discard": "Discard"
+    }
+  },
+  "aiChatToolWidgets": {
+    "boolYes": "yes",
+    "boolNo": "no",
+    "summaryWithParts": "{{label}} — {{parts}}",
+    "summaryComplete": "{{label}} complete",
+    "notAvailable": "N/A",
+    "plusMore": "+{{count}} more",
+    "volumeShort": "Vol: ${{value}}",
+    "liquidityShort": "Liq: ${{value}}",
+    "endsLabel": "Ends: {{date}}",
+    "priceLabels": {
+      "yes": "YES",
+      "no": "NO"
+    },
+    "marketSearch": {
+      "noResults": "No markets found for \"{{query}}\"",
+      "foundOne": "Found {{count}} market for \"{{query}}\"",
+      "foundOther": "Found {{count}} markets for \"{{query}}\""
+    },
+    "marketDetail": {
+      "defaultTitle": "Market Details"
+    },
+    "positions": {
+      "empty": "No open positions",
+      "headerOne": "{{count}} open position",
+      "headerOther": "{{count}} open positions"
+    },
+    "balance": {
+      "label": "Balance: ${{value}}"
+    },
+    "news": {
+      "empty": "No news found",
+      "headerOne": "{{count}} news item",
+      "headerOther": "{{count}} news items"
+    },
+    "sentiment": {
+      "title": "Sentiment Analysis",
+      "labels": {
+        "bullish": "bullish",
+        "bearish": "bearish",
+        "neutral": "neutral",
+        "positive": "positive",
+        "negative": "negative",
+        "mixed": "mixed"
+      }
+    },
+    "webSearch": {
+      "empty": "No web results",
+      "headerOne": "{{count}} result",
+      "headerOther": "{{count}} results"
+    },
+    "strategies": {
+      "loadedOne": "{{count}} strategy loaded",
+      "loadedOther": "{{count}} strategies loaded"
+    },
+    "performance": {
+      "pnl": "PnL: {{sign}}${{value}}",
+      "winRate": "Win rate: {{value}}%"
+    },
+    "orderbook": {
+      "bids": "Bids: ${{value}}",
+      "asks": "Asks: ${{value}}",
+      "spread": "Spread: {{value}}c"
+    },
+    "traderOverview": {
+      "empty": "No traders found",
+      "headerOne": "{{count}} trader",
+      "headerOther": "{{count}} traders",
+      "fallbackName": "Trader {{n}}",
+      "positionsShort": "{{count}} pos",
+      "status": {
+        "active": "active",
+        "paused": "paused",
+        "stopped": "stopped",
+        "idle": "idle"
+      }
+    },
+    "fleetStatus": {
+      "traders": "Traders",
+      "active": "Active",
+      "strategies": "Strategies",
+      "pnl": "PnL",
+      "fallback": "Fleet status: {{count}} fields"
+    },
+    "signals": {
+      "empty": "No active signals",
+      "headerOne": "{{count}} active signal",
+      "headerOther": "{{count}} active signals",
+      "fallbackName": "Signal {{n}}"
+    },
+    "toolLabels": {
+      "search_markets": "Searching markets",
+      "get_market_details": "Fetching market details",
+      "get_live_prices": "Getting live prices",
+      "get_price_history": "Loading price history",
+      "check_orderbook": "Checking order book",
+      "find_related_markets": "Finding related markets",
+      "get_market_regime": "Analyzing market regime",
+      "get_active_markets_summary": "Summarizing active markets",
+      "get_open_positions": "Loading positions",
+      "get_open_orders": "Loading open orders",
+      "get_trade_history": "Fetching trade history",
+      "get_account_balance": "Checking balance",
+      "get_portfolio_performance": "Loading performance",
+      "place_order": "Placing order",
+      "cancel_order": "Cancelling order",
+      "cancel_all_orders": "Cancelling all orders",
+      "search_news": "Searching news",
+      "get_news_edges": "Finding news edges",
+      "analyze_market_sentiment": "Analyzing sentiment",
+      "analyze_resolution": "Analyzing resolution",
+      "web_search": "Searching the web",
+      "fetch_webpage": "Fetching webpage",
+      "get_system_status": "Checking system status",
+      "get_settings": "Loading settings",
+      "update_setting": "Updating setting",
+      "query_database": "Querying database",
+      "list_strategies": "Listing strategies",
+      "get_strategy_details": "Loading strategy",
+      "get_strategy_performance": "Checking performance",
+      "update_strategy_config": "Updating strategy config",
+      "validate_strategy_code": "Validating strategy",
+      "run_strategy_backtest": "Running backtest",
+      "create_strategy": "Creating strategy",
+      "get_wallet_profile": "Loading wallet profile",
+      "get_wallet_leaderboard": "Fetching leaderboard",
+      "get_smart_pool_stats": "Loading smart pool stats",
+      "get_confluence_signals": "Checking confluence signals",
+      "get_tracked_wallets": "Loading tracked wallets",
+      "get_trader_groups": "Fetching trader groups",
+      "get_whale_clusters": "Detecting whale clusters",
+      "get_active_signals": "Loading active signals",
+      "get_recent_decisions": "Fetching recent decisions",
+      "get_trader_overview": "Loading trader overview",
+      "detect_anomalies": "Detecting anomalies",
+      "get_cross_platform_arb": "Checking cross-platform arb",
+      "get_llm_usage_stats": "Loading LLM usage stats",
+      "get_data_sources": "Listing data sources",
+      "query_data_source": "Querying data source",
+      "cortex_recall": "Recalling from memory",
+      "cortex_remember": "Saving to memory",
+      "cortex_expire_memory": "Expiring memory",
+      "cortex_get_fleet_status": "Loading fleet status",
+      "cortex_pause_trader": "Pausing trader",
+      "cortex_enable_strategy": "Enabling strategy",
+      "cortex_update_risk_clamps": "Updating risk clamps"
+    }
+  },
+  "aiChatRendering": {
+    "stillWorking": "Still working...",
+    "thinkingLog": "Thinking Log"
+  },
+  "aiMarketCard": {
+    "yesPrice": "YES {{price}}c",
+    "noPrice": "NO {{price}}c",
+    "volume": "Vol: {{value}}",
+    "liquidity": "Liq: {{value}}",
+    "ends": "Ends: {{date}}",
+    "viewOnPolymarket": "View on Polymarket"
   }
 }

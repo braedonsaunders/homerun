@@ -4747,5 +4747,397 @@
     "valid": "有効",
     "invalid": "無効",
     "classLabel": "クラス:"
+  },
+  "aiCommandBar": {
+    "title": "グローバル検索",
+    "placeholders": {
+      "global": "市場、トレーダー、戦略、ニュース、ウォレットなど何でも検索…",
+      "ask": "市場、戦略、リスクなど何でも質問…",
+      "commands": "コマンドを検索…"
+    },
+    "latencyMs": "{{ms}}ms",
+    "escButton": "ESC",
+    "allFilter": "すべて",
+    "pinned": "ピン留め",
+    "recentSearches": "最近の検索",
+    "quickActions": "クイックアクション",
+    "noMatches": "一致するものがありません。別のキーワードを試すか、タイプフィルタを解除してください。",
+    "viewAllResultOne": "{{count}} 件の結果をすべて表示",
+    "viewAllResultsOther": "{{count}} 件の結果をすべて表示",
+    "thinking": "考え中…",
+    "aiResponse": "AI 応答",
+    "askPrompt": "質問を入力して Enter を押してください",
+    "yesPrice": "YES ${{price}}",
+    "liquidityShort": "流動性 ${{value}}",
+    "pin": "ピン留め",
+    "unpin": "ピン留め解除",
+    "footer": {
+      "open": "開く",
+      "navigate": "移動",
+      "commands": "コマンド",
+      "close": "閉じる"
+    },
+    "commands": {
+      "askAi": {
+        "label": "AI に質問する",
+        "description": "AI コパイロットとチャット"
+      },
+      "resolutionAnalysis": {
+        "label": "決済分析",
+        "description": "市場がどのように決済されるかを分析"
+      },
+      "marketAnalysis": {
+        "label": "市場分析",
+        "description": "任意のトピックに関する詳細な AI 分析"
+      },
+      "newsSentiment": {
+        "label": "ニュースセンチメント",
+        "description": "ニュースを検索してセンチメントを分析"
+      },
+      "openCopilot": {
+        "label": "AI コパイロットを開く",
+        "description": "AI アシスタントパネルを開く"
+      }
+    },
+    "types": {
+      "market": {
+        "label": "市場",
+        "plural": "市場"
+      },
+      "event": {
+        "label": "イベント",
+        "plural": "イベント"
+      },
+      "category": {
+        "label": "カテゴリ",
+        "plural": "カテゴリ"
+      },
+      "strategy": {
+        "label": "戦略",
+        "plural": "戦略"
+      },
+      "dataSource": {
+        "label": "データソース",
+        "plural": "データソース"
+      },
+      "trader": {
+        "label": "トレーダー",
+        "plural": "トレーダー"
+      },
+      "wallet": {
+        "label": "ウォレット",
+        "plural": "ウォレット"
+      },
+      "news": {
+        "label": "ニュース",
+        "plural": "ニュース"
+      },
+      "alert": {
+        "label": "アラート",
+        "plural": "アラート"
+      },
+      "research": {
+        "label": "リサーチ",
+        "plural": "リサーチ"
+      },
+      "opportunity": {
+        "label": "機会",
+        "plural": "機会"
+      },
+      "fallback": {
+        "label": "アイテム",
+        "plural": "アイテム"
+      }
+    }
+  },
+  "aiCopilotPanel": {
+    "title": "AI コパイロット",
+    "openInAiTab": "AI タブで開く",
+    "clearChat": "チャットをクリア",
+    "chatLabel": "チャット",
+    "sessionsCountOne": "{{count}} セッション",
+    "sessionsCountOther": "{{count}} セッション",
+    "inputPlaceholder": "この機会について質問…",
+    "noResponse": "(応答なし)",
+    "errorPrefix": "エラー: {{message}}",
+    "failedToGetResponse": "応答を取得できませんでした",
+    "welcomeTitle": {
+      "strategy": "この戦略について何でも質問してください",
+      "dataSource": "このデータソースについて何でも質問してください",
+      "default": "あなたのトレードについて何でも質問してください"
+    },
+    "welcomeSubtitle": {
+      "strategy": "コードの説明、改善提案、リクエスト時には戦略の直接編集を行えます。",
+      "dataSource": "取り込みロジックの分析、正規化の改善、リクエスト時にはソースの直接編集を行えます。",
+      "default": "機会の分析、リスク評価、意思決定をサポートできます。"
+    },
+    "quickActions": {
+      "strategy": {
+        "explainCode": {
+          "label": "コードを説明",
+          "prompt": "この戦略コードを端から端まで説明してください: detect/evaluate/exit と主なリスクトレードオフ。"
+        },
+        "improveEvaluate": {
+          "label": "evaluate() を改善",
+          "prompt": "evaluate() を改善してリスクゲーティングを強化し、より明確な DecisionCheck の出力を生成してください。"
+        },
+        "addFeature": {
+          "label": "機能を追加",
+          "prompt": "市場流動性のための設定可能なフィルタを追加し、default_config + config_schema に組み込んでください。コード変更を直接適用してください。"
+        },
+        "reviewSafety": {
+          "label": "安全性をレビュー",
+          "prompt": "この戦略を潜在的なロジックバグ、実行リスク、無効な仮定についてレビューしてください。"
+        }
+      },
+      "dataSource": {
+        "explainSource": {
+          "label": "ソースを説明",
+          "prompt": "このデータソースのパイプラインと、本番環境で失敗する可能性のある箇所を説明してください。"
+        },
+        "hardenParsing": {
+          "label": "解析を強化",
+          "prompt": "このソースを改善してタイムスタンプ、ID、カテゴリをより適切に正規化してください。コード変更を直接適用してください。"
+        },
+        "addGeotags": {
+          "label": "ジオタグを追加",
+          "prompt": "堅牢なジオタグサポートを追加し、出力がレコード契約に従うことを保証してください。コード変更を直接適用してください。"
+        },
+        "retentionReview": {
+          "label": "保持期間レビュー",
+          "prompt": "予想されるボリュームと使用状況に基づいて、このソースの保持期間/設定変更を推奨してください。"
+        }
+      },
+      "default": {
+        "analyzeRisk": {
+          "label": "リスク要因を分析",
+          "prompt": "この機会の主なリスク要因は何ですか?"
+        },
+        "resolutionSafety": {
+          "label": "決済の安全性",
+          "prompt": "決済基準はどの程度安全ですか?あいまいな点はありますか?"
+        },
+        "shouldITrade": {
+          "label": "トレードすべき?",
+          "prompt": "現在のデータを考慮すると、このトレードを実行すべきですか?長所と短所は何ですか?"
+        },
+        "explainStrategy": {
+          "label": "戦略を説明",
+          "prompt": "このアービトラージ戦略がどのように機能し、なぜこの機会が存在するのかを説明してください。"
+        }
+      }
+    }
+  },
+  "aiCortexView": {
+    "enabled": "有効",
+    "writeActions": "書き込みアクション",
+    "memoriesCount": "{{count}} 件の記憶",
+    "stop": "停止",
+    "runNow": "今すぐ実行",
+    "errorBold": "エラー:",
+    "unknownError": "不明なエラー",
+    "tabs": {
+      "activity": "アクティビティ",
+      "memory": "記憶 ({{count}})",
+      "settings": "設定"
+    },
+    "loadingActivity": "アクティビティを読み込み中...",
+    "noActivityYet": "まだアクティビティがありません。Cortex を有効にして実行をトリガーしてください。",
+    "clearHistory": "履歴をクリア",
+    "runningNow": "実行中",
+    "startingCycle": "サイクルを開始中...",
+    "memory": {
+      "allCategories": "すべてのカテゴリ",
+      "showExpired": "期限切れを表示",
+      "addMemory": "記憶を追加",
+      "contentPlaceholder": "記憶の内容...",
+      "save": "保存",
+      "cancel": "キャンセル",
+      "importanceLabel": "重要度:",
+      "accessedTimes": "{{count}} 回アクセス",
+      "empty": "まだ記憶がありません。Cortex は時間をかけて学習します。",
+      "categories": {
+        "observation": "観察",
+        "lesson": "教訓",
+        "rule": "ルール",
+        "preference": "好み"
+      }
+    },
+    "settings": {
+      "loading": "設定を読み込み中...",
+      "configuration": "設定",
+      "model": "モデル",
+      "defaultModel": "デフォルト (AI 設定)",
+      "runIntervalSeconds": "実行間隔 (秒)",
+      "maxIterations": "最大反復数",
+      "temperature": "温度",
+      "memoryLimit": "記憶制限 (実行ごと)",
+      "telegramNotifications": "Telegram 通知",
+      "onWriteActions": "書き込みアクション時",
+      "mandateTitle": "マンデート (システムプロンプト)",
+      "mandatePlaceholder": "デフォルトのマンデートを使用するには空のままにしてください。Cortex の優先順位と動作を変更するにはカスタマイズしてください...",
+      "saveSettings": "設定を保存",
+      "discard": "破棄"
+    }
+  },
+  "aiChatToolWidgets": {
+    "boolYes": "はい",
+    "boolNo": "いいえ",
+    "summaryWithParts": "{{label}} — {{parts}}",
+    "summaryComplete": "{{label}} 完了",
+    "notAvailable": "なし",
+    "plusMore": "+{{count}} 件",
+    "volumeShort": "出来高: ${{value}}",
+    "liquidityShort": "流動性: ${{value}}",
+    "endsLabel": "終了: {{date}}",
+    "priceLabels": {
+      "yes": "YES",
+      "no": "NO"
+    },
+    "marketSearch": {
+      "noResults": "\"{{query}}\" に一致する市場が見つかりません",
+      "foundOne": "\"{{query}}\" に {{count}} 件の市場が見つかりました",
+      "foundOther": "\"{{query}}\" に {{count}} 件の市場が見つかりました"
+    },
+    "marketDetail": {
+      "defaultTitle": "市場の詳細"
+    },
+    "positions": {
+      "empty": "未決済ポジションなし",
+      "headerOne": "{{count}} 件の未決済ポジション",
+      "headerOther": "{{count}} 件の未決済ポジション"
+    },
+    "balance": {
+      "label": "残高: ${{value}}"
+    },
+    "news": {
+      "empty": "ニュースが見つかりません",
+      "headerOne": "{{count}} 件のニュース",
+      "headerOther": "{{count}} 件のニュース"
+    },
+    "sentiment": {
+      "title": "センチメント分析",
+      "labels": {
+        "bullish": "強気",
+        "bearish": "弱気",
+        "neutral": "中立",
+        "positive": "ポジティブ",
+        "negative": "ネガティブ",
+        "mixed": "混合"
+      }
+    },
+    "webSearch": {
+      "empty": "ウェブ結果なし",
+      "headerOne": "{{count}} 件の結果",
+      "headerOther": "{{count}} 件の結果"
+    },
+    "strategies": {
+      "loadedOne": "{{count}} 件の戦略を読み込みました",
+      "loadedOther": "{{count}} 件の戦略を読み込みました"
+    },
+    "performance": {
+      "pnl": "P&L: {{sign}}${{value}}",
+      "winRate": "勝率: {{value}}%"
+    },
+    "orderbook": {
+      "bids": "買い: ${{value}}",
+      "asks": "売り: ${{value}}",
+      "spread": "スプレッド: {{value}}c"
+    },
+    "traderOverview": {
+      "empty": "トレーダーが見つかりません",
+      "headerOne": "{{count}} 名のトレーダー",
+      "headerOther": "{{count}} 名のトレーダー",
+      "fallbackName": "トレーダー {{n}}",
+      "positionsShort": "{{count}} ポジション",
+      "status": {
+        "active": "アクティブ",
+        "paused": "一時停止",
+        "stopped": "停止",
+        "idle": "アイドル"
+      }
+    },
+    "fleetStatus": {
+      "traders": "トレーダー",
+      "active": "アクティブ",
+      "strategies": "戦略",
+      "pnl": "P&L",
+      "fallback": "フリート状態: {{count}} フィールド"
+    },
+    "signals": {
+      "empty": "アクティブなシグナルなし",
+      "headerOne": "{{count}} 件のアクティブなシグナル",
+      "headerOther": "{{count}} 件のアクティブなシグナル",
+      "fallbackName": "シグナル {{n}}"
+    },
+    "toolLabels": {
+      "search_markets": "市場を検索中",
+      "get_market_details": "市場の詳細を取得中",
+      "get_live_prices": "ライブ価格を取得中",
+      "get_price_history": "価格履歴を読み込み中",
+      "check_orderbook": "オーダーブックを確認中",
+      "find_related_markets": "関連市場を検索中",
+      "get_market_regime": "市場レジームを分析中",
+      "get_active_markets_summary": "アクティブ市場を要約中",
+      "get_open_positions": "ポジションを読み込み中",
+      "get_open_orders": "未決済注文を読み込み中",
+      "get_trade_history": "取引履歴を取得中",
+      "get_account_balance": "残高を確認中",
+      "get_portfolio_performance": "パフォーマンスを読み込み中",
+      "place_order": "注文を発注中",
+      "cancel_order": "注文をキャンセル中",
+      "cancel_all_orders": "すべての注文をキャンセル中",
+      "search_news": "ニュースを検索中",
+      "get_news_edges": "ニュースエッジを検索中",
+      "analyze_market_sentiment": "センチメントを分析中",
+      "analyze_resolution": "決済を分析中",
+      "web_search": "ウェブを検索中",
+      "fetch_webpage": "ウェブページを取得中",
+      "get_system_status": "システム状態を確認中",
+      "get_settings": "設定を読み込み中",
+      "update_setting": "設定を更新中",
+      "query_database": "データベースをクエリ中",
+      "list_strategies": "戦略をリスト中",
+      "get_strategy_details": "戦略を読み込み中",
+      "get_strategy_performance": "パフォーマンスを確認中",
+      "update_strategy_config": "戦略設定を更新中",
+      "validate_strategy_code": "戦略を検証中",
+      "run_strategy_backtest": "バックテストを実行中",
+      "create_strategy": "戦略を作成中",
+      "get_wallet_profile": "ウォレットプロファイルを読み込み中",
+      "get_wallet_leaderboard": "リーダーボードを取得中",
+      "get_smart_pool_stats": "スマートプール統計を読み込み中",
+      "get_confluence_signals": "コンフルエンスシグナルを確認中",
+      "get_tracked_wallets": "追跡ウォレットを読み込み中",
+      "get_trader_groups": "トレーダーグループを取得中",
+      "get_whale_clusters": "クジラクラスターを検出中",
+      "get_active_signals": "アクティブシグナルを読み込み中",
+      "get_recent_decisions": "最近の決定を取得中",
+      "get_trader_overview": "トレーダー概要を読み込み中",
+      "detect_anomalies": "異常を検出中",
+      "get_cross_platform_arb": "クロスプラットフォームアービトラージを確認中",
+      "get_llm_usage_stats": "LLM 使用統計を読み込み中",
+      "get_data_sources": "データソースをリスト中",
+      "query_data_source": "データソースをクエリ中",
+      "cortex_recall": "記憶から呼び出し中",
+      "cortex_remember": "記憶に保存中",
+      "cortex_expire_memory": "記憶を期限切れにしています",
+      "cortex_get_fleet_status": "フリート状態を読み込み中",
+      "cortex_pause_trader": "トレーダーを一時停止中",
+      "cortex_enable_strategy": "戦略を有効化中",
+      "cortex_update_risk_clamps": "リスククランプを更新中"
+    }
+  },
+  "aiChatRendering": {
+    "stillWorking": "まだ処理中...",
+    "thinkingLog": "思考ログ"
+  },
+  "aiMarketCard": {
+    "yesPrice": "YES {{price}}c",
+    "noPrice": "NO {{price}}c",
+    "volume": "出来高: {{value}}",
+    "liquidity": "流動性: {{value}}",
+    "ends": "終了: {{date}}",
+    "viewOnPolymarket": "Polymarket で表示"
   }
 }

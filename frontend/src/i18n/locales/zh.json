@@ -4747,5 +4747,397 @@
     "valid": "有效",
     "invalid": "无效",
     "classLabel": "类:"
+  },
+  "aiCommandBar": {
+    "title": "全局搜索",
+    "placeholders": {
+      "global": "搜索市场、交易者、策略、新闻、钱包 — 任何内容…",
+      "ask": "询问市场、策略、风险等任何问题…",
+      "commands": "搜索命令…"
+    },
+    "latencyMs": "{{ms}}ms",
+    "escButton": "ESC",
+    "allFilter": "全部",
+    "pinned": "已置顶",
+    "recentSearches": "最近搜索",
+    "quickActions": "快捷操作",
+    "noMatches": "无匹配结果。请尝试其他关键词或移除类型筛选。",
+    "viewAllResultOne": "查看全部 {{count}} 个结果",
+    "viewAllResultsOther": "查看全部 {{count}} 个结果",
+    "thinking": "思考中…",
+    "aiResponse": "AI 回复",
+    "askPrompt": "输入问题并按回车键",
+    "yesPrice": "YES ${{price}}",
+    "liquidityShort": "流动性 ${{value}}",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "footer": {
+      "open": "打开",
+      "navigate": "导航",
+      "commands": "命令",
+      "close": "关闭"
+    },
+    "commands": {
+      "askAi": {
+        "label": "向 AI 提问",
+        "description": "与 AI 副驾驶聊天"
+      },
+      "resolutionAnalysis": {
+        "label": "结算分析",
+        "description": "分析市场如何结算"
+      },
+      "marketAnalysis": {
+        "label": "市场分析",
+        "description": "对任意主题进行深度 AI 分析"
+      },
+      "newsSentiment": {
+        "label": "新闻情绪",
+        "description": "搜索新闻并分析情绪"
+      },
+      "openCopilot": {
+        "label": "打开 AI 副驾驶",
+        "description": "打开 AI 助手面板"
+      }
+    },
+    "types": {
+      "market": {
+        "label": "市场",
+        "plural": "市场"
+      },
+      "event": {
+        "label": "事件",
+        "plural": "事件"
+      },
+      "category": {
+        "label": "类别",
+        "plural": "类别"
+      },
+      "strategy": {
+        "label": "策略",
+        "plural": "策略"
+      },
+      "dataSource": {
+        "label": "数据源",
+        "plural": "数据源"
+      },
+      "trader": {
+        "label": "交易者",
+        "plural": "交易者"
+      },
+      "wallet": {
+        "label": "钱包",
+        "plural": "钱包"
+      },
+      "news": {
+        "label": "新闻",
+        "plural": "新闻"
+      },
+      "alert": {
+        "label": "提醒",
+        "plural": "提醒"
+      },
+      "research": {
+        "label": "研究",
+        "plural": "研究"
+      },
+      "opportunity": {
+        "label": "机会",
+        "plural": "机会"
+      },
+      "fallback": {
+        "label": "项目",
+        "plural": "项目"
+      }
+    }
+  },
+  "aiCopilotPanel": {
+    "title": "AI 副驾驶",
+    "openInAiTab": "在 AI 标签页打开",
+    "clearChat": "清除聊天",
+    "chatLabel": "聊天",
+    "sessionsCountOne": "{{count}} 个会话",
+    "sessionsCountOther": "{{count}} 个会话",
+    "inputPlaceholder": "询问关于此机会…",
+    "noResponse": "(无响应)",
+    "errorPrefix": "错误: {{message}}",
+    "failedToGetResponse": "获取响应失败",
+    "welcomeTitle": {
+      "strategy": "可以问我关于这个策略的任何问题",
+      "dataSource": "可以问我关于这个数据源的任何问题",
+      "default": "可以问我关于你交易的任何问题"
+    },
+    "welcomeSubtitle": {
+      "strategy": "我可以解释代码、提出改进建议,并在请求时直接对策略进行编辑。",
+      "dataSource": "我可以分析摄取逻辑、改进归一化,并在请求时直接对数据源进行编辑。",
+      "default": "我可以分析机会、评估风险并帮助你做出决策。"
+    },
+    "quickActions": {
+      "strategy": {
+        "explainCode": {
+          "label": "解释代码",
+          "prompt": "端到端解释此策略代码:detect/evaluate/exit 以及主要的风险权衡。"
+        },
+        "improveEvaluate": {
+          "label": "改进 evaluate()",
+          "prompt": "改进 evaluate() 以加强风险控制并产生更清晰的 DecisionCheck 输出。"
+        },
+        "addFeature": {
+          "label": "添加功能",
+          "prompt": "添加一个可配置的市场流动性过滤器,并将其接入 default_config + config_schema。直接应用代码更改。"
+        },
+        "reviewSafety": {
+          "label": "审查安全性",
+          "prompt": "审查此策略中潜在的逻辑错误、执行风险和无效假设。"
+        }
+      },
+      "dataSource": {
+        "explainSource": {
+          "label": "解释数据源",
+          "prompt": "解释此数据源管道,以及它在生产中可能失败的地方。"
+        },
+        "hardenParsing": {
+          "label": "加固解析",
+          "prompt": "改进此数据源以更好地规范化时间戳、ID 和类别。直接应用代码更改。"
+        },
+        "addGeotags": {
+          "label": "添加地理标签",
+          "prompt": "添加稳健的地理标签支持,并确保输出符合记录契约。直接应用代码更改。"
+        },
+        "retentionReview": {
+          "label": "保留审查",
+          "prompt": "根据此数据源的预期数量和使用情况,推荐保留/配置更改。"
+        }
+      },
+      "default": {
+        "analyzeRisk": {
+          "label": "分析风险因素",
+          "prompt": "此机会的主要风险因素是什么?"
+        },
+        "resolutionSafety": {
+          "label": "结算安全性",
+          "prompt": "结算标准有多安全?是否存在歧义?"
+        },
+        "shouldITrade": {
+          "label": "我该交易吗?",
+          "prompt": "根据当前数据,我应该执行此交易吗?利弊是什么?"
+        },
+        "explainStrategy": {
+          "label": "解释策略",
+          "prompt": "解释此套利策略如何运作以及为何存在此机会。"
+        }
+      }
+    }
+  },
+  "aiCortexView": {
+    "enabled": "已启用",
+    "writeActions": "写入操作",
+    "memoriesCount": "{{count}} 条记忆",
+    "stop": "停止",
+    "runNow": "立即运行",
+    "errorBold": "错误:",
+    "unknownError": "未知错误",
+    "tabs": {
+      "activity": "活动",
+      "memory": "记忆 ({{count}})",
+      "settings": "设置"
+    },
+    "loadingActivity": "正在加载活动...",
+    "noActivityYet": "尚无活动。启用 Cortex 并触发运行。",
+    "clearHistory": "清除历史",
+    "runningNow": "正在运行",
+    "startingCycle": "启动周期...",
+    "memory": {
+      "allCategories": "所有类别",
+      "showExpired": "显示已过期",
+      "addMemory": "添加记忆",
+      "contentPlaceholder": "记忆内容...",
+      "save": "保存",
+      "cancel": "取消",
+      "importanceLabel": "重要性:",
+      "accessedTimes": "已访问 {{count}} 次",
+      "empty": "尚无记忆。Cortex 会逐渐学习。",
+      "categories": {
+        "observation": "观察",
+        "lesson": "教训",
+        "rule": "规则",
+        "preference": "偏好"
+      }
+    },
+    "settings": {
+      "loading": "正在加载设置...",
+      "configuration": "配置",
+      "model": "模型",
+      "defaultModel": "默认 (AI 设置)",
+      "runIntervalSeconds": "运行间隔 (秒)",
+      "maxIterations": "最大迭代次数",
+      "temperature": "温度",
+      "memoryLimit": "记忆限制 (每次运行)",
+      "telegramNotifications": "Telegram 通知",
+      "onWriteActions": "用于写入操作",
+      "mandateTitle": "授权 (系统提示)",
+      "mandatePlaceholder": "留空以使用默认授权。自定义以更改 Cortex 的优先级和行为...",
+      "saveSettings": "保存设置",
+      "discard": "放弃"
+    }
+  },
+  "aiChatToolWidgets": {
+    "boolYes": "是",
+    "boolNo": "否",
+    "summaryWithParts": "{{label}} — {{parts}}",
+    "summaryComplete": "{{label}} 完成",
+    "notAvailable": "无",
+    "plusMore": "+{{count}} 个更多",
+    "volumeShort": "成交量: ${{value}}",
+    "liquidityShort": "流动性: ${{value}}",
+    "endsLabel": "结束: {{date}}",
+    "priceLabels": {
+      "yes": "YES",
+      "no": "NO"
+    },
+    "marketSearch": {
+      "noResults": "未找到 \"{{query}}\" 的市场",
+      "foundOne": "找到 {{count}} 个 \"{{query}}\" 的市场",
+      "foundOther": "找到 {{count}} 个 \"{{query}}\" 的市场"
+    },
+    "marketDetail": {
+      "defaultTitle": "市场详情"
+    },
+    "positions": {
+      "empty": "无未平仓位",
+      "headerOne": "{{count}} 个未平仓位",
+      "headerOther": "{{count}} 个未平仓位"
+    },
+    "balance": {
+      "label": "余额: ${{value}}"
+    },
+    "news": {
+      "empty": "未找到新闻",
+      "headerOne": "{{count}} 条新闻",
+      "headerOther": "{{count}} 条新闻"
+    },
+    "sentiment": {
+      "title": "情绪分析",
+      "labels": {
+        "bullish": "看涨",
+        "bearish": "看跌",
+        "neutral": "中性",
+        "positive": "积极",
+        "negative": "消极",
+        "mixed": "混合"
+      }
+    },
+    "webSearch": {
+      "empty": "无网络结果",
+      "headerOne": "{{count}} 个结果",
+      "headerOther": "{{count}} 个结果"
+    },
+    "strategies": {
+      "loadedOne": "已加载 {{count}} 个策略",
+      "loadedOther": "已加载 {{count}} 个策略"
+    },
+    "performance": {
+      "pnl": "P&L: {{sign}}${{value}}",
+      "winRate": "胜率: {{value}}%"
+    },
+    "orderbook": {
+      "bids": "买单: ${{value}}",
+      "asks": "卖单: ${{value}}",
+      "spread": "价差: {{value}}c"
+    },
+    "traderOverview": {
+      "empty": "未找到交易者",
+      "headerOne": "{{count}} 个交易者",
+      "headerOther": "{{count}} 个交易者",
+      "fallbackName": "交易者 {{n}}",
+      "positionsShort": "{{count}} 个持仓",
+      "status": {
+        "active": "活跃",
+        "paused": "暂停",
+        "stopped": "已停止",
+        "idle": "空闲"
+      }
+    },
+    "fleetStatus": {
+      "traders": "交易者",
+      "active": "活跃",
+      "strategies": "策略",
+      "pnl": "P&L",
+      "fallback": "舰队状态: {{count}} 个字段"
+    },
+    "signals": {
+      "empty": "无活跃信号",
+      "headerOne": "{{count}} 个活跃信号",
+      "headerOther": "{{count}} 个活跃信号",
+      "fallbackName": "信号 {{n}}"
+    },
+    "toolLabels": {
+      "search_markets": "正在搜索市场",
+      "get_market_details": "正在获取市场详情",
+      "get_live_prices": "正在获取实时价格",
+      "get_price_history": "正在加载价格历史",
+      "check_orderbook": "正在检查订单簿",
+      "find_related_markets": "正在查找相关市场",
+      "get_market_regime": "正在分析市场状态",
+      "get_active_markets_summary": "正在汇总活跃市场",
+      "get_open_positions": "正在加载持仓",
+      "get_open_orders": "正在加载未结订单",
+      "get_trade_history": "正在获取交易历史",
+      "get_account_balance": "正在检查余额",
+      "get_portfolio_performance": "正在加载业绩",
+      "place_order": "正在下单",
+      "cancel_order": "正在取消订单",
+      "cancel_all_orders": "正在取消所有订单",
+      "search_news": "正在搜索新闻",
+      "get_news_edges": "正在查找新闻 edges",
+      "analyze_market_sentiment": "正在分析情绪",
+      "analyze_resolution": "正在分析结算",
+      "web_search": "正在搜索网络",
+      "fetch_webpage": "正在获取网页",
+      "get_system_status": "正在检查系统状态",
+      "get_settings": "正在加载设置",
+      "update_setting": "正在更新设置",
+      "query_database": "正在查询数据库",
+      "list_strategies": "正在列出策略",
+      "get_strategy_details": "正在加载策略",
+      "get_strategy_performance": "正在检查业绩",
+      "update_strategy_config": "正在更新策略配置",
+      "validate_strategy_code": "正在验证策略",
+      "run_strategy_backtest": "正在运行回测",
+      "create_strategy": "正在创建策略",
+      "get_wallet_profile": "正在加载钱包资料",
+      "get_wallet_leaderboard": "正在获取排行榜",
+      "get_smart_pool_stats": "正在加载智能池统计",
+      "get_confluence_signals": "正在检查汇合信号",
+      "get_tracked_wallets": "正在加载追踪钱包",
+      "get_trader_groups": "正在获取交易者组",
+      "get_whale_clusters": "正在检测鲸鱼集群",
+      "get_active_signals": "正在加载活跃信号",
+      "get_recent_decisions": "正在获取最近决策",
+      "get_trader_overview": "正在加载交易者概览",
+      "detect_anomalies": "正在检测异常",
+      "get_cross_platform_arb": "正在检查跨平台套利",
+      "get_llm_usage_stats": "正在加载 LLM 使用统计",
+      "get_data_sources": "正在列出数据源",
+      "query_data_source": "正在查询数据源",
+      "cortex_recall": "正在从记忆中检索",
+      "cortex_remember": "正在保存到记忆",
+      "cortex_expire_memory": "正在过期记忆",
+      "cortex_get_fleet_status": "正在加载舰队状态",
+      "cortex_pause_trader": "正在暂停交易者",
+      "cortex_enable_strategy": "正在启用策略",
+      "cortex_update_risk_clamps": "正在更新风险限制"
+    }
+  },
+  "aiChatRendering": {
+    "stillWorking": "仍在处理...",
+    "thinkingLog": "思考日志"
+  },
+  "aiMarketCard": {
+    "yesPrice": "YES {{price}}c",
+    "noPrice": "NO {{price}}c",
+    "volume": "成交量: {{value}}",
+    "liquidity": "流动性: {{value}}",
+    "ends": "结束: {{date}}",
+    "viewOnPolymarket": "在 Polymarket 查看"
   }
 }

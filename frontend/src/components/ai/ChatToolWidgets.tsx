@@ -7,6 +7,7 @@
  */
 
 import { motion } from 'framer-motion'
+import { useTranslation } from 'react-i18next'
 import { cn } from '../../lib/utils'
 import {
   TrendingUp,
@@ -134,67 +135,16 @@ const TOOL_ICONS: Record<string, React.ElementType> = {
   cortex_update_risk_clamps: Wrench,
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  search_markets: 'Searching markets',
-  get_market_details: 'Fetching market details',
-  get_live_prices: 'Getting live prices',
-  get_price_history: 'Loading price history',
-  check_orderbook: 'Checking order book',
-  find_related_markets: 'Finding related markets',
-  get_market_regime: 'Analyzing market regime',
-  get_active_markets_summary: 'Summarizing active markets',
-  get_open_positions: 'Loading positions',
-  get_open_orders: 'Loading open orders',
-  get_trade_history: 'Fetching trade history',
-  get_account_balance: 'Checking balance',
-  get_portfolio_performance: 'Loading performance',
-  place_order: 'Placing order',
-  cancel_order: 'Cancelling order',
-  cancel_all_orders: 'Cancelling all orders',
-  search_news: 'Searching news',
-  get_news_edges: 'Finding news edges',
-  analyze_market_sentiment: 'Analyzing sentiment',
-  analyze_resolution: 'Analyzing resolution',
-  web_search: 'Searching the web',
-  fetch_webpage: 'Fetching webpage',
-  get_system_status: 'Checking system status',
-  get_settings: 'Loading settings',
-  update_setting: 'Updating setting',
-  query_database: 'Querying database',
-  list_strategies: 'Listing strategies',
-  get_strategy_details: 'Loading strategy',
-  get_strategy_performance: 'Checking performance',
-  update_strategy_config: 'Updating strategy config',
-  validate_strategy_code: 'Validating strategy',
-  run_strategy_backtest: 'Running backtest',
-  create_strategy: 'Creating strategy',
-  get_wallet_profile: 'Loading wallet profile',
-  get_wallet_leaderboard: 'Fetching leaderboard',
-  get_smart_pool_stats: 'Loading smart pool stats',
-  get_confluence_signals: 'Checking confluence signals',
-  get_tracked_wallets: 'Loading tracked wallets',
-  get_trader_groups: 'Fetching trader groups',
-  get_whale_clusters: 'Detecting whale clusters',
-  get_active_signals: 'Loading active signals',
-  get_recent_decisions: 'Fetching recent decisions',
-  get_trader_overview: 'Loading trader overview',
-  detect_anomalies: 'Detecting anomalies',
-  get_cross_platform_arb: 'Checking cross-platform arb',
-  get_llm_usage_stats: 'Loading LLM usage stats',
-  get_data_sources: 'Listing data sources',
-  query_data_source: 'Querying data source',
-  cortex_recall: 'Recalling from memory',
-  cortex_remember: 'Saving to memory',
-  cortex_expire_memory: 'Expiring memory',
-  cortex_get_fleet_status: 'Loading fleet status',
-  cortex_pause_trader: 'Pausing trader',
-  cortex_enable_strategy: 'Enabling strategy',
-  cortex_update_risk_clamps: 'Updating risk clamps',
+// Tool label keys live under `aiChatToolWidgets.toolLabels.<tool_name>`.
+// Falls back to the prettified tool name when no translation is found.
+function useToolLabel(tool: string): string {
+  const { t } = useTranslation()
+  return t(`aiChatToolWidgets.toolLabels.${tool}`, { defaultValue: tool.replace(/_/g, ' ') })
 }
 
 export function ToolStartWidget({ tool, input }: ToolStartProps) {
   const Icon = TOOL_ICONS[tool] || Wrench
-  const label = TOOL_LABELS[tool] || tool.replace(/_/g, ' ')
+  const label = useToolLabel(tool)
   const params = Object.entries(input || {})
     .filter(([, v]) => v !== undefined && v !== null)
     .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
@@ -243,6 +193,17 @@ export function ToolErrorWidget({ tool, error }: { tool: string; error: string }
   )
 }
 
+function MarketSearchHeader({ count, query }: { count: number; query: string }) {
+  const { t } = useTranslation()
+  return (
+    <span className="text-[10px] font-medium text-muted-foreground">
+      {count === 1
+        ? t('aiChatToolWidgets.marketSearch.foundOne', { count, query })
+        : t('aiChatToolWidgets.marketSearch.foundOther', { count, query })}
+    </span>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Tool result widget — dispatches to type-specific renderers
 // ---------------------------------------------------------------------------
@@ -278,6 +239,7 @@ export function ToolResultWidget({ tool, output }: ToolWidgetProps) {
 // ---------------------------------------------------------------------------
 
 function MarketSearchWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const markets = (data.markets as any[]) || []
   const count = (data.count as number) || 0
   const query = data.query as string
@@ -286,7 +248,7 @@ function MarketSearchWidget({ data }: { data: Record<string, unknown> }) {
     return (
       <CompactResultCard
         icon={Search}
-        label={`No markets found for "${query}"`}
+        label={t('aiChatToolWidgets.marketSearch.noResults', { query })}
         color="amber"
       />
     )
@@ -300,9 +262,7 @@ function MarketSearchWidget({ data }: { data: Record<string, unknown> }) {
     >
       <div className="px-2.5 py-1.5 border-b border-border/20 flex items-center gap-2">
         <Search className="w-3 h-3 text-purple-400" />
-        <span className="text-[10px] font-medium text-muted-foreground">
-          Found {count} market{count !== 1 ? 's' : ''} for &quot;{query}&quot;
-        </span>
+        <MarketSearchHeader count={count} query={query} />
       </div>
       <div className="divide-y divide-border/10">
         {markets.slice(0, 6).map((m: any, i: number) => {
@@ -312,13 +272,13 @@ function MarketSearchWidget({ data }: { data: Record<string, unknown> }) {
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-foreground/90 truncate">{m.question}</p>
                 <div className="flex items-center gap-3 mt-0.5">
-                  <PricePill label="YES" price={prices[0]} color="emerald" />
-                  <PricePill label="NO" price={prices[1]} color="red" />
+                  <PricePill label={t('aiChatToolWidgets.priceLabels.yes')} price={prices[0]} color="emerald" />
+                  <PricePill label={t('aiChatToolWidgets.priceLabels.no')} price={prices[1]} color="red" />
                   <span className="text-[10px] text-muted-foreground/50">
-                    Vol: ${formatCompact(parseFloat(m.volume || '0'))}
+                    {t('aiChatToolWidgets.volumeShort', { value: formatCompact(parseFloat(m.volume || '0')) })}
                   </span>
                   <span className="text-[10px] text-muted-foreground/50">
-                    Liq: ${formatCompact(parseFloat(m.liquidity || '0'))}
+                    {t('aiChatToolWidgets.liquidityShort', { value: formatCompact(parseFloat(m.liquidity || '0')) })}
                   </span>
                 </div>
               </div>
@@ -328,7 +288,7 @@ function MarketSearchWidget({ data }: { data: Record<string, unknown> }) {
       </div>
       {count > 6 && (
         <div className="px-2.5 py-1 border-t border-border/20 text-center">
-          <span className="text-[10px] text-muted-foreground/50">+{count - 6} more</span>
+          <span className="text-[10px] text-muted-foreground/50">{t('aiChatToolWidgets.plusMore', { count: count - 6 })}</span>
         </div>
       )}
     </motion.div>
@@ -340,8 +300,9 @@ function MarketSearchWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function MarketDetailWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const market = (data.market as any) || data
-  const question = market.question || market.title || 'Market Details'
+  const question = market.question || market.title || t('aiChatToolWidgets.marketDetail.defaultTitle')
   const prices = parsePrices(market.outcome_prices || market.outcomes)
 
   return (
@@ -352,21 +313,21 @@ function MarketDetailWidget({ data }: { data: Record<string, unknown> }) {
     >
       <p className="text-xs font-medium text-foreground/90 mb-1.5">{question}</p>
       <div className="flex items-center gap-3 flex-wrap">
-        <PricePill label="YES" price={prices[0]} color="emerald" />
-        <PricePill label="NO" price={prices[1]} color="red" />
+        <PricePill label={t('aiChatToolWidgets.priceLabels.yes')} price={prices[0]} color="emerald" />
+        <PricePill label={t('aiChatToolWidgets.priceLabels.no')} price={prices[1]} color="red" />
         {market.volume && (
           <span className="text-[10px] text-muted-foreground/60">
-            Vol: ${formatCompact(parseFloat(market.volume))}
+            {t('aiChatToolWidgets.volumeShort', { value: formatCompact(parseFloat(market.volume)) })}
           </span>
         )}
         {market.liquidity && (
           <span className="text-[10px] text-muted-foreground/60">
-            Liq: ${formatCompact(parseFloat(market.liquidity))}
+            {t('aiChatToolWidgets.liquidityShort', { value: formatCompact(parseFloat(market.liquidity)) })}
           </span>
         )}
         {market.end_date && (
           <span className="text-[10px] text-muted-foreground/60">
-            Ends: {new Date(market.end_date).toLocaleDateString()}
+            {t('aiChatToolWidgets.endsLabel', { date: new Date(market.end_date).toLocaleDateString() })}
           </span>
         )}
       </div>
@@ -403,10 +364,11 @@ function LivePricesWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function PositionsWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const positions = (data.positions as any[]) || []
 
   if (positions.length === 0) {
-    return <CompactResultCard icon={Wallet} label="No open positions" color="muted" />
+    return <CompactResultCard icon={Wallet} label={t('aiChatToolWidgets.positions.empty')} color="muted" />
   }
 
   return (
@@ -418,7 +380,9 @@ function PositionsWidget({ data }: { data: Record<string, unknown> }) {
       <div className="px-2.5 py-1.5 border-b border-border/20 flex items-center gap-2">
         <Wallet className="w-3 h-3 text-cyan-400" />
         <span className="text-[10px] font-medium text-muted-foreground">
-          {positions.length} open position{positions.length !== 1 ? 's' : ''}
+          {positions.length === 1
+            ? t('aiChatToolWidgets.positions.headerOne', { count: positions.length })
+            : t('aiChatToolWidgets.positions.headerOther', { count: positions.length })}
         </span>
       </div>
       {positions.slice(0, 5).map((pos: any, i: number) => (
@@ -445,11 +409,13 @@ function PositionsWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function BalanceWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const balance = data.balance ?? data.total ?? data.available
+  const value = typeof balance === 'number' ? balance.toFixed(2) : String(balance ?? t('aiChatToolWidgets.notAvailable'))
   return (
     <CompactResultCard
       icon={DollarSign}
-      label={`Balance: $${typeof balance === 'number' ? balance.toFixed(2) : String(balance ?? 'N/A')}`}
+      label={t('aiChatToolWidgets.balance.label', { value })}
       color="emerald"
     />
   )
@@ -460,11 +426,12 @@ function BalanceWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function NewsWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const articles = (data.articles as any[]) || (data.edges as any[]) || (data.news as any[]) || []
   const count = articles.length || (data.count as number) || 0
 
   if (count === 0) {
-    return <CompactResultCard icon={Newspaper} label="No news found" color="amber" />
+    return <CompactResultCard icon={Newspaper} label={t('aiChatToolWidgets.news.empty')} color="amber" />
   }
 
   return (
@@ -475,7 +442,11 @@ function NewsWidget({ data }: { data: Record<string, unknown> }) {
     >
       <div className="px-2.5 py-1.5 border-b border-border/20 flex items-center gap-2">
         <Newspaper className="w-3 h-3 text-amber-400" />
-        <span className="text-[10px] font-medium text-muted-foreground">{count} news item{count !== 1 ? 's' : ''}</span>
+        <span className="text-[10px] font-medium text-muted-foreground">
+          {count === 1
+            ? t('aiChatToolWidgets.news.headerOne', { count })
+            : t('aiChatToolWidgets.news.headerOther', { count })}
+        </span>
       </div>
       {articles.slice(0, 4).map((a: any, i: number) => (
         <div key={i} className="px-2.5 py-1.5 border-b border-border/10 last:border-0">
@@ -492,8 +463,10 @@ function NewsWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function SentimentWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const score = (data.sentiment_score ?? data.score ?? 0) as number
-  const label = (data.overall_sentiment ?? data.sentiment ?? 'neutral') as string
+  const rawLabel = (data.overall_sentiment ?? data.sentiment ?? 'neutral') as string
+  const translatedLabel = t(`aiChatToolWidgets.sentiment.labels.${rawLabel}`, { defaultValue: rawLabel })
   const pct = ((score + 1) / 2) * 100
 
   return (
@@ -504,12 +477,12 @@ function SentimentWidget({ data }: { data: Record<string, unknown> }) {
     >
       <div className="flex items-center gap-2 mb-1.5">
         <Brain className="w-3 h-3 text-cyan-400" />
-        <span className="text-[10px] font-medium text-muted-foreground">Sentiment Analysis</span>
+        <span className="text-[10px] font-medium text-muted-foreground">{t('aiChatToolWidgets.sentiment.title')}</span>
         <span className={cn(
           'text-[10px] font-bold ml-auto',
           score > 0.3 ? 'text-emerald-400' : score < -0.3 ? 'text-red-400' : 'text-amber-400'
         )}>
-          {label.toUpperCase()} ({score > 0 ? '+' : ''}{score.toFixed(2)})
+          {translatedLabel.toUpperCase()} ({score > 0 ? '+' : ''}{score.toFixed(2)})
         </span>
       </div>
       <div className="relative h-1.5 rounded-full bg-muted/40 overflow-hidden">
@@ -534,11 +507,12 @@ function SentimentWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function WebSearchWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const results = (data.results as any[]) || []
   const count = results.length || (data.count as number) || 0
 
   if (count === 0) {
-    return <CompactResultCard icon={Globe} label="No web results" color="amber" />
+    return <CompactResultCard icon={Globe} label={t('aiChatToolWidgets.webSearch.empty')} color="amber" />
   }
 
   return (
@@ -549,7 +523,11 @@ function WebSearchWidget({ data }: { data: Record<string, unknown> }) {
     >
       <div className="px-2.5 py-1.5 border-b border-border/20 flex items-center gap-2">
         <Globe className="w-3 h-3 text-blue-400" />
-        <span className="text-[10px] font-medium text-muted-foreground">{count} result{count !== 1 ? 's' : ''}</span>
+        <span className="text-[10px] font-medium text-muted-foreground">
+          {count === 1
+            ? t('aiChatToolWidgets.webSearch.headerOne', { count })
+            : t('aiChatToolWidgets.webSearch.headerOther', { count })}
+        </span>
       </div>
       {results.slice(0, 4).map((r: any, i: number) => (
         <div key={i} className="px-2.5 py-1.5 border-b border-border/10 last:border-0">
@@ -598,13 +576,16 @@ function SystemStatusWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function StrategiesWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const strategies = (data.strategies as any[]) || []
   const count = strategies.length || (data.count as number) || 0
 
   return (
     <CompactResultCard
       icon={Target}
-      label={`${count} strateg${count !== 1 ? 'ies' : 'y'} loaded`}
+      label={count === 1
+        ? t('aiChatToolWidgets.strategies.loadedOne', { count })
+        : t('aiChatToolWidgets.strategies.loadedOther', { count })}
       color="purple"
     />
   )
@@ -615,6 +596,7 @@ function StrategiesWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function PerformanceWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const totalPnl = data.total_pnl ?? data.pnl ?? data.total_profit
   const winRate = data.win_rate ?? data.winRate
 
@@ -632,12 +614,12 @@ function PerformanceWidget({ data }: { data: Record<string, unknown> }) {
             : 'bg-red-500/10 text-red-400 border-red-500/20'
         )}>
           {Number(totalPnl) >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          PnL: {Number(totalPnl) >= 0 ? '+' : ''}${Number(totalPnl).toFixed(2)}
+          {t('aiChatToolWidgets.performance.pnl', { sign: Number(totalPnl) >= 0 ? '+' : '', value: Number(totalPnl).toFixed(2) })}
         </span>
       )}
       {winRate !== undefined && (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted/30 border border-border/20 text-[10px]">
-          Win rate: {(Number(winRate) * 100).toFixed(1)}%
+          {t('aiChatToolWidgets.performance.winRate', { value: (Number(winRate) * 100).toFixed(1) })}
         </span>
       )}
     </motion.div>
@@ -649,6 +631,7 @@ function PerformanceWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function OrderbookWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const bids = (data.bids as number) ?? (data.bid_depth as number)
   const asks = (data.asks as number) ?? (data.ask_depth as number)
   const spread = data.spread as number | undefined
@@ -661,17 +644,17 @@ function OrderbookWidget({ data }: { data: Record<string, unknown> }) {
     >
       {bids !== undefined && (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-400">
-          Bids: ${formatCompact(bids)}
+          {t('aiChatToolWidgets.orderbook.bids', { value: formatCompact(bids) })}
         </span>
       )}
       {asks !== undefined && (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-[10px] text-red-400">
-          Asks: ${formatCompact(asks)}
+          {t('aiChatToolWidgets.orderbook.asks', { value: formatCompact(asks) })}
         </span>
       )}
       {spread !== undefined && (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted/30 border border-border/20 text-[10px]">
-          Spread: {(spread * 100).toFixed(2)}c
+          {t('aiChatToolWidgets.orderbook.spread', { value: (spread * 100).toFixed(2) })}
         </span>
       )}
     </motion.div>
@@ -683,11 +666,12 @@ function OrderbookWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function TraderOverviewWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const traders = (data.traders as any[]) || []
   const count = (data.count as number) || traders.length
 
   if (count === 0) {
-    return <CompactResultCard icon={BarChart3} label="No traders found" color="amber" />
+    return <CompactResultCard icon={BarChart3} label={t('aiChatToolWidgets.traderOverview.empty')} color="amber" />
   }
 
   return (
@@ -699,27 +683,29 @@ function TraderOverviewWidget({ data }: { data: Record<string, unknown> }) {
       <div className="px-2.5 py-1.5 border-b border-border/20 flex items-center gap-2">
         <BarChart3 className="w-3 h-3 text-cyan-400" />
         <span className="text-[10px] font-medium text-muted-foreground">
-          {count} trader{count !== 1 ? 's' : ''}
+          {count === 1
+            ? t('aiChatToolWidgets.traderOverview.headerOne', { count })
+            : t('aiChatToolWidgets.traderOverview.headerOther', { count })}
         </span>
       </div>
-      {traders.slice(0, 6).map((t: any, i: number) => (
+      {traders.slice(0, 6).map((tr: any, i: number) => (
         <div key={i} className="px-2.5 py-1.5 border-b border-border/10 last:border-0 flex items-center justify-between">
           <span className="text-xs text-foreground/80 truncate flex-1 mr-2">
-            {t.name || t.id || `Trader ${i + 1}`}
+            {tr.name || tr.id || t('aiChatToolWidgets.traderOverview.fallbackName', { n: i + 1 })}
           </span>
           <div className="flex items-center gap-2 shrink-0">
-            {t.status && (
-              <span className={cn('text-[10px]', t.status === 'active' ? 'text-emerald-400' : 'text-muted-foreground/50')}>
-                {t.status}
+            {tr.status && (
+              <span className={cn('text-[10px]', tr.status === 'active' ? 'text-emerald-400' : 'text-muted-foreground/50')}>
+                {t(`aiChatToolWidgets.traderOverview.status.${tr.status}`, { defaultValue: tr.status })}
               </span>
             )}
-            {t.pnl !== undefined && (
-              <span className={cn('text-[10px] font-mono', Number(t.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
-                {Number(t.pnl) >= 0 ? '+' : ''}${Number(t.pnl).toFixed(2)}
+            {tr.pnl !== undefined && (
+              <span className={cn('text-[10px] font-mono', Number(tr.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                {Number(tr.pnl) >= 0 ? '+' : ''}${Number(tr.pnl).toFixed(2)}
               </span>
             )}
-            {t.open_positions !== undefined && (
-              <span className="text-[10px] text-muted-foreground/50">{t.open_positions} pos</span>
+            {tr.open_positions !== undefined && (
+              <span className="text-[10px] text-muted-foreground/50">{t('aiChatToolWidgets.traderOverview.positionsShort', { count: tr.open_positions })}</span>
             )}
           </div>
         </div>
@@ -733,18 +719,19 @@ function TraderOverviewWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function FleetStatusWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const strategies = (data.strategies as any[]) || (data.active_strategies as any[]) || []
 
   const items: { label: string; value: string; color: string }[] = []
-  if (data.total_traders !== undefined) items.push({ label: 'Traders', value: String(data.total_traders), color: 'cyan' })
-  if (data.active_traders !== undefined) items.push({ label: 'Active', value: String(data.active_traders), color: 'emerald' })
-  if (strategies.length) items.push({ label: 'Strategies', value: String(strategies.length), color: 'purple' })
-  if (data.total_pnl !== undefined) items.push({ label: 'PnL', value: `$${Number(data.total_pnl).toFixed(2)}`, color: Number(data.total_pnl) >= 0 ? 'emerald' : 'red' })
+  if (data.total_traders !== undefined) items.push({ label: t('aiChatToolWidgets.fleetStatus.traders'), value: String(data.total_traders), color: 'cyan' })
+  if (data.active_traders !== undefined) items.push({ label: t('aiChatToolWidgets.fleetStatus.active'), value: String(data.active_traders), color: 'emerald' })
+  if (strategies.length) items.push({ label: t('aiChatToolWidgets.fleetStatus.strategies'), value: String(strategies.length), color: 'purple' })
+  if (data.total_pnl !== undefined) items.push({ label: t('aiChatToolWidgets.fleetStatus.pnl'), value: `$${Number(data.total_pnl).toFixed(2)}`, color: Number(data.total_pnl) >= 0 ? 'emerald' : 'red' })
 
   if (items.length === 0) {
     // Fallback: summarize whatever keys we got
     const keys = Object.keys(data).filter(k => k !== 'error')
-    return <CompactResultCard icon={Activity} label={`Fleet status: ${keys.length} fields`} color="cyan" />
+    return <CompactResultCard icon={Activity} label={t('aiChatToolWidgets.fleetStatus.fallback', { count: keys.length })} color="cyan" />
   }
 
   return (
@@ -774,11 +761,12 @@ function FleetStatusWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function SignalsWidget({ data }: { data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const signals = (data.signals as any[]) || []
   const count = signals.length || (data.count as number) || 0
 
   if (count === 0) {
-    return <CompactResultCard icon={Zap} label="No active signals" color="muted" />
+    return <CompactResultCard icon={Zap} label={t('aiChatToolWidgets.signals.empty')} color="muted" />
   }
 
   return (
@@ -790,13 +778,15 @@ function SignalsWidget({ data }: { data: Record<string, unknown> }) {
       <div className="px-2.5 py-1.5 border-b border-border/20 flex items-center gap-2">
         <Zap className="w-3 h-3 text-amber-400" />
         <span className="text-[10px] font-medium text-muted-foreground">
-          {count} active signal{count !== 1 ? 's' : ''}
+          {count === 1
+            ? t('aiChatToolWidgets.signals.headerOne', { count })
+            : t('aiChatToolWidgets.signals.headerOther', { count })}
         </span>
       </div>
       {signals.slice(0, 5).map((s: any, i: number) => (
         <div key={i} className="px-2.5 py-1.5 border-b border-border/10 last:border-0 flex items-center justify-between">
           <span className="text-xs text-foreground/80 truncate flex-1 mr-2">
-            {s.type || s.signal_type || s.name || `Signal ${i + 1}`}
+            {s.type || s.signal_type || s.name || t('aiChatToolWidgets.signals.fallbackName', { n: i + 1 })}
           </span>
           <div className="flex items-center gap-2 shrink-0">
             {s.strength !== undefined && (
@@ -820,8 +810,9 @@ function SignalsWidget({ data }: { data: Record<string, unknown> }) {
 // ---------------------------------------------------------------------------
 
 function GenericResultWidget({ tool, data }: { tool: string; data: Record<string, unknown> }) {
+  const { t } = useTranslation()
   const Icon = TOOL_ICONS[tool] || CheckCircle
-  const label = TOOL_LABELS[tool] || tool.replace(/_/g, ' ')
+  const label = useToolLabel(tool)
   const entries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined)
 
   // Build a smart summary: count arrays, show scalars
@@ -834,14 +825,16 @@ function GenericResultWidget({ tool, data }: { tool: string; data: Record<string
     } else if (typeof v === 'string' && v.length < 40) {
       parts.push(`${k}: ${v}`)
     } else if (typeof v === 'boolean') {
-      parts.push(`${k}: ${v ? 'yes' : 'no'}`)
+      parts.push(`${k}: ${v ? t('aiChatToolWidgets.boolYes') : t('aiChatToolWidgets.boolNo')}`)
     }
   }
 
   return (
     <CompactResultCard
       icon={Icon}
-      label={parts.length > 0 ? `${label} — ${parts.join(', ')}` : `${label} complete`}
+      label={parts.length > 0
+        ? t('aiChatToolWidgets.summaryWithParts', { label, parts: parts.join(', ') })
+        : t('aiChatToolWidgets.summaryComplete', { label })}
       color="muted"
     />
   )

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { useAtom, useSetAtom } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import {
   X,
   Send,
@@ -50,6 +51,7 @@ export default function AICopilotPanel({
   contextLabel,
   seedPrompt,
 }: AICopilotPanelProps) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [messages, setMessages] = useState<AIChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -244,7 +246,7 @@ export default function AICopilotPanel({
       }
 
       // Finalize: add the completed assistant message
-      const finalContent = accumulated || '(No response)'
+      const finalContent = accumulated || t('aiCopilotPanel.noResponse')
       setMessages((prev) => [...prev, { role: 'assistant', content: finalContent }])
       setStreamingContent('')
 
@@ -263,14 +265,14 @@ export default function AICopilotPanel({
         ...prev,
         {
           role: 'assistant',
-          content: `Error: ${err?.message || 'Failed to get response'}`,
+          content: t('aiCopilotPanel.errorPrefix', { message: err?.message || t('aiCopilotPanel.failedToGetResponse') }),
         },
       ])
     } finally {
       setIsStreaming(false)
       abortControllerRef.current = null
     }
-  }, [sessionId, contextType, contextId, sessionStorageKey, setActiveChatSessionId, queryClient])
+  }, [t, sessionId, contextType, contextId, sessionStorageKey, setActiveChatSessionId, queryClient])
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim()
@@ -339,27 +341,27 @@ export default function AICopilotPanel({
   const quickActions = useMemo(() => {
     if (contextType === 'strategy') {
       return [
-        { label: 'Explain code', prompt: 'Explain this strategy code end-to-end: detect/evaluate/exit and main risk tradeoffs.' },
-        { label: 'Improve evaluate()', prompt: 'Improve evaluate() to tighten risk gating and produce clearer DecisionCheck outputs.' },
-        { label: 'Add feature', prompt: 'Add a configurable filter for market liquidity and wire it into default_config + config_schema. Apply the code changes directly.' },
-        { label: 'Review safety', prompt: 'Review this strategy for potential logic bugs, execution hazards, and invalid assumptions.' },
+        { label: t('aiCopilotPanel.quickActions.strategy.explainCode.label'), prompt: t('aiCopilotPanel.quickActions.strategy.explainCode.prompt') },
+        { label: t('aiCopilotPanel.quickActions.strategy.improveEvaluate.label'), prompt: t('aiCopilotPanel.quickActions.strategy.improveEvaluate.prompt') },
+        { label: t('aiCopilotPanel.quickActions.strategy.addFeature.label'), prompt: t('aiCopilotPanel.quickActions.strategy.addFeature.prompt') },
+        { label: t('aiCopilotPanel.quickActions.strategy.reviewSafety.label'), prompt: t('aiCopilotPanel.quickActions.strategy.reviewSafety.prompt') },
       ]
     }
     if (contextType === 'data_source') {
       return [
-        { label: 'Explain source', prompt: 'Explain this data source pipeline and where it may fail in production.' },
-        { label: 'Harden parsing', prompt: 'Improve this source to better normalize timestamps, IDs, and categories. Apply the code changes directly.' },
-        { label: 'Add geotags', prompt: 'Add robust geotag support and ensure output follows the record contract. Apply the code changes directly.' },
-        { label: 'Retention review', prompt: 'Recommend retention/config changes for this source based on its expected volume and usage.' },
+        { label: t('aiCopilotPanel.quickActions.dataSource.explainSource.label'), prompt: t('aiCopilotPanel.quickActions.dataSource.explainSource.prompt') },
+        { label: t('aiCopilotPanel.quickActions.dataSource.hardenParsing.label'), prompt: t('aiCopilotPanel.quickActions.dataSource.hardenParsing.prompt') },
+        { label: t('aiCopilotPanel.quickActions.dataSource.addGeotags.label'), prompt: t('aiCopilotPanel.quickActions.dataSource.addGeotags.prompt') },
+        { label: t('aiCopilotPanel.quickActions.dataSource.retentionReview.label'), prompt: t('aiCopilotPanel.quickActions.dataSource.retentionReview.prompt') },
       ]
     }
     return [
-      { label: 'Analyze risk factors', prompt: 'What are the main risk factors for this opportunity?' },
-      { label: 'Resolution safety', prompt: 'How safe is the resolution criteria? Any ambiguities?' },
-      { label: 'Should I trade?', prompt: 'Given the current data, should I execute this trade? What are the pros and cons?' },
-      { label: 'Explain strategy', prompt: 'Explain how this arbitrage strategy works and why this opportunity exists.' },
+      { label: t('aiCopilotPanel.quickActions.default.analyzeRisk.label'), prompt: t('aiCopilotPanel.quickActions.default.analyzeRisk.prompt') },
+      { label: t('aiCopilotPanel.quickActions.default.resolutionSafety.label'), prompt: t('aiCopilotPanel.quickActions.default.resolutionSafety.prompt') },
+      { label: t('aiCopilotPanel.quickActions.default.shouldITrade.label'), prompt: t('aiCopilotPanel.quickActions.default.shouldITrade.prompt') },
+      { label: t('aiCopilotPanel.quickActions.default.explainStrategy.label'), prompt: t('aiCopilotPanel.quickActions.default.explainStrategy.prompt') },
     ]
-  }, [contextType])
+  }, [t, contextType])
 
   // Cleanup abort controller on unmount
   useEffect(() => {
@@ -384,7 +386,7 @@ export default function AICopilotPanel({
             <Sparkles className="w-4 h-4 text-foreground" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-foreground">AI Copilot</h3>
+            <h3 className="text-sm font-semibold text-foreground">{t('aiCopilotPanel.title')}</h3>
             {contextLabel && (
               <p className="text-[10px] text-purple-400 truncate max-w-[200px]">
                 {contextLabel}
@@ -398,7 +400,7 @@ export default function AICopilotPanel({
             variant="ghost"
             size="icon"
             className="h-7 w-7"
-            title="Open in AI tab"
+            title={t('aiCopilotPanel.openInAiTab')}
           >
             <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
           </Button>
@@ -408,7 +410,7 @@ export default function AICopilotPanel({
               variant="ghost"
               size="icon"
               className="h-7 w-7"
-              title="Clear chat"
+              title={t('aiCopilotPanel.clearChat')}
             >
               <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />
             </Button>
@@ -467,14 +469,16 @@ export default function AICopilotPanel({
                   )}
                   title={s.title || s.session_id}
                 >
-                  {s.title || s.context_type || 'Chat'}
+                  {s.title || s.context_type || t('aiCopilotPanel.chatLabel')}
                 </button>
               ))}
             </div>
           )}
           {!showSessionPills && (
             <span className="text-[10px] text-muted-foreground">
-              {recentSessions.length} session{recentSessions.length !== 1 ? 's' : ''}
+              {recentSessions.length === 1
+                ? t('aiCopilotPanel.sessionsCountOne', { count: recentSessions.length })
+                : t('aiCopilotPanel.sessionsCountOther', { count: recentSessions.length })}
             </span>
           )}
         </div>
@@ -490,17 +494,17 @@ export default function AICopilotPanel({
               </div>
               <p className="text-sm text-muted-foreground mb-1">
                 {contextType === 'strategy'
-                  ? 'Ask me anything about this strategy'
+                  ? t('aiCopilotPanel.welcomeTitle.strategy')
                   : contextType === 'data_source'
-                    ? 'Ask me anything about this data source'
-                    : 'Ask me anything about your trades'}
+                    ? t('aiCopilotPanel.welcomeTitle.dataSource')
+                    : t('aiCopilotPanel.welcomeTitle.default')}
               </p>
               <p className="text-xs text-muted-foreground mb-4">
                 {contextType === 'strategy'
-                  ? 'I can explain the code, suggest improvements, and apply direct strategy edits when requested.'
+                  ? t('aiCopilotPanel.welcomeSubtitle.strategy')
                   : contextType === 'data_source'
-                    ? 'I can analyze ingestion logic, improve normalization, and apply direct source edits when requested.'
-                    : 'I can analyze opportunities, assess risk, and help you make decisions.'}
+                    ? t('aiCopilotPanel.welcomeSubtitle.dataSource')
+                    : t('aiCopilotPanel.welcomeSubtitle.default')}
               </p>
 
               {/* Quick Actions */}
@@ -581,7 +585,7 @@ export default function AICopilotPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about this opportunity..."
+            placeholder={t('aiCopilotPanel.inputPlaceholder')}
             rows={3}
             className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none min-h-[68px] max-h-40"
           />

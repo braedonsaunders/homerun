@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Brain,
   Play,
@@ -39,6 +40,7 @@ import {
 type Panel = 'activity' | 'memory' | 'settings'
 
 export default function CortexView() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [panel, setPanel] = useState<Panel>('activity')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -100,7 +102,7 @@ export default function CortexView() {
           }
           case 'error':
             setStreamPhase('answering')
-            setStreamContent(`**Error:** ${event.data.error || 'Unknown error'}`)
+            setStreamContent(`**${t('aiCortexView.errorBold')}** ${event.data.error || t('aiCortexView.unknownError')}`)
             break
         }
       },
@@ -113,11 +115,11 @@ export default function CortexView() {
       (error) => {
         setIsStreaming(false)
         abortRef.current = null
-        setStreamContent(`**Error:** ${error}`)
+        setStreamContent(`**${t('aiCortexView.errorBold')}** ${error}`)
       },
       controller.signal,
     )
-  }, [queryClient])
+  }, [queryClient, t])
 
   const handleStopRun = useCallback(() => {
     abortRef.current?.abort()
@@ -140,7 +142,7 @@ export default function CortexView() {
               onCheckedChange={(v) => toggleMutation.mutate({ enabled: v })}
               disabled={toggleMutation.isPending}
             />
-            <span className="text-sm font-medium">Enabled</span>
+            <span className="text-sm font-medium">{t('aiCortexView.enabled')}</span>
           </label>
         </div>
 
@@ -152,7 +154,7 @@ export default function CortexView() {
             onCheckedChange={(v) => toggleMutation.mutate({ write_actions_enabled: v })}
             disabled={toggleMutation.isPending}
           />
-          <span className="text-sm">Write Actions</span>
+          <span className="text-sm">{t('aiCortexView.writeActions')}</span>
         </label>
 
         <div className="flex-1" />
@@ -160,7 +162,7 @@ export default function CortexView() {
         {status && (
           <span className="text-xs text-muted-foreground flex items-center gap-1">
             <Clock className="w-3 h-3" />
-            {status.memory_count} memories
+            {t('aiCortexView.memoriesCount', { count: status.memory_count })}
           </span>
         )}
 
@@ -168,7 +170,7 @@ export default function CortexView() {
 
         {isStreaming ? (
           <Button size="sm" variant="destructive" onClick={handleStopRun}>
-            <Square className="w-3.5 h-3.5 mr-1.5" /> Stop
+            <Square className="w-3.5 h-3.5 mr-1.5" /> {t('aiCortexView.stop')}
           </Button>
         ) : (
           <Button
@@ -176,7 +178,7 @@ export default function CortexView() {
             onClick={handleTriggerRun}
             disabled={!status?.enabled}
           >
-            <Play className="w-3.5 h-3.5 mr-1.5" /> Run Now
+            <Play className="w-3.5 h-3.5 mr-1.5" /> {t('aiCortexView.runNow')}
           </Button>
         )}
       </div>
@@ -184,9 +186,9 @@ export default function CortexView() {
       {/* Panel Tabs */}
       <div className="flex gap-1 border-b border-border shrink-0">
         {([
-          { key: 'activity' as Panel, label: 'Activity', icon: Zap },
-          { key: 'memory' as Panel, label: `Memory (${status?.memory_count ?? 0})`, icon: BookOpen },
-          { key: 'settings' as Panel, label: 'Settings', icon: Settings2 },
+          { key: 'activity' as Panel, label: t('aiCortexView.tabs.activity'), icon: Zap },
+          { key: 'memory' as Panel, label: t('aiCortexView.tabs.memory', { count: status?.memory_count ?? 0 }), icon: BookOpen },
+          { key: 'settings' as Panel, label: t('aiCortexView.tabs.settings'), icon: Settings2 },
         ]).map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -232,6 +234,7 @@ function ActivityPanel({
   streamPhase: 'working' | 'answering'
   streamContent: string
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -258,7 +261,7 @@ function ActivityPanel({
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        Loading activity...
+        {t('aiCortexView.loadingActivity')}
       </div>
     )
   }
@@ -267,7 +270,7 @@ function ActivityPanel({
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
         <Brain className="w-10 h-10 mb-3 opacity-20" />
-        <p className="text-sm">No activity yet. Enable Cortex and trigger a run.</p>
+        <p className="text-sm">{t('aiCortexView.noActivityYet')}</p>
       </div>
     )
   }
@@ -284,7 +287,7 @@ function ActivityPanel({
             onClick={() => clearMutation.mutate()}
             disabled={clearMutation.isPending}
           >
-            <Trash2 className="w-3 h-3 mr-1" /> Clear History
+            <Trash2 className="w-3 h-3 mr-1" /> {t('aiCortexView.clearHistory')}
           </Button>
         </div>
       )}
@@ -294,14 +297,14 @@ function ActivityPanel({
         <div className="rounded-lg border border-purple-500/30 bg-muted/20 overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-border/20 bg-purple-500/5">
             <Brain className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
-            <span className="text-xs font-medium text-purple-400">Running now</span>
+            <span className="text-xs font-medium text-purple-400">{t('aiCortexView.runningNow')}</span>
           </div>
           <div className="p-3">
             {streamPhase === 'answering' && streamContent ? (
               <MessageContent content={streamContent} isStreaming={true} />
             ) : (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <span>{streamContent || 'Starting cycle...'}</span>
+                <span>{streamContent || t('aiCortexView.startingCycle')}</span>
               </div>
             )}
           </div>
@@ -342,6 +345,7 @@ function CortexRunCard({ message }: { message: CortexHistoryMessage }) {
 // ---------------------------------------------------------------------------
 
 function MemoryPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [categoryFilter, setCategoryFilter] = useState<string>('')
   const [showExpired, setShowExpired] = useState(false)
@@ -408,8 +412,8 @@ function MemoryPanel() {
           onChange={(e) => setCategoryFilter(e.target.value)}
           className="px-2 py-1 rounded bg-muted border border-border text-sm"
         >
-          <option value="">All Categories</option>
-          {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          <option value="">{t('aiCortexView.memory.allCategories')}</option>
+          {categories.map(c => <option key={c} value={c}>{t(`aiCortexView.memory.categories.${c}`)}</option>)}
         </select>
         <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
           <Switch
@@ -417,11 +421,11 @@ function MemoryPanel() {
             onCheckedChange={setShowExpired}
             className="scale-75"
           />
-          Show expired
+          {t('aiCortexView.memory.showExpired')}
         </label>
         <div className="flex-1" />
         <Button size="sm" variant="outline" onClick={() => setShowAdd(!showAdd)}>
-          <Plus className="w-3.5 h-3.5 mr-1" /> Add Memory
+          <Plus className="w-3.5 h-3.5 mr-1" /> {t('aiCortexView.memory.addMemory')}
         </Button>
       </div>
 
@@ -432,7 +436,7 @@ function MemoryPanel() {
             <textarea
               value={newContent}
               onChange={(e) => setNewContent(e.target.value)}
-              placeholder="Memory content..."
+              placeholder={t('aiCortexView.memory.contentPlaceholder')}
               className="w-full px-3 py-2 rounded bg-muted border border-border text-sm min-h-[60px]"
             />
             <div className="flex gap-2 items-center">
@@ -441,16 +445,16 @@ function MemoryPanel() {
                 onChange={(e) => setNewCategory(e.target.value)}
                 className="px-2 py-1 rounded bg-muted border border-border text-sm"
               >
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                {categories.map(c => <option key={c} value={c}>{t(`aiCortexView.memory.categories.${c}`)}</option>)}
               </select>
               <Button
                 size="sm"
                 onClick={() => createMutation.mutate({ content: newContent, category: newCategory })}
                 disabled={!newContent.trim() || createMutation.isPending}
               >
-                Save
+                {t('aiCortexView.memory.save')}
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
+              <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>{t('aiCortexView.memory.cancel')}</Button>
             </div>
           </CardContent>
         </Card>
@@ -474,7 +478,7 @@ function MemoryPanel() {
                   className="w-full px-2 py-1 rounded bg-muted border border-border text-sm min-h-[50px]"
                 />
                 <div className="flex gap-2 items-center">
-                  <label className="text-xs text-muted-foreground">Importance:</label>
+                  <label className="text-xs text-muted-foreground">{t('aiCortexView.memory.importanceLabel')}</label>
                   <Input
                     type="number"
                     min={0} max={1} step={0.1}
@@ -486,16 +490,16 @@ function MemoryPanel() {
                     id: m.id,
                     updates: { content: editContent, importance: editImportance },
                   })}>
-                    Save
+                    {t('aiCortexView.memory.save')}
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>{t('aiCortexView.memory.cancel')}</Button>
                 </div>
               </div>
             ) : (
               <>
                 <div className="flex items-start gap-2">
                   <Badge variant="outline" className={cn('text-[10px] shrink-0 mt-0.5', categoryColors[m.category])}>
-                    {m.category}
+                    {t(`aiCortexView.memory.categories.${m.category}`, { defaultValue: m.category })}
                   </Badge>
                   <span className="flex-1">{m.content}</span>
                   <div className="flex items-center gap-1 shrink-0">
@@ -519,7 +523,7 @@ function MemoryPanel() {
                   </div>
                 </div>
                 <div className="text-[10px] text-muted-foreground mt-1">
-                  Accessed {m.access_count}x | {m.updated_at && new Date(m.updated_at).toLocaleDateString()}
+                  {t('aiCortexView.memory.accessedTimes', { count: m.access_count })} | {m.updated_at && new Date(m.updated_at).toLocaleDateString()}
                 </div>
               </>
             )}
@@ -527,7 +531,7 @@ function MemoryPanel() {
         ))}
         {memories.length === 0 && (
           <div className="text-sm text-muted-foreground text-center py-8">
-            No memories yet. Cortex will learn over time.
+            {t('aiCortexView.memory.empty')}
           </div>
         )}
       </div>
@@ -540,6 +544,7 @@ function MemoryPanel() {
 // ---------------------------------------------------------------------------
 
 function SettingsPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const { data: settings, isLoading } = useQuery({
     queryKey: ['cortex-settings'],
@@ -571,7 +576,7 @@ function SettingsPanel() {
     },
   })
 
-  if (isLoading) return <div className="text-sm text-muted-foreground">Loading settings...</div>
+  if (isLoading) return <div className="text-sm text-muted-foreground">{t('aiCortexView.settings.loading')}</div>
 
   const allModels: { id: string; name: string }[] = []
   if (modelsData?.models) {
@@ -587,24 +592,24 @@ function SettingsPanel() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Settings2 className="w-4 h-4 text-muted-foreground" /> Configuration
+            <Settings2 className="w-4 h-4 text-muted-foreground" /> {t('aiCortexView.settings.configuration')}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Model</label>
+              <label className="text-xs text-muted-foreground block mb-1">{t('aiCortexView.settings.model')}</label>
               <select
                 value={currentSettings.model ?? ''}
                 onChange={(e) => updateField('model', e.target.value || null)}
                 className="w-full px-2 py-1.5 rounded bg-muted border border-border text-sm"
               >
-                <option value="">Default (AI Settings)</option>
+                <option value="">{t('aiCortexView.settings.defaultModel')}</option>
                 {allModels.map(m => <option key={m.id} value={m.id}>{m.name || m.id}</option>)}
               </select>
             </div>
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Run Interval (seconds)</label>
+              <label className="text-xs text-muted-foreground block mb-1">{t('aiCortexView.settings.runIntervalSeconds')}</label>
               <Input
                 type="number"
                 min={30} max={3600}
@@ -614,7 +619,7 @@ function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Max Iterations</label>
+              <label className="text-xs text-muted-foreground block mb-1">{t('aiCortexView.settings.maxIterations')}</label>
               <Input
                 type="number"
                 min={1} max={50}
@@ -624,7 +629,7 @@ function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Temperature</label>
+              <label className="text-xs text-muted-foreground block mb-1">{t('aiCortexView.settings.temperature')}</label>
               <Input
                 type="number"
                 min={0} max={2} step={0.05}
@@ -634,7 +639,7 @@ function SettingsPanel() {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground block mb-1">Memory Limit (per run)</label>
+              <label className="text-xs text-muted-foreground block mb-1">{t('aiCortexView.settings.memoryLimit')}</label>
               <Input
                 type="number"
                 min={1} max={100}
@@ -651,8 +656,8 @@ function SettingsPanel() {
               onCheckedChange={(v) => updateField('notify_telegram', v)}
             />
             <div>
-              <span className="text-sm font-medium">Telegram Notifications</span>
-              <span className="text-xs text-muted-foreground ml-2">on write actions</span>
+              <span className="text-sm font-medium">{t('aiCortexView.settings.telegramNotifications')}</span>
+              <span className="text-xs text-muted-foreground ml-2">{t('aiCortexView.settings.onWriteActions')}</span>
             </div>
           </label>
         </CardContent>
@@ -661,14 +666,14 @@ function SettingsPanel() {
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Brain className="w-4 h-4 text-muted-foreground" /> Mandate (System Prompt)
+            <Brain className="w-4 h-4 text-muted-foreground" /> {t('aiCortexView.settings.mandateTitle')}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <textarea
             value={currentSettings.mandate ?? ''}
             onChange={(e) => updateField('mandate', e.target.value || null)}
-            placeholder="Leave empty for default mandate. Customize to change Cortex's priorities and behavior..."
+            placeholder={t('aiCortexView.settings.mandatePlaceholder')}
             className="w-full px-3 py-2 rounded bg-muted border border-border text-sm min-h-[120px] font-mono"
           />
         </CardContent>
@@ -677,9 +682,9 @@ function SettingsPanel() {
       {dirty && (
         <div className="flex items-center gap-3">
           <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
-            Save Settings
+            {t('aiCortexView.settings.saveSettings')}
           </Button>
-          <Button variant="ghost" onClick={() => { setForm({}); setDirty(false) }}>Discard</Button>
+          <Button variant="ghost" onClick={() => { setForm({}); setDirty(false) }}>{t('aiCortexView.settings.discard')}</Button>
         </div>
       )}
     </div>

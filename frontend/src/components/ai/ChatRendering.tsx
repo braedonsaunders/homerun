@@ -6,6 +6,7 @@
  */
 
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import { Renderer } from '@openuidev/react-lang'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -281,6 +282,7 @@ export function pairToolSegments(segments: ChatSegment[]): (PairedTool | ChatSeg
 
 /** Render paired segments (tool widgets + text) with animations. */
 export function SegmentedContent({ raw, isStreaming = false }: { raw: string; isStreaming?: boolean }) {
+  const { t } = useTranslation()
   const segments = parseSegments(raw)
   const paired = pairToolSegments(segments)
 
@@ -343,7 +345,7 @@ export function SegmentedContent({ raw, isStreaming = false }: { raw: string; is
             className="flex items-center gap-2 mt-2 py-1.5 px-2 rounded-md bg-purple-500/5 border border-purple-500/10"
           >
             <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin" />
-            <span className="text-xs text-purple-400/80">Still working...</span>
+            <span className="text-xs text-purple-400/80">{t('aiChatRendering.stillWorking')}</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -384,6 +386,7 @@ export function BotMessageBubble({ label, content, isStreaming = false }: { labe
 
 /** Collapsible thinking log. */
 export function ThinkingLog({ log }: { log: string }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   return (
     <div>
@@ -392,7 +395,7 @@ export function ThinkingLog({ log }: { log: string }) {
         className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <ChevronRight className={cn('w-3 h-3 transition-transform', expanded && 'rotate-90')} />
-        Thinking Log
+        {t('aiChatRendering.thinkingLog')}
       </button>
       {expanded && (
         <pre className="mt-2 p-3 rounded bg-muted border border-border text-xs text-muted-foreground whitespace-pre-wrap max-h-64 overflow-y-auto">

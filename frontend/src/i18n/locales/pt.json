@@ -4747,5 +4747,397 @@
     "valid": "Válido",
     "invalid": "Inválido",
     "classLabel": "Classe:"
+  },
+  "aiCommandBar": {
+    "title": "Busca Global",
+    "placeholders": {
+      "global": "Buscar mercados, traders, estratégias, notícias, carteiras — qualquer coisa…",
+      "ask": "Pergunte qualquer coisa sobre mercados, estratégias, risco…",
+      "commands": "Buscar comandos…"
+    },
+    "latencyMs": "{{ms}}ms",
+    "escButton": "ESC",
+    "allFilter": "Tudo",
+    "pinned": "Fixados",
+    "recentSearches": "Buscas recentes",
+    "quickActions": "Ações rápidas",
+    "noMatches": "Sem resultados. Tente outras palavras-chave ou remova os filtros de tipo.",
+    "viewAllResultOne": "Ver todos os {{count}} resultado para",
+    "viewAllResultsOther": "Ver todos os {{count}} resultados para",
+    "thinking": "Pensando…",
+    "aiResponse": "Resposta da IA",
+    "askPrompt": "Digite sua pergunta e pressione Enter",
+    "yesPrice": "YES ${{price}}",
+    "liquidityShort": "Liq ${{value}}",
+    "pin": "Fixar",
+    "unpin": "Desfixar",
+    "footer": {
+      "open": "abrir",
+      "navigate": "navegar",
+      "commands": "comandos",
+      "close": "fechar"
+    },
+    "commands": {
+      "askAi": {
+        "label": "Fazer uma pergunta à IA",
+        "description": "Conversar com o copiloto de IA"
+      },
+      "resolutionAnalysis": {
+        "label": "Análise de resolução",
+        "description": "Analisar como um mercado será resolvido"
+      },
+      "marketAnalysis": {
+        "label": "Análise de mercado",
+        "description": "Análise profunda de IA sobre qualquer tópico"
+      },
+      "newsSentiment": {
+        "label": "Sentimento de notícias",
+        "description": "Buscar notícias e analisar sentimento"
+      },
+      "openCopilot": {
+        "label": "Abrir Copiloto IA",
+        "description": "Abrir o painel do assistente de IA"
+      }
+    },
+    "types": {
+      "market": {
+        "label": "Mercado",
+        "plural": "Mercados"
+      },
+      "event": {
+        "label": "Evento",
+        "plural": "Eventos"
+      },
+      "category": {
+        "label": "Categoria",
+        "plural": "Categorias"
+      },
+      "strategy": {
+        "label": "Estratégia",
+        "plural": "Estratégias"
+      },
+      "dataSource": {
+        "label": "Fonte de dados",
+        "plural": "Fontes de dados"
+      },
+      "trader": {
+        "label": "Trader",
+        "plural": "Traders"
+      },
+      "wallet": {
+        "label": "Carteira",
+        "plural": "Carteiras"
+      },
+      "news": {
+        "label": "Notícia",
+        "plural": "Notícias"
+      },
+      "alert": {
+        "label": "Alerta",
+        "plural": "Alertas"
+      },
+      "research": {
+        "label": "Pesquisa",
+        "plural": "Pesquisa"
+      },
+      "opportunity": {
+        "label": "Oportunidade",
+        "plural": "Oportunidades"
+      },
+      "fallback": {
+        "label": "Item",
+        "plural": "Itens"
+      }
+    }
+  },
+  "aiCopilotPanel": {
+    "title": "Copiloto IA",
+    "openInAiTab": "Abrir na aba IA",
+    "clearChat": "Limpar chat",
+    "chatLabel": "Chat",
+    "sessionsCountOne": "{{count}} sessão",
+    "sessionsCountOther": "{{count}} sessões",
+    "inputPlaceholder": "Pergunte sobre esta oportunidade...",
+    "noResponse": "(Sem resposta)",
+    "errorPrefix": "Erro: {{message}}",
+    "failedToGetResponse": "Falha ao obter resposta",
+    "welcomeTitle": {
+      "strategy": "Pergunte-me qualquer coisa sobre esta estratégia",
+      "dataSource": "Pergunte-me qualquer coisa sobre esta fonte de dados",
+      "default": "Pergunte-me qualquer coisa sobre suas operações"
+    },
+    "welcomeSubtitle": {
+      "strategy": "Posso explicar o código, sugerir melhorias e aplicar edições diretas na estratégia quando solicitado.",
+      "dataSource": "Posso analisar a lógica de ingestão, melhorar a normalização e aplicar edições diretas na fonte quando solicitado.",
+      "default": "Posso analisar oportunidades, avaliar riscos e ajudá-lo a tomar decisões."
+    },
+    "quickActions": {
+      "strategy": {
+        "explainCode": {
+          "label": "Explicar código",
+          "prompt": "Explique este código de estratégia de ponta a ponta: detect/evaluate/exit e principais tradeoffs de risco."
+        },
+        "improveEvaluate": {
+          "label": "Melhorar evaluate()",
+          "prompt": "Melhore evaluate() para apertar o gating de risco e produzir saídas DecisionCheck mais claras."
+        },
+        "addFeature": {
+          "label": "Adicionar recurso",
+          "prompt": "Adicione um filtro configurável para liquidez do mercado e conecte-o ao default_config + config_schema. Aplique as alterações de código diretamente."
+        },
+        "reviewSafety": {
+          "label": "Revisar segurança",
+          "prompt": "Revise esta estratégia em busca de bugs lógicos, riscos de execução e suposições inválidas."
+        }
+      },
+      "dataSource": {
+        "explainSource": {
+          "label": "Explicar fonte",
+          "prompt": "Explique este pipeline de fonte de dados e onde pode falhar em produção."
+        },
+        "hardenParsing": {
+          "label": "Reforçar parsing",
+          "prompt": "Melhore esta fonte para normalizar melhor timestamps, IDs e categorias. Aplique as alterações de código diretamente."
+        },
+        "addGeotags": {
+          "label": "Adicionar geotags",
+          "prompt": "Adicione suporte robusto a geotags e garanta que a saída siga o contrato de registro. Aplique as alterações de código diretamente."
+        },
+        "retentionReview": {
+          "label": "Revisão de retenção",
+          "prompt": "Recomende mudanças de retenção/configuração para esta fonte com base no volume e uso esperados."
+        }
+      },
+      "default": {
+        "analyzeRisk": {
+          "label": "Analisar fatores de risco",
+          "prompt": "Quais são os principais fatores de risco para esta oportunidade?"
+        },
+        "resolutionSafety": {
+          "label": "Segurança de resolução",
+          "prompt": "Quão seguros são os critérios de resolução? Há ambiguidades?"
+        },
+        "shouldITrade": {
+          "label": "Devo operar?",
+          "prompt": "Dados os dados atuais, devo executar esta operação? Quais são os prós e contras?"
+        },
+        "explainStrategy": {
+          "label": "Explicar estratégia",
+          "prompt": "Explique como esta estratégia de arbitragem funciona e por que esta oportunidade existe."
+        }
+      }
+    }
+  },
+  "aiCortexView": {
+    "enabled": "Habilitado",
+    "writeActions": "Ações de Escrita",
+    "memoriesCount": "{{count}} memórias",
+    "stop": "Parar",
+    "runNow": "Executar agora",
+    "errorBold": "Erro:",
+    "unknownError": "Erro desconhecido",
+    "tabs": {
+      "activity": "Atividade",
+      "memory": "Memória ({{count}})",
+      "settings": "Configurações"
+    },
+    "loadingActivity": "Carregando atividade...",
+    "noActivityYet": "Ainda sem atividade. Habilite o Cortex e dispare uma execução.",
+    "clearHistory": "Limpar histórico",
+    "runningNow": "Executando agora",
+    "startingCycle": "Iniciando ciclo...",
+    "memory": {
+      "allCategories": "Todas as categorias",
+      "showExpired": "Mostrar expiradas",
+      "addMemory": "Adicionar memória",
+      "contentPlaceholder": "Conteúdo da memória...",
+      "save": "Salvar",
+      "cancel": "Cancelar",
+      "importanceLabel": "Importância:",
+      "accessedTimes": "Acessada {{count}} vezes",
+      "empty": "Ainda sem memórias. O Cortex aprenderá com o tempo.",
+      "categories": {
+        "observation": "observação",
+        "lesson": "lição",
+        "rule": "regra",
+        "preference": "preferência"
+      }
+    },
+    "settings": {
+      "loading": "Carregando configurações...",
+      "configuration": "Configuração",
+      "model": "Modelo",
+      "defaultModel": "Padrão (Configurações de IA)",
+      "runIntervalSeconds": "Intervalo de execução (segundos)",
+      "maxIterations": "Máx. iterações",
+      "temperature": "Temperatura",
+      "memoryLimit": "Limite de memória (por execução)",
+      "telegramNotifications": "Notificações do Telegram",
+      "onWriteActions": "em ações de escrita",
+      "mandateTitle": "Mandato (Prompt do sistema)",
+      "mandatePlaceholder": "Deixe vazio para o mandato padrão. Personalize para alterar as prioridades e o comportamento do Cortex...",
+      "saveSettings": "Salvar configurações",
+      "discard": "Descartar"
+    }
+  },
+  "aiChatToolWidgets": {
+    "boolYes": "sim",
+    "boolNo": "não",
+    "summaryWithParts": "{{label}} — {{parts}}",
+    "summaryComplete": "{{label}} concluído",
+    "notAvailable": "N/D",
+    "plusMore": "+{{count}} mais",
+    "volumeShort": "Vol: ${{value}}",
+    "liquidityShort": "Liq: ${{value}}",
+    "endsLabel": "Termina: {{date}}",
+    "priceLabels": {
+      "yes": "YES",
+      "no": "NO"
+    },
+    "marketSearch": {
+      "noResults": "Nenhum mercado encontrado para \"{{query}}\"",
+      "foundOne": "Encontrado {{count}} mercado para \"{{query}}\"",
+      "foundOther": "Encontrados {{count}} mercados para \"{{query}}\""
+    },
+    "marketDetail": {
+      "defaultTitle": "Detalhes do mercado"
+    },
+    "positions": {
+      "empty": "Sem posições abertas",
+      "headerOne": "{{count}} posição aberta",
+      "headerOther": "{{count}} posições abertas"
+    },
+    "balance": {
+      "label": "Saldo: ${{value}}"
+    },
+    "news": {
+      "empty": "Nenhuma notícia encontrada",
+      "headerOne": "{{count}} notícia",
+      "headerOther": "{{count}} notícias"
+    },
+    "sentiment": {
+      "title": "Análise de Sentimento",
+      "labels": {
+        "bullish": "alta",
+        "bearish": "baixa",
+        "neutral": "neutro",
+        "positive": "positivo",
+        "negative": "negativo",
+        "mixed": "misto"
+      }
+    },
+    "webSearch": {
+      "empty": "Sem resultados na web",
+      "headerOne": "{{count}} resultado",
+      "headerOther": "{{count}} resultados"
+    },
+    "strategies": {
+      "loadedOne": "{{count}} estratégia carregada",
+      "loadedOther": "{{count}} estratégias carregadas"
+    },
+    "performance": {
+      "pnl": "P&L: {{sign}}${{value}}",
+      "winRate": "Taxa de acerto: {{value}}%"
+    },
+    "orderbook": {
+      "bids": "Compras: ${{value}}",
+      "asks": "Vendas: ${{value}}",
+      "spread": "Spread: {{value}}c"
+    },
+    "traderOverview": {
+      "empty": "Nenhum trader encontrado",
+      "headerOne": "{{count}} trader",
+      "headerOther": "{{count}} traders",
+      "fallbackName": "Trader {{n}}",
+      "positionsShort": "{{count}} pos",
+      "status": {
+        "active": "ativo",
+        "paused": "pausado",
+        "stopped": "parado",
+        "idle": "inativo"
+      }
+    },
+    "fleetStatus": {
+      "traders": "Traders",
+      "active": "Ativos",
+      "strategies": "Estratégias",
+      "pnl": "P&L",
+      "fallback": "Status da frota: {{count}} campos"
+    },
+    "signals": {
+      "empty": "Sem sinais ativos",
+      "headerOne": "{{count}} sinal ativo",
+      "headerOther": "{{count}} sinais ativos",
+      "fallbackName": "Sinal {{n}}"
+    },
+    "toolLabels": {
+      "search_markets": "Buscando mercados",
+      "get_market_details": "Obtendo detalhes do mercado",
+      "get_live_prices": "Obtendo preços em tempo real",
+      "get_price_history": "Carregando histórico de preços",
+      "check_orderbook": "Verificando livro de ordens",
+      "find_related_markets": "Buscando mercados relacionados",
+      "get_market_regime": "Analisando regime de mercado",
+      "get_active_markets_summary": "Resumindo mercados ativos",
+      "get_open_positions": "Carregando posições",
+      "get_open_orders": "Carregando ordens abertas",
+      "get_trade_history": "Obtendo histórico de operações",
+      "get_account_balance": "Verificando saldo",
+      "get_portfolio_performance": "Carregando desempenho",
+      "place_order": "Colocando ordem",
+      "cancel_order": "Cancelando ordem",
+      "cancel_all_orders": "Cancelando todas as ordens",
+      "search_news": "Buscando notícias",
+      "get_news_edges": "Buscando edges de notícias",
+      "analyze_market_sentiment": "Analisando sentimento",
+      "analyze_resolution": "Analisando resolução",
+      "web_search": "Buscando na web",
+      "fetch_webpage": "Obtendo página web",
+      "get_system_status": "Verificando status do sistema",
+      "get_settings": "Carregando configurações",
+      "update_setting": "Atualizando configuração",
+      "query_database": "Consultando banco de dados",
+      "list_strategies": "Listando estratégias",
+      "get_strategy_details": "Carregando estratégia",
+      "get_strategy_performance": "Verificando desempenho",
+      "update_strategy_config": "Atualizando configuração da estratégia",
+      "validate_strategy_code": "Validando estratégia",
+      "run_strategy_backtest": "Executando backtest",
+      "create_strategy": "Criando estratégia",
+      "get_wallet_profile": "Carregando perfil da carteira",
+      "get_wallet_leaderboard": "Obtendo ranking",
+      "get_smart_pool_stats": "Carregando estatísticas do smart pool",
+      "get_confluence_signals": "Verificando sinais de confluência",
+      "get_tracked_wallets": "Carregando carteiras rastreadas",
+      "get_trader_groups": "Obtendo grupos de traders",
+      "get_whale_clusters": "Detectando clusters de baleias",
+      "get_active_signals": "Carregando sinais ativos",
+      "get_recent_decisions": "Obtendo decisões recentes",
+      "get_trader_overview": "Carregando visão geral do trader",
+      "detect_anomalies": "Detectando anomalias",
+      "get_cross_platform_arb": "Verificando arbitragem multi-plataforma",
+      "get_llm_usage_stats": "Carregando estatísticas de uso de LLM",
+      "get_data_sources": "Listando fontes de dados",
+      "query_data_source": "Consultando fonte de dados",
+      "cortex_recall": "Recordando da memória",
+      "cortex_remember": "Salvando na memória",
+      "cortex_expire_memory": "Expirando memória",
+      "cortex_get_fleet_status": "Carregando status da frota",
+      "cortex_pause_trader": "Pausando trader",
+      "cortex_enable_strategy": "Habilitando estratégia",
+      "cortex_update_risk_clamps": "Atualizando limites de risco"
+    }
+  },
+  "aiChatRendering": {
+    "stillWorking": "Ainda trabalhando...",
+    "thinkingLog": "Registro de pensamento"
+  },
+  "aiMarketCard": {
+    "yesPrice": "YES {{price}}c",
+    "noPrice": "NO {{price}}c",
+    "volume": "Vol: {{value}}",
+    "liquidity": "Liq: {{value}}",
+    "ends": "Termina: {{date}}",
+    "viewOnPolymarket": "Ver no Polymarket"
   }
 }
