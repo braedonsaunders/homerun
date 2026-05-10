@@ -5086,10 +5086,20 @@ async def run_execution_backtest(
         for f in fills
     ]
 
-    eq = list(bt_result.equity_history or [])
-    if equity_sample_size and len(eq) > equity_sample_size:
-        step = max(1, len(eq) // equity_sample_size)
-        eq = eq[::step]
+    eq_full = list(bt_result.equity_history or [])
+    if equity_sample_size and len(eq_full) > equity_sample_size:
+        step = max(1, len(eq_full) // equity_sample_size)
+        eq = eq_full[::step]
+        # ALWAYS include the true final equity point — otherwise the
+        # chart's "ending" value disagrees with total_return_pct (which
+        # is computed from final_equity_usd = portfolio.equity_usd()
+        # post-mark-to-market).  Stride sampling can drop up to step-1
+        # tail entries, including the post-close-out anchor appended in
+        # engine._final_mark_to_market().
+        if eq_full[-1] is not eq[-1]:
+            eq.append(eq_full[-1])
+    else:
+        eq = eq_full
     result.equity_curve_sample = [
         {"at": ts.isoformat(), "equity_usd": float(value)} for ts, value in eq
     ]

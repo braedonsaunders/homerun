@@ -509,3 +509,53 @@ class TestEndToEnd:
         # 1-trade backtest. Verify the structure.
         assert hasattr(result.metrics.sharpe, "value")
         assert hasattr(result.metrics.hit_rate, "ci_low")
+
+    @pytest.mark.asyncio
+    async def test_equity_history_anchors_to_final_equity(self):
+        """Regression: chart's last point must match the headline return.
+
+        Bug observed in production: a -16.32% max drawdown run that
+        recovered to -0.18% return rendered the equity curve ending at
+        $836 (pre-recovery trough sample) while the headline showed
+        -0.18%.  Root cause: ``_final_mark_to_market`` converts
+        unrealized PnL to realized cash + pays resolution fees but
+        never appended a final ``equity_history`` entry, so the curve
+        ended at the last mark BEFORE close-out — diverging from
+        ``portfolio.equity_usd()`` (the source of total_return_pct).
+        """
+        br = _build_drifting_book(60)
+        intent = TradeIntent(
+            intent_id="i1", emitted_at=T0, token_id="tok", side="BUY",
+            size=20, limit_price=0.52, tif=TIF_IOC, post_only=False,
+            strategy_slug="legacy_test",
+        )
+        # Strategy that NEVER exits — guarantees a position is open at
+        # window end and exercises _final_mark_to_market.
+        class _NeverExit(BaseStrategy):
+            strategy_type = "never_exit"
+            name = "never"
+            description = "hold"
+            def should_exit(self, position, market_state):
+                return ExitDecision("hold", "always")
+
+        engine = BacktestEngine(
+            config=BacktestConfig(
+                portfolio=PortfolioConfig(initial_capital_usd=1000.0),
+                latency=LatencyModel.deterministic(submit_ms=100, cancel_ms=50),
+                final_close_at_last_mid=True,
+                seed=42,
+            ),
+            strategy=_NeverExit(),
+        )
+        result = await engine.run(book_source=br, trade_intents=[intent])
+        assert result.metrics.trade_count >= 1, "intent should have filled"
+        assert len(result.equity_history) > 0, "equity_history must be populated"
+        # The LAST equity_history entry must equal final_equity_usd to
+        # within float tolerance — otherwise the rendered chart's
+        # ending value will disagree with total_return_pct.
+        last_at, last_equity = result.equity_history[-1]
+        assert last_equity == pytest.approx(result.final_equity_usd, abs=1e-6), (
+            f"equity_history[-1]={last_equity:.6f} must match "
+            f"final_equity_usd={result.final_equity_usd:.6f} so the "
+            f"rendered chart matches the headline return"
+        )

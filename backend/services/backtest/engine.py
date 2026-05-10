@@ -671,6 +671,32 @@ class BacktestEngine:
             self.portfolio.closed_positions.append(pos)
             del self.portfolio.positions[key]
 
+        # Anchor the equity curve at the post-close-out value so the
+        # displayed final equity matches ``portfolio.equity_usd()`` (the
+        # source of ``total_return_pct``). Without this anchor, callers
+        # that read ``equity_history[-1]`` see the mark just BEFORE the
+        # synthetic close-out — which can differ from the true final
+        # equity by held-position unrealized PnL + resolution fees,
+        # producing a chart that disagrees with the headline return.
+        # Use the latest mark timestamp we've seen; fall back to the
+        # last history entry's timestamp or now if neither exists.
+        anchor_at: datetime | None = None
+        if self.portfolio.equity_history:
+            anchor_at = self.portfolio.equity_history[-1][0]
+        for pos in reversed(self.portfolio.closed_positions):
+            if pos.closed_at is not None:
+                if anchor_at is None or pos.closed_at >= anchor_at:
+                    anchor_at = pos.closed_at
+                break
+        if anchor_at is None:
+            anchor_at = datetime.now(timezone.utc)
+        self.portfolio.equity_history.append(
+            (anchor_at, self.portfolio.equity_usd())
+        )
+        self.portfolio.cash_history.append(
+            (anchor_at, self.portfolio.cash_usd)
+        )
+
     def _build_result(self) -> BacktestResult:
         all_fills = self.matching.all_fills()
         rejected = sum(
