@@ -414,6 +414,63 @@ def _order_book_payload(order_book: Any) -> dict[str, Any] | None:
     return {"bids": _levels("bids"), "asks": _levels("asks")}
 
 
+def _compute_book_spread_bps(book_payload: dict[str, Any] | None) -> float | None:
+    """Best-bid / best-ask spread in basis points from a normalized book payload.
+
+    Returns None when either side is empty or both legs aren't strictly positive.
+    Matches the convention used elsewhere (services/ai/market_analyzer.py and
+    services/ai/tools/market_tools.py): best_bid = max(bid prices),
+    best_ask = min(ask prices) — defensive against unsorted level lists.
+    """
+    if not isinstance(book_payload, dict):
+        return None
+    bids = book_payload.get("bids") or []
+    asks = book_payload.get("asks") or []
+    bid_prices = [float(b.get("price") or 0.0) for b in bids if isinstance(b, dict)]
+    ask_prices = [float(a.get("price") or 0.0) for a in asks if isinstance(a, dict)]
+    bid_prices = [p for p in bid_prices if p > 0.0]
+    ask_prices = [p for p in ask_prices if p > 0.0]
+    if not bid_prices or not ask_prices:
+        return None
+    best_bid = max(bid_prices)
+    best_ask = min(ask_prices)
+    if best_ask <= best_bid:
+        return 0.0
+    mid = (best_bid + best_ask) / 2.0
+    if mid <= 0.0:
+        return None
+    return (best_ask - best_bid) / mid * 10_000.0
+
+
+def _check_max_spread_bps(
+    *,
+    book_payload: dict[str, Any] | None,
+    risk_limits: dict[str, Any] | None,
+) -> tuple[bool, float | None, float | None]:
+    """Returns (rejected, spread_bps, configured_cap_bps).
+
+    Rejected when configured cap is > 0 AND book yields a measurable spread
+    that exceeds the cap. Returns rejected=False when cap is unset/zero (knob
+    off) or when no book is available (we don't reject for missing data — that
+    is a separate skip path).
+    """
+    if not isinstance(risk_limits, dict):
+        return False, None, None
+    cap_raw = risk_limits.get("max_spread_bps")
+    if cap_raw is None:
+        return False, None, None
+    try:
+        cap = float(cap_raw)
+    except (TypeError, ValueError):
+        return False, None, None
+    if cap <= 0.0:
+        return False, None, cap
+    spread_bps = _compute_book_spread_bps(book_payload)
+    if spread_bps is None:
+        return False, None, cap
+    return (spread_bps > cap), spread_bps, cap
+
+
 def _trades_payload(trades: list[Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for trade in trades:
@@ -927,6 +984,33 @@ async def submit_execution_leg(
         )
         payload_mode = "shadow"
         submission_label = "shadow_microstructure_simulated"
+        # Pre-trade max-spread gate (per-trader risk_limits.max_spread_bps).
+        # Applies symmetrically to shadow + live so the shadow preview
+        # matches what live would do. No-op when knob is unset/zero.
+        _spread_rejected, _spread_bps, _spread_cap = _check_max_spread_bps(
+            book_payload=book_payload,
+            risk_limits=risk_limits,
+        )
+        if _spread_rejected:
+            return LegSubmitResult(
+                leg_id=leg_id,
+                status="skipped",
+                effective_price=price,
+                error_message=f"Book spread {_spread_bps:.1f} bps exceeds max_spread_bps {_spread_cap:.1f}.",
+                payload={
+                    "mode": payload_mode,
+                    "submission": "rejected",
+                    "reason": "max_spread_bps_exceeded",
+                    "spread_bps": round(float(_spread_bps), 2),
+                    "max_spread_bps": float(_spread_cap),
+                    "token_id": token_id,
+                    "leg": dict(leg),
+                    "requested_notional_usd": notional,
+                    "effective_notional_usd": 0.0,
+                },
+                shares=shares,
+                notional_usd=0.0,
+            )
         if book_payload is None:
             return LegSubmitResult(
                 leg_id=leg_id,
@@ -1167,6 +1251,33 @@ async def submit_execution_leg(
         await _resolve_shadow_book_and_tape(token_id=token_id, live_context=live_context)
     )
     _leg_record("book_tape_resolve", _stage_started)
+    # Pre-trade max-spread gate for live path. Mirrors the shadow-branch
+    # gate above so a knob configured in the per-trader Risk Limits flyout
+    # actually blocks submission when the book is too wide.
+    _live_spread_rejected, _live_spread_bps, _live_spread_cap = _check_max_spread_bps(
+        book_payload=live_book_payload,
+        risk_limits=risk_limits,
+    )
+    if _live_spread_rejected:
+        return LegSubmitResult(
+            leg_id=leg_id,
+            status="failed",
+            effective_price=price,
+            error_message=f"Book spread {_live_spread_bps:.1f} bps exceeds max_spread_bps {_live_spread_cap:.1f}.",
+            payload={
+                "mode": "live",
+                "submission": "rejected",
+                "reason": "max_spread_bps_exceeded",
+                "spread_bps": round(float(_live_spread_bps), 2),
+                "max_spread_bps": float(_live_spread_cap),
+                "token_id": token_id,
+                "leg": dict(leg),
+                "requested_notional_usd": notional,
+                "effective_notional_usd": 0.0,
+            },
+            shares=shares,
+            notional_usd=0.0,
+        )
     live_latency = measured_latency_cached()
     live_survival_features = build_survival_features(
         estimate=None,
