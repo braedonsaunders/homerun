@@ -97,12 +97,27 @@ def _is_status_scalar(value: Any) -> bool:
 
 
 async def _apply_snapshot_write_timeouts(session: AsyncSession) -> None:
+    # Fold both SET LOCAL calls into a single round-trip via
+    # ``set_config(name, value, is_local=true)``.  Worker-snapshot writes
+    # fire from EVERY worker's heartbeat loop (search-index, scanner,
+    # market-universe, scanner-slo, ...) at 5-30s cadence; the production
+    # log shows these heartbeats holding "Long transaction held" warnings
+    # in the 2-7s range with ``uow_dirty=0`` — the work is purely the two
+    # SET LOCAL round-trips plus the upsert.  Halving the SET overhead
+    # is a measurable reduction in idle-in-transaction time across the
+    # whole worker host.
     try:
-        await session.execute(text(f"SET LOCAL statement_timeout = '{_WORKER_SNAPSHOT_STATEMENT_TIMEOUT_MS}ms'"))
-    except Exception:
-        pass
-    try:
-        await session.execute(text(f"SET LOCAL lock_timeout = '{_WORKER_SNAPSHOT_LOCK_TIMEOUT_MS}ms'"))
+        await session.execute(
+            text(
+                "SELECT "
+                "set_config('statement_timeout', :stmt_ms, true), "
+                "set_config('lock_timeout', :lock_ms, true)"
+            ),
+            {
+                "stmt_ms": f"{_WORKER_SNAPSHOT_STATEMENT_TIMEOUT_MS}ms",
+                "lock_ms": f"{_WORKER_SNAPSHOT_LOCK_TIMEOUT_MS}ms",
+            },
+        )
     except Exception:
         pass
 

@@ -2990,19 +2990,32 @@ class IntentRuntime:
                 # before the asyncio outer wait_for / pool watchdog
                 # recovers.  Log the failure so we can diagnose if this
                 # ever happens in production.
+                # ``set_config(name, value, is_local)`` is the function-form of
+                # ``SET LOCAL`` (third argument ``true`` makes it transaction-
+                # scoped).  Bundling both timeouts into a single ``SELECT`` halves
+                # the wire round-trips per chunk.  At ``chunk_size=1`` (the
+                # current pressure-aware default) the projection loop runs
+                # 30+ chunks/sec; saving one round-trip per chunk is ~30 fewer
+                # wire ops/sec on the DB pool that's already showing up in
+                # ``Long transaction held`` warnings.  Failures are still
+                # logged but cover both timeouts at once.
                 try:
-                    await session.execute(text(f"SET LOCAL statement_timeout = '{_PROJECTION_STATEMENT_TIMEOUT_MS}'"))
-                except Exception as exc:
-                    logger.warning(
-                        "intent_runtime: SET LOCAL statement_timeout=%dms failed; backend will rely on outer timeouts",
-                        _PROJECTION_STATEMENT_TIMEOUT_MS,
-                        exc_info=exc,
+                    await session.execute(
+                        text(
+                            "SELECT "
+                            "set_config('statement_timeout', :stmt_ms, true), "
+                            "set_config('lock_timeout', :lock_ms, true)"
+                        ),
+                        {
+                            "stmt_ms": str(_PROJECTION_STATEMENT_TIMEOUT_MS),
+                            "lock_ms": str(_PROJECTION_LOCK_TIMEOUT_MS),
+                        },
                     )
-                try:
-                    await session.execute(text(f"SET LOCAL lock_timeout = '{_PROJECTION_LOCK_TIMEOUT_MS}'"))
                 except Exception as exc:
                     logger.warning(
-                        "intent_runtime: SET LOCAL lock_timeout=%dms failed; row-lock waits may exceed budget",
+                        "intent_runtime: SET LOCAL statement_timeout=%dms / lock_timeout=%dms failed; "
+                        "backend will rely on outer timeouts",
+                        _PROJECTION_STATEMENT_TIMEOUT_MS,
                         _PROJECTION_LOCK_TIMEOUT_MS,
                         exc_info=exc,
                     )
@@ -3124,19 +3137,32 @@ class IntentRuntime:
                 # before the asyncio outer wait_for / pool watchdog
                 # recovers.  Log the failure so we can diagnose if this
                 # ever happens in production.
+                # ``set_config(name, value, is_local)`` is the function-form of
+                # ``SET LOCAL`` (third argument ``true`` makes it transaction-
+                # scoped).  Bundling both timeouts into a single ``SELECT`` halves
+                # the wire round-trips per chunk.  At ``chunk_size=1`` (the
+                # current pressure-aware default) the projection loop runs
+                # 30+ chunks/sec; saving one round-trip per chunk is ~30 fewer
+                # wire ops/sec on the DB pool that's already showing up in
+                # ``Long transaction held`` warnings.  Failures are still
+                # logged but cover both timeouts at once.
                 try:
-                    await session.execute(text(f"SET LOCAL statement_timeout = '{_PROJECTION_STATEMENT_TIMEOUT_MS}'"))
-                except Exception as exc:
-                    logger.warning(
-                        "intent_runtime: SET LOCAL statement_timeout=%dms failed; backend will rely on outer timeouts",
-                        _PROJECTION_STATEMENT_TIMEOUT_MS,
-                        exc_info=exc,
+                    await session.execute(
+                        text(
+                            "SELECT "
+                            "set_config('statement_timeout', :stmt_ms, true), "
+                            "set_config('lock_timeout', :lock_ms, true)"
+                        ),
+                        {
+                            "stmt_ms": str(_PROJECTION_STATEMENT_TIMEOUT_MS),
+                            "lock_ms": str(_PROJECTION_LOCK_TIMEOUT_MS),
+                        },
                     )
-                try:
-                    await session.execute(text(f"SET LOCAL lock_timeout = '{_PROJECTION_LOCK_TIMEOUT_MS}'"))
                 except Exception as exc:
                     logger.warning(
-                        "intent_runtime: SET LOCAL lock_timeout=%dms failed; row-lock waits may exceed budget",
+                        "intent_runtime: SET LOCAL statement_timeout=%dms / lock_timeout=%dms failed; "
+                        "backend will rely on outer timeouts",
+                        _PROJECTION_STATEMENT_TIMEOUT_MS,
                         _PROJECTION_LOCK_TIMEOUT_MS,
                         exc_info=exc,
                     )
@@ -3185,19 +3211,32 @@ class IntentRuntime:
                 # before the asyncio outer wait_for / pool watchdog
                 # recovers.  Log the failure so we can diagnose if this
                 # ever happens in production.
+                # ``set_config(name, value, is_local)`` is the function-form of
+                # ``SET LOCAL`` (third argument ``true`` makes it transaction-
+                # scoped).  Bundling both timeouts into a single ``SELECT`` halves
+                # the wire round-trips per chunk.  At ``chunk_size=1`` (the
+                # current pressure-aware default) the projection loop runs
+                # 30+ chunks/sec; saving one round-trip per chunk is ~30 fewer
+                # wire ops/sec on the DB pool that's already showing up in
+                # ``Long transaction held`` warnings.  Failures are still
+                # logged but cover both timeouts at once.
                 try:
-                    await session.execute(text(f"SET LOCAL statement_timeout = '{_PROJECTION_STATEMENT_TIMEOUT_MS}'"))
-                except Exception as exc:
-                    logger.warning(
-                        "intent_runtime: SET LOCAL statement_timeout=%dms failed; backend will rely on outer timeouts",
-                        _PROJECTION_STATEMENT_TIMEOUT_MS,
-                        exc_info=exc,
+                    await session.execute(
+                        text(
+                            "SELECT "
+                            "set_config('statement_timeout', :stmt_ms, true), "
+                            "set_config('lock_timeout', :lock_ms, true)"
+                        ),
+                        {
+                            "stmt_ms": str(_PROJECTION_STATEMENT_TIMEOUT_MS),
+                            "lock_ms": str(_PROJECTION_LOCK_TIMEOUT_MS),
+                        },
                     )
-                try:
-                    await session.execute(text(f"SET LOCAL lock_timeout = '{_PROJECTION_LOCK_TIMEOUT_MS}'"))
                 except Exception as exc:
                     logger.warning(
-                        "intent_runtime: SET LOCAL lock_timeout=%dms failed; row-lock waits may exceed budget",
+                        "intent_runtime: SET LOCAL statement_timeout=%dms / lock_timeout=%dms failed; "
+                        "backend will rely on outer timeouts",
+                        _PROJECTION_STATEMENT_TIMEOUT_MS,
                         _PROJECTION_LOCK_TIMEOUT_MS,
                         exc_info=exc,
                     )

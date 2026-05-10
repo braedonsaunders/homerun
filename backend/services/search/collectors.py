@@ -114,14 +114,40 @@ _OPP_CACHE_TTL_SECONDS = 5.0
 
 
 async def _load_opps(session: AsyncSession) -> list[Any]:
+    """Load opportunities for search-index population.
+
+    The search collectors only need the SNAPSHOT-time fields baked into
+    the opportunity row (``markets[*].yes_price``, ``liquidity``,
+    ``question``, ``category``, …).  ``shared_state.
+    get_opportunities_from_db`` does much more than that: live price
+    refresh against Polymarket HTTP, ``get_market_tradability_map``
+    (its own DB transaction — caught at 4.88s in the production log),
+    and ``attach_price_history_to_opportunities`` (per-market HTTP
+    fan-out).  None of that work changes the search index — the
+    collectors read from the static market dicts only.
+
+    Running the full enrichment from inside the search reindex was
+    the dominant contributor to the ``Search reindex hard-timeout
+    for market after 25.0s; deferring to next cycle`` warning that
+    fired 91× in the latest production capture.  The search-index
+    reindex tick is every 120s; one cycle's worth of stale prices in
+    a metadata field used for ranking is acceptable.  The live UI
+    that needs fresh prices reads from the opportunity API directly,
+    not from the search index.
+
+    This loader therefore reads ONLY from the scanner / traders
+    snapshots and skips every enrichment hop.  Net effect: the
+    ``market`` collector's wall-clock drops from "regularly >25s" to
+    a single DB read of two snapshot rows.
+    """
     now = time.monotonic()
     cached = _OPP_CACHE.get("data")
     if cached is not None and (now - float(_OPP_CACHE.get("at") or 0.0)) < _OPP_CACHE_TTL_SECONDS:
         return cached
     try:
-        data = await shared_state.get_opportunities_from_db(
-            session, None, source="all"
-        )
+        market_opps, _ = await shared_state.read_scanner_snapshot(session)
+        trader_opps, _ = await shared_state.read_traders_snapshot(session)
+        data = list(market_opps) + list(trader_opps)
     except Exception as exc:
         logger.warning("opportunity snapshot load failed: %s", exc)
         data = []

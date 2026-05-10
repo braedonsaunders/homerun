@@ -2554,9 +2554,19 @@ class LiveExecutionService:
             _persist_breakdown["attempts"] = float(attempt + 1)
             _stage_started = _time.monotonic()
             async with AsyncSessionLocal() as session:
+                # ``session_checkout`` is always ~0 because ``async with
+                # AsyncSessionLocal()`` does NOT acquire a pool connection
+                # until the first ``session.execute()`` runs. The actual
+                # pool wait + first-statement round-trip lands in
+                # ``set_local_lock_timeout`` below.  Without that split
+                # the slow-log shows e.g. ``upsert=328 + commit=141 =
+                # 469ms`` against a ``total_ms=7172``, with 6.7s
+                # invisible to operators.
                 _persist_record("session_checkout", _stage_started)
                 try:
+                    _stage_started = _time.monotonic()
                     await session.execute(text("SET LOCAL lock_timeout = '1500ms'"))
+                    _persist_record("set_local_lock_timeout", _stage_started)
                     # Cycle 9 of the perf-harness loop showed ``select
                     # _signals`` averaging 1.9s/call under DB pool
                     # contention (30 slow events, 56s cumulative).
@@ -2685,6 +2695,22 @@ class LiveExecutionService:
                     _persist_record("commit", _stage_started)
                     _persist_breakdown["total_ms"] = round(
                         (_time.monotonic() - _persist_started) * 1000.0, 1
+                    )
+                    # Surface unaccounted time so operators can tell
+                    # event-loop / GC stalls apart from in-DB cost.
+                    # Stages explicitly measured: session_checkout,
+                    # set_local_lock_timeout, select_signals (optional),
+                    # upsert, commit. Anything else (pure-Python loops,
+                    # asyncio scheduler delay, GC pauses) shows up here.
+                    _accounted = (
+                        _persist_breakdown.get("session_checkout", 0.0)
+                        + _persist_breakdown.get("set_local_lock_timeout", 0.0)
+                        + _persist_breakdown.get("select_signals", 0.0)
+                        + _persist_breakdown.get("upsert", 0.0)
+                        + _persist_breakdown.get("commit", 0.0)
+                    )
+                    _persist_breakdown["unaccounted_ms"] = round(
+                        max(0.0, _persist_breakdown["total_ms"] - _accounted), 1
                     )
                     if _persist_breakdown["total_ms"] >= 2000.0:
                         try:

@@ -1566,11 +1566,19 @@ async def _audit_run_group_inner(
     insert_started = _time.monotonic()
     async with AuditAsyncSessionLocal() as session:
         try:
+            # Fold both SETs into a single round-trip — every audit-tier
+            # write goes through this path, so halving the SET overhead
+            # cuts wire ops/sec measurably under live trading load.
             await session.execute(
-                sa_text(f"SET LOCAL statement_timeout = '{_AUDIT_STATEMENT_TIMEOUT_MS}'")
-            )
-            await session.execute(
-                sa_text(f"SET LOCAL lock_timeout = '{_AUDIT_LOCK_TIMEOUT_MS}'")
+                sa_text(
+                    "SELECT "
+                    "set_config('statement_timeout', :stmt_ms, true), "
+                    "set_config('lock_timeout', :lock_ms, true)"
+                ),
+                {
+                    "stmt_ms": str(_AUDIT_STATEMENT_TIMEOUT_MS),
+                    "lock_ms": str(_AUDIT_LOCK_TIMEOUT_MS),
+                },
             )
             with session.no_autoflush:
                 await body(session)

@@ -164,19 +164,31 @@ async def _apply_local_db_timeouts(
     # they fail silently the only recovery is the 180s watchdog.
     # Promote both calls from silent except-pass to logged warnings so
     # we can diagnose if the SET LOCAL ever fails on production.
+    #
+    # Fold both SETs into a single round-trip via ``set_config(name,
+    # value, is_local=true)``.  Scanner state projection runs on every
+    # full snapshot tick (~5s cadence) and the production log shows it
+    # holding "Long transaction held" warnings of 2-7s.  Halving the SET
+    # overhead is one fewer round-trip per projection cycle.  Failures
+    # of either timeout still surface as a single warning covering both
+    # because the GUC names appear in the log message and the exception.
     try:
-        await session.execute(text(f"SET LOCAL statement_timeout = '{statement_timeout}ms'"))
-    except Exception as exc:
-        logger.warning(
-            "SET LOCAL statement_timeout=%dms failed; backend will rely on outer wait_for",
-            statement_timeout,
-            exc_info=exc,
+        await session.execute(
+            text(
+                "SELECT "
+                "set_config('statement_timeout', :stmt_ms, true), "
+                "set_config('lock_timeout', :lock_ms, true)"
+            ),
+            {
+                "stmt_ms": f"{statement_timeout}ms",
+                "lock_ms": f"{lock_timeout}ms",
+            },
         )
-    try:
-        await session.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}ms'"))
     except Exception as exc:
         logger.warning(
-            "SET LOCAL lock_timeout=%dms failed; row-lock waits will fall back to outer wait_for",
+            "SET LOCAL statement_timeout=%dms / lock_timeout=%dms failed; "
+            "backend will rely on outer wait_for",
+            statement_timeout,
             lock_timeout,
             exc_info=exc,
         )

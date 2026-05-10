@@ -29,8 +29,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Iterable, Optional, Sequence
 
-from sqlalchemy import select, text
+from sqlalchemy import any_, bindparam, select, text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.types import String as SAString
 
 from models.database import MarketMicrostructureSnapshot
 from utils.converters import safe_float
@@ -47,6 +49,34 @@ logger = logging.getLogger(__name__)
 _BACKTEST_STATEMENT_TIMEOUT_MS = int(
     _os.getenv("HOMERUN_BACKTEST_STATEMENT_TIMEOUT_MS", "300000")
 )
+
+
+def _token_id_in(column, token_ids: Sequence[str]):
+    """Build a ``token_id IN (...)`` predicate that survives huge lists.
+
+    SQLAlchemy's ``column.in_(values)`` expands to one bind parameter
+    per element. asyncpg / the PostgreSQL wire-protocol caps the total
+    parameter count per statement at 32,767 — a backtest that targets
+    tens of thousands of tokens (event-market strategies routinely
+    fan out across 30k+ outcomes) blows past that on the very first
+    chunk with ``InterfaceError: the number of query arguments cannot
+    exceed 32767`` and the entire replay aborts before yielding a
+    single snapshot.
+
+    The fix is to send the token list as a single ``varchar[]`` array
+    parameter and compare with ``= ANY($1)``. PostgreSQL plans this
+    identically to an IN-list against a small set and falls back to a
+    bitmap scan / hash semi-join for large ones, but the wire frame
+    only carries one parameter regardless of array length.
+    """
+    return column == any_(
+        bindparam(
+            "token_ids_array",
+            value=list(token_ids),
+            type_=ARRAY(SAString),
+            unique=True,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -299,7 +329,10 @@ class BookReplay:
                     stmt = (
                         select(MarketMicrostructureSnapshot)
                         .where(
-                            MarketMicrostructureSnapshot.token_id.in_(self._token_ids),
+                            _token_id_in(
+                                MarketMicrostructureSnapshot.token_id,
+                                self._token_ids,
+                            ),
                             MarketMicrostructureSnapshot.observed_at >= last_observed,
                             MarketMicrostructureSnapshot.observed_at <= self._end,
                         )
@@ -562,7 +595,16 @@ class BookDeltaReplay:
                     pass
                 yield fresh
 
-        CHUNK = 50
+        # Anchor lookups stay chunked — but at a much higher chunk size
+        # now that the parameter wall is gone.  Result-set size is the
+        # remaining bound: each token contributes one row (the most
+        # recent at-or-before ``start``) plus any older rows we filter
+        # out client-side, so we keep the chunk modest to avoid hauling
+        # tens of MB of bids_json/asks_json over the wire on a single
+        # query.  500 is a comfortable balance — fewer round-trips than
+        # the old 50 by 10×, but each result set still fits well under
+        # the asyncpg row-cache ceiling.
+        CHUNK = 500
         for i in range(0, len(self._token_ids), CHUNK):
             chunk = self._token_ids[i : i + CHUNK]
             try:
@@ -570,7 +612,10 @@ class BookDeltaReplay:
                     stmt = (
                         select(MarketMicrostructureSnapshot)
                         .where(
-                            MarketMicrostructureSnapshot.token_id.in_(chunk),
+                            _token_id_in(
+                                MarketMicrostructureSnapshot.token_id,
+                                chunk,
+                            ),
                             MarketMicrostructureSnapshot.observed_at <= self._start,
                             MarketMicrostructureSnapshot.snapshot_type == "book",
                         )
@@ -649,7 +694,10 @@ class BookDeltaReplay:
                     stmt = (
                         select(BookDeltaEvent)
                         .where(
-                            BookDeltaEvent.token_id.in_(self._token_ids),
+                            _token_id_in(
+                                BookDeltaEvent.token_id,
+                                self._token_ids,
+                            ),
                             BookDeltaEvent.observed_at >= last_observed,
                             BookDeltaEvent.observed_at <= self._end,
                         )

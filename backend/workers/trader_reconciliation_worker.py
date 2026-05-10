@@ -1429,11 +1429,24 @@ async def _run_reconciliation_cycle(
             try:
                 async def _authority_recovery() -> None:
                     async with AsyncSessionLocal() as session:
+                        # Fold both timeout SETs into a single round-trip.
+                        # The production log captured authority_recovery
+                        # holding a 16.89s transaction (uow_dirty=1,
+                        # tables=execution_sessions) — the two preliminary
+                        # SET LOCAL round-trips were small but billable
+                        # contributors on every recovery cycle.  See
+                        # ``shared_state._apply_local_db_timeouts`` for
+                        # the same fold pattern with the same rationale.
                         await session.execute(
-                            text(f"SET LOCAL statement_timeout = '{_AUTHORITY_RECOVERY_STATEMENT_TIMEOUT_MS}'")
-                        )
-                        await session.execute(
-                            text(f"SET LOCAL lock_timeout = '{_AUTHORITY_RECOVERY_LOCK_TIMEOUT_MS}'")
+                            text(
+                                "SELECT "
+                                "set_config('statement_timeout', :stmt_ms, true), "
+                                "set_config('lock_timeout', :lock_ms, true)"
+                            ),
+                            {
+                                "stmt_ms": str(_AUTHORITY_RECOVERY_STATEMENT_TIMEOUT_MS),
+                                "lock_ms": str(_AUTHORITY_RECOVERY_LOCK_TIMEOUT_MS),
+                            },
                         )
                         await recover_missing_live_trader_orders(
                             session,
