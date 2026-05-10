@@ -58,7 +58,7 @@ from sqlalchemy.exc import OperationalError
 from models.database import AsyncSessionLocal
 from services.event_bus import event_bus
 from services import trader_hot_state as hot_state
-from services.live_pressure import is_db_pressure_active
+from services.live_pressure import current_backpressure_level, is_db_pressure_active
 from services.trader_orchestrator_state import (
     DEFAULT_LIVE_PROVIDER_HEALTH,
     DEFAULT_PENDING_LIVE_EXIT_GUARD,
@@ -527,7 +527,23 @@ class _TraderCycleContextManager:
         # empty sentinel if no cache yet), preserving the trader cycle's
         # latency budget. The 30 s reconciler still refreshes the cache
         # in the background once pressure clears.
-        if prefetch_db and is_db_pressure_active():
+        #
+        # 2026-05-10: ``is_db_pressure_active()`` is REACTIVE — it only
+        # trips after a query has actually raised OperationalError /
+        # statement-timeout / lock-timeout.  During slow-soak, the
+        # projection commits run 2-7s but never throw, so the reactive
+        # flag stays False even with intent_runtime queue saturating
+        # to 80%+.  Soak 2026-05-10 14:57-15:38 captured 16 ``Trader
+        # cycle slow`` warnings with setup_ca_provider_failure ≈
+        # setup_ca_pending_live_exit ≈ 4-8s each (already gathered
+        # in parallel — these are gather-internal stalls, not seriality)
+        # while ``intent_runtime_queue`` was publishing proactive
+        # backpressure.  Honouring proactive level ≥ 0.5 (the
+        # documented ``extend intervals`` threshold) bypasses inline
+        # DB the moment the queue starts saturating, well before any
+        # query throws.  Cached projections are served instead; the
+        # 30s reconciler keeps them fresh in the background.
+        if prefetch_db and (is_db_pressure_active() or current_backpressure_level() >= 0.5):
             prefetch_db = False
         if normalized_mode == "live":
             # R12-B: R11-A data showed these two projection awaits together
