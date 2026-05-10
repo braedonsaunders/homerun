@@ -3473,14 +3473,6 @@ async def run_execution_backtest(
     from models.database import (
         AsyncSessionLocal,
         MarketMicrostructureSnapshot,
-        # Historical opportunities live in the OpportunityHistory ORM
-        # table.  Aliased as ``Opportunity`` here so the SQLAlchemy
-        # query syntax below stays readable; positions are nested in
-        # the ``positions_data`` JSON column rather than a top-level
-        # ``positions_to_take`` attribute.  See the row-shape sample
-        # at services/strategy_backtester.py:_extract_positions for
-        # the canonical key path.
-        OpportunityHistory as Opportunity,
     )
 
     result = ExecutionBacktestResult(

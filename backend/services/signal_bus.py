@@ -160,6 +160,22 @@ def _normalize_reactivation_value(value: Any) -> Any:
     return value
 
 
+_PAYLOAD_AUTO_EMITTED_KEYS = frozenset({"signal_emitted_at"})
+
+
+def _strip_auto_emitted_keys(payload: Any) -> Any:
+    """Strip only keys auto-stamped by upsert_trade_signal on every call.
+
+    Used for payload refresh comparisons in the active-refresh path —
+    strips just ``signal_emitted_at`` so volatile data fields like
+    ``price_age_seconds`` are still detected as changes, while avoiding
+    spurious dirty-row writes when only the timestamp differs.
+    """
+    if isinstance(payload, dict):
+        return {k: v for k, v in payload.items() if k not in _PAYLOAD_AUTO_EMITTED_KEYS}
+    return payload
+
+
 def _normalize_number(value: Any) -> float | None:
     if value is None:
         return None
@@ -1511,15 +1527,15 @@ async def upsert_trade_signal(
                     new_strategy_ctx = _safe_json(strategy_context_json)
                     if existing_expires_naive != incoming_expires_naive:
                         row.expires_at = incoming_expires_naive
-                    existing_payload_normalized = _normalize_reactivation_value(
+                    existing_payload_for_cmp = _strip_auto_emitted_keys(
                         ensure_market_roster_payload(
                             _safe_json(row.payload_json),
                             market_id=market_id,
                             market_question=market_question,
                         )
                     )
-                    incoming_payload_normalized = _normalize_reactivation_value(new_payload)
-                    if existing_payload_normalized != incoming_payload_normalized:
+                    incoming_payload_for_cmp = _strip_auto_emitted_keys(new_payload)
+                    if existing_payload_for_cmp != incoming_payload_for_cmp:
                         row.payload_json = new_payload
                     existing_ctx_normalized = _normalize_reactivation_value(
                         _safe_json(row.strategy_context_json)
