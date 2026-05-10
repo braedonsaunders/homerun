@@ -2294,6 +2294,14 @@ class _BulkBookIndex:
         tokens will trip that ceiling on a single shared session.
         Opening a fresh session per chunk keeps each checkout <1s
         regardless of total wall-clock time.
+
+        Parquet-first: tokens covered by an operator-supplied parquet
+        dataset (HOMERUN_PARQUET_ROOT) are loaded straight from the
+        file with pyarrow — no SQL round-trip.  Remaining tokens fall
+        through to the chunked-session SQL path.  This matters for
+        live_context overlay: without parquet, evaluate sees the
+        token's edge_percent computed from a sparse mms snapshot;
+        with parquet, it sees the dense vendor data.
         """
         from sqlalchemy import select as _select, text as _text
         from models.database import (
@@ -2305,8 +2313,62 @@ class _BulkBookIndex:
         idx = cls()
         if not token_ids:
             return idx
-        for i in range(0, len(token_ids), chunk):
-            sub = token_ids[i : i + chunk]
+
+        # Phase A — parquet-covered tokens.
+        try:
+            from services.external_data import parquet_scanner as _pq_scanner
+            await _pq_scanner.ensure_recent_scan(max_age_seconds=60.0)
+            pq_paths = await _pq_scanner.find_parquet_coverage(
+                token_ids=token_ids, start=start_dt, end=end_dt,
+            )
+        except Exception as _exc:
+            logger.debug("_BulkBookIndex parquet lookup skipped: %s", _exc)
+            pq_paths = {}
+        if pq_paths:
+            import pyarrow.parquet as _pq
+            for tok, file_path in pq_paths.items():
+                try:
+                    table = _pq.read_table(
+                        str(file_path),
+                        columns=[
+                            "observed_at_us", "best_bid", "best_ask", "spread_bps",
+                        ],
+                    )
+                except Exception as _exc:
+                    logger.debug(
+                        "_BulkBookIndex parquet read failed for %s: %s", tok, _exc
+                    )
+                    continue
+                obs_us = table.column("observed_at_us").to_pylist()
+                best_bid = table.column("best_bid").to_pylist()
+                best_ask = table.column("best_ask").to_pylist()
+                spread_bps = table.column("spread_bps").to_pylist()
+                start_us = int(start_dt.replace(tzinfo=timezone.utc).timestamp() * 1_000_000) if start_dt.tzinfo is None else int(start_dt.timestamp() * 1_000_000)
+                end_us = int(end_dt.replace(tzinfo=timezone.utc).timestamp() * 1_000_000) if end_dt.tzinfo is None else int(end_dt.timestamp() * 1_000_000)
+                for i in range(len(obs_us)):
+                    us = int(obs_us[i] or 0)
+                    if us < start_us or us > end_us:
+                        continue
+                    bb_f = float(best_bid[i] or 0.0)
+                    ba_f = float(best_ask[i] or 0.0)
+                    observed = datetime.fromtimestamp(us / 1_000_000, tz=timezone.utc)
+                    snap = BookSnapshot(
+                        token_id=str(tok),
+                        observed_at=observed,
+                        bids=(PriceLevel(price=bb_f, size=0.0),) if bb_f > 0 else (),
+                        asks=(PriceLevel(price=ba_f, size=0.0),) if ba_f > 0 else (),
+                        spread_bps=(
+                            float(spread_bps[i]) if spread_bps[i] is not None else None
+                        ),
+                    )
+                    idx._by_token.setdefault(str(tok), []).append((observed, snap))
+
+        # Phase B — SQL fallback for everything not covered by parquet.
+        sql_tokens = [t for t in token_ids if t not in pq_paths]
+        if not sql_tokens:
+            return idx
+        for i in range(0, len(sql_tokens), chunk):
+            sub = sql_tokens[i : i + chunk]
             async with _Sess() as session:
                 try:
                     await session.execute(_text("SET statement_timeout = 60000"))
@@ -4825,7 +4887,12 @@ async def run_execution_backtest(
         and median_deltas_per_hr >= 10.0
     )
     # Import locally to avoid circular imports at module load.
-    from services.backtest.book_replay import BookDeltaReplay as _BookDeltaReplay
+    from services.backtest.book_replay import (
+        BookDeltaReplay as _BookDeltaReplay,
+        HybridBookSource as _HybridBookSource,
+    )
+    from services.backtest.parquet_replay import ParquetBookReplay as _ParquetBookReplay
+    from services.external_data import parquet_scanner as _parquet_scanner
 
     run_start = time.monotonic()
     replay_for_run: Any = None
@@ -4838,44 +4905,102 @@ async def run_execution_backtest(
         # placeholder for any future per-run resources we want
         # scoped to the matcher's lifetime.
         async with AsyncSessionLocal() as _matcher_run_scope:  # noqa: F841 — reserved for future per-run resources
-            if use_delta_replay:
-                replay_for_run = _BookDeltaReplay(
-                    session=None,
-                    token_ids=tokens,
-                    start=start_dt,
-                    end=end_dt,
+            # ── Per-token source resolver ────────────────────────────
+            # Three potential book sources: parquet (operator-supplied
+            # files in HOMERUN_PARQUET_ROOT), book_delta_events (the
+            # live ingestor's authoritative stream), and
+            # market_microstructure_snapshots (throttled snapshots).
+            # Selection is per-token: parquet > deltas (when delta
+            # density dominates the window) > snapshots.  A
+            # HybridBookSource dispatches each ``snapshot_at`` /
+            # ``iter_snapshots`` to the right backend.
+            #
+            # Auto-discovery: ``ensure_recent_scan`` walks the parquet
+            # root iff the cached scan is >60s old, so newly-dropped
+            # files are picked up without an explicit rescan.
+            try:
+                await _parquet_scanner.ensure_recent_scan(max_age_seconds=60.0)
+                parquet_coverage = await _parquet_scanner.find_parquet_coverage(
+                    token_ids=tokens, start=start_dt, end=end_dt,
                 )
-                # Annotate which source was used.  "+anchor" if the
-                # delta replay had any tokens with usable mms anchors
-                # (we only know after iter_snapshots starts, but the
-                # presence of mms rows for the universe is a proxy).
-                result.replay_source = (
-                    "deltas+anchor"
-                    if int(cov.get("tokens_with_snapshots") or 0) > 0
-                    else "deltas"
+            except Exception as _pq_exc:
+                logger.warning("parquet coverage lookup failed: %s", _pq_exc)
+                parquet_coverage = {}
+
+            sql_tokens = [t for t in tokens if t not in parquet_coverage]
+            backends: dict[str, Any] = {}
+            routing: dict[str, str] = {}
+            source_label_parts: list[str] = []
+
+            if parquet_coverage:
+                backends["parquet"] = _ParquetBookReplay(
+                    per_token_files=parquet_coverage,
+                    start=start_dt, end=end_dt,
                 )
-                result.validation_warnings.append(
-                    f"Replay source: BOOK DELTAS (live-parity path) — "
-                    f"{deltas_total:,} delta events vs {snapshots_total:,} snapshots "
-                    f"in window.  This is the same data feed the live system uses."
+                for tok in parquet_coverage:
+                    routing[tok] = "parquet"
+                source_label_parts.append(
+                    f"PARQUET={len(parquet_coverage)} tokens"
                 )
-            else:
-                replay_for_run = BookReplay(
-                    session=None,
-                    token_ids=tokens,
-                    start=start_dt,
-                    end=end_dt,
-                    snapshot_type="book",
-                )
-                result.replay_source = "snapshots"
-                # Only mention source explicitly when the delta path
-                # was a near-miss; otherwise keep the warning list
-                # focused on actionable items.
-                if deltas_total > 0 and median_deltas_per_hr > 0:
-                    result.validation_warnings.append(
-                        f"Replay source: SNAPSHOTS — {snapshots_total:,} mms rows "
-                        f"vs {deltas_total:,} delta events in window."
+
+            sql_replay_label = None
+            if sql_tokens:
+                if use_delta_replay:
+                    backends["deltas"] = _BookDeltaReplay(
+                        session=None, token_ids=sql_tokens,
+                        start=start_dt, end=end_dt,
                     )
+                    for tok in sql_tokens:
+                        routing[tok] = "deltas"
+                    sql_replay_label = (
+                        "deltas+anchor"
+                        if int(cov.get("tokens_with_snapshots") or 0) > 0
+                        else "deltas"
+                    )
+                    source_label_parts.append(
+                        f"DELTAS={len(sql_tokens)} tokens "
+                        f"({deltas_total:,} events)"
+                    )
+                else:
+                    backends["snapshots"] = BookReplay(
+                        session=None, token_ids=sql_tokens,
+                        start=start_dt, end=end_dt, snapshot_type="book",
+                    )
+                    for tok in sql_tokens:
+                        routing[tok] = "snapshots"
+                    sql_replay_label = "snapshots"
+                    source_label_parts.append(
+                        f"SNAPSHOTS={len(sql_tokens)} tokens "
+                        f"({snapshots_total:,} rows)"
+                    )
+
+            if not backends:
+                # Defensive: shouldn't happen because the universe is
+                # non-empty by this point, but if every backend was
+                # somehow empty fall back to snapshots over the whole
+                # universe so the matcher doesn't crash.
+                backends["snapshots"] = BookReplay(
+                    session=None, token_ids=tokens,
+                    start=start_dt, end=end_dt, snapshot_type="book",
+                )
+                routing = {tok: "snapshots" for tok in tokens}
+                sql_replay_label = "snapshots"
+
+            replay_for_run = _HybridBookSource(
+                backends=backends, routing=routing,
+            )
+            # Surface which source(s) drove this run.  When parquet
+            # covers the entire universe label is just "parquet";
+            # otherwise we get e.g. "parquet+deltas" or "parquet+snapshots".
+            if "parquet" in backends and sql_replay_label is None:
+                result.replay_source = "parquet"
+            elif "parquet" in backends:
+                result.replay_source = f"parquet+{sql_replay_label}"
+            else:
+                result.replay_source = sql_replay_label or "snapshots"
+            result.validation_warnings.append(
+                "Replay source: " + " · ".join(source_label_parts)
+            )
             bt_result = await engine.run(
                 book_source=replay_for_run,
                 trade_intents=intents,

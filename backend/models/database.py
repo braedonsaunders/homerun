@@ -3540,6 +3540,14 @@ class ProviderDataset(Base):
     last_imported_at = Column(DateTime, nullable=True)
     last_import_job_id = Column(String, nullable=True)
     payload_json = Column(JSON, default=dict)  # cached provider market metadata
+    # Where the actual snapshot rows live.  ``postgres`` (default) means
+    # the legacy path: snapshots are projected into
+    # MarketMicrostructureSnapshot keyed by provider+token_id.  ``parquet``
+    # means the data lives in a file at ``storage_uri`` and the
+    # backtester's ParquetBookReplay reads it directly.  See
+    # services/external_data/parquet_scanner.py for how this is set.
+    storage_type = Column(String, nullable=False, default="postgres")
+    storage_uri = Column(String, nullable=True)  # e.g. file:///path or s3://bucket/key
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
 
@@ -3547,6 +3555,11 @@ class ProviderDataset(Base):
         UniqueConstraint("provider", "external_id", name="uq_provider_dataset_provider_extid"),
         Index("idx_provider_dataset_provider_coin", "provider", "coin"),
         Index("idx_provider_dataset_updated", "updated_at"),
+        Index(
+            "ix_provider_datasets_storage_type_provider",
+            "storage_type",
+            "provider",
+        ),
     )
 
 

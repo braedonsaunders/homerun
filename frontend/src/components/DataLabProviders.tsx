@@ -43,15 +43,20 @@ import { cn } from '../lib/utils'
 import {
   cancelImportJob,
   deleteProviderDataset,
+  getParquetRoot,
   getProviderSettings,
   importPolybacktest,
   listImportJobs,
+  listParquetDatasets,
   listPolybacktestMarkets,
   listProviderDatasets,
   listProviders,
+  rescanParquetRoot,
   updateProviderSettings,
   type ImportJob,
   type ImportJobStatus,
+  type ParquetDataset,
+  type ParquetRescanReport,
   type PolybacktestMarket,
   type ProviderDataset,
   type ProviderInfo,
@@ -81,6 +86,12 @@ const TIME_PRESETS: Array<{ label: string; hours: number }> = [
 // operator finds historical-gap-filling tools next to other importers.
 const POLYMARKET_TAB_KEY = '__polymarket__'
 
+// Synthetic provider key for the parquet bring-your-own-data sub-tab.
+// Operator drops parquet files into HOMERUN_PARQUET_ROOT; the
+// auto-discovery scanner upserts them into provider_datasets and the
+// backtester's resolver picks them up automatically.
+const PARQUET_TAB_KEY = '__parquet__'
+
 export default function DataLabProviders() {
   // ── Providers list ───────────────────────────────────────────────
   const providersQuery = useQuery({
@@ -98,6 +109,7 @@ export default function DataLabProviders() {
   }, [providers, activeProvider])
   const selected = providers.find((p) => p.key === activeProvider) ?? null
   const isPolymarketTab = activeProvider === POLYMARKET_TAB_KEY
+  const isParquetTab = activeProvider === PARQUET_TAB_KEY
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 p-3">
@@ -155,10 +167,25 @@ export default function DataLabProviders() {
           <Download className="h-3 w-3 rotate-180" />
           Polymarket
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveProvider(PARQUET_TAB_KEY)}
+          className={cn(
+            '-mb-px flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-[11px] font-medium transition-colors',
+            isParquetTab
+              ? 'border-violet-500 text-foreground'
+              : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <Server className="h-3 w-3" />
+          Parquet
+        </button>
       </div>
 
       {isPolymarketTab ? (
         <PolymarketSection />
+      ) : isParquetTab ? (
+        <ParquetSection />
       ) : selected?.key === 'polybacktest' ? (
         <PolybacktestSection provider={selected} />
       ) : selected ? (
@@ -1353,6 +1380,166 @@ function PolymarketSection() {
         </div>
       </div>
       <PolymarketBackfillFlyout open={open} onClose={() => setOpen(false)} />
+    </div>
+  )
+}
+
+
+// ─── Parquet sub-tab ───────────────────────────────────────────────────
+//
+// Local-single-user shop: there's no upload UI.  The operator copies
+// parquet files into ``HOMERUN_PARQUET_ROOT`` (the path is shown in the
+// header card so they know where) using whatever tool — Explorer,
+// scp, rsync, a download script — and hits Rescan.  The backtester's
+// source resolver picks up parquet-covered tokens automatically on
+// the next run.
+//
+// Files must follow the layout in services/external_data/parquet_schema.py:
+//   {root}/{provider}/{coin}/{startISO}__{endISO}/{kind}__{token_id}.parquet
+//
+// The auto-discovery scanner also runs once every 60s when a backtest
+// kicks off, so a file dropped just before pressing Run is picked up
+// without an explicit Rescan press.
+
+function ParquetSection() {
+  const queryClient = useQueryClient()
+  const rootQuery = useQuery({
+    queryKey: ['providers', 'parquet', 'root'],
+    queryFn: getParquetRoot,
+    staleTime: 5 * 60_000,
+  })
+  const datasetsQuery = useQuery({
+    queryKey: ['providers', 'parquet', 'datasets'],
+    queryFn: listParquetDatasets,
+    staleTime: 30_000,
+  })
+  const rescanMutation = useMutation({
+    mutationFn: rescanParquetRoot,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers', 'parquet', 'datasets'] })
+    },
+  })
+  const datasets = datasetsQuery.data ?? []
+  const lastReport: ParquetRescanReport | undefined = rescanMutation.data
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      {/* Storage root — operator copies files into this directory. */}
+      <div className="rounded-md border border-border/40 bg-card/40 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <Database className="h-3.5 w-3.5 text-violet-400" />
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Parquet storage root
+              </span>
+            </div>
+            <p className="mt-1 break-all font-mono text-[11px] text-foreground">
+              {rootQuery.isLoading ? 'loading…' : rootQuery.data?.root ?? '—'}
+            </p>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Drop parquet files here following the layout{' '}
+              <code className="text-[10px]">
+                {'{provider}/{coin}/{startISO}__{endISO}/{kind}__{token_id}.parquet'}
+              </code>
+              .  Override via the <code>HOMERUN_PARQUET_ROOT</code> env var.
+              {rootQuery.data && !rootQuery.data.exists && (
+                <span className="ml-1 text-amber-400">
+                  Directory does not exist yet — it will be created on first import.
+                </span>
+              )}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 text-[10px]"
+            disabled={rescanMutation.isPending}
+            onClick={() => rescanMutation.mutate()}
+          >
+            {rescanMutation.isPending ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Search className="h-3 w-3" />
+            )}
+            Rescan
+          </Button>
+        </div>
+        {lastReport && (
+          <div className="mt-2 rounded border border-border/30 bg-muted/20 p-2 text-[10px] text-muted-foreground">
+            Last rescan: {lastReport.groups_seen} group(s) found in{' '}
+            {lastReport.elapsed_ms.toFixed(0)} ms.
+            {lastReport.results.some((r) => r.error) && (
+              <span className="ml-1 text-amber-400">
+                {lastReport.results.filter((r) => r.error).length} group(s) errored.
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Catalog table */}
+      <div className="flex-1 min-h-0 rounded-md border border-border/40 bg-card/40">
+        <div className="border-b border-border/30 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Discovered datasets ({datasets.length})
+        </div>
+        {datasetsQuery.isLoading ? (
+          <div className="flex h-32 items-center justify-center text-xs text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : datasets.length === 0 ? (
+          <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
+            No parquet datasets discovered yet.  Drop files into the storage
+            root above and hit Rescan.
+          </div>
+        ) : (
+          <ScrollArea className="h-full">
+            <table className="w-full text-[11px]">
+              <thead className="sticky top-0 bg-card/95 backdrop-blur">
+                <tr className="border-b border-border/30 text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Provider</th>
+                  <th className="px-3 py-2 font-medium">Coin</th>
+                  <th className="px-3 py-2 font-medium">Window</th>
+                  <th className="px-3 py-2 text-right font-medium">Tokens</th>
+                  <th className="px-3 py-2 text-right font-medium">Snapshots</th>
+                  <th className="px-3 py-2 text-right font-medium">Trades</th>
+                  <th className="px-3 py-2 font-medium">Last imported</th>
+                </tr>
+              </thead>
+              <tbody>
+                {datasets.map((d: ParquetDataset) => (
+                  <tr
+                    key={d.id}
+                    className="border-b border-border/20 hover:bg-muted/20"
+                  >
+                    <td className="px-3 py-1.5 font-mono">{d.provider}</td>
+                    <td className="px-3 py-1.5 font-mono">{d.coin ?? '—'}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground">
+                      {d.start_ts && d.end_ts
+                        ? `${d.start_ts.slice(0, 10)} → ${d.end_ts.slice(0, 10)}`
+                        : '—'}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">
+                      {d.token_count.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">
+                      {d.snapshot_count.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">
+                      {d.trade_count.toLocaleString()}
+                    </td>
+                    <td className="px-3 py-1.5 text-[10px] text-muted-foreground">
+                      {d.last_imported_at
+                        ? d.last_imported_at.replace('T', ' ').slice(0, 19)
+                        : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollArea>
+        )}
+      </div>
     </div>
   )
 }

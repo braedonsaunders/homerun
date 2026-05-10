@@ -833,10 +833,173 @@ class BookDeltaReplay:
         )
 
 
+# ── HybridBookSource ────────────────────────────────────────────────
+#
+# Per-token source dispatcher.  The matcher's source-selection used to
+# be a binary "snapshots vs deltas" choice for the entire run; that
+# breaks down once a third source enters the picture (parquet) AND
+# coverage is heterogeneous (some tokens covered by parquet, some by
+# deltas, some only by snapshots).
+#
+# HybridBookSource holds one underlying source per backend
+# (snapshots / deltas / parquet) plus a ``routing`` dict mapping
+# ``token_id -> backend_name``.  ``snapshot_at`` looks up the routed
+# backend and delegates; ``iter_snapshots`` heap-merges streams so
+# global ordering on observed_at is preserved.
+#
+# The selection of which backend wins per token is the resolver's
+# job (see ``services/backtest/replay_resolver.py``); HybridBookSource
+# itself is a pure dispatcher.
+
+
+class HybridBookSource:
+    """Dispatches per-token book reads across multiple underlying
+    BookSource implementations.  Same public surface as ``BookReplay``
+    so the matching engine consumes it without knowing about the
+    routing.
+
+    Usage:
+
+        backends = {
+            "parquet":   ParquetBookReplay(per_token_files=..., ...),
+            "deltas":    BookDeltaReplay(token_ids=parquet_miss_tokens, ...),
+            "snapshots": BookReplay(token_ids=fallback_tokens, ...),
+        }
+        routing = {"<token_id>": "parquet" | "deltas" | "snapshots", ...}
+        source = HybridBookSource(backends=backends, routing=routing)
+        await engine.run(book_source=source, ...)
+    """
+
+    def __init__(
+        self,
+        *,
+        backends: dict[str, Any],
+        routing: dict[str, str],
+    ) -> None:
+        # Drop empty backends so iter_snapshots doesn't waste a heap
+        # slot on a no-op stream.
+        self._backends: dict[str, Any] = {
+            name: b for name, b in (backends or {}).items() if b is not None
+        }
+        self._routing: dict[str, str] = {
+            str(tid): name
+            for tid, name in (routing or {}).items()
+            if name in self._backends
+        }
+        # Truncation flags merge from any underlying that truncates —
+        # the matcher surfaces a single warning regardless of which
+        # backend hit the issue.
+        self.truncated: bool = False
+        self.truncation_reason: Optional[str] = None
+        self.snapshots_yielded: int = 0
+
+    async def iter_snapshots(self) -> AsyncIterator[BookSnapshot]:
+        """Heap-merge ordered streams from every active backend.
+        Works because each backend itself yields in observed_at order;
+        we just need to interleave.
+        """
+        if not self._backends:
+            return
+        import asyncio as _asyncio
+
+        # Spin up one async iterator per backend.
+        iterators: dict[str, AsyncIterator[BookSnapshot]] = {
+            name: backend.iter_snapshots() for name, backend in self._backends.items()
+        }
+        # Pre-fetch the first snapshot from each so the heap has
+        # something to compare on.
+        head_task: dict[str, _asyncio.Task | None] = {}
+        head_snap: dict[str, BookSnapshot | None] = {}
+        for name, it in iterators.items():
+            try:
+                first = await it.__anext__()
+            except StopAsyncIteration:
+                first = None
+            head_snap[name] = first
+
+        total_yielded = 0
+        while True:
+            # Find the backend with the smallest pending observed_at,
+            # filtered to ones whose token is routed to it (this lets
+            # backends preload snapshots for tokens they "own" without
+            # us emitting duplicates from a different backend's stream).
+            candidates = [
+                (snap.observed_at, name, snap)
+                for name, snap in head_snap.items()
+                if snap is not None
+                and self._routing.get(str(snap.token_id)) == name
+            ]
+            if not candidates:
+                # Drain any non-routed pending snapshots silently —
+                # they came from a backend whose stream covers more
+                # tokens than the routing assigned (e.g. a shared
+                # snapshots stream that includes tokens the parquet
+                # path also covers).  We just advance them.
+                advanced = False
+                for name, snap in list(head_snap.items()):
+                    if snap is not None:
+                        try:
+                            head_snap[name] = await iterators[name].__anext__()
+                        except StopAsyncIteration:
+                            head_snap[name] = None
+                        advanced = True
+                if not advanced:
+                    break
+                continue
+            candidates.sort(key=lambda x: (x[0], x[1]))
+            ts, winning_name, winning_snap = candidates[0]
+            yield winning_snap
+            total_yielded += 1
+            self.snapshots_yielded = total_yielded
+            # Advance only the winning backend's stream.
+            try:
+                head_snap[winning_name] = await iterators[winning_name].__anext__()
+            except StopAsyncIteration:
+                head_snap[winning_name] = None
+
+        # Surface truncation on the merged source if any underlying
+        # truncated mid-stream.
+        for name, backend in self._backends.items():
+            if getattr(backend, "truncated", False):
+                self.truncated = True
+                reason = getattr(backend, "truncation_reason", None) or "unknown"
+                self.truncation_reason = f"{name}: {reason}"
+                break
+
+    async def snapshot_at(
+        self, *, token_id: str, ts: datetime
+    ) -> Optional[BookSnapshot]:
+        """Route to the backend that owns this token, with fallback
+        through the others if the primary returns nothing (covers the
+        case where a token's parquet file ends mid-window and we need
+        to fall back to the live recorder for the tail)."""
+        primary = self._routing.get(str(token_id))
+        order: list[str] = []
+        if primary and primary in self._backends:
+            order.append(primary)
+        # Fallbacks: try every other backend whose ``token_ids`` (if
+        # exposed) might cover this token.  Most backends accept any
+        # token; let snapshot_at return None to signal absence.
+        for name in self._backends:
+            if name not in order:
+                order.append(name)
+        for name in order:
+            backend = self._backends[name]
+            try:
+                snap = await backend.snapshot_at(token_id=token_id, ts=ts)
+            except Exception as exc:
+                logger.debug("HybridBookSource.snapshot_at(%s) failed: %s", name, exc)
+                continue
+            if snap is not None:
+                return snap
+        return None
+
+
 __all__ = [
     "PriceLevel",
     "BookSnapshot",
     "BookReplay",
     "BookDeltaReplay",
     "InMemoryBookReplay",
+    "HybridBookSource",
 ]

@@ -19,6 +19,14 @@ asyncpg==0.30.0
 greenlet>=3.0.0
 cryptography>=42.0.0
 
+# pyarrow — backtester reads parquet datasets dropped into Data Lab's
+# storage root (see services/external_data/parquet_*).  Avoids
+# round-tripping bring-your-own-data through Postgres (faster reads,
+# no autovacuum pressure on mms).  15.0 is the first version with a
+# stable streaming dataset scanner; pinning ">=" because parquet
+# format is forwards-compatible.
+pyarrow>=15.0
+
 # Redis (cross-process bus + ephemeral cache).  See backend/services/redis_client.py.
 # 5.x is the first major to ship redis.asyncio with stable connection-pool
 # semantics + native socket_timeout / health_check_interval kwargs.

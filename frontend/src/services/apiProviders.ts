@@ -226,3 +226,67 @@ export async function updateProviderSettings(
   const { data } = await api.put<{ ok: boolean }>('/providers/settings', body)
   return data
 }
+
+
+// ─── Parquet datasets (operator-supplied vendor data) ────────────────
+
+export interface ParquetRoot {
+  root: string
+  exists: boolean
+  env_var: string
+}
+
+export interface ParquetDataset {
+  id: string
+  provider: string
+  coin: string | null
+  title: string | null
+  start_ts: string | null
+  end_ts: string | null
+  token_count: number
+  snapshot_count: number
+  trade_count: number
+  storage_uri: string
+  last_imported_at: string | null
+}
+
+export interface ParquetRescanResult {
+  provider?: string
+  coin?: string
+  window?: string
+  id?: string
+  tokens?: number
+  snapshot_files?: number
+  delta_files?: number
+  snapshot_rows?: number
+  delta_rows?: number
+  errors?: string[]
+  skipped?: boolean
+  reason?: string
+  error?: string
+}
+
+export interface ParquetRescanReport {
+  root: string
+  groups_seen: number
+  results: ParquetRescanResult[]
+  elapsed_ms: number
+  scanned_at_epoch: number
+}
+
+export async function getParquetRoot(): Promise<ParquetRoot> {
+  const { data } = await api.get<ParquetRoot>('/providers/parquet/root')
+  return data
+}
+
+export async function listParquetDatasets(): Promise<ParquetDataset[]> {
+  const { data } = await api.get<{ count: number; datasets: ParquetDataset[] }>(
+    '/providers/parquet/datasets',
+  )
+  return data.datasets ?? []
+}
+
+export async function rescanParquetRoot(): Promise<ParquetRescanReport> {
+  const { data } = await api.post<ParquetRescanReport>('/providers/parquet/rescan')
+  return data
+}
