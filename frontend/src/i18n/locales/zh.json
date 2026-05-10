@@ -3746,5 +3746,138 @@
       "descriptionMiddle": "和排除",
       "retry": "重试"
     }
+  },
+  "cryptoCycleChart": {
+    "waitingForCycleStart": "等待周期开始时间…",
+    "legend": {
+      "oracle": "预言机",
+      "up": "上涨",
+      "down": "下跌"
+    },
+    "walletTradeCount_one": "{{n}} 笔钱包交易",
+    "walletTradeCount_other": "{{n}} 笔钱包交易",
+    "hollowPending": "(空心 = 待确认)"
+  },
+  "recentTradesPanel": {
+    "refresh": "刷新",
+    "settings": "设置",
+    "manualGroup": "手动分组",
+    "createTrack": "创建 + 跟踪",
+    "unknownAddress": "未知",
+    "unknownMarket": "未知市场",
+    "tradesCount": "{{n}} 笔交易",
+    "header": {
+      "title": {
+        "traders": "交易者",
+        "opportunities": "交易者机会",
+        "groups": "交易者分组",
+        "management": "交易者管理"
+      },
+      "subtitle": {
+        "traders": "已跟踪交易者、交易者分组,以及来自高质量发现钱包的发现合流",
+        "opportunities": "策略筛选后的交易者实时合流,来源包括跟踪钱包、分组与池成员",
+        "groups": "创建、跟踪并管理发现交易者分组",
+        "management": "已跟踪交易者列表、分组管理与监控控制"
+      }
+    },
+    "section": {
+      "traderGroups": "交易者分组",
+      "trackedTraders": "已跟踪交易者",
+      "existingGroups": "现有分组",
+      "suggestedGroups": "建议分组(发现)",
+      "activeTrackedTraders": "活跃的已跟踪交易者"
+    },
+    "stat": {
+      "trackedWallets": "已跟踪钱包",
+      "traderGroups": "交易者分组",
+      "groupMembers": "分组成员",
+      "recentTradesHours": "近期交易({{n}}小时)"
+    },
+    "form": {
+      "groupNamePlaceholder": "分组名称",
+      "descriptionPlaceholder": "描述(可选)",
+      "walletsPlaceholder": "钱包地址(用逗号或换行分隔)"
+    },
+    "loading": {
+      "groups": "加载分组中...",
+      "suggestions": "生成建议中..."
+    },
+    "empty": {
+      "noGroups": "尚未创建任何分组。",
+      "noSuggestions": "暂无可用建议。",
+      "noActivity": "在所选交易窗口中未发现已跟踪钱包活动。",
+      "noScannedSignals": "未找到扫描的交易者信号",
+      "noExecutableSignals": "未找到可执行的交易者信号",
+      "noScopeMatch": "没有信号匹配当前来源范围 ({{labels}})。",
+      "noConfluence": "目前没有可用的池合流或跟踪/分组个人交易信号",
+      "filteredFromExec": "{{n}} 条扫描的信号目前已从执行中过滤",
+      "noQualified": "目前没有符合策略条件的交易者机会"
+    },
+    "action": {
+      "track": "跟踪",
+      "delete": "删除"
+    },
+    "group": {
+      "memberCount": "{{n}} 名成员"
+    },
+    "suggestion": {
+      "tradersCount": "{{n}} 名交易者",
+      "created": "已创建",
+      "avgScore": "平均分 {{score}}",
+      "alreadyTracked": "已跟踪 {{n}} 名"
+    },
+    "sourceScope": {
+      "tracked": "已跟踪",
+      "group": "分组",
+      "pool": "池",
+      "other": "其他"
+    },
+    "filter": {
+      "maxSignals": "最大信号数:",
+      "allSources": "所有来源",
+      "showFiltered": "显示已过滤",
+      "hideFiltered": "隐藏已过滤"
+    },
+    "summary": {
+      "scannedSignals": "扫描的信号",
+      "executableSignals": "可执行信号",
+      "highExtreme": "高 / 极高",
+      "avgConviction": "平均确信度",
+      "marketsWallets": "市场 / 钱包",
+      "sourceScope": "来源范围",
+      "otherCount": "其他 {{n}}",
+      "filteredOut": "已过滤",
+      "scopeCount": "范围 {{n}}"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} 共 {{total}}",
+      "prev": "上一页",
+      "next": "下一页"
+    },
+    "alert": {
+      "title": "{{tier}} 合流信号",
+      "titleWithOutcome": "{{tier}} 合流信号 ({{outcome}})",
+      "conviction": "确信度 {{n}}/100"
+    },
+    "time": {
+      "unknown": "未知",
+      "justNow": "刚刚",
+      "minutesAgo": "{{n}} 分钟前",
+      "hoursAgo": "{{n}} 小时前",
+      "yesterday": "昨天"
+    },
+    "toast": {
+      "settingsSaved": "交易者机会设置已保存",
+      "settingsSaveFailed": "保存交易者机会设置失败",
+      "discoveryLoading": "发现设置仍在加载中。请重试。",
+      "groupCreated": "已创建分组({{members}} 名成员,{{tracked}} 名已跟踪)。",
+      "createGroupFailed": "创建分组失败",
+      "trackingRefreshed": "已为 {{n}} 名分组成员刷新跟踪。",
+      "trackMembersFailed": "跟踪分组成员失败",
+      "groupDeleted": "分组已删除",
+      "deleteGroupFailed": "删除分组失败",
+      "groupNameRequired": "分组名称为必填项",
+      "walletRequired": "至少添加一个钱包地址"
+    }
   }
 }

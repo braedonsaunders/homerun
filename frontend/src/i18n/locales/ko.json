@@ -3746,5 +3746,138 @@
       "descriptionMiddle": "및 제외",
       "retry": "재시도"
     }
+  },
+  "cryptoCycleChart": {
+    "waitingForCycleStart": "사이클 시작 시간을 기다리는 중…",
+    "legend": {
+      "oracle": "오라클",
+      "up": "상승",
+      "down": "하락"
+    },
+    "walletTradeCount_one": "{{n}}건의 지갑 거래",
+    "walletTradeCount_other": "{{n}}건의 지갑 거래",
+    "hollowPending": "(빈 도형 = 대기 중)"
+  },
+  "recentTradesPanel": {
+    "refresh": "새로고침",
+    "settings": "설정",
+    "manualGroup": "수동 그룹",
+    "createTrack": "생성 + 추적",
+    "unknownAddress": "알 수 없음",
+    "unknownMarket": "알 수 없는 마켓",
+    "tradesCount": "{{n}}건의 거래",
+    "header": {
+      "title": {
+        "traders": "트레이더",
+        "opportunities": "트레이더 기회",
+        "groups": "트레이더 그룹",
+        "management": "트레이더 관리"
+      },
+      "subtitle": {
+        "traders": "추적 중인 트레이더, 트레이더 그룹, 그리고 고품질 발견 지갑의 디스커버리 합류",
+        "opportunities": "추적 지갑·그룹·풀 멤버에서 전략 필터링된 트레이더 파이어호스 합류",
+        "groups": "디스커버리 트레이더 그룹을 생성·추적·관리",
+        "management": "추적 트레이더 목록, 그룹 관리 및 모니터링 컨트롤"
+      }
+    },
+    "section": {
+      "traderGroups": "트레이더 그룹",
+      "trackedTraders": "추적 중인 트레이더",
+      "existingGroups": "기존 그룹",
+      "suggestedGroups": "추천 그룹 (디스커버리)",
+      "activeTrackedTraders": "활성 추적 트레이더"
+    },
+    "stat": {
+      "trackedWallets": "추적 중인 지갑",
+      "traderGroups": "트레이더 그룹",
+      "groupMembers": "그룹 멤버",
+      "recentTradesHours": "최근 거래 ({{n}}시간)"
+    },
+    "form": {
+      "groupNamePlaceholder": "그룹 이름",
+      "descriptionPlaceholder": "설명 (선택 사항)",
+      "walletsPlaceholder": "지갑 주소 (쉼표/줄바꿈으로 구분)"
+    },
+    "loading": {
+      "groups": "그룹 로드 중...",
+      "suggestions": "추천 생성 중..."
+    },
+    "empty": {
+      "noGroups": "아직 생성된 그룹이 없습니다.",
+      "noSuggestions": "현재 사용 가능한 추천이 없습니다.",
+      "noActivity": "선택한 거래 기간에 추적 지갑 활동이 없습니다.",
+      "noScannedSignals": "스캔된 트레이더 신호를 찾을 수 없습니다",
+      "noExecutableSignals": "실행 가능한 트레이더 신호를 찾을 수 없습니다",
+      "noScopeMatch": "현재 소스 범위 ({{labels}})와 일치하는 신호가 없습니다.",
+      "noConfluence": "현재 풀 합류 또는 추적/그룹 개별 거래 신호를 사용할 수 없습니다",
+      "filteredFromExec": "{{n}}건의 스캔된 신호가 현재 실행에서 필터링되었습니다",
+      "noQualified": "현재 전략 자격을 갖춘 트레이더 기회가 없습니다"
+    },
+    "action": {
+      "track": "추적",
+      "delete": "삭제"
+    },
+    "group": {
+      "memberCount": "{{n}}명"
+    },
+    "suggestion": {
+      "tradersCount": "{{n}}명의 트레이더",
+      "created": "생성됨",
+      "avgScore": "평균 점수 {{score}}",
+      "alreadyTracked": "{{n}}명 이미 추적됨"
+    },
+    "sourceScope": {
+      "tracked": "추적",
+      "group": "그룹",
+      "pool": "풀",
+      "other": "기타"
+    },
+    "filter": {
+      "maxSignals": "최대 신호 수:",
+      "allSources": "모든 소스",
+      "showFiltered": "필터링된 항목 표시",
+      "hideFiltered": "필터링된 항목 숨기기"
+    },
+    "summary": {
+      "scannedSignals": "스캔된 신호",
+      "executableSignals": "실행 가능한 신호",
+      "highExtreme": "높음 / 극도",
+      "avgConviction": "평균 확신도",
+      "marketsWallets": "마켓 / 지갑",
+      "sourceScope": "소스 범위",
+      "otherCount": "기타 {{n}}",
+      "filteredOut": "필터링됨",
+      "scopeCount": "범위 {{n}}"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} / {{total}}",
+      "prev": "이전",
+      "next": "다음"
+    },
+    "alert": {
+      "title": "{{tier}} 합류 신호",
+      "titleWithOutcome": "{{tier}} 합류 신호 ({{outcome}})",
+      "conviction": "확신도 {{n}}/100"
+    },
+    "time": {
+      "unknown": "알 수 없음",
+      "justNow": "방금 전",
+      "minutesAgo": "{{n}}분 전",
+      "hoursAgo": "{{n}}시간 전",
+      "yesterday": "어제"
+    },
+    "toast": {
+      "settingsSaved": "트레이더 기회 설정이 저장되었습니다",
+      "settingsSaveFailed": "트레이더 기회 설정 저장 실패",
+      "discoveryLoading": "디스커버리 설정을 아직 로드 중입니다. 다시 시도해 주세요.",
+      "groupCreated": "그룹이 생성되었습니다 ({{members}}명, {{tracked}}명 추적됨).",
+      "createGroupFailed": "그룹 생성 실패",
+      "trackingRefreshed": "{{n}}명의 그룹 멤버에 대해 추적이 갱신되었습니다.",
+      "trackMembersFailed": "그룹 멤버 추적 실패",
+      "groupDeleted": "그룹이 삭제되었습니다",
+      "deleteGroupFailed": "그룹 삭제 실패",
+      "groupNameRequired": "그룹 이름이 필요합니다",
+      "walletRequired": "지갑 주소를 하나 이상 추가하세요"
+    }
   }
 }

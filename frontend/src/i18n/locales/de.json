@@ -3746,5 +3746,138 @@
       "descriptionMiddle": "und Ausschluss",
       "retry": "Wiederholen"
     }
+  },
+  "cryptoCycleChart": {
+    "waitingForCycleStart": "Warte auf Zyklusstartzeit…",
+    "legend": {
+      "oracle": "Orakel",
+      "up": "hoch",
+      "down": "runter"
+    },
+    "walletTradeCount_one": "{{n}} Wallet-Trade",
+    "walletTradeCount_other": "{{n}} Wallet-Trades",
+    "hollowPending": "(hohl = ausstehend)"
+  },
+  "recentTradesPanel": {
+    "refresh": "Aktualisieren",
+    "settings": "Einstellungen",
+    "manualGroup": "Manuelle Gruppe",
+    "createTrack": "Erstellen + Verfolgen",
+    "unknownAddress": "unbekannt",
+    "unknownMarket": "Unbekannter Markt",
+    "tradesCount": "{{n}} Trades",
+    "header": {
+      "title": {
+        "traders": "Trader",
+        "opportunities": "Trader-Chancen",
+        "groups": "Trader-Gruppen",
+        "management": "Trader-Verwaltung"
+      },
+      "subtitle": {
+        "traders": "Verfolgte Trader, Trader-Gruppen und Discovery-Konfluenz aus hochwertigen entdeckten Wallets",
+        "opportunities": "Strategie-gefilterte Trader-Firehose-Konfluenz von verfolgten Wallets, Gruppen und Pool-Mitgliedern",
+        "groups": "Discovery-Trader-Gruppen erstellen, verfolgen und verwalten",
+        "management": "Listen verfolgter Trader, Gruppenverwaltung und Überwachungssteuerung"
+      }
+    },
+    "section": {
+      "traderGroups": "Trader-Gruppen",
+      "trackedTraders": "Verfolgte Trader",
+      "existingGroups": "Bestehende Gruppen",
+      "suggestedGroups": "Vorgeschlagene Gruppen (Discovery)",
+      "activeTrackedTraders": "Aktive verfolgte Trader"
+    },
+    "stat": {
+      "trackedWallets": "Verfolgte Wallets",
+      "traderGroups": "Trader-Gruppen",
+      "groupMembers": "Gruppenmitglieder",
+      "recentTradesHours": "Aktuelle Trades ({{n}}h)"
+    },
+    "form": {
+      "groupNamePlaceholder": "Gruppenname",
+      "descriptionPlaceholder": "Beschreibung (optional)",
+      "walletsPlaceholder": "Wallet-Adressen (durch Komma/Zeilenumbruch getrennt)"
+    },
+    "loading": {
+      "groups": "Gruppen werden geladen...",
+      "suggestions": "Vorschläge werden erstellt..."
+    },
+    "empty": {
+      "noGroups": "Noch keine Gruppen erstellt.",
+      "noSuggestions": "Noch keine Vorschläge verfügbar.",
+      "noActivity": "Keine Aktivität verfolgter Wallets im gewählten Trade-Fenster gefunden.",
+      "noScannedSignals": "Keine gescannten Trader-Signale gefunden",
+      "noExecutableSignals": "Keine ausführbaren Trader-Signale gefunden",
+      "noScopeMatch": "Keine Signale entsprechen dem aktuellen Quellbereich ({{labels}}).",
+      "noConfluence": "Derzeit keine gepoolte Konfluenz oder verfolgten/Gruppen-Einzeltrade-Signale verfügbar",
+      "filteredFromExec": "{{n}} gescannte Signale werden derzeit aus der Ausführung gefiltert",
+      "noQualified": "Derzeit keine strategiekonformen Trader-Chancen verfügbar"
+    },
+    "action": {
+      "track": "Verfolgen",
+      "delete": "Löschen"
+    },
+    "group": {
+      "memberCount": "{{n}} Mitglieder"
+    },
+    "suggestion": {
+      "tradersCount": "{{n}} Trader",
+      "created": "Erstellt",
+      "avgScore": "Durchschnittspunktzahl {{score}}",
+      "alreadyTracked": "{{n}} bereits verfolgt"
+    },
+    "sourceScope": {
+      "tracked": "Verfolgt",
+      "group": "Gruppen",
+      "pool": "Pool",
+      "other": "Andere"
+    },
+    "filter": {
+      "maxSignals": "Max. Signale:",
+      "allSources": "Alle Quellen",
+      "showFiltered": "Gefilterte anzeigen",
+      "hideFiltered": "Gefilterte ausblenden"
+    },
+    "summary": {
+      "scannedSignals": "Gescannte Signale",
+      "executableSignals": "Ausführbare Signale",
+      "highExtreme": "Hoch / Extrem",
+      "avgConviction": "Ø Überzeugung",
+      "marketsWallets": "Märkte / Wallets",
+      "sourceScope": "Quellbereich",
+      "otherCount": "Andere {{n}}",
+      "filteredOut": "Ausgefiltert",
+      "scopeCount": "Bereich {{n}}"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} von {{total}}",
+      "prev": "Zurück",
+      "next": "Weiter"
+    },
+    "alert": {
+      "title": "{{tier}}-Konfluenzsignal",
+      "titleWithOutcome": "{{tier}}-Konfluenzsignal ({{outcome}})",
+      "conviction": "Überzeugung {{n}}/100"
+    },
+    "time": {
+      "unknown": "Unbekannt",
+      "justNow": "Gerade eben",
+      "minutesAgo": "vor {{n}} Min.",
+      "hoursAgo": "vor {{n}} Std.",
+      "yesterday": "Gestern"
+    },
+    "toast": {
+      "settingsSaved": "Trader-Chancen-Einstellungen gespeichert",
+      "settingsSaveFailed": "Speichern der Trader-Chancen-Einstellungen fehlgeschlagen",
+      "discoveryLoading": "Discovery-Einstellungen werden noch geladen. Bitte erneut versuchen.",
+      "groupCreated": "Gruppe erstellt ({{members}} Mitglieder, {{tracked}} verfolgt).",
+      "createGroupFailed": "Erstellen der Gruppe fehlgeschlagen",
+      "trackingRefreshed": "Verfolgung für {{n}} Gruppenmitglieder aktualisiert.",
+      "trackMembersFailed": "Verfolgen der Gruppenmitglieder fehlgeschlagen",
+      "groupDeleted": "Gruppe gelöscht",
+      "deleteGroupFailed": "Löschen der Gruppe fehlgeschlagen",
+      "groupNameRequired": "Gruppenname ist erforderlich",
+      "walletRequired": "Mindestens eine Wallet-Adresse hinzufügen"
+    }
   }
 }

@@ -3746,5 +3746,138 @@
       "descriptionMiddle": "и исключение",
       "retry": "Повторить"
     }
+  },
+  "cryptoCycleChart": {
+    "waitingForCycleStart": "Ожидание времени начала цикла…",
+    "legend": {
+      "oracle": "оракул",
+      "up": "рост",
+      "down": "падение"
+    },
+    "walletTradeCount_one": "{{n}} сделка кошелька",
+    "walletTradeCount_other": "{{n}} сделок кошелька",
+    "hollowPending": "(пустой = в ожидании)"
+  },
+  "recentTradesPanel": {
+    "refresh": "Обновить",
+    "settings": "Настройки",
+    "manualGroup": "Ручная группа",
+    "createTrack": "Создать + Отслеживать",
+    "unknownAddress": "неизвестно",
+    "unknownMarket": "Неизвестный рынок",
+    "tradesCount": "{{n}} сделок",
+    "header": {
+      "title": {
+        "traders": "Трейдеры",
+        "opportunities": "Возможности трейдеров",
+        "groups": "Группы трейдеров",
+        "management": "Управление трейдерами"
+      },
+      "subtitle": {
+        "traders": "Отслеживаемые трейдеры, группы трейдеров и конфлюенция дискавери из качественных найденных кошельков",
+        "opportunities": "Конфлюенция файрхоса трейдеров с фильтрацией по стратегии из отслеживаемых кошельков, групп и участников пула",
+        "groups": "Создание, отслеживание и управление группами трейдеров дискавери",
+        "management": "Списки отслеживаемых трейдеров, управление группами и контроль мониторинга"
+      }
+    },
+    "section": {
+      "traderGroups": "Группы трейдеров",
+      "trackedTraders": "Отслеживаемые трейдеры",
+      "existingGroups": "Существующие группы",
+      "suggestedGroups": "Предлагаемые группы (Дискавери)",
+      "activeTrackedTraders": "Активные отслеживаемые трейдеры"
+    },
+    "stat": {
+      "trackedWallets": "Отслеживаемые кошельки",
+      "traderGroups": "Группы трейдеров",
+      "groupMembers": "Участники группы",
+      "recentTradesHours": "Недавние сделки ({{n}} ч)"
+    },
+    "form": {
+      "groupNamePlaceholder": "Название группы",
+      "descriptionPlaceholder": "Описание (необязательно)",
+      "walletsPlaceholder": "Адреса кошельков (через запятую/перенос строки)"
+    },
+    "loading": {
+      "groups": "Загрузка групп...",
+      "suggestions": "Создание предложений..."
+    },
+    "empty": {
+      "noGroups": "Группы пока не созданы.",
+      "noSuggestions": "Предложения пока недоступны.",
+      "noActivity": "Активность отслеживаемых кошельков в выбранном окне сделок не обнаружена.",
+      "noScannedSignals": "Сканированные сигналы трейдеров не найдены",
+      "noExecutableSignals": "Исполняемые сигналы трейдеров не найдены",
+      "noScopeMatch": "Нет сигналов, соответствующих текущей области источников ({{labels}}).",
+      "noConfluence": "В настоящее время недоступны конфлюенция пула или индивидуальные сигналы по отслеживаемым/групповым сделкам",
+      "filteredFromExec": "{{n}} сканированных сигналов сейчас отфильтрованы из исполнения",
+      "noQualified": "В настоящее время нет квалифицированных стратегией возможностей трейдеров"
+    },
+    "action": {
+      "track": "Отслеживать",
+      "delete": "Удалить"
+    },
+    "group": {
+      "memberCount": "{{n}} участников"
+    },
+    "suggestion": {
+      "tradersCount": "{{n}} трейдеров",
+      "created": "Создано",
+      "avgScore": "Средний балл {{score}}",
+      "alreadyTracked": "{{n}} уже отслеживаются"
+    },
+    "sourceScope": {
+      "tracked": "Отслеживаемые",
+      "group": "Группы",
+      "pool": "Пул",
+      "other": "Другие"
+    },
+    "filter": {
+      "maxSignals": "Макс. сигналов:",
+      "allSources": "Все источники",
+      "showFiltered": "Показать отфильтрованные",
+      "hideFiltered": "Скрыть отфильтрованные"
+    },
+    "summary": {
+      "scannedSignals": "Сканированные сигналы",
+      "executableSignals": "Исполняемые сигналы",
+      "highExtreme": "Высокий / Экстремальный",
+      "avgConviction": "Средняя уверенность",
+      "marketsWallets": "Рынки / Кошельки",
+      "sourceScope": "Область источника",
+      "otherCount": "Другие {{n}}",
+      "filteredOut": "Отфильтровано",
+      "scopeCount": "Область {{n}}"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} из {{total}}",
+      "prev": "Назад",
+      "next": "Вперёд"
+    },
+    "alert": {
+      "title": "Сигнал конфлюенции {{tier}}",
+      "titleWithOutcome": "Сигнал конфлюенции {{tier}} ({{outcome}})",
+      "conviction": "Уверенность {{n}}/100"
+    },
+    "time": {
+      "unknown": "Неизвестно",
+      "justNow": "Только что",
+      "minutesAgo": "{{n}} мин назад",
+      "hoursAgo": "{{n}} ч назад",
+      "yesterday": "Вчера"
+    },
+    "toast": {
+      "settingsSaved": "Настройки возможностей трейдера сохранены",
+      "settingsSaveFailed": "Не удалось сохранить настройки возможностей трейдера",
+      "discoveryLoading": "Настройки дискавери ещё загружаются. Попробуйте снова.",
+      "groupCreated": "Группа создана ({{members}} участников, {{tracked}} отслеживается).",
+      "createGroupFailed": "Не удалось создать группу",
+      "trackingRefreshed": "Отслеживание обновлено для {{n}} участников группы.",
+      "trackMembersFailed": "Не удалось отслеживать участников группы",
+      "groupDeleted": "Группа удалена",
+      "deleteGroupFailed": "Не удалось удалить группу",
+      "groupNameRequired": "Требуется название группы",
+      "walletRequired": "Добавьте хотя бы один адрес кошелька"
+    }
   }
 }

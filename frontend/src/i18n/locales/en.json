@@ -3746,5 +3746,138 @@
       "descriptionMiddle": "and exclusion",
       "retry": "Retry"
     }
+  },
+  "cryptoCycleChart": {
+    "waitingForCycleStart": "Waiting for cycle start time…",
+    "legend": {
+      "oracle": "oracle",
+      "up": "up",
+      "down": "down"
+    },
+    "walletTradeCount_one": "{{n}} wallet trade",
+    "walletTradeCount_other": "{{n}} wallet trades",
+    "hollowPending": "(hollow = pending)"
+  },
+  "recentTradesPanel": {
+    "refresh": "Refresh",
+    "settings": "Settings",
+    "manualGroup": "Manual Group",
+    "createTrack": "Create + Track",
+    "unknownAddress": "unknown",
+    "unknownMarket": "Unknown market",
+    "tradesCount": "{{n}} trades",
+    "header": {
+      "title": {
+        "traders": "Traders",
+        "opportunities": "Trader Opportunities",
+        "groups": "Trader Groups",
+        "management": "Trader Management"
+      },
+      "subtitle": {
+        "traders": "Tracked traders, trader groups, and discovery confluence from high-quality discovered wallets",
+        "opportunities": "Strategy-filtered trader firehose confluence from tracked wallets, groups, and pool members",
+        "groups": "Create, track, and manage discovery trader groups",
+        "management": "Tracked trader lists, group management, and monitoring controls"
+      }
+    },
+    "section": {
+      "traderGroups": "Trader Groups",
+      "trackedTraders": "Tracked Traders",
+      "existingGroups": "Existing Groups",
+      "suggestedGroups": "Suggested Groups (Discovery)",
+      "activeTrackedTraders": "Active Tracked Traders"
+    },
+    "stat": {
+      "trackedWallets": "Tracked Wallets",
+      "traderGroups": "Trader Groups",
+      "groupMembers": "Group Members",
+      "recentTradesHours": "Recent Trades ({{n}}h)"
+    },
+    "form": {
+      "groupNamePlaceholder": "Group name",
+      "descriptionPlaceholder": "Description (optional)",
+      "walletsPlaceholder": "Wallet addresses (comma/newline separated)"
+    },
+    "loading": {
+      "groups": "Loading groups...",
+      "suggestions": "Building suggestions..."
+    },
+    "empty": {
+      "noGroups": "No groups created yet.",
+      "noSuggestions": "No suggestions available yet.",
+      "noActivity": "No tracked-wallet activity found in the selected trade window.",
+      "noScannedSignals": "No scanned trader signals found",
+      "noExecutableSignals": "No executable trader signals found",
+      "noScopeMatch": "No signals match current source scope ({{labels}}).",
+      "noConfluence": "No pooled confluence or tracked/group individual trade signals are currently available",
+      "filteredFromExec": "{{n}} scanned signals are currently filtered from execution",
+      "noQualified": "No strategy-qualified trader opportunities are currently available"
+    },
+    "action": {
+      "track": "Track",
+      "delete": "Delete"
+    },
+    "group": {
+      "memberCount": "{{n}} members"
+    },
+    "suggestion": {
+      "tradersCount": "{{n}} traders",
+      "created": "Created",
+      "avgScore": "Avg score {{score}}",
+      "alreadyTracked": "{{n}} already tracked"
+    },
+    "sourceScope": {
+      "tracked": "Tracked",
+      "group": "Groups",
+      "pool": "Pool",
+      "other": "Other"
+    },
+    "filter": {
+      "maxSignals": "Max signals:",
+      "allSources": "All Sources",
+      "showFiltered": "Show Filtered",
+      "hideFiltered": "Hide Filtered"
+    },
+    "summary": {
+      "scannedSignals": "Scanned Signals",
+      "executableSignals": "Executable Signals",
+      "highExtreme": "High / Extreme",
+      "avgConviction": "Avg Conviction",
+      "marketsWallets": "Markets / Wallets",
+      "sourceScope": "Source Scope",
+      "otherCount": "Other {{n}}",
+      "filteredOut": "Filtered Out",
+      "scopeCount": "Scope {{n}}"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} of {{total}}",
+      "prev": "Prev",
+      "next": "Next"
+    },
+    "alert": {
+      "title": "{{tier}} confluence signal",
+      "titleWithOutcome": "{{tier}} confluence signal ({{outcome}})",
+      "conviction": "Conviction {{n}}/100"
+    },
+    "time": {
+      "unknown": "Unknown",
+      "justNow": "Just now",
+      "minutesAgo": "{{n}}m ago",
+      "hoursAgo": "{{n}}h ago",
+      "yesterday": "Yesterday"
+    },
+    "toast": {
+      "settingsSaved": "Trader opportunity settings saved",
+      "settingsSaveFailed": "Failed to save trader opportunity settings",
+      "discoveryLoading": "Discovery settings are still loading. Please try again.",
+      "groupCreated": "Group created ({{members}} members, {{tracked}} tracked).",
+      "createGroupFailed": "Failed to create group",
+      "trackingRefreshed": "Tracking refreshed for {{n}} group members.",
+      "trackMembersFailed": "Failed to track group members",
+      "groupDeleted": "Group deleted",
+      "deleteGroupFailed": "Failed to delete group",
+      "groupNameRequired": "Group name is required",
+      "walletRequired": "Add at least one wallet address"
+    }
   }
 }

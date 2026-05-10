@@ -3746,5 +3746,138 @@
       "descriptionMiddle": "e exclusão",
       "retry": "Tentar novamente"
     }
+  },
+  "cryptoCycleChart": {
+    "waitingForCycleStart": "Aguardando horário de início do ciclo…",
+    "legend": {
+      "oracle": "oráculo",
+      "up": "alta",
+      "down": "baixa"
+    },
+    "walletTradeCount_one": "{{n}} negociação de carteira",
+    "walletTradeCount_other": "{{n}} negociações de carteira",
+    "hollowPending": "(vazado = pendente)"
+  },
+  "recentTradesPanel": {
+    "refresh": "Atualizar",
+    "settings": "Configurações",
+    "manualGroup": "Grupo manual",
+    "createTrack": "Criar + Rastrear",
+    "unknownAddress": "desconhecido",
+    "unknownMarket": "Mercado desconhecido",
+    "tradesCount": "{{n}} negociações",
+    "header": {
+      "title": {
+        "traders": "Traders",
+        "opportunities": "Oportunidades de traders",
+        "groups": "Grupos de traders",
+        "management": "Gestão de traders"
+      },
+      "subtitle": {
+        "traders": "Traders rastreados, grupos de traders e confluência de descoberta de carteiras de alta qualidade",
+        "opportunities": "Confluência do firehose de traders filtrada por estratégia a partir de carteiras rastreadas, grupos e membros do pool",
+        "groups": "Crie, rastreie e gerencie grupos de traders de descoberta",
+        "management": "Listas de traders rastreados, gestão de grupos e controles de monitoramento"
+      }
+    },
+    "section": {
+      "traderGroups": "Grupos de traders",
+      "trackedTraders": "Traders rastreados",
+      "existingGroups": "Grupos existentes",
+      "suggestedGroups": "Grupos sugeridos (Descoberta)",
+      "activeTrackedTraders": "Traders rastreados ativos"
+    },
+    "stat": {
+      "trackedWallets": "Carteiras rastreadas",
+      "traderGroups": "Grupos de traders",
+      "groupMembers": "Membros do grupo",
+      "recentTradesHours": "Negociações recentes ({{n}}h)"
+    },
+    "form": {
+      "groupNamePlaceholder": "Nome do grupo",
+      "descriptionPlaceholder": "Descrição (opcional)",
+      "walletsPlaceholder": "Endereços de carteira (separados por vírgula ou nova linha)"
+    },
+    "loading": {
+      "groups": "Carregando grupos...",
+      "suggestions": "Gerando sugestões..."
+    },
+    "empty": {
+      "noGroups": "Nenhum grupo criado ainda.",
+      "noSuggestions": "Nenhuma sugestão disponível ainda.",
+      "noActivity": "Nenhuma atividade de carteira rastreada encontrada na janela selecionada.",
+      "noScannedSignals": "Nenhum sinal de trader escaneado encontrado",
+      "noExecutableSignals": "Nenhum sinal de trader executável encontrado",
+      "noScopeMatch": "Nenhum sinal corresponde ao escopo de fonte atual ({{labels}}).",
+      "noConfluence": "Nenhuma confluência de pool ou sinal individual de traders/grupos disponível no momento",
+      "filteredFromExec": "{{n}} sinais escaneados estão atualmente filtrados da execução",
+      "noQualified": "Nenhuma oportunidade de trader qualificada por estratégia disponível no momento"
+    },
+    "action": {
+      "track": "Rastrear",
+      "delete": "Excluir"
+    },
+    "group": {
+      "memberCount": "{{n}} membros"
+    },
+    "suggestion": {
+      "tradersCount": "{{n}} traders",
+      "created": "Criado",
+      "avgScore": "Pontuação média {{score}}",
+      "alreadyTracked": "{{n}} já rastreados"
+    },
+    "sourceScope": {
+      "tracked": "Rastreados",
+      "group": "Grupos",
+      "pool": "Pool",
+      "other": "Outros"
+    },
+    "filter": {
+      "maxSignals": "Máx. sinais:",
+      "allSources": "Todas as fontes",
+      "showFiltered": "Mostrar filtrados",
+      "hideFiltered": "Ocultar filtrados"
+    },
+    "summary": {
+      "scannedSignals": "Sinais escaneados",
+      "executableSignals": "Sinais executáveis",
+      "highExtreme": "Alto / Extremo",
+      "avgConviction": "Convicção média",
+      "marketsWallets": "Mercados / Carteiras",
+      "sourceScope": "Escopo da fonte",
+      "otherCount": "Outros {{n}}",
+      "filteredOut": "Filtrados",
+      "scopeCount": "Escopo {{n}}"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} de {{total}}",
+      "prev": "Anterior",
+      "next": "Próximo"
+    },
+    "alert": {
+      "title": "Sinal de confluência {{tier}}",
+      "titleWithOutcome": "Sinal de confluência {{tier}} ({{outcome}})",
+      "conviction": "Convicção {{n}}/100"
+    },
+    "time": {
+      "unknown": "Desconhecido",
+      "justNow": "Agora mesmo",
+      "minutesAgo": "há {{n}}m",
+      "hoursAgo": "há {{n}}h",
+      "yesterday": "Ontem"
+    },
+    "toast": {
+      "settingsSaved": "Configurações de oportunidades de trader salvas",
+      "settingsSaveFailed": "Falha ao salvar configurações de oportunidades de trader",
+      "discoveryLoading": "Configurações de descoberta ainda estão carregando. Tente novamente.",
+      "groupCreated": "Grupo criado ({{members}} membros, {{tracked}} rastreados).",
+      "createGroupFailed": "Falha ao criar grupo",
+      "trackingRefreshed": "Rastreamento atualizado para {{n}} membros do grupo.",
+      "trackMembersFailed": "Falha ao rastrear membros do grupo",
+      "groupDeleted": "Grupo excluído",
+      "deleteGroupFailed": "Falha ao excluir grupo",
+      "groupNameRequired": "O nome do grupo é obrigatório",
+      "walletRequired": "Adicione pelo menos um endereço de carteira"
+    }
   }
 }

@@ -20,6 +20,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { api } from '../services/apiClient'
 import type { CryptoMarket } from '../services/api'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -109,6 +110,7 @@ export function CryptoCycleChart({
   theme?: Theme
   height?: number
 }) {
+  const { t } = useTranslation()
   const palette = PALETTE[theme]
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -517,7 +519,7 @@ export function CryptoCycleChart({
   if (cycleStart === null || cycleEnd === null) {
     return (
       <div className="flex items-center justify-center text-xs text-muted-foreground" style={{ height }}>
-        Waiting for cycle start time…
+        {t('cryptoCycleChart.waitingForCycleStart')}
       </div>
     )
   }
@@ -529,22 +531,24 @@ export function CryptoCycleChart({
       <div className="pointer-events-none absolute left-3 top-2 flex items-center gap-3 text-[10px] font-mono uppercase tracking-wider">
         <span className="flex items-center gap-1" style={{ color: palette.oracle }}>
           <span className="h-0.5 w-3" style={{ backgroundColor: palette.oracle }} />
-          oracle
+          {t('cryptoCycleChart.legend.oracle')}
         </span>
         <span className="flex items-center gap-1" style={{ color: palette.up }}>
           <span className="h-0.5 w-3" style={{ backgroundColor: palette.up }} />
-          up
+          {t('cryptoCycleChart.legend.up')}
         </span>
         <span className="flex items-center gap-1" style={{ color: palette.down }}>
           <span className="h-0.5 w-3" style={{ backgroundColor: palette.down }} />
-          down
+          {t('cryptoCycleChart.legend.down')}
         </span>
         {tradeMarkers.length > 0 && (
           <span className="text-muted-foreground">
-            {tradeMarkers.length} wallet trade{tradeMarkers.length === 1 ? '' : 's'}
+            {tradeMarkers.length === 1
+              ? t('cryptoCycleChart.walletTradeCount_one', { n: tradeMarkers.length })
+              : t('cryptoCycleChart.walletTradeCount_other', { n: tradeMarkers.length })}
             {tradeMarkers.some((t) => t.confirmed === false) && (
               <span className="ml-1 text-muted-foreground/70">
-                (hollow = pending)
+                {t('cryptoCycleChart.hollowPending')}
               </span>
             )}
           </span>

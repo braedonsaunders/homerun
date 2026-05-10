@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Activity,
   AlertCircle,
@@ -68,12 +69,12 @@ const CONFLUENCE_FETCH_LIMIT_MAX = 200
 const ITEMS_PER_PAGE = 20
 const TRADER_SOURCE_SCOPE_OPTIONS: Array<{
   key: TraderSourceScopeFilter
-  label: string
+  labelKey: string
 }> = [
-  { key: 'tracked', label: 'Tracked' },
-  { key: 'group', label: 'Groups' },
-  { key: 'pool', label: 'Pool' },
-  { key: 'other', label: 'Other' },
+  { key: 'tracked', labelKey: 'recentTradesPanel.sourceScope.tracked' },
+  { key: 'group', labelKey: 'recentTradesPanel.sourceScope.group' },
+  { key: 'pool', labelKey: 'recentTradesPanel.sourceScope.pool' },
+  { key: 'other', labelKey: 'recentTradesPanel.sourceScope.other' },
 ]
 const DEFAULT_TRADER_SOURCE_SCOPE_FILTER: TraderSourceScopeFilterState = {
   tracked: true,
@@ -125,26 +126,28 @@ function safeParseTime(value?: string | number | null): Date | null {
   return null
 }
 
-function formatTimeAgo(value?: string | number | null): string {
+type TFunction = (key: string, options?: Record<string, unknown>) => string
+
+function formatTimeAgo(value: string | number | null | undefined, t: TFunction): string {
   const date = safeParseTime(value)
-  if (!date) return 'Unknown'
+  if (!date) return t('recentTradesPanel.time.unknown')
 
   const now = Date.now()
   const diffMs = now - date.getTime()
-  if (diffMs < 0) return 'Just now'
+  if (diffMs < 0) return t('recentTradesPanel.time.justNow')
 
   const diffMins = Math.floor(diffMs / 60000)
-  if (diffMins < 1) return 'Just now'
-  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffMins < 1) return t('recentTradesPanel.time.justNow')
+  if (diffMins < 60) return t('recentTradesPanel.time.minutesAgo', { n: diffMins })
 
   const diffHours = Math.floor(diffMins / 60)
-  if (diffHours < 24) return `${diffHours}h ago`
-  if (diffHours < 48) return 'Yesterday'
+  if (diffHours < 24) return t('recentTradesPanel.time.hoursAgo', { n: diffHours })
+  if (diffHours < 48) return t('recentTradesPanel.time.yesterday')
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-function shortAddress(address: string): string {
-  if (!address) return 'unknown'
+function shortAddress(address: string, t: TFunction): string {
+  if (!address) return t('recentTradesPanel.unknownAddress')
   if (address.length <= 12) return address
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
@@ -227,6 +230,7 @@ export default function RecentTradesPanel({
   onAnalyzeTargetsChange,
   onSignalStatsChange,
 }: Props) {
+  const { t } = useTranslation()
   const showManagement = mode !== 'opportunities'
   const showOpportunities = mode !== 'management'
   const groupsOnlyManagement = showManagement && !showOpportunities && managementVariant === 'groups'
@@ -283,7 +287,7 @@ export default function RecentTradesPanel({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
       queryClient.invalidateQueries({ queryKey: ['settings-discovery'] })
-      setSettingsSaveMessage({ type: 'success', text: 'Trader opportunity settings saved' })
+      setSettingsSaveMessage({ type: 'success', text: t('recentTradesPanel.toast.settingsSaved') })
       setTimeout(() => setSettingsSaveMessage(null), 3000)
       setSettingsOpen(false)
     },
@@ -291,7 +295,7 @@ export default function RecentTradesPanel({
       const message =
         (error as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail
         || (error as { message?: string })?.message
-        || 'Failed to save trader opportunity settings'
+        || t('recentTradesPanel.toast.settingsSaveFailed')
       setSettingsSaveMessage({ type: 'error', text: message })
       setTimeout(() => setSettingsSaveMessage(null), 5000)
     },
@@ -384,7 +388,10 @@ export default function RecentTradesPanel({
       }),
     onSuccess: (result) => {
       setGroupStatusMessage(
-        `Group created (${result.group?.member_count ?? 0} members, ${result.tracked_members} tracked).`,
+        t('recentTradesPanel.toast.groupCreated', {
+          members: result.group?.member_count ?? 0,
+          tracked: result.tracked_members,
+        }),
       )
       setGroupName('')
       setGroupDescription('')
@@ -394,7 +401,7 @@ export default function RecentTradesPanel({
     onError: (error: unknown) => {
       const message =
         (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-        || 'Failed to create group'
+        || t('recentTradesPanel.toast.createGroupFailed')
       setGroupStatusMessage(message)
     },
   })
@@ -402,19 +409,21 @@ export default function RecentTradesPanel({
   const trackGroupMembersMutation = useMutation({
     mutationFn: (groupId: string) => discoveryApi.trackTraderGroupMembers(groupId),
     onSuccess: (result) => {
-      setGroupStatusMessage(`Tracking refreshed for ${result.tracked_members} group members.`)
+      setGroupStatusMessage(
+        t('recentTradesPanel.toast.trackingRefreshed', { n: result.tracked_members }),
+      )
       invalidateTrackedManagementQueries()
     },
-    onError: () => setGroupStatusMessage('Failed to track group members'),
+    onError: () => setGroupStatusMessage(t('recentTradesPanel.toast.trackMembersFailed')),
   })
 
   const deleteGroupMutation = useMutation({
     mutationFn: (groupId: string) => discoveryApi.deleteTraderGroup(groupId),
     onSuccess: () => {
-      setGroupStatusMessage('Group deleted')
+      setGroupStatusMessage(t('recentTradesPanel.toast.groupDeleted'))
       invalidateTrackedManagementQueries()
     },
-    onError: () => setGroupStatusMessage('Failed to delete group'),
+    onError: () => setGroupStatusMessage(t('recentTradesPanel.toast.deleteGroupFailed')),
   })
 
   useEffect(() => {
@@ -433,7 +442,7 @@ export default function RecentTradesPanel({
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       market:
         String(lastMessage.data.market_question || '').trim() ||
-        String(lastMessage.data.market_id || 'Unknown market'),
+        String(lastMessage.data.market_id || t('recentTradesPanel.unknownMarket')),
       tier,
       conviction,
       outcome: lastMessage.data.outcome || null,
@@ -445,7 +454,7 @@ export default function RecentTradesPanel({
     }, 8000)
 
     return () => clearTimeout(timer)
-  }, [lastMessage, showOpportunities])
+  }, [lastMessage, showOpportunities, t])
 
   useEffect(() => {
     if (!showOpportunities || !discoverySettings) return
@@ -606,9 +615,9 @@ export default function RecentTradesPanel({
     () =>
       TRADER_SOURCE_SCOPE_OPTIONS
         .filter((option) => sourceScopeFilter[option.key])
-        .map((option) => option.label)
+        .map((option) => t(option.labelKey))
         .join(', '),
-    [sourceScopeFilter],
+    [sourceScopeFilter, t],
   )
   const highSignals = unifiedSignals.filter(
     (signal) => signal.source === 'confluence' && tierRank(signal.tier) >= tierRank('HIGH'),
@@ -740,7 +749,7 @@ export default function RecentTradesPanel({
     if (!discoverySettings) {
       setSettingsSaveMessage({
         type: 'error',
-        text: 'Discovery settings are still loading. Please try again.',
+        text: t('recentTradesPanel.toast.discoveryLoading'),
       })
       setTimeout(() => setSettingsSaveMessage(null), 4000)
       return
@@ -758,7 +767,7 @@ export default function RecentTradesPanel({
       trader_opps_insider_min_confidence: next.individual_trade_min_confidence,
       trader_opps_insider_max_age_minutes: next.individual_trade_max_age_minutes,
     })
-  }, [discoverySettings, saveTraderSettingsMutation])
+  }, [discoverySettings, saveTraderSettingsMutation, t])
 
   const handleCloseSettings = useCallback(() => {
     setSettingsOpen(false)
@@ -783,11 +792,11 @@ export default function RecentTradesPanel({
     const name = groupName.trim()
     const walletAddresses = parseWalletInput(groupWalletInput)
     if (!name) {
-      setGroupStatusMessage('Group name is required')
+      setGroupStatusMessage(t('recentTradesPanel.toast.groupNameRequired'))
       return
     }
     if (walletAddresses.length === 0) {
-      setGroupStatusMessage('Add at least one wallet address')
+      setGroupStatusMessage(t('recentTradesPanel.toast.walletRequired'))
       return
     }
 
@@ -829,21 +838,21 @@ export default function RecentTradesPanel({
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-foreground truncate">
                   {showOpportunities && showManagement
-                    ? 'Traders'
+                    ? t('recentTradesPanel.header.title.traders')
                     : showOpportunities
-                      ? 'Trader Opportunities'
+                      ? t('recentTradesPanel.header.title.opportunities')
                       : groupsOnlyManagement
-                        ? 'Trader Groups'
-                        : 'Trader Management'}
+                        ? t('recentTradesPanel.header.title.groups')
+                        : t('recentTradesPanel.header.title.management')}
                 </h2>
                 <p className="text-sm text-muted-foreground/70 truncate">
                   {showOpportunities && showManagement
-                    ? 'Tracked traders, trader groups, and discovery confluence from high-quality discovered wallets'
+                    ? t('recentTradesPanel.header.subtitle.traders')
                     : showOpportunities
-                      ? 'Strategy-filtered trader firehose confluence from tracked wallets, groups, and pool members'
+                      ? t('recentTradesPanel.header.subtitle.opportunities')
                       : groupsOnlyManagement
-                        ? 'Create, track, and manage discovery trader groups'
-                        : 'Tracked trader lists, group management, and monitoring controls'}
+                        ? t('recentTradesPanel.header.subtitle.groups')
+                        : t('recentTradesPanel.header.subtitle.management')}
                 </p>
               </div>
             </div>
@@ -858,7 +867,7 @@ export default function RecentTradesPanel({
               )}
             >
               <RefreshCw className={cn('w-3.5 h-3.5', isRefetching && 'animate-spin')} />
-              Refresh
+              {t('recentTradesPanel.refresh')}
             </button>
           </div>
         </div>
@@ -870,7 +879,9 @@ export default function RecentTradesPanel({
           <div className="flex items-center gap-2">
             <Users className="w-4 h-4 text-blue-400" />
             <h3 className="text-sm font-semibold text-foreground">
-              {groupsOnlyManagement ? 'Trader Groups' : 'Tracked Traders'}
+              {groupsOnlyManagement
+                ? t('recentTradesPanel.section.traderGroups')
+                : t('recentTradesPanel.section.trackedTraders')}
             </h3>
           </div>
           <button
@@ -883,27 +894,27 @@ export default function RecentTradesPanel({
             )}
           >
             <FolderPlus className="w-3.5 h-3.5" />
-            Manual Group
+            {t('recentTradesPanel.manualGroup')}
           </button>
         </div>
 
         <div className={cn('grid gap-3', groupsOnlyManagement ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-2 sm:grid-cols-4')}>
           {!groupsOnlyManagement && (
             <div className="rounded-md border border-border bg-background/40 px-3 py-2">
-              <p className="text-[11px] text-muted-foreground/70">Tracked Wallets</p>
+              <p className="text-[11px] text-muted-foreground/70">{t('recentTradesPanel.stat.trackedWallets')}</p>
               <p className="text-sm font-semibold text-foreground">{trackedWallets}</p>
             </div>
           )}
           <div className="rounded-md border border-border bg-background/40 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground/70">Trader Groups</p>
+            <p className="text-[11px] text-muted-foreground/70">{t('recentTradesPanel.stat.traderGroups')}</p>
             <p className="text-sm font-semibold text-foreground">{traderGroups.length}</p>
           </div>
           <div className="rounded-md border border-border bg-background/40 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground/70">Group Members</p>
+            <p className="text-[11px] text-muted-foreground/70">{t('recentTradesPanel.stat.groupMembers')}</p>
             <p className="text-sm font-semibold text-foreground">{totalGroupMembers}</p>
           </div>
           <div className="rounded-md border border-border bg-background/40 px-3 py-2">
-            <p className="text-[11px] text-muted-foreground/70">Recent Trades ({hoursFilter}h)</p>
+            <p className="text-[11px] text-muted-foreground/70">{t('recentTradesPanel.stat.recentTradesHours', { n: hoursFilter })}</p>
             <p className="text-sm font-semibold text-foreground">{rawTrades.length}</p>
           </div>
         </div>
@@ -921,21 +932,21 @@ export default function RecentTradesPanel({
                 type="text"
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
-                placeholder="Group name"
+                placeholder={t('recentTradesPanel.form.groupNamePlaceholder')}
                 className="bg-muted border border-border rounded px-2 py-1.5 text-sm"
               />
               <input
                 type="text"
                 value={groupDescription}
                 onChange={(e) => setGroupDescription(e.target.value)}
-                placeholder="Description (optional)"
+                placeholder={t('recentTradesPanel.form.descriptionPlaceholder')}
                 className="bg-muted border border-border rounded px-2 py-1.5 text-sm"
               />
             </div>
             <textarea
               value={groupWalletInput}
               onChange={(e) => setGroupWalletInput(e.target.value)}
-              placeholder="Wallet addresses (comma/newline separated)"
+              placeholder={t('recentTradesPanel.form.walletsPlaceholder')}
               className="w-full min-h-[72px] bg-muted border border-border rounded px-2 py-1.5 text-sm"
             />
             <div className="flex items-center justify-end">
@@ -953,7 +964,7 @@ export default function RecentTradesPanel({
                 ) : (
                   <FolderPlus className="w-3.5 h-3.5" />
                 )}
-                Create + Track
+                {t('recentTradesPanel.createTrack')}
               </button>
             </div>
           </div>
@@ -963,16 +974,16 @@ export default function RecentTradesPanel({
           <div className="flex items-center gap-2">
             <Layers className="w-4 h-4 text-muted-foreground/70" />
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              Existing Groups
+              {t('recentTradesPanel.section.existingGroups')}
             </p>
           </div>
           {groupsLoading ? (
             <div className="rounded-md border border-border bg-background/40 p-3 text-sm text-muted-foreground/70">
-              Loading groups...
+              {t('recentTradesPanel.loading.groups')}
             </div>
           ) : traderGroups.length === 0 ? (
             <div className="rounded-md border border-dashed border-border bg-background/20 p-3 text-sm text-muted-foreground/70">
-              No groups created yet.
+              {t('recentTradesPanel.empty.noGroups')}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -985,7 +996,7 @@ export default function RecentTradesPanel({
                     <div>
                       <p className="text-sm font-medium text-foreground">{group.name}</p>
                       <p className="text-[11px] text-muted-foreground/70">
-                        {group.member_count} members
+                        {t('recentTradesPanel.group.memberCount', { n: group.member_count })}
                         <span className="mx-1">•</span>
                         {group.source_type.replace(/_/g, ' ')}
                       </p>
@@ -997,7 +1008,7 @@ export default function RecentTradesPanel({
                         className="inline-flex items-center gap-1 rounded-md bg-blue-500/15 px-2 py-1 text-[11px] text-blue-300 hover:bg-blue-500/25"
                       >
                         <CheckCircle2 className="w-3 h-3" />
-                        Track
+                        {t('recentTradesPanel.action.track')}
                       </button>
                       <button
                         onClick={() => deleteGroupMutation.mutate(group.id)}
@@ -1005,7 +1016,7 @@ export default function RecentTradesPanel({
                         className="inline-flex items-center gap-1 rounded-md bg-red-500/15 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/25"
                       >
                         <Trash2 className="w-3 h-3" />
-                        Delete
+                        {t('recentTradesPanel.action.delete')}
                       </button>
                     </div>
                   </div>
@@ -1018,7 +1029,7 @@ export default function RecentTradesPanel({
                           className="inline-flex items-center gap-1 rounded bg-muted/80 px-2 py-0.5 text-[11px] text-foreground/80 hover:bg-muted"
                         >
                           <Wallet className="w-3 h-3 text-muted-foreground/70" />
-                          {member.username || shortAddress(member.wallet_address)}
+                          {member.username || shortAddress(member.wallet_address, t)}
                         </button>
                       ))}
                     </div>
@@ -1033,16 +1044,16 @@ export default function RecentTradesPanel({
           <div className="flex items-center gap-2">
             <Target className="w-4 h-4 text-muted-foreground/70" />
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              Suggested Groups (Discovery)
+              {t('recentTradesPanel.section.suggestedGroups')}
             </p>
           </div>
           {suggestionsLoading ? (
             <div className="rounded-md border border-border bg-background/40 p-3 text-sm text-muted-foreground/70">
-              Building suggestions...
+              {t('recentTradesPanel.loading.suggestions')}
             </div>
           ) : groupSuggestions.length === 0 ? (
             <div className="rounded-md border border-dashed border-border bg-background/20 p-3 text-sm text-muted-foreground/70">
-              No suggestions available yet.
+              {t('recentTradesPanel.empty.noSuggestions')}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -1060,7 +1071,7 @@ export default function RecentTradesPanel({
                       <div>
                         <p className="text-sm font-medium text-foreground">{suggestion.name}</p>
                         <p className="text-[11px] text-muted-foreground/70">
-                          {suggestion.wallet_count} traders
+                          {t('recentTradesPanel.suggestion.tradersCount', { n: suggestion.wallet_count })}
                           <span className="mx-1">•</span>
                           {suggestion.kind.replace(/_/g, ' ')}
                         </p>
@@ -1079,15 +1090,17 @@ export default function RecentTradesPanel({
                         )}
                       >
                         <FolderPlus className="w-3 h-3" />
-                        {suggestion.already_exists ? 'Created' : 'Create + Track'}
+                        {suggestion.already_exists
+                          ? t('recentTradesPanel.suggestion.created')
+                          : t('recentTradesPanel.createTrack')}
                       </button>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground/70 line-clamp-2">
                       {suggestion.description}
                     </p>
                     <div className="mt-2 flex items-center gap-3 text-[11px] text-muted-foreground/70">
-                      <span>Avg score {(suggestion.avg_composite_score ?? 0).toFixed(2)}</span>
-                      <span>{trackedOverlap} already tracked</span>
+                      <span>{t('recentTradesPanel.suggestion.avgScore', { score: (suggestion.avg_composite_score ?? 0).toFixed(2) })}</span>
+                      <span>{t('recentTradesPanel.suggestion.alreadyTracked', { n: trackedOverlap })}</span>
                     </div>
                   </div>
                 )
@@ -1101,12 +1114,12 @@ export default function RecentTradesPanel({
             <div className="flex items-center gap-2">
               <Activity className="w-4 h-4 text-muted-foreground/70" />
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Active Tracked Traders
+                {t('recentTradesPanel.section.activeTrackedTraders')}
               </p>
             </div>
             {trackedWalletActivity.length === 0 ? (
               <div className="rounded-md border border-dashed border-border bg-background/20 p-3 text-sm text-muted-foreground/70">
-                No tracked-wallet activity found in the selected trade window.
+                {t('recentTradesPanel.empty.noActivity')}
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -1117,15 +1130,15 @@ export default function RecentTradesPanel({
                     className="rounded-md border border-border bg-background/40 p-3 text-left hover:border-border/80 transition-colors"
                   >
                     <p className="text-sm font-medium text-foreground">
-                      {wallet.wallet_username || wallet.wallet_label || shortAddress(wallet.wallet_address)}
+                      {wallet.wallet_username || wallet.wallet_label || shortAddress(wallet.wallet_address, t)}
                     </p>
                     <p className="text-[11px] text-muted-foreground/70 font-mono">
-                      {shortAddress(wallet.wallet_address)}
+                      {shortAddress(wallet.wallet_address, t)}
                     </p>
                     <div className="mt-2 flex items-center justify-between text-xs">
-                      <span className="text-blue-300">{wallet.trade_count} trades</span>
+                      <span className="text-blue-300">{t('recentTradesPanel.tradesCount', { n: wallet.trade_count })}</span>
                       <span className="text-muted-foreground/70">
-                        {wallet.latest_trade_at ? formatTimeAgo(wallet.latest_trade_at.toISOString()) : 'Unknown'}
+                        {wallet.latest_trade_at ? formatTimeAgo(wallet.latest_trade_at.toISOString(), t) : t('recentTradesPanel.time.unknown')}
                       </span>
                     </div>
                   </button>
@@ -1144,7 +1157,7 @@ export default function RecentTradesPanel({
               <Filter className="w-4 h-4 text-muted-foreground/70" />
 
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Max signals:</span>
+                <span className="text-xs text-muted-foreground">{t('recentTradesPanel.filter.maxSignals')}</span>
                 <select
                   value={signalLimit}
                   onChange={(e) => setSignalLimit(Number(e.target.value))}
@@ -1169,7 +1182,7 @@ export default function RecentTradesPanel({
                         : 'border-border/60 bg-card text-muted-foreground hover:text-foreground hover:bg-muted/60',
                     )}
                   >
-                    {option.label}
+                    {t(option.labelKey)}
                   </button>
                 ))}
                 {sourceScopeFilterActive && (
@@ -1177,7 +1190,7 @@ export default function RecentTradesPanel({
                     onClick={clearSourceScopeFilter}
                     className="inline-flex h-8 items-center rounded-md border border-border/60 bg-card px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
                   >
-                    All Sources
+                    {t('recentTradesPanel.filter.allSources')}
                   </button>
                 )}
               </div>
@@ -1192,7 +1205,9 @@ export default function RecentTradesPanel({
                       : 'border-border/60 bg-card text-muted-foreground hover:text-foreground hover:bg-muted/60',
                   )}
                 >
-                  {showFilteredSignals ? 'Hide Filtered' : 'Show Filtered'}
+                  {showFilteredSignals
+                    ? t('recentTradesPanel.filter.hideFiltered')
+                    : t('recentTradesPanel.filter.showFiltered')}
                 </button>
                 <button
                   onClick={handleRefresh}
@@ -1204,7 +1219,7 @@ export default function RecentTradesPanel({
                   )}
                 >
                   <RefreshCw className={cn('w-3.5 h-3.5', isRefetching && 'animate-spin')} />
-                  Refresh
+                  {t('recentTradesPanel.refresh')}
                 </button>
                 {showSettingsButton && (
                   <button
@@ -1217,7 +1232,7 @@ export default function RecentTradesPanel({
                     )}
                   >
                     <Settings className="w-3.5 h-3.5" />
-                    Settings
+                    {t('recentTradesPanel.settings')}
                   </button>
                 )}
               </div>
@@ -1229,7 +1244,7 @@ export default function RecentTradesPanel({
                 <Filter className="w-4 h-4 text-muted-foreground/70" />
 
                 <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground/70">Max signals:</span>
+                  <span className="text-sm text-muted-foreground/70">{t('recentTradesPanel.filter.maxSignals')}</span>
                   <select
                     value={signalLimit}
                     onChange={(e) => setSignalLimit(Number(e.target.value))}
@@ -1253,7 +1268,7 @@ export default function RecentTradesPanel({
                           : 'border-border bg-muted text-muted-foreground hover:text-foreground hover:bg-accent',
                       )}
                     >
-                      {option.label}
+                      {t(option.labelKey)}
                     </button>
                   ))}
                   {sourceScopeFilterActive && (
@@ -1261,7 +1276,7 @@ export default function RecentTradesPanel({
                       onClick={clearSourceScopeFilter}
                       className="inline-flex items-center rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground hover:bg-accent"
                     >
-                      All Sources
+                      {t('recentTradesPanel.filter.allSources')}
                     </button>
                   )}
                 </div>
@@ -1275,7 +1290,9 @@ export default function RecentTradesPanel({
                       : 'border-border bg-muted text-muted-foreground hover:text-foreground hover:bg-accent',
                   )}
                 >
-                  {showFilteredSignals ? 'Hide Filtered' : 'Show Filtered'}
+                  {showFilteredSignals
+                    ? t('recentTradesPanel.filter.hideFiltered')
+                    : t('recentTradesPanel.filter.showFiltered')}
                 </button>
               </div>
 
@@ -1283,7 +1300,9 @@ export default function RecentTradesPanel({
               <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                    {showFilteredSignals ? 'Scanned Signals' : 'Executable Signals'}
+                    {showFilteredSignals
+                      ? t('recentTradesPanel.summary.scannedSignals')
+                      : t('recentTradesPanel.summary.executableSignals')}
                   </p>
                   <p className="text-lg font-semibold text-foreground">
                     {unifiedSignals.length}
@@ -1293,18 +1312,18 @@ export default function RecentTradesPanel({
                   </p>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">High / Extreme</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('recentTradesPanel.summary.highExtreme')}</p>
                   <p className="text-lg font-semibold text-orange-400">
                     {highSignals}
                     <span className="text-muted-foreground/60 text-sm ml-1">/ {extremeSignals}</span>
                   </p>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Avg Conviction</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('recentTradesPanel.summary.avgConviction')}</p>
                   <p className="text-lg font-semibold text-foreground">{avgConviction.toFixed(1)}</p>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Markets / Wallets</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('recentTradesPanel.summary.marketsWallets')}</p>
                   <p className="text-lg font-semibold text-foreground">
                     <span className="text-blue-400">{uniqueSignalMarkets}</span>
                     <span className="text-muted-foreground/50 mx-1">/</span>
@@ -1312,16 +1331,16 @@ export default function RecentTradesPanel({
                   </p>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Source Scope</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('recentTradesPanel.summary.sourceScope')}</p>
                   <p className="text-sm font-semibold text-cyan-300">{selectedSourceScopeLabels}</p>
                   <p className="text-[10px] text-muted-foreground/70 mt-1">
-                    Other {displayedOtherCount}
+                    {t('recentTradesPanel.summary.otherCount', { n: displayedOtherCount })}
                   </p>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-card/40 p-3">
-                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Filtered Out</p>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('recentTradesPanel.summary.filteredOut')}</p>
                   <p className="text-lg font-semibold text-red-300">{filteredOutSignals}</p>
-                  <p className="text-[10px] text-orange-300/80 mt-1">Scope {sourceScopedOutSignals}</p>
+                  <p className="text-[10px] text-orange-300/80 mt-1">{t('recentTradesPanel.summary.scopeCount', { n: sourceScopedOutSignals })}</p>
                 </div>
               </div>
             </>
@@ -1336,16 +1355,18 @@ export default function RecentTradesPanel({
             <div className="text-center py-12 bg-card rounded-lg border border-border">
               <AlertCircle className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
               <p className="text-muted-foreground">
-                {showFilteredSignals ? 'No scanned trader signals found' : 'No executable trader signals found'}
+                {showFilteredSignals
+                  ? t('recentTradesPanel.empty.noScannedSignals')
+                  : t('recentTradesPanel.empty.noExecutableSignals')}
               </p>
               <p className="text-sm text-muted-foreground/50 mt-1">
                 {sourceScopeFilterActive
-                  ? `No signals match current source scope (${selectedSourceScopeLabels}).`
+                  ? t('recentTradesPanel.empty.noScopeMatch', { labels: selectedSourceScopeLabels })
                   : showFilteredSignals
-                  ? 'No pooled confluence or tracked/group individual trade signals are currently available'
+                  ? t('recentTradesPanel.empty.noConfluence')
                   : filteredOutSignals > 0
-                    ? `${filteredOutSignals} scanned signals are currently filtered from execution`
-                    : 'No strategy-qualified trader opportunities are currently available'}
+                    ? t('recentTradesPanel.empty.filteredFromExec', { n: filteredOutSignals })
+                    : t('recentTradesPanel.empty.noQualified')}
               </p>
             </div>
           ) : viewMode === 'terminal' ? (
@@ -1374,7 +1395,11 @@ export default function RecentTradesPanel({
               <Separator />
               <div className="flex items-center justify-between pt-4">
                 <div className="text-xs text-muted-foreground">
-                  {currentPage * ITEMS_PER_PAGE + 1} - {Math.min((currentPage + 1) * ITEMS_PER_PAGE, unifiedSignals.length)} of {unifiedSignals.length}
+                  {t('recentTradesPanel.pagination.range', {
+                    from: currentPage * ITEMS_PER_PAGE + 1,
+                    to: Math.min((currentPage + 1) * ITEMS_PER_PAGE, unifiedSignals.length),
+                    total: unifiedSignals.length,
+                  })}
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -1385,7 +1410,7 @@ export default function RecentTradesPanel({
                     disabled={currentPage === 0}
                   >
                     <ChevronLeft className="w-3.5 h-3.5" />
-                    Prev
+                    {t('recentTradesPanel.pagination.prev')}
                   </Button>
                   <span className="px-2.5 py-1 bg-card rounded-lg text-xs border border-border font-mono">
                     {currentPage + 1}/{totalPages || 1}
@@ -1397,7 +1422,7 @@ export default function RecentTradesPanel({
                     onClick={() => setCurrentPage((p) => p + 1)}
                     disabled={currentPage >= totalPages - 1}
                   >
-                    Next
+                    {t('recentTradesPanel.pagination.next')}
                     <ChevronRight className="w-3.5 h-3.5" />
                   </Button>
                 </div>
@@ -1434,11 +1459,13 @@ export default function RecentTradesPanel({
                 <Bell className="w-4 h-4 mt-0.5 flex-shrink-0" />
                 <div className="min-w-0">
                   <p className="text-xs font-semibold">
-                    {alert.tier} confluence signal {alert.outcome ? `(${alert.outcome})` : ''}
+                    {alert.outcome
+                      ? t('recentTradesPanel.alert.titleWithOutcome', { tier: alert.tier, outcome: alert.outcome })
+                      : t('recentTradesPanel.alert.title', { tier: alert.tier })}
                   </p>
                   <p className="text-xs mt-0.5 line-clamp-2">{alert.market}</p>
                   <p className="text-[11px] mt-1 opacity-90">
-                    Conviction {alert.conviction}/100
+                    {t('recentTradesPanel.alert.conviction', { n: alert.conviction })}
                   </p>
                 </div>
               </div>

@@ -3746,5 +3746,138 @@
       "descriptionMiddle": "および除外",
       "retry": "再試行"
     }
+  },
+  "cryptoCycleChart": {
+    "waitingForCycleStart": "サイクル開始時刻を待機中…",
+    "legend": {
+      "oracle": "オラクル",
+      "up": "アップ",
+      "down": "ダウン"
+    },
+    "walletTradeCount_one": "{{n}} 件のウォレット取引",
+    "walletTradeCount_other": "{{n}} 件のウォレット取引",
+    "hollowPending": "(中抜き = 保留中)"
+  },
+  "recentTradesPanel": {
+    "refresh": "更新",
+    "settings": "設定",
+    "manualGroup": "手動グループ",
+    "createTrack": "作成 + トラック",
+    "unknownAddress": "不明",
+    "unknownMarket": "不明なマーケット",
+    "tradesCount": "{{n}} 取引",
+    "header": {
+      "title": {
+        "traders": "トレーダー",
+        "opportunities": "トレーダー機会",
+        "groups": "トレーダーグループ",
+        "management": "トレーダー管理"
+      },
+      "subtitle": {
+        "traders": "追跡中のトレーダー、トレーダーグループ、および高品質な発見ウォレットからのディスカバリー合流",
+        "opportunities": "追跡ウォレット、グループ、プールメンバーからの戦略フィルター済みトレーダーファイヤーホース合流",
+        "groups": "ディスカバリーのトレーダーグループを作成・追跡・管理",
+        "management": "追跡トレーダーリスト、グループ管理、監視コントロール"
+      }
+    },
+    "section": {
+      "traderGroups": "トレーダーグループ",
+      "trackedTraders": "追跡中のトレーダー",
+      "existingGroups": "既存グループ",
+      "suggestedGroups": "提案グループ(ディスカバリー)",
+      "activeTrackedTraders": "アクティブな追跡トレーダー"
+    },
+    "stat": {
+      "trackedWallets": "追跡中のウォレット",
+      "traderGroups": "トレーダーグループ",
+      "groupMembers": "グループメンバー",
+      "recentTradesHours": "最近の取引 ({{n}}時間)"
+    },
+    "form": {
+      "groupNamePlaceholder": "グループ名",
+      "descriptionPlaceholder": "説明(任意)",
+      "walletsPlaceholder": "ウォレットアドレス(カンマまたは改行区切り)"
+    },
+    "loading": {
+      "groups": "グループを読み込み中...",
+      "suggestions": "提案を生成中..."
+    },
+    "empty": {
+      "noGroups": "まだグループは作成されていません。",
+      "noSuggestions": "現在利用可能な提案はありません。",
+      "noActivity": "選択した取引ウィンドウで追跡ウォレットの活動が見つかりません。",
+      "noScannedSignals": "スキャン済みのトレーダーシグナルが見つかりません",
+      "noExecutableSignals": "実行可能なトレーダーシグナルが見つかりません",
+      "noScopeMatch": "現在のソーススコープ ({{labels}}) に一致するシグナルがありません。",
+      "noConfluence": "現在、プール合流または追跡/グループ個別取引シグナルは利用できません",
+      "filteredFromExec": "{{n}} 件のスキャン済みシグナルが現在実行から除外されています",
+      "noQualified": "現在、戦略適格なトレーダー機会はありません"
+    },
+    "action": {
+      "track": "追跡",
+      "delete": "削除"
+    },
+    "group": {
+      "memberCount": "{{n}} メンバー"
+    },
+    "suggestion": {
+      "tradersCount": "{{n}} トレーダー",
+      "created": "作成済み",
+      "avgScore": "平均スコア {{score}}",
+      "alreadyTracked": "{{n}} 名追跡済み"
+    },
+    "sourceScope": {
+      "tracked": "追跡",
+      "group": "グループ",
+      "pool": "プール",
+      "other": "その他"
+    },
+    "filter": {
+      "maxSignals": "最大シグナル数:",
+      "allSources": "すべてのソース",
+      "showFiltered": "フィルター済みを表示",
+      "hideFiltered": "フィルター済みを非表示"
+    },
+    "summary": {
+      "scannedSignals": "スキャン済みシグナル",
+      "executableSignals": "実行可能シグナル",
+      "highExtreme": "高 / 極高",
+      "avgConviction": "平均確信度",
+      "marketsWallets": "マーケット / ウォレット",
+      "sourceScope": "ソーススコープ",
+      "otherCount": "その他 {{n}}",
+      "filteredOut": "除外",
+      "scopeCount": "スコープ {{n}}"
+    },
+    "pagination": {
+      "range": "{{from}} - {{to}} / {{total}}",
+      "prev": "前へ",
+      "next": "次へ"
+    },
+    "alert": {
+      "title": "{{tier}} 合流シグナル",
+      "titleWithOutcome": "{{tier}} 合流シグナル ({{outcome}})",
+      "conviction": "確信度 {{n}}/100"
+    },
+    "time": {
+      "unknown": "不明",
+      "justNow": "今",
+      "minutesAgo": "{{n}}分前",
+      "hoursAgo": "{{n}}時間前",
+      "yesterday": "昨日"
+    },
+    "toast": {
+      "settingsSaved": "トレーダー機会設定を保存しました",
+      "settingsSaveFailed": "トレーダー機会設定の保存に失敗しました",
+      "discoveryLoading": "ディスカバリー設定を読み込み中です。もう一度お試しください。",
+      "groupCreated": "グループを作成しました ({{members}} メンバー、{{tracked}} 追跡済み)。",
+      "createGroupFailed": "グループの作成に失敗しました",
+      "trackingRefreshed": "{{n}} 名のグループメンバーの追跡を更新しました。",
+      "trackMembersFailed": "グループメンバーの追跡に失敗しました",
+      "groupDeleted": "グループを削除しました",
+      "deleteGroupFailed": "グループの削除に失敗しました",
+      "groupNameRequired": "グループ名は必須です",
+      "walletRequired": "少なくとも 1 つのウォレットアドレスを追加してください"
+    }
   }
 }
