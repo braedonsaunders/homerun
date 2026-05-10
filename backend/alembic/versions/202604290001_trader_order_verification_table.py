@@ -35,6 +35,7 @@ Until step 4, both the original columns and the new table coexist.
 from __future__ import annotations
 
 from alembic import op
+from alembic_helpers import safe_create_table, safe_create_index
 import sqlalchemy as sa
 
 
@@ -46,7 +47,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    safe_create_table(
         "trader_order_verification",
         sa.Column(
             "trader_order_id",
@@ -68,17 +69,17 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
     )
-    op.create_index(
+    safe_create_index(
         "idx_trader_order_verification_status",
         "trader_order_verification",
         ["verification_status"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_trader_order_verification_tx_hash",
         "trader_order_verification",
         ["verification_tx_hash"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_trader_order_verification_wallet",
         "trader_order_verification",
         ["execution_wallet_address"],

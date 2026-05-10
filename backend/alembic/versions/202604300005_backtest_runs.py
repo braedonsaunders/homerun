@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_create_table, safe_create_index
 
 
 revision = "202604300005"
@@ -25,7 +26,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    safe_create_table(
         "backtest_runs",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("strategy_slug", sa.String(), nullable=True),
@@ -45,13 +46,13 @@ def upgrade() -> None:
             server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
     )
-    op.create_index(
+    safe_create_index(
         "idx_btr_strategy_started",
         "backtest_runs",
         ["strategy_slug", "started_at"],
     )
-    op.create_index("idx_btr_started", "backtest_runs", ["started_at"])
-    op.create_index("idx_btr_status", "backtest_runs", ["status"])
+    safe_create_index("idx_btr_started", "backtest_runs", ["started_at"])
+    safe_create_index("idx_btr_status", "backtest_runs", ["status"])
 
 
 def downgrade() -> None:

@@ -22,6 +22,7 @@ Create Date: 2026-05-06
 from __future__ import annotations
 
 from alembic import op
+from alembic_helpers import safe_add_column, safe_create_index
 import sqlalchemy as sa
 
 
@@ -32,27 +33,27 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column("payload_json", sa.JSON(), nullable=True),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column("progress", sa.Float(), nullable=False, server_default="0.0"),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column("message", sa.String(), nullable=True),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column("worker_id", sa.String(), nullable=True),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column("claimed_at", sa.DateTime(), nullable=True),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column(
             "cancel_requested",
@@ -61,11 +62,11 @@ def upgrade() -> None:
             server_default=sa.false(),
         ),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column("error", sa.Text(), nullable=True),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column(
             "snapshots_processed",
@@ -74,12 +75,12 @@ def upgrade() -> None:
             server_default="0",
         ),
     )
-    op.add_column(
+    safe_add_column(
         "backtest_runs",
         sa.Column("snapshots_total_estimate", sa.Integer(), nullable=True),
     )
 
-    op.create_index(
+    safe_create_index(
         "idx_btr_status_created",
         "backtest_runs",
         ["status", "created_at"],

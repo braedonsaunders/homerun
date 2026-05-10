@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column, safe_create_table, safe_create_index
 
 
 # revision identifiers, used by Alembic.
@@ -38,7 +39,7 @@ depends_on = None
 
 def upgrade() -> None:
     # ── provider_datasets ──────────────────────────────────────────────
-    op.create_table(
+    safe_create_table(
         "provider_datasets",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("provider", sa.String(), nullable=False),
@@ -70,25 +71,25 @@ def upgrade() -> None:
             "provider", "external_id", name="uq_provider_dataset_provider_extid"
         ),
     )
-    op.create_index(
+    safe_create_index(
         "ix_provider_datasets_provider", "provider_datasets", ["provider"]
     )
-    op.create_index("ix_provider_datasets_coin", "provider_datasets", ["coin"])
-    op.create_index(
+    safe_create_index("ix_provider_datasets_coin", "provider_datasets", ["coin"])
+    safe_create_index(
         "ix_provider_datasets_start_ts", "provider_datasets", ["start_ts"]
     )
-    op.create_index("ix_provider_datasets_end_ts", "provider_datasets", ["end_ts"])
-    op.create_index(
+    safe_create_index("ix_provider_datasets_end_ts", "provider_datasets", ["end_ts"])
+    safe_create_index(
         "idx_provider_dataset_provider_coin",
         "provider_datasets",
         ["provider", "coin"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_provider_dataset_updated", "provider_datasets", ["updated_at"]
     )
 
     # ── provider_import_jobs ───────────────────────────────────────────
-    op.create_table(
+    safe_create_table(
         "provider_import_jobs",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("provider", sa.String(), nullable=False),
@@ -115,21 +116,21 @@ def upgrade() -> None:
         sa.Column("started_at", sa.DateTime(), nullable=True),
         sa.Column("finished_at", sa.DateTime(), nullable=True),
     )
-    op.create_index(
+    safe_create_index(
         "ix_provider_import_jobs_provider", "provider_import_jobs", ["provider"]
     )
-    op.create_index(
+    safe_create_index(
         "ix_provider_import_jobs_status", "provider_import_jobs", ["status"]
     )
-    op.create_index(
+    safe_create_index(
         "idx_provider_import_status", "provider_import_jobs", ["status"]
     )
-    op.create_index(
+    safe_create_index(
         "idx_provider_import_created", "provider_import_jobs", ["created_at"]
     )
 
     # ── strategy_reverse_engineer_jobs ─────────────────────────────────
-    op.create_table(
+    safe_create_table(
         "strategy_reverse_engineer_jobs",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("wallet_address", sa.String(), nullable=False),
@@ -187,34 +188,34 @@ def upgrade() -> None:
         sa.Column("started_at", sa.DateTime(), nullable=True),
         sa.Column("finished_at", sa.DateTime(), nullable=True),
     )
-    op.create_index(
+    safe_create_index(
         "ix_strategy_reverse_engineer_jobs_wallet_address",
         "strategy_reverse_engineer_jobs",
         ["wallet_address"],
     )
-    op.create_index(
+    safe_create_index(
         "ix_strategy_reverse_engineer_jobs_status",
         "strategy_reverse_engineer_jobs",
         ["status"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_re_jobs_wallet",
         "strategy_reverse_engineer_jobs",
         ["wallet_address"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_re_jobs_status",
         "strategy_reverse_engineer_jobs",
         ["status"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_re_jobs_created",
         "strategy_reverse_engineer_jobs",
         ["created_at"],
     )
 
     # ── strategy_reverse_engineer_iterations ───────────────────────────
-    op.create_table(
+    safe_create_table(
         "strategy_reverse_engineer_iterations",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column(
@@ -250,12 +251,12 @@ def upgrade() -> None:
         sa.Column("completed_at", sa.DateTime(), nullable=True),
         sa.UniqueConstraint("job_id", "iteration", name="uq_re_iter_job_iter"),
     )
-    op.create_index(
+    safe_create_index(
         "ix_strategy_reverse_engineer_iterations_job_id",
         "strategy_reverse_engineer_iterations",
         ["job_id"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_re_iter_job_iter",
         "strategy_reverse_engineer_iterations",
         ["job_id", "iteration"],
@@ -264,10 +265,10 @@ def upgrade() -> None:
     # ── app_settings extensions ────────────────────────────────────────
     # Polybacktest API key + UI-tunable defaults for the reverse-engineer
     # agent.  All nullable so existing rows upgrade cleanly.
-    op.add_column(
+    safe_add_column(
         "app_settings", sa.Column("polybacktest_api_key", sa.String(), nullable=True)
     )
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column("polybacktest_base_url", sa.String(), nullable=True),
     )
@@ -275,7 +276,7 @@ def upgrade() -> None:
     # ``app_settings.llm_model_assignments['strategy_reverse_engineer']``
     # (the existing per-purpose JSON column the AI → Models view manages),
     # so we do NOT add a dedicated column for it here.
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column(
             "reverse_engineer_max_iterations",
@@ -283,7 +284,7 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column(
             "reverse_engineer_target_score",
@@ -291,7 +292,7 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column(
             "reverse_engineer_max_cost_usd",
@@ -299,7 +300,7 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column(
             "reverse_engineer_max_wallet_trades",

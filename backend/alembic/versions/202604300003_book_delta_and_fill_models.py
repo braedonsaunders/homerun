@@ -26,6 +26,7 @@ last N seconds for token X" query path fast.
 from __future__ import annotations
 
 from alembic import op
+from alembic_helpers import safe_create_table, safe_create_index
 import sqlalchemy as sa
 
 
@@ -36,7 +37,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    safe_create_table(
         "book_delta_events",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("provider", sa.String(), nullable=False, server_default="polymarket"),
@@ -55,18 +56,18 @@ def upgrade() -> None:
         sa.Column("payload_json", sa.JSON(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
     )
-    op.create_index("idx_bde_provider", "book_delta_events", ["provider"])
-    op.create_index("idx_bde_token_id", "book_delta_events", ["token_id"])
-    op.create_index("idx_bde_observed_at", "book_delta_events", ["observed_at"])
-    op.create_index("idx_bde_event_type", "book_delta_events", ["event_type"])
-    op.create_index("idx_bde_token_observed", "book_delta_events", ["token_id", "observed_at"])
-    op.create_index(
+    safe_create_index("idx_bde_provider", "book_delta_events", ["provider"])
+    safe_create_index("idx_bde_token_id", "book_delta_events", ["token_id"])
+    safe_create_index("idx_bde_observed_at", "book_delta_events", ["observed_at"])
+    safe_create_index("idx_bde_event_type", "book_delta_events", ["event_type"])
+    safe_create_index("idx_bde_token_observed", "book_delta_events", ["token_id", "observed_at"])
+    safe_create_index(
         "idx_bde_token_type_observed",
         "book_delta_events",
         ["token_id", "event_type", "observed_at"],
     )
 
-    op.create_table(
+    safe_create_table(
         "fill_probability_models",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("family", sa.String(), nullable=False, server_default="cox_ph"),
@@ -88,16 +89,16 @@ def upgrade() -> None:
         sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("notes", sa.String(), nullable=True),
     )
-    op.create_index("idx_fpm_family", "fill_probability_models", ["family"])
-    op.create_index("idx_fpm_strata_key", "fill_probability_models", ["strata_key"])
-    op.create_index("idx_fpm_trained_at", "fill_probability_models", ["trained_at"])
-    op.create_index("idx_fpm_active", "fill_probability_models", ["active"])
-    op.create_index(
+    safe_create_index("idx_fpm_family", "fill_probability_models", ["family"])
+    safe_create_index("idx_fpm_strata_key", "fill_probability_models", ["strata_key"])
+    safe_create_index("idx_fpm_trained_at", "fill_probability_models", ["trained_at"])
+    safe_create_index("idx_fpm_active", "fill_probability_models", ["active"])
+    safe_create_index(
         "idx_fpm_family_strata_active",
         "fill_probability_models",
         ["family", "strata_key", "active"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_fpm_active_trained",
         "fill_probability_models",
         ["active", "trained_at"],

@@ -16,6 +16,7 @@ JSON to accept any JSON-serialisable Python value.
 from __future__ import annotations
 
 from alembic import op
+from alembic_helpers import safe_create_table, safe_create_index
 import sqlalchemy as sa
 
 
@@ -26,7 +27,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    safe_create_table(
         "strategy_persistent_state",
         sa.Column("strategy_slug", sa.String(), primary_key=True),
         sa.Column("key", sa.String(), primary_key=True),
@@ -38,12 +39,12 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
     )
-    op.create_index(
+    safe_create_index(
         "idx_strategy_persistent_state_slug",
         "strategy_persistent_state",
         ["strategy_slug"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_strategy_persistent_state_updated",
         "strategy_persistent_state",
         ["updated_at"],

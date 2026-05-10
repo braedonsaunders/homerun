@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_create_index
 
 
 revision = "202604260003"
@@ -30,7 +31,7 @@ def upgrade() -> None:
         existing_type=sa.String(),
         nullable=True,
     )
-    op.create_index(
+    safe_create_index(
         "idx_arx_strategy_id",
         "autoresearch_experiments",
         ["strategy_id"],

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column
 
 
 # revision identifiers, used by Alembic.
@@ -33,7 +34,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column("polymarket_default_collateral", sa.String(), nullable=True),
     )

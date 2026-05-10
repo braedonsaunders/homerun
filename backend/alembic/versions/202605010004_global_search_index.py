@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import column_names, safe_create_table, safe_create_index
 
 
 revision = "202605010004"
@@ -46,7 +47,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE search_index (
+        CREATE TABLE IF NOT EXISTS search_index (
             entity_type    VARCHAR(64)  NOT NULL,
             entity_id      VARCHAR(255) NOT NULL,
             title          TEXT         NOT NULL,
@@ -69,28 +70,50 @@ def upgrade() -> None:
         """
     )
 
-    op.execute("CREATE INDEX idx_search_index_tsv ON search_index USING GIN (tsv)")
+    # The ORM model in services/search/models.py does not declare ``tsv``
+    # (it's a Postgres-managed GENERATED column).  When the lazy baseline
+    # migration ran ``Base.metadata.create_all`` on a fresh DB, it
+    # therefore created ``search_index`` *without* ``tsv``, and the
+    # ``CREATE TABLE IF NOT EXISTS`` above no-op'd.  Add the missing
+    # column so the GIN index below has something to point at.  On a
+    # production DB stamped past this revision, ``tsv`` is already
+    # present and this is a no-op.
+    if "tsv" not in column_names("search_index"):
+        op.execute(
+            """
+            ALTER TABLE search_index ADD COLUMN tsv TSVECTOR
+            GENERATED ALWAYS AS (
+                setweight(to_tsvector('english', coalesce(title, '')),    'A') ||
+                setweight(to_tsvector('english', coalesce(subtitle, '')), 'B') ||
+                setweight(to_tsvector('english', coalesce(body, '')),     'C')
+            ) STORED
+            """
+        )
+
     op.execute(
-        "CREATE INDEX idx_search_index_title_trgm "
+        "CREATE INDEX IF NOT EXISTS idx_search_index_tsv ON search_index USING GIN (tsv)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_search_index_title_trgm "
         "ON search_index USING GIN (title gin_trgm_ops)"
     )
-    op.create_index(
+    safe_create_index(
         "idx_search_index_entity_type",
         "search_index",
         ["entity_type"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_search_index_recency",
         "search_index",
         ["recency"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_search_index_updated_at",
         "search_index",
         ["updated_at"],
     )
 
-    op.create_table(
+    safe_create_table(
         "search_query_log",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
         sa.Column("query", sa.Text(), nullable=False),
@@ -104,7 +127,7 @@ def upgrade() -> None:
             server_default=sa.text("(now() AT TIME ZONE 'utc')"),
         ),
     )
-    op.create_index(
+    safe_create_index(
         "idx_search_query_log_created_at",
         "search_query_log",
         ["created_at"],

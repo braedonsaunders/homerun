@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column
 
 
 # revision identifiers, used by Alembic.
@@ -24,9 +25,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("app_settings", sa.Column("latency_fallback_p50_ms", sa.Float(), nullable=True))
-    op.add_column("app_settings", sa.Column("latency_fallback_p95_ms", sa.Float(), nullable=True))
-    op.add_column("app_settings", sa.Column("latency_fallback_p99_ms", sa.Float(), nullable=True))
+    safe_add_column("app_settings", sa.Column("latency_fallback_p50_ms", sa.Float(), nullable=True))
+    safe_add_column("app_settings", sa.Column("latency_fallback_p95_ms", sa.Float(), nullable=True))
+    safe_add_column("app_settings", sa.Column("latency_fallback_p99_ms", sa.Float(), nullable=True))
 
 
 def downgrade() -> None:

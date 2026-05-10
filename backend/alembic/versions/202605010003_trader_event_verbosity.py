@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column, safe_create_index
 
 
 revision = "202605010003"
@@ -23,11 +24,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    safe_add_column(
         "trader_events",
         sa.Column("verbosity", sa.String(), nullable=True),
     )
-    op.create_index(
+    safe_create_index(
         "idx_trader_events_verbosity",
         "trader_events",
         ["verbosity"],

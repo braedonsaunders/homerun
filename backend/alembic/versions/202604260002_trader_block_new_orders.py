@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column
 
 
 revision = "202604260002"
@@ -23,7 +24,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    safe_add_column(
         "traders",
         sa.Column(
             "block_new_orders",

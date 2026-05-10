@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_create_table, safe_create_index
 
 
 # revision identifiers, used by Alembic.
@@ -30,7 +31,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    safe_create_table(
         "recording_sessions",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("name", sa.String(), nullable=False),
@@ -61,12 +62,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
     )
-    op.create_index(
+    safe_create_index(
         "idx_recording_sessions_status",
         "recording_sessions",
         ["status"],
     )
-    op.create_index(
+    safe_create_index(
         "idx_recording_sessions_started_at",
         "recording_sessions",
         ["started_at"],
