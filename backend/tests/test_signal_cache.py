@@ -213,17 +213,105 @@ def test_per_trader_consumption_isolation():
     assert {s.id for s in b_results} == {"s1"}
 
 
-def test_consumed_ring_evicts_oldest():
-    cache = signal_cache.SignalCache(max_entries=10000)
-    # Replace the per-trader ring cap with a tiny limit for the test.
-    # We can't easily monkeypatch _MAX_CONSUMED_RING_PER_TRADER so we
-    # rely on the public behavior: the ring is bounded.  Drive enough
-    # consumptions to overflow the default 1000 cap.
-    for i in range(1100):
+def test_consumed_set_is_unbounded_under_threshold():
+    """Plan 0032: the per-trader consumed-set is unbounded by design —
+    the previous 1 000-entry deque ring caused skip storms whenever
+    a busy trader's ring wrapped.  Below the lazy-prune threshold,
+    every consumed signal_id MUST stay in the set."""
+    cache = signal_cache.SignalCache(max_entries=10_000)
+    for i in range(1_100):
         cache.upsert(_make_snapshot(signal_id=f"s{i}"))
         cache.mark_consumed("trader-x", f"s{i}")
-    # The first 100 should have rolled off the consumed ring.
-    assert len(cache._consumed_set["trader-x"]) <= 1000
+    assert len(cache._consumed_set["trader-x"]) == 1_100
+
+
+def test_consumed_set_lazy_prune_drops_evicted_signal_ids(monkeypatch):
+    """Once a per-trader set crosses the prune threshold, signal_ids
+    no longer present in ``_signals`` are dropped — but a freshly
+    consumed id whose snapshot is still cached survives."""
+    monkeypatch.setattr(signal_cache, "_CONSUMED_SET_PRUNE_THRESHOLD", 4)
+    cache = signal_cache.SignalCache(max_entries=10_000)
+    fresh = datetime.now(timezone.utc)
+    for sid in ("a", "b", "c"):
+        cache.upsert(_make_snapshot(signal_id=sid, created_at=fresh))
+        cache.mark_consumed("trader-x", sid)
+    # Evict 'a' and 'b' from _signals (simulating LRU drop / terminal
+    # cleanup) — they're now droppable from the consumed-set.
+    cache._signals.pop("a")
+    cache._signals.pop("b")
+    cache.upsert(_make_snapshot(signal_id="d", created_at=fresh))
+    cache.mark_consumed("trader-x", "d")  # crosses threshold (=4) → prune
+    consumed = cache._consumed_set["trader-x"]
+    assert "a" not in consumed
+    assert "b" not in consumed
+    assert "c" in consumed
+    assert "d" in consumed
+    assert cache.status_snapshot()["consumed_set_lazy_prunes_total"] == 1
+
+
+def test_upsert_skips_when_every_known_trader_already_consumed():
+    """Plan 0032: ``upsert`` MUST skip the snapshot write when every
+    known trader has already consumed the id.  Re-emitting only
+    bumps runtime_sequence and pays for filter cycles every trader
+    will short-circuit on the consumed-set lookup anyway."""
+    cache = signal_cache.get_signal_cache()
+    cache.hydrate_trader_consumed_ids("trader-A", [])
+    cache.hydrate_trader_consumed_ids("trader-B", [])
+    initial = _make_snapshot(signal_id="s-overlap", runtime_sequence=1)
+    cache.upsert(initial)
+    cache.mark_consumed("trader-A", "s-overlap")
+    cache.mark_consumed("trader-B", "s-overlap")
+    refreshed = _make_snapshot(signal_id="s-overlap", runtime_sequence=99)
+    cache.upsert(refreshed)
+    stored = cache.get_signal("s-overlap")
+    assert stored is initial
+    assert stored.runtime_sequence == 1
+    assert cache.status_snapshot()["upserts_skipped_consumed_overlap"] == 1
+
+
+def test_upsert_writes_when_a_trader_has_not_consumed_yet():
+    """The skip is strict: as soon as one known trader has not
+    consumed the id, the snapshot MUST be written so that trader's
+    next ``get_unconsumed_signals`` sees it."""
+    cache = signal_cache.get_signal_cache()
+    cache.hydrate_trader_consumed_ids("trader-A", [])
+    cache.hydrate_trader_consumed_ids("trader-B", [])
+    cache.upsert(_make_snapshot(signal_id="s-mixed", runtime_sequence=1))
+    cache.mark_consumed("trader-A", "s-mixed")
+    refreshed = _make_snapshot(signal_id="s-mixed", runtime_sequence=42)
+    cache.upsert(refreshed)
+    assert cache.get_signal("s-mixed").runtime_sequence == 42
+    assert cache.status_snapshot()["upserts_skipped_consumed_overlap"] == 0
+
+
+def test_upsert_writes_when_no_trader_has_been_seen_yet():
+    """A brand-new process has no per-trader consumed-sets; the
+    optimisation must NOT collapse to "skip everything" in that
+    state — the empty trader-set means we have no reason to skip."""
+    cache = signal_cache.get_signal_cache()
+    cache.upsert(_make_snapshot(signal_id="s-coldcache", runtime_sequence=7))
+    assert cache.get_signal("s-coldcache") is not None
+
+
+def test_consumed_set_lazy_prune_drops_terminal_old_snapshots(monkeypatch):
+    """Snapshots present in ``_signals`` but older than the terminal
+    cutoff (24 h) are also droppable — terminal status flips will
+    not re-emit them in a way the trader has not already consumed."""
+    monkeypatch.setattr(signal_cache, "_CONSUMED_SET_PRUNE_THRESHOLD", 3)
+    cache = signal_cache.SignalCache(max_entries=10_000)
+    stale_created = datetime.now(timezone.utc) - timedelta(days=2)
+    fresh_created = datetime.now(timezone.utc)
+    cache.upsert(_make_snapshot(signal_id="old", created_at=stale_created))
+    cache.mark_consumed("trader-x", "old")
+    cache.upsert(_make_snapshot(signal_id="fresh", created_at=fresh_created))
+    cache.mark_consumed("trader-x", "fresh")
+    # Cross threshold → prune.
+    cache.upsert(_make_snapshot(signal_id="trigger", created_at=fresh_created))
+    cache.mark_consumed("trader-x", "trigger")
+    consumed = cache._consumed_set["trader-x"]
+    assert "old" not in consumed
+    assert "fresh" in consumed
+    assert "trigger" in consumed
 
 
 def test_hydrate_trader_consumed_ids_marks_hydrated():

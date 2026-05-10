@@ -36,10 +36,17 @@ Redis down, race with publisher), the caller falls back to the DB.
 Per-trader consumption tracking
 -------------------------------
 ``list_unconsumed_trade_signals``'s NOT EXISTS subquery is replaced by
-an in-memory per-trader consumed-signal-id ring.  Hydrated lazily from
-the DB on first use (last 24h of consumptions), updated on every
-``mark_consumed`` call.  Bounded ring per trader so memory is O(N
-traders × 1000) — kilobytes.
+an in-memory per-trader consumed-set.  Hydrated on cold-start from the
+DB ledger via ``trader_orchestrator_state.fetch_recent_consumed_signal_ids``
+(last 48 h, capped at 50 000 entries), updated on every
+``mark_consumed`` call.  The set is unbounded by design — Plan 0032
+retired the previous 1 000-entry deque ring after operators observed
+"trader_order already exists" skip storms whenever a busy trader's
+ring wrapped (every ~1.4 h on the affected hosts).  A lazy prune
+inside ``mark_consumed`` drops obviously-stale ids (no longer in
+``_signals``, terminal-state cutoff at 24 h) once the per-trader set
+crosses 50 000 entries, capping long-term memory growth without
+re-introducing the wrap bug.
 
 Soft-fail contract
 ------------------
@@ -58,9 +65,9 @@ import asyncio
 import json
 import threading
 import time
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from services import redis_client
@@ -73,11 +80,24 @@ logger = get_logger("signal_cache")
 # ``services/signal_bus.py::_publish_signal_payload`` for the publisher.
 SIGNAL_PAYLOADS_CHANNEL = "signal_payloads"
 
-# Bounded LRU caps.  At 10 K signals × ~500 bytes each, cache memory
+# Bounded LRU cap.  At 10 K signals × ~500 bytes each, cache memory
 # stays under ~5 MB — fine for a worker process.  Per-trader consumed
-# rings hold at most 1 K recent signal_ids each, ~50 bytes per entry.
+# sets are unbounded by design (Plan 0032: a 1 000-entry deque ring
+# wrapped in ~1.4 h on busy traders, re-emitting skip storms); a lazy
+# prune inside ``mark_consumed`` keeps the long-term memory floor flat.
 _MAX_SIGNAL_CACHE_ENTRIES = 10_000
-_MAX_CONSUMED_RING_PER_TRADER = 1_000
+
+# Lazy-prune trigger: once a per-trader consumed-set crosses this
+# many entries we sweep stale signal_ids (no longer in ``_signals`` AND
+# whose mirroring snapshot — if it ever existed — was last updated
+# more than this many seconds ago).  Both numbers are intentionally
+# loose: the goal is to cap long-term memory growth, not to evict
+# eagerly.  At ~12 ``mark_consumed`` per minute (the worst-case
+# observed throughput on the affected production traders) the prune
+# threshold is hit roughly once every 2.5 days, and the sweep itself
+# is O(N) over the trader's set — sub-millisecond at the cap.
+_CONSUMED_SET_PRUNE_THRESHOLD = 50_000
+_CONSUMED_SET_PRUNE_TERMINAL_CUTOFF_SECONDS = 86_400.0  # 24 h
 
 
 @dataclass(slots=True)
@@ -283,9 +303,12 @@ class SignalCache:
         # OrderedDict for O(1) LRU semantics.
         self._signals: OrderedDict[str, SignalSnapshot] = OrderedDict()
         self._max_entries = max_entries
-        # Per-trader consumed signal_id ring.  ``deque(maxlen=N)`` for
-        # bounded memory; companion set for O(1) "is consumed" check.
-        self._consumed_ids: dict[str, deque[str]] = {}
+        # Per-trader consumed-set: unbounded set of signal_ids the
+        # trader has consumed.  Plan 0032 retired the prior
+        # ``deque(maxlen=1_000)`` ring (companion set) — wrapping was
+        # the dominant cause of "trader_order already exists" skip
+        # spam on busy traders.  A lazy prune inside ``mark_consumed``
+        # keeps long-term memory bounded.
         self._consumed_set: dict[str, set[str]] = {}
         # Diagnostic counters.
         self._signals_added: int = 0
@@ -293,6 +316,8 @@ class SignalCache:
         self._consumptions_recorded: int = 0
         self._lookups_total: int = 0
         self._lookups_hit: int = 0
+        self._upserts_skipped_consumed_overlap: int = 0
+        self._consumed_set_lazy_prunes_total: int = 0
         # Timestamp of the last subscriber message — surfaced in
         # ``status_snapshot()`` so operators can see if the cache is
         # actively being fed.
@@ -313,13 +338,33 @@ class SignalCache:
     # ---------- Mutation (subscriber side) ----------
 
     def upsert(self, snapshot: SignalSnapshot) -> None:
-        """Insert or refresh a signal in the cache."""
+        """Insert or refresh a signal in the cache.
+
+        Plan 0032 optimisation: when the snapshot's signal_id is
+        already present in EVERY known trader's consumed-set, skip
+        the upsert entirely.  Re-emitting the snapshot would only
+        bump ``runtime_sequence`` and waste filter cycles in
+        ``get_unconsumed_signals`` — every trader would skip it
+        immediately on the consumed-set lookup anyway.
+
+        The skip is strict: a brand-new trader whose consumed-set
+        does not exist yet is treated as "interested", so the
+        snapshot is upserted and stays available for hydration when
+        the new trader cold-starts.
+        """
         with self._lock:
+            self._last_received_mono = time.monotonic()
+            interested_traders = self._consumed_set
+            if interested_traders and all(
+                snapshot.id in consumed
+                for consumed in interested_traders.values()
+            ):
+                self._upserts_skipped_consumed_overlap += 1
+                return
             self._signals[snapshot.id] = snapshot
             # Move-to-end so LRU eviction picks the oldest unused entry.
             self._signals.move_to_end(snapshot.id)
             self._signals_added += 1
-            self._last_received_mono = time.monotonic()
             # Bounded eviction.
             while len(self._signals) > self._max_entries:
                 self._signals.popitem(last=False)
@@ -335,21 +380,50 @@ class SignalCache:
         if not trader_id or not signal_id:
             return
         with self._lock:
-            ring = self._consumed_ids.get(trader_id)
             consumed = self._consumed_set.get(trader_id)
-            if ring is None:
-                ring = deque(maxlen=_MAX_CONSUMED_RING_PER_TRADER)
-                self._consumed_ids[trader_id] = ring
+            if consumed is None:
                 consumed = set()
                 self._consumed_set[trader_id] = consumed
             if signal_id in consumed:
                 return
-            if len(ring) >= ring.maxlen:
-                old = ring[0]
-                consumed.discard(old)
-            ring.append(signal_id)
             consumed.add(signal_id)
             self._consumptions_recorded += 1
+            if len(consumed) >= _CONSUMED_SET_PRUNE_THRESHOLD:
+                self._lazy_prune_consumed_set(trader_id, consumed)
+
+    def _lazy_prune_consumed_set(
+        self, trader_id: str, consumed: set[str]
+    ) -> None:
+        """Drop signal_ids that are obviously stale.
+
+        Called from ``mark_consumed`` only after the set crosses
+        ``_CONSUMED_SET_PRUNE_THRESHOLD``.  An id is droppable when
+        the cache no longer holds a snapshot for it AND, if a
+        snapshot exists, its ``updated_at`` is older than
+        ``_CONSUMED_SET_PRUNE_TERMINAL_CUTOFF_SECONDS`` (24 h) —
+        terminal status flips and signals that have been LRU-evicted
+        cannot be re-emitted in a way the trader has not already
+        consumed, so dropping their ids does NOT re-introduce the
+        ring-wrap bug.
+
+        Caller must hold ``self._lock``.
+        """
+        cutoff = utcnow() - timedelta(
+            seconds=_CONSUMED_SET_PRUNE_TERMINAL_CUTOFF_SECONDS
+        )
+        signals = self._signals
+        droppable: list[str] = []
+        for sid in consumed:
+            snap = signals.get(sid)
+            if snap is None:
+                droppable.append(sid)
+                continue
+            updated = snap.updated_at or snap.created_at
+            if updated is not None and updated < cutoff:
+                droppable.append(sid)
+        for sid in droppable:
+            consumed.discard(sid)
+        self._consumed_set_lazy_prunes_total += 1
 
     def hydrate_trader_consumed_ids(
         self,
@@ -358,17 +432,14 @@ class SignalCache:
     ) -> None:
         """Bulk-load consumed signal_ids for a trader from a DB query.
 
-        Idempotent: re-hydrating a trader simply refreshes the ring.
+        Idempotent: re-hydrating a trader simply replaces the set.
         """
         if not trader_id:
             return
         with self._lock:
-            ring = deque(
-                (str(sid) for sid in signal_ids if sid),
-                maxlen=_MAX_CONSUMED_RING_PER_TRADER,
-            )
-            self._consumed_ids[trader_id] = ring
-            self._consumed_set[trader_id] = set(ring)
+            self._consumed_set[trader_id] = {
+                str(sid) for sid in signal_ids if sid
+            }
             self._consumed_hydrated.add(trader_id)
 
     def is_trader_hydrated(self, trader_id: str) -> bool:
@@ -480,6 +551,10 @@ class SignalCache:
                 if self._last_bootstrap_mono is None
                 else round(time.monotonic() - self._last_bootstrap_mono, 3)
             )
+            consumed_set_size_per_trader = {
+                trader_id: len(consumed)
+                for trader_id, consumed in self._consumed_set.items()
+            }
             return {
                 "size": len(self._signals),
                 "max_entries": self._max_entries,
@@ -491,6 +566,13 @@ class SignalCache:
                 "hit_rate": hit_rate,
                 "last_received_age_seconds": age,
                 "traders_hydrated": len(self._consumed_hydrated),
+                "consumed_set_size_per_trader": consumed_set_size_per_trader,
+                "consumed_set_lazy_prunes_total": (
+                    self._consumed_set_lazy_prunes_total
+                ),
+                "upserts_skipped_consumed_overlap": (
+                    self._upserts_skipped_consumed_overlap
+                ),
                 "ready": self._ready,
                 "bootstraps_total": self._bootstraps_total,
                 "last_bootstrap_age_seconds": bootstrap_age,

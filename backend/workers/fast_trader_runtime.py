@@ -50,6 +50,7 @@ from services.trader_orchestrator.fast_submit import (
     execute_fast_signal,
 )
 from services.trader_orchestrator_state import (
+    fetch_recent_consumed_signal_ids,
     get_trader_signal_cursor,
     list_fast_traders,
     list_unconsumed_trade_signals,
@@ -916,7 +917,36 @@ class _FastTraderTask:
                     (time.monotonic() - db_t0) * 1000.0, 1
                 )
                 if not trader_hydrated:
-                    cache.hydrate_trader_consumed_ids(trader_id, [])
+                    # Hydrate the per-trader consumed-set from the
+                    # ``trader_signal_consumption`` ledger so the very
+                    # first cycle after a worker restart already knows
+                    # which signals this bot has handled — eliminates
+                    # the post-restart "trader_order already exists"
+                    # skip burst (was 200-400/h on Sandbox - Tail-End,
+                    # Plan 0032). The hydrate is a strict optimisation:
+                    # if the query fails, fall back to the old empty
+                    # hydrate behaviour and let steady-state mark_consumed
+                    # plus the (trader_id, signal_id) idempotency-guard
+                    # in fast_submit absorb the duplicates.
+                    hydrate_t0 = time.monotonic()
+                    consumed_ids: list[str] = []
+                    try:
+                        consumed_ids = await fetch_recent_consumed_signal_ids(
+                            session,
+                            trader_id=trader_id,
+                            hours=48,
+                            limit=50_000,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Fast trader cold-start consumed-set hydrate failed",
+                            trader_id=trader_id,
+                            exc_info=exc,
+                        )
+                    cache.hydrate_trader_consumed_ids(trader_id, consumed_ids)
+                    self._last_stage_timings_ms["coldstart_consumed_hydrate"] = round(
+                        (time.monotonic() - hydrate_t0) * 1000.0, 1
+                    )
                 # Seed the cache so the NEXT cycle takes the fast path
                 # even if the eager bootstrap hasn't completed yet.
                 for db_sig in signals:

@@ -6825,6 +6825,50 @@ async def record_signal_consumption(
     if commit:
         await _commit_with_retry(session)
 
+
+async def fetch_recent_consumed_signal_ids(
+    session: AsyncSession,
+    *,
+    trader_id: str,
+    hours: int = 48,
+    limit: int = 50_000,
+) -> list[str]:
+    """Return signal_ids this trader has consumed inside a recent window.
+
+    Used by the fast-tier worker to hydrate the in-process consumed-set
+    on cold start, replacing the previous unconditional empty hydrate.
+    Without this, every restart of ``worker-trading`` causes the trader
+    to re-walk every pending ``trade_signals`` row that already has a
+    matching ``trader_orders`` row and emit thousands of "trader_order
+    already exists" skip decisions before steady state recovers.
+
+    Caps results at ``limit`` (default 50 000) so a misconfigured
+    high-consumption trader cannot blow up worker memory at start-up.
+    The cap matches the per-trader ``_consumed_set`` upper bound used
+    by ``signal_cache`` after Plan 0032 retired the deque ring.
+
+    Returns a ``list[str]`` (not a ``set``) — the cache's
+    ``hydrate_trader_consumed_ids`` accepts an ``Iterable[str]`` and
+    deduplicates internally. Newest-first ordering keeps the most
+    relevant signal_ids if the cap clips the tail.
+    """
+    normalized_trader_id = str(trader_id or "").strip()
+    if not normalized_trader_id:
+        return []
+    window_hours = int(hours) if hours and int(hours) > 0 else 48
+    capped_limit = int(limit) if limit and int(limit) > 0 else 50_000
+    cutoff = (_now() - timedelta(hours=window_hours)).replace(tzinfo=None)
+    query = (
+        select(TraderSignalConsumption.signal_id)
+        .where(TraderSignalConsumption.trader_id == normalized_trader_id)
+        .where(TraderSignalConsumption.consumed_at >= cutoff)
+        .order_by(desc(TraderSignalConsumption.consumed_at))
+        .limit(capped_limit)
+    )
+    result = await session.execute(query)
+    return [str(sid) for sid in result.scalars().all() if sid]
+
+
 async def list_unconsumed_trade_signals(
     session: AsyncSession,
     *,
