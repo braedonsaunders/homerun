@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans, useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
 import {
   ShoppingCart,
@@ -124,6 +125,7 @@ function formatUsd(value: number): string {
 // ─── Component ──────────────────────────────────────────
 
 export default function BuyButton({ opportunity, traderSignal, className, variant = 'full' }: BuyButtonProps) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [result, setResult] = useState<{ success: boolean; message: string; traderId?: string } | null>(null)
   const [sizeUsd, setSizeUsd] = useState<number | null>(null)
@@ -181,7 +183,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
     onError: (error: any) => {
       setResult({
         success: false,
-        message: error?.response?.data?.detail || error?.message || 'Buy failed',
+        message: error?.response?.data?.detail || error?.message || t('buyButton.buyFailed'),
       })
       setConfirmStep(false)
     },
@@ -231,7 +233,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
           ) : (
             <ShoppingCart className="w-3 h-3" />
           )}
-          Buy
+          {t('buyButton.buy')}
         </button>
       ) : (
         <Button
@@ -250,7 +252,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
           ) : (
             <ShoppingCart className="w-3 h-3 mr-1.5" />
           )}
-          Buy
+          {t('buyButton.buy')}
         </Button>
       )}
 
@@ -287,7 +289,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                     }
                   </div>
                   <div className="flex-1 min-w-0">
-                    <h2 className="text-sm font-semibold text-foreground">Place Order</h2>
+                    <h2 className="text-sm font-semibold text-foreground">{t('buyButton.placeOrder')}</h2>
                     <p className="text-xs text-muted-foreground truncate">{config?.title}</p>
                   </div>
                   <button
@@ -332,7 +334,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                 {/* ─── Order Type ─── */}
                 <div>
                   <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2 block">
-                    Order Type
+                    {t('buyButton.orderType')}
                   </label>
                   <div className="grid grid-cols-2 gap-1.5 p-1 bg-muted/40 rounded-lg">
                     <button
@@ -345,7 +347,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                       )}
                     >
                       <Zap className="w-3.5 h-3.5" />
-                      Market
+                      {t('buyButton.market')}
                     </button>
                     <button
                       onClick={() => setOrderType('limit')}
@@ -357,7 +359,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                       )}
                     >
                       <Target className="w-3.5 h-3.5" />
-                      Limit
+                      {t('buyButton.limit')}
                     </button>
                   </div>
 
@@ -369,7 +371,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                       className="overflow-hidden"
                     >
                       <div className="mt-2.5 relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">Price</span>
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">{t('buyButton.price')}</span>
                         <input
                           type="number"
                           step="0.01"
@@ -390,10 +392,10 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                 <div>
                   <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
                     <DollarSign className="w-3 h-3" />
-                    Position Size
+                    {t('buyButton.positionSize')}
                     {config?.suggestedSizeUsd != null && (
                       <span className="text-emerald-400/70 font-normal normal-case tracking-normal">
-                        suggested: {formatUsd(config.suggestedSizeUsd)}
+                        {t('buyButton.suggested', { amount: formatUsd(config.suggestedSizeUsd) })}
                       </span>
                     )}
                   </label>
@@ -419,7 +421,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                       type="number"
                       step="1"
                       min="1"
-                      placeholder="Custom amount"
+                      placeholder={t('buyButton.customAmount')}
                       value={customSize}
                       onChange={(e) => {
                         setCustomSize(e.target.value)
@@ -436,12 +438,12 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                 <div>
                   <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
                     <Bot className="w-3 h-3" />
-                    Execute Via
+                    {t('buyButton.executeVia')}
                   </label>
                   {enabledTraders.length === 0 ? (
                     <div className="flex items-center gap-2 px-3 py-3 rounded-lg bg-muted/30 border border-border/50">
                       <Bot className="w-4 h-4 text-muted-foreground/40" />
-                      <span className="text-xs text-muted-foreground">No enabled bots available</span>
+                      <span className="text-xs text-muted-foreground">{t('buyButton.noEnabledBots')}</span>
                     </div>
                   ) : (
                     <div className="space-y-1">
@@ -475,7 +477,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                               ? 'bg-green-500/10 text-green-400 border border-green-500/20'
                               : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                           )}>
-                            {trader.mode === 'live' ? 'Live' : 'Shadow'}
+                            {trader.mode === 'live' ? t('buyButton.modeLive') : t('buyButton.modeShadow')}
                           </span>
                         </button>
                       ))}
@@ -492,29 +494,29 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                     className="overflow-hidden"
                   >
                     <div className="rounded-lg bg-muted/30 border border-border/50 p-3 space-y-2">
-                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Trade Summary</p>
+                      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{t('buyButton.tradeSummary')}</p>
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Cost</span>
+                          <span className="text-muted-foreground">{t('buyButton.cost')}</span>
                           <span className="font-data text-foreground">{formatUsd(effectiveSize)}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Entry</span>
+                          <span className="text-muted-foreground">{t('buyButton.entry')}</span>
                           <span className="font-data text-foreground">{effectivePrice.toFixed(2)}c</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">Shares</span>
+                          <span className="text-muted-foreground">{t('buyButton.shares')}</span>
                           <span className="font-data text-foreground">~{estimatedShares.toFixed(1)}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">If Yes</span>
+                          <span className="text-muted-foreground">{t('buyButton.ifYes')}</span>
                           <span className="font-data text-emerald-400">+{formatUsd(estimatedProfit)}</span>
                         </div>
                       </div>
                       {config?.roi != null && (
                         <div className="flex items-center gap-1.5 pt-1 border-t border-border/30">
                           <TrendingUp className="w-3 h-3 text-emerald-400/70" />
-                          <span className="text-[11px] text-muted-foreground">ROI/Edge</span>
+                          <span className="text-[11px] text-muted-foreground">{t('buyButton.roiEdge')}</span>
                           <span className="text-[11px] font-data text-emerald-400 ml-auto">{config.roi.toFixed(1)}%</span>
                         </div>
                       )}
@@ -542,7 +544,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                       : <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />}
                     <div className="flex-1 min-w-0">
                       <p className={cn('text-xs font-medium', result.success ? 'text-green-400' : 'text-red-400')}>
-                        {result.success ? 'Order Placed' : 'Order Failed'}
+                        {result.success ? t('buyButton.orderPlaced') : t('buyButton.orderFailed')}
                       </p>
                       <p className={cn('text-[11px] mt-0.5', result.success ? 'text-green-400/70' : 'text-red-400/70')}>
                         {result.message}
@@ -566,7 +568,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                         className="flex-1 h-9 text-xs"
                       >
                         <Bot className="w-3.5 h-3.5 mr-1.5" />
-                        Go to Trader
+                        {t('buyButton.goToTrader')}
                       </Button>
                     )}
                     <Button
@@ -579,7 +581,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                           : 'bg-muted/40 hover:bg-muted/60 text-foreground border border-border/50'
                       )}
                     >
-                      {result.success ? 'Done' : 'Close'}
+                      {result.success ? t('buyButton.done') : t('buyButton.close')}
                     </Button>
                   </div>
                 ) : confirmStep && selectedTrader?.mode === 'live' ? (
@@ -587,9 +589,9 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                     <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-red-500/10 border border-red-500/20">
                       <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-xs font-medium text-red-400">Live Order Confirmation</p>
+                        <p className="text-xs font-medium text-red-400">{t('buyButton.liveOrderConfirmation')}</p>
                         <p className="text-[11px] text-red-400/70 mt-0.5">
-                          This will place a <strong>real money</strong> order for {formatUsd(effectiveSize)} via "{selectedTrader.name}".
+                          <Trans i18nKey="buyButton.realMoneyWarning" t={t} values={{ amount: formatUsd(effectiveSize), name: selectedTrader.name }} components={{ strong: <strong /> }} />
                         </p>
                       </div>
                     </div>
@@ -600,7 +602,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                         variant="outline"
                         className="flex-1 h-9 text-xs"
                       >
-                        Cancel
+                        {t('buyButton.cancel')}
                       </Button>
                       <Button
                         onClick={() => mutation.mutate(selectedTraderId!)}
@@ -613,7 +615,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                         ) : (
                           <Shield className="w-3.5 h-3.5 mr-1.5" />
                         )}
-                        Confirm Live Order
+                        {t('buyButton.confirmLiveOrder')}
                       </Button>
                     </div>
                   </div>
@@ -634,7 +636,7 @@ export default function BuyButton({ opportunity, traderSignal, className, varian
                     ) : (
                       <ShoppingCart className="w-4 h-4 mr-2" />
                     )}
-                    {!selectedTraderId ? 'Select a Bot' : `Buy ${formatUsd(effectiveSize)}`}
+                    {!selectedTraderId ? t('buyButton.selectABot') : t('buyButton.buyAmount', { amount: formatUsd(effectiveSize) })}
                   </Button>
                 )}
               </div>

@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useState } from 'react'
+import { Trans, useTranslation } from 'react-i18next'
 import {
   AlertCircle,
   CheckCircle,
@@ -78,6 +79,7 @@ function TraderOpportunitiesSettingsFlyout({
   savePending,
   saveMessage,
 }: TraderOpportunitiesSettingsFlyoutProps) {
+  const { t } = useTranslation()
   const [form, setForm] = useState<TraderOpportunitiesSettingsForm>(initial)
 
   useEffect(() => {
@@ -133,7 +135,7 @@ function TraderOpportunitiesSettingsFlyout({
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 bg-background/95 backdrop-blur-sm border-b border-border/40">
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-orange-400" />
-            <h3 className="text-sm font-semibold">Trader Signal Display</h3>
+            <h3 className="text-sm font-semibold">{t('traderOpportunitiesSettingsFlyout.title')}</h3>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -143,7 +145,7 @@ function TraderOpportunitiesSettingsFlyout({
               className="gap-1 text-[10px] h-auto px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white"
             >
               <Save className="w-3 h-3" />
-              {savePending ? 'Saving...' : 'Save'}
+              {savePending ? t('traderOpportunitiesSettingsFlyout.saving') : t('traderOpportunitiesSettingsFlyout.save')}
             </Button>
             <Button
               variant="ghost"
@@ -151,7 +153,7 @@ function TraderOpportunitiesSettingsFlyout({
               className="text-xs h-auto px-2.5 py-1 hover:bg-card"
             >
               <X className="w-3.5 h-3.5 mr-1" />
-              Close
+              {t('traderOpportunitiesSettingsFlyout.close')}
             </Button>
           </div>
         </div>
@@ -176,20 +178,18 @@ function TraderOpportunitiesSettingsFlyout({
 
         <div className="p-3 space-y-3 pb-6">
           <p className="text-[11px] text-muted-foreground/70">
-            Traders opportunities are fully strategy-owned. Firehose eligibility filters are defined
-            in the Traders Confluence strategy config below.
-            Auto-trader and copy trading settings are configured in the Auto Trader flyout.
+            {t('traderOpportunitiesSettingsFlyout.intro')}
           </p>
 
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3 space-y-3">
             <div className="flex items-center gap-1.5">
               <Filter className="w-3.5 h-3.5 text-orange-400" />
-              <h4 className="text-[10px] uppercase tracking-widest font-semibold">Display Limits</h4>
+              <h4 className="text-[10px] uppercase tracking-widest font-semibold">{t('traderOpportunitiesSettingsFlyout.displayLimits')}</h4>
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <NumericField
-                label="Confluence Fetch Limit"
-                help="1-200"
+                label={t('traderOpportunitiesSettingsFlyout.confluenceFetchLimit')}
+                help={t('traderOpportunitiesSettingsFlyout.range1to200')}
                 value={form.confluence_limit}
                 onChange={(v) => setForm((prev) => ({ ...prev, confluence_limit: v }))}
                 min={1}
@@ -203,13 +203,11 @@ function TraderOpportunitiesSettingsFlyout({
             <div className="flex items-center gap-1.5">
               <Users className="w-3.5 h-3.5 text-amber-400" />
               <h4 className="text-[10px] uppercase tracking-widest font-semibold">
-                Firehose Filtering Ownership
+                {t('traderOpportunitiesSettingsFlyout.firehoseFilteringOwnership')}
               </h4>
             </div>
             <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
-              Traders firehose inclusion/exclusion gates (tradability, crypto exclusion, source
-              qualification, age windows) are controlled in the{' '}
-              <span className="text-foreground">Traders Confluence strategy config</span> below.
+              <Trans i18nKey="traderOpportunitiesSettingsFlyout.firehoseDescription" t={t} components={{ strategy: <span className="text-foreground" /> }} />
             </p>
           </Card>
 
@@ -218,9 +216,9 @@ function TraderOpportunitiesSettingsFlyout({
           <Card className="bg-card/40 border-border/40 rounded-xl shadow-none p-3">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium">Strategy Code</p>
+                <p className="text-xs font-medium">{t('traderOpportunitiesSettingsFlyout.strategyCode')}</p>
                 <p className="text-[10px] text-muted-foreground">
-                  Edit the Traders Confluence detector source code
+                  {t('traderOpportunitiesSettingsFlyout.strategyCodeDescription')}
                 </p>
               </div>
               <Button
@@ -230,7 +228,7 @@ function TraderOpportunitiesSettingsFlyout({
                 className="gap-1.5 text-[10px] h-7"
               >
                 <ExternalLink className="w-3 h-3" />
-                Edit Strategy Code
+                {t('traderOpportunitiesSettingsFlyout.editStrategyCode')}
               </Button>
             </div>
           </Card>

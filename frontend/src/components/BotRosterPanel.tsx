@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react'
 import { useAtom } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import { Loader2, Plus } from 'lucide-react'
 import type { Trader } from '../services/apiTraders'
 import {
@@ -71,6 +72,7 @@ function BotRosterPanelImpl({
   sourceLabelByKey,
   sourceGroupOrderByKey,
 }: BotRosterPanelProps) {
+  const { t } = useTranslation()
   const [search, setSearch] = useAtom(botRosterSearchAtom)
   const [hideInactive, setHideInactive] = useAtom(botRosterHideInactiveAtom)
   const [sort, setSort] = useAtom(botRosterSortAtom)
@@ -101,7 +103,7 @@ function BotRosterPanelImpl({
 
   const grouped = useMemo(() => {
     if (groupBy === 'none') {
-      return [{ key: 'all', label: 'All Bots', order: 0, rows: filtered }]
+      return [{ key: 'all', label: t('botRosterPanel.allBots'), order: 0, rows: filtered }]
     }
     const groups = new Map<string, { key: string; label: string; order: number; rows: BotRosterRow[] }>()
     for (const row of filtered) {
@@ -110,14 +112,14 @@ function BotRosterPanelImpl({
       let order = 99
       if (groupBy === 'status') {
         key = row.status.key
-        if (row.status.key === 'running') { label = 'Running'; order = 0 }
-        else if (row.status.key === 'engine_stopped') { label = 'Engine Stopped'; order = 1 }
-        else if (row.status.key === 'bot_stopped') { label = 'Bot Stopped'; order = 2 }
-        else { label = 'Inactive'; order = 3 }
+        if (row.status.key === 'running') { label = t('botRosterPanel.statusRunning'); order = 0 }
+        else if (row.status.key === 'engine_stopped') { label = t('botRosterPanel.statusEngineStopped'); order = 1 }
+        else if (row.status.key === 'bot_stopped') { label = t('botRosterPanel.statusBotStopped'); order = 2 }
+        else { label = t('botRosterPanel.statusInactive'); order = 3 }
       } else {
         key = row.primarySourceKey
-        if (key === 'multi') { label = 'Multi-source'; order = sourceGroupOrderByKey.size + 1 }
-        else if (key === 'unknown') { label = 'Unassigned'; order = sourceGroupOrderByKey.size + 2 }
+        if (key === 'multi') { label = t('botRosterPanel.groupMultiSource'); order = sourceGroupOrderByKey.size + 1 }
+        else if (key === 'unknown') { label = t('botRosterPanel.groupUnassigned'); order = sourceGroupOrderByKey.size + 2 }
         else {
           label = sourceLabelByKey[key] || key.toUpperCase()
           order = sourceGroupOrderByKey.get(key) ?? sourceGroupOrderByKey.size
@@ -130,13 +132,13 @@ function BotRosterPanelImpl({
       if (a.order !== b.order) return a.order - b.order
       return a.label.localeCompare(b.label)
     })
-  }, [filtered, groupBy, sourceGroupOrderByKey, sourceLabelByKey])
+  }, [filtered, groupBy, sourceGroupOrderByKey, sourceLabelByKey, t])
 
   return (
     <div className="hidden xl:flex flex-col min-h-0 rounded-lg border border-border/70 bg-card overflow-hidden">
       <div className="shrink-0 px-2.5 py-2 border-b border-border/50 flex items-center justify-between gap-1">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Bots</span>
-        <Button size="sm" className="h-6 w-6 p-0" variant="outline" onClick={openCreateTraderFlyout} title="New bot">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('botRosterPanel.headerBots')}</span>
+        <Button size="sm" className="h-6 w-6 p-0" variant="outline" onClick={openCreateTraderFlyout} title={t('botRosterPanel.newBot')}>
           <Plus className="w-3.5 h-3.5" />
         </Button>
       </div>
@@ -144,7 +146,7 @@ function BotRosterPanelImpl({
         <Input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search bots, source, status..."
+          placeholder={t('botRosterPanel.searchPlaceholder')}
           className="h-6 text-[10px]"
         />
         <div className="grid grid-cols-2 gap-1">
@@ -153,12 +155,12 @@ function BotRosterPanelImpl({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="name_asc">Name A-Z</SelectItem>
-              <SelectItem value="name_desc">Name Z-A</SelectItem>
-              <SelectItem value="pnl_desc">P&amp;L High-Low</SelectItem>
-              <SelectItem value="pnl_asc">P&amp;L Low-High</SelectItem>
-              <SelectItem value="open_desc">Open Orders</SelectItem>
-              <SelectItem value="activity_desc">Latest Activity</SelectItem>
+              <SelectItem value="name_asc">{t('botRosterPanel.sortNameAsc')}</SelectItem>
+              <SelectItem value="name_desc">{t('botRosterPanel.sortNameDesc')}</SelectItem>
+              <SelectItem value="pnl_desc">{t('botRosterPanel.sortPnlDesc')}</SelectItem>
+              <SelectItem value="pnl_asc">{t('botRosterPanel.sortPnlAsc')}</SelectItem>
+              <SelectItem value="open_desc">{t('botRosterPanel.sortOpenOrders')}</SelectItem>
+              <SelectItem value="activity_desc">{t('botRosterPanel.sortLatestActivity')}</SelectItem>
             </SelectContent>
           </Select>
           <Select value={groupBy} onValueChange={(value) => setGroupBy(value as BotRosterGroupBy)}>
@@ -166,9 +168,9 @@ function BotRosterPanelImpl({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="status">Group: Status</SelectItem>
-              <SelectItem value="source">Group: Source</SelectItem>
-              <SelectItem value="none">Group: None</SelectItem>
+              <SelectItem value="status">{t('botRosterPanel.groupByStatus')}</SelectItem>
+              <SelectItem value="source">{t('botRosterPanel.groupBySource')}</SelectItem>
+              <SelectItem value="none">{t('botRosterPanel.groupByNone')}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -178,7 +180,7 @@ function BotRosterPanelImpl({
             onCheckedChange={setHideInactive}
             className="scale-[0.75]"
           />
-          <span className="text-[10px] text-muted-foreground">Hide inactive</span>
+          <span className="text-[10px] text-muted-foreground">{t('botRosterPanel.hideInactive')}</span>
           <span className="ml-auto text-[10px] font-mono text-muted-foreground">
             {filtered.length}/{totalTraderCount}
           </span>
@@ -197,13 +199,13 @@ function BotRosterPanelImpl({
             )}
           >
             <div className="flex min-w-0 items-center justify-between gap-2">
-              <span className="truncate">All Bots</span>
+              <span className="truncate">{t('botRosterPanel.allBots')}</span>
               <span className={cn('shrink-0 font-mono text-[10px]', globalResolvedPnl > 0 ? 'text-emerald-500' : globalResolvedPnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
                 {fmtCurrency(globalResolvedPnl)}
               </span>
             </div>
             <div className="mt-0.5 truncate text-[9px] text-muted-foreground">
-              Showing {filtered.length}/{totalTraderCount}
+              {t('botRosterPanel.showingCount', { shown: filtered.length, total: totalTraderCount })}
             </div>
           </button>
           {showCreatingTraderSkeleton ? (
@@ -213,11 +215,11 @@ function BotRosterPanelImpl({
                   <div className="flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />
                     <span className="text-[11px] font-medium truncate leading-tight text-foreground">
-                      {creatingTraderPreview?.name || 'Creating bot...'}
+                      {creatingTraderPreview?.name || t('botRosterPanel.creatingBot')}
                     </span>
                   </div>
                   <div className="pl-3 mt-0.5 text-[9px] text-muted-foreground">
-                    Provisioning {String(creatingTraderPreview?.mode || selectedAccountMode).toUpperCase()} bot...
+                    {t('botRosterPanel.provisioningBot', { mode: String(creatingTraderPreview?.mode || selectedAccountMode).toUpperCase() })}
                   </div>
                 </div>
                 <Loader2 className="w-3.5 h-3.5 text-cyan-300 animate-spin shrink-0" />
@@ -225,7 +227,7 @@ function BotRosterPanelImpl({
             </div>
           ) : null}
           {grouped.length === 0 ? (
-            <p className="py-6 text-center text-[11px] text-muted-foreground">No bots match these filters.</p>
+            <p className="py-6 text-center text-[11px] text-muted-foreground">{t('botRosterPanel.noBotsMatch')}</p>
           ) : (
             grouped.map((group) => {
               const groupPnl = group.rows.reduce((sum, row) => sum + row.pnl, 0)
@@ -273,12 +275,12 @@ function BotRosterPanelImpl({
                             <div className="shrink-0 flex items-center gap-1 text-[9px] text-cyan-300">
                               <Loader2 className="w-3 h-3 animate-spin" />
                               {pendingToggleAction === 'start'
-                                ? 'Starting...'
+                                ? t('botRosterPanel.actionStarting')
                                 : pendingToggleAction === 'stop'
-                                  ? 'Stopping...'
+                                  ? t('botRosterPanel.actionStopping')
                                   : pendingToggleAction === 'activate'
-                                    ? 'Activating...'
-                                    : 'Deactivating...'}
+                                    ? t('botRosterPanel.actionActivating')
+                                    : t('botRosterPanel.actionDeactivating')}
                             </div>
                           </div>
                         ) : (
@@ -293,13 +295,13 @@ function BotRosterPanelImpl({
                                   <span className="text-[11px] font-medium truncate leading-tight">{row.trader.name}</span>
                                 </div>
                                 <div className="pl-3 mt-0.5 text-[9px] text-muted-foreground">
-                                  <span>{row.open} open</span>
+                                  <span>{t('botRosterPanel.openCount', { n: row.open })}</span>
                                   {row.partialOpenBundles > 0 && (
-                                    <span className="text-amber-500" title="Bundles with one filled leg and one still working">
-                                      {' · '}{row.partialOpenBundles} partial
+                                    <span className="text-amber-500" title={t('botRosterPanel.partialBundlesTooltip')}>
+                                      {' · '}{t('botRosterPanel.partialCount', { n: row.partialOpenBundles })}
                                     </span>
                                   )}
-                                  <span>{' · '}{row.resolved} resolved</span>
+                                  <span>{' · '}{t('botRosterPanel.resolvedCount', { n: row.resolved })}</span>
                                 </div>
                               </div>
                               <span className={cn('shrink-0 text-[10px] font-mono', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
@@ -310,14 +312,14 @@ function BotRosterPanelImpl({
                               {row.sourceLabels.length > 0 ? row.sourceLabels.map((sourceLabel) => (
                                 <span key={`${row.trader.id}:${sourceLabel}`} className="px-1 py-0 text-[8px] rounded bg-muted/60 text-muted-foreground leading-relaxed">{sourceLabel}</span>
                               )) : (
-                                <span className="px-1 py-0 text-[8px] rounded bg-muted/60 text-muted-foreground leading-relaxed">Unassigned</span>
+                                <span className="px-1 py-0 text-[8px] rounded bg-muted/60 text-muted-foreground leading-relaxed">{t('botRosterPanel.groupUnassigned')}</span>
                               )}
                               {row.trader.block_new_orders ? (
                                 <span
                                   className="px-1 py-0 text-[8px] rounded bg-red-500/15 text-red-300 border border-red-500/30 leading-relaxed"
-                                  title="New entry orders blocked. Existing positions still managed."
+                                  title={t('botRosterPanel.noNewOrdersTooltip')}
                                 >
-                                  No new orders
+                                  {t('botRosterPanel.noNewOrders')}
                                 </span>
                               ) : null}
                             </div>
