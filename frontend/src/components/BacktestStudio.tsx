@@ -715,6 +715,23 @@ function ReplaySourcePill({ source }: { source?: string }) {
  * high regardless of the snapshot table — it's the SAME data the live
  * system uses.
  */
+/**
+ * Compact data-fidelity indicator.
+ *
+ * Renders as a single-line chip — a subtle dot + concise rating
+ * label + the relevant numeric.  Click to expand the full detail
+ * (snapshots/deltas split + recommendation).  Lives in the sticky
+ * header so it frames every stage without consuming vertical real
+ * estate.
+ *
+ * Color rules:
+ *   - delta-replay or fidelity=high → emerald (live-parity)
+ *   - fidelity=medium               → amber
+ *   - fidelity=low/none             → red
+ *
+ * Light + dark mode use deliberately desaturated tints so the chip
+ * reads as professional status rather than "alarm banner".
+ */
 function DataCoverageBanner({
   coverage,
   replaySource,
@@ -725,6 +742,7 @@ function DataCoverageBanner({
   discoveryMode?: string
 }) {
   const { t } = useTranslation()
+  const [expanded, setExpanded] = useState(false)
   if (!coverage || !coverage.fidelity_rating) return null
   const rating = coverage.fidelity_rating
   const median = coverage.median_snaps_per_token_per_hour ?? 0
@@ -735,88 +753,90 @@ function DataCoverageBanner({
   const rec = coverage.recommended_action || ''
   const ranOnDeltas = replaySource?.startsWith('deltas') ?? false
 
-  // Delta-replay path → live-parity, always green regardless of the
-  // snapshot-table coverage rating.
-  if (ranOnDeltas) {
-    return (
-      <div className="flex items-center justify-between rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/5 dark:text-emerald-200">
-        <div>
-          <span className="font-semibold">{t('backtestStudio.liveParityReplay')}</span>
-          <span className="ml-2 text-emerald-800/90 dark:text-emerald-300/80">
-            {t('backtestStudio.liveParityDetails', { withDeltas: tokensWithDeltas, total: oppTokens, deltasMedian: deltasMedian.toFixed(1) })}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <DiscoveryModePill mode={discoveryMode} />
-          <ReplaySourcePill source={replaySource} />
-        </div>
-      </div>
-    )
-  }
+  // Resolve a single rating bucket.  Delta-replay always wins (it's
+  // live-parity regardless of the snapshot-table coverage).
+  const tone: 'good' | 'warn' | 'bad' =
+    ranOnDeltas || rating === 'high' ? 'good' : rating === 'medium' ? 'warn' : 'bad'
 
-  if (rating === 'high') {
-    return (
-      <div className="flex items-center justify-between rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-[11px] text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/5 dark:text-emerald-200">
-        <div>
-          <span className="font-semibold">{t('backtestStudio.fidelityHigh')}</span>
-          <span className="ml-2 text-emerald-800/90 dark:text-emerald-300/80">
-            {t('backtestStudio.fidelityHighDetails', { median: median.toFixed(1), withSnaps: tokensWithSnaps, total: oppTokens })}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <DiscoveryModePill mode={discoveryMode} />
-          <ReplaySourcePill source={replaySource} />
-        </div>
-      </div>
-    )
-  }
+  const summaryLabel = ranOnDeltas
+    ? t('backtestStudio.liveParityReplay')
+    : rating === 'high'
+      ? t('backtestStudio.fidelityHigh')
+      : rating === 'medium'
+        ? t('backtestStudio.fidelityMedium')
+        : t('backtestStudio.fidelityLowHeader', { rating: rating.toUpperCase() })
 
-  if (rating === 'medium') {
-    return (
-      <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
-        <div className="flex items-center justify-between">
-          <span className="font-semibold">{t('backtestStudio.fidelityMedium')}</span>
-          <div className="flex items-center gap-1.5">
-          <DiscoveryModePill mode={discoveryMode} />
-          <ReplaySourcePill source={replaySource} />
-        </div>
-        </div>
-        <div className="mt-1 text-amber-900/90 dark:text-amber-300/90">
-          {t('backtestStudio.fidelityMediumDetails', { median: median.toFixed(1), withSnaps: tokensWithSnaps, total: oppTokens })}
-        </div>
-        {rec ? <div className="mt-1 text-amber-900/80 dark:text-amber-200/80">{rec}</div> : null}
-      </div>
-    )
-  }
+  const summaryNumeric = ranOnDeltas
+    ? `${tokensWithDeltas}/${oppTokens} · ${deltasMedian.toFixed(1)}/hr Δ`
+    : `${tokensWithSnaps}/${oppTokens} · ${median.toFixed(1)}/hr`
 
-  // low / none — most actionable case.  This is what shows when "0
-  // trades" is a coverage problem.
+  const dotColor =
+    tone === 'good' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : 'bg-red-500'
+  const ringColor =
+    tone === 'good'
+      ? 'border-emerald-200 dark:border-emerald-500/30'
+      : tone === 'warn'
+        ? 'border-amber-200 dark:border-amber-500/30'
+        : 'border-red-200 dark:border-red-500/40'
+
   return (
-    <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900 dark:border-red-500/50 dark:bg-red-500/10 dark:text-red-100">
-      <div className="flex items-center justify-between">
-        <span className="font-semibold text-red-900 dark:text-red-200">
-          {t('backtestStudio.fidelityLowHeader', { rating: rating.toUpperCase() })}
+    <div
+      className={cn(
+        'rounded-md border bg-card/40 px-2.5 py-1 text-[11px] transition-colors',
+        ringColor,
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotColor)} />
+        <span className="text-muted-foreground uppercase tracking-wide text-[10px] shrink-0">
+          {t('backtestStudio.fidelityChipLabel', { defaultValue: 'Data fidelity' })}
         </span>
-        <div className="flex items-center gap-1.5">
+        <span className={cn(
+          'font-semibold shrink-0',
+          tone === 'good' && 'text-emerald-700 dark:text-emerald-300',
+          tone === 'warn' && 'text-amber-700 dark:text-amber-300',
+          tone === 'bad'  && 'text-red-700 dark:text-red-300',
+        )}>
+          {summaryLabel}
+        </span>
+        <span className="font-mono tabular-nums text-muted-foreground shrink-0">
+          {summaryNumeric}
+        </span>
+        <div className="ml-auto flex items-center gap-1">
           <DiscoveryModePill mode={discoveryMode} />
           <ReplaySourcePill source={replaySource} />
+          <span className="text-muted-foreground text-[12px] leading-none">
+            {expanded ? '▴' : '▾'}
+          </span>
         </div>
-      </div>
-      <div className="mt-1 grid grid-cols-2 gap-2 text-[11px] text-red-900/90 dark:text-red-100/90">
-        <div className="rounded-sm bg-red-100 px-2 py-1 dark:bg-red-500/10">
-          <div className="text-red-800/80 dark:text-red-200/70">{t('backtestStudio.fidelitySnapshotsLabel')}</div>
-          <div className="font-mono">
-            {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithSnaps, total: oppTokens, median: median.toFixed(1) })}
+      </button>
+      {expanded ? (
+        <div className="mt-1.5 space-y-1 border-t border-border/30 pt-1.5 text-[10.5px] text-muted-foreground">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <span className="uppercase tracking-wide text-[9px]">
+                {t('backtestStudio.fidelitySnapshotsLabel')}
+              </span>
+              <div className="font-mono tabular-nums text-foreground">
+                {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithSnaps, total: oppTokens, median: median.toFixed(1) })}
+              </div>
+            </div>
+            <div>
+              <span className="uppercase tracking-wide text-[9px]">
+                {t('backtestStudio.fidelityDeltasLabel')}
+              </span>
+              <div className="font-mono tabular-nums text-foreground">
+                {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithDeltas, total: oppTokens, median: deltasMedian.toFixed(1) })}
+              </div>
+            </div>
           </div>
+          {rec ? <div className="text-muted-foreground/90 leading-relaxed">{rec}</div> : null}
         </div>
-        <div className="rounded-sm bg-red-100 px-2 py-1 dark:bg-red-500/10">
-          <div className="text-red-800/80 dark:text-red-200/70">{t('backtestStudio.fidelityDeltasLabel')}</div>
-          <div className="font-mono">
-            {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithDeltas, total: oppTokens, median: deltasMedian.toFixed(1) })}
-          </div>
-        </div>
-      </div>
-      {rec ? <div className="mt-2 text-red-900/90 dark:text-red-100/90">{rec}</div> : null}
+      ) : null}
     </div>
   )
 }
@@ -1081,17 +1101,17 @@ function StudioStepper({
             className={cn(
               'group flex flex-1 items-center gap-2 rounded-sm px-2.5 py-1.5 text-left transition-colors',
               active
-                ? 'bg-amber-500/15 ring-1 ring-amber-500/40'
+                ? 'bg-amber-500/20 ring-1 ring-amber-500/60 shadow-sm dark:bg-amber-500/15 dark:ring-amber-400/40'
                 : s.disabled
                   ? 'opacity-40 cursor-not-allowed'
-                  : 'hover:bg-muted/40',
+                  : 'hover:bg-muted/50',
             )}
           >
             <span
               className={cn(
                 'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold tabular-nums',
                 active
-                  ? 'border-amber-400 bg-amber-500/20 text-amber-200'
+                  ? 'border-amber-500 bg-amber-500 text-white dark:border-amber-400 dark:bg-amber-500/30 dark:text-amber-100'
                   : 'border-border/40 bg-background/40 text-muted-foreground',
               )}
             >
@@ -1100,20 +1120,29 @@ function StudioStepper({
             <Icon
               className={cn(
                 'h-3.5 w-3.5 shrink-0',
-                active ? 'text-amber-300' : 'text-muted-foreground',
+                active ? 'text-amber-700 dark:text-amber-300' : 'text-muted-foreground',
               )}
             />
             <span className="min-w-0 flex-1">
               <span
                 className={cn(
                   'block text-[11px] font-semibold leading-tight',
-                  active ? 'text-amber-200' : 'text-foreground',
+                  active
+                    ? 'text-amber-900 dark:text-amber-100'
+                    : 'text-foreground',
                 )}
               >
                 {s.label}
               </span>
               {s.sublabel ? (
-                <span className="block truncate text-[9px] uppercase tracking-wide text-muted-foreground">
+                <span
+                  className={cn(
+                    'block truncate text-[9px] uppercase tracking-wide',
+                    active
+                      ? 'text-amber-800/80 dark:text-amber-200/70'
+                      : 'text-muted-foreground',
+                  )}
+                >
                   {s.sublabel}
                 </span>
               ) : null}
@@ -2118,88 +2147,54 @@ export default function BacktestStudio({
       {/* ═════════════════ STAGE BODY ═════════════════ */}
       <div className="flex-1 min-h-0 overflow-hidden">
 
-        {/* ─────────── ① SETUP — pick data + window + capital ─────────── */}
+        {/* ─────────── ① SETUP — pick data + window + capital ───────────
+            App-shell layout: full width, fit-to-viewport flex column.
+            Content laid out in a 12-col grid that absorbs available
+            width without horizontal scrolling, and only an internal
+            ScrollArea on the dataset list (which CAN exceed viewport
+            when many datasets are imported).  Sticky footer owns the
+            Continue action so it never slides off-screen. */}
         {stage === 'setup' ? (
-          <ScrollArea className="h-full">
-            <div className="mx-auto max-w-3xl space-y-4 p-6">
-              <div>
-                <h2 className="text-lg font-semibold">{t('backtestStudio.setupTitle', { defaultValue: 'Set up the run' })}</h2>
-                <p className="text-[12px] text-muted-foreground">
-                  {t('backtestStudio.setupSubtitle', { defaultValue: 'Pick the data window and capital first.  Strategy parameters come next on Run.' })}
-                </p>
-              </div>
-
-              {/* Provider dataset picker — full width.  When set, this
-                  drives (token_ids, start, end) for the run; the
-                  Window controls below are ignored. */}
-              <div className="rounded-md border border-border/50 bg-card/40 p-3 space-y-2">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <Layers3 className="h-3.5 w-3.5 text-violet-400" />
-                  {t('backtestStudio.setupDatasetTitle', { defaultValue: 'Data source' })}
-                </div>
-                <ProviderDatasetSelector
-                  selected={providerDatasetIds}
-                  onChange={setProviderDatasetIds}
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  {t('backtestStudio.setupDatasetHint', { defaultValue: 'Pick imported parquet datasets, or leave empty to use the rolling window below.' })}
-                </p>
-              </div>
-
-              {/* Capital + Seed */}
-              <div className="rounded-md border border-border/50 bg-card/40 p-3 space-y-2">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
-                  {t('backtestStudio.setupCapitalTitle', { defaultValue: 'Capital & seed' })}
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {t('backtestStudio.labelCapital')}
-                    </Label>
-                    <Input
-                      value={initialCapital}
-                      onChange={(e) => setInitialCapital(e.target.value)}
-                      className="h-8"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {t('backtestStudio.labelSeed')}
-                    </Label>
-                    <Input
-                      value={seed}
-                      onChange={(e) => setSeed(e.target.value)}
-                      placeholder={t('backtestStudio.labelSeedAuto')}
-                      className="h-8"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Window — only used when no provider dataset is selected */}
-              <div
-                className={cn(
-                  'rounded-md border border-border/50 bg-card/40 p-3 space-y-2',
-                  providerDatasetIds.length > 0 && 'opacity-50',
-                )}
-              >
-                <div className="flex items-center justify-between">
+          <div className="flex h-full flex-col">
+            <div className="flex-1 min-h-0 grid grid-cols-12 gap-3 p-4">
+              {/* Left column — primary inputs (capital, window, dataset) */}
+              <div className="col-span-12 lg:col-span-7 flex min-h-0 flex-col gap-3">
+                {/* Provider dataset picker — flex-1 so it absorbs
+                    excess vertical space; the picker's own list
+                    scrolls internally. */}
+                <div className="rounded-md border border-border/50 bg-card/40 p-3 flex min-h-0 flex-col gap-2">
                   <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    <Clock className="h-3.5 w-3.5 text-sky-400" />
-                    {t('backtestStudio.setupWindowTitle', { defaultValue: 'Time window' })}
+                    <Layers3 className="h-3.5 w-3.5 text-violet-400" />
+                    {t('backtestStudio.setupDatasetTitle', { defaultValue: 'Data source' })}
                   </div>
-                  {providerDatasetIds.length > 0 ? (
-                    <span className="text-[10px] text-muted-foreground italic">
-                      {t('backtestStudio.setupWindowDisabled', { defaultValue: 'overridden by selected dataset(s)' })}
-                    </span>
-                  ) : null}
+                  <ProviderDatasetSelector
+                    selected={providerDatasetIds}
+                    onChange={setProviderDatasetIds}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    {t('backtestStudio.setupDatasetHint', { defaultValue: 'Pick imported parquet datasets, or leave empty to use the rolling window below.' })}
+                  </p>
                 </div>
-                <div>
-                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title={t('backtestStudio.windowTooltip')}>
-                    {t('backtestStudio.labelWindowDays')}
-                  </Label>
-                  <div className="flex items-center gap-2">
+
+                {/* Window — disabled when a provider dataset is selected */}
+                <div
+                  className={cn(
+                    'rounded-md border border-border/50 bg-card/40 p-3 transition-opacity',
+                    providerDatasetIds.length > 0 && 'opacity-50',
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <Clock className="h-3.5 w-3.5 text-sky-400" />
+                      {t('backtestStudio.setupWindowTitle', { defaultValue: 'Time window' })}
+                    </div>
+                    {providerDatasetIds.length > 0 ? (
+                      <span className="text-[10px] text-muted-foreground italic">
+                        {t('backtestStudio.setupWindowDisabled', { defaultValue: 'overridden by selected dataset(s)' })}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
                     <Input
                       value={windowDays}
                       onChange={(e) => setWindowDays(e.target.value)}
@@ -2236,95 +2231,128 @@ export default function BacktestStudio({
                 </div>
               </div>
 
-              {/* Run mechanics — latency, impact, rebate */}
-              <details className="group rounded-md border border-border/50 bg-card/40">
-                <summary className="cursor-pointer list-none px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <Sliders className="h-3.5 w-3.5 text-amber-400" />
-                    {t('backtestStudio.setupMechanicsTitle', { defaultValue: 'Run mechanics' })}
-                    <span className="ml-2 text-[10px] font-normal text-muted-foreground/70 normal-case">
-                      {t('backtestStudio.setupMechanicsHint', { defaultValue: 'Latency, impact, maker rebate — defaults are fine for most runs.' })}
-                    </span>
-                  </span>
-                  <span className="text-[12px] text-muted-foreground transition-transform group-open:rotate-90">▸</span>
-                </summary>
-                <div className="grid grid-cols-2 gap-3 px-3 pb-3">
-                  <div>
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {t('backtestStudio.labelLatencyP50')}
-                    </Label>
-                    <Input
-                      value={submitP50}
-                      onChange={(e) => setSubmitP50(e.target.value)}
-                      placeholder={t('backtestStudio.labelMeasured')}
-                      className="h-8"
-                    />
+              {/* Right column — capital + mechanics (compact form) */}
+              <div className="col-span-12 lg:col-span-5 flex min-h-0 flex-col gap-3">
+                <div className="rounded-md border border-border/50 bg-card/40 p-3">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
+                    {t('backtestStudio.setupCapitalTitle', { defaultValue: 'Capital & seed' })}
                   </div>
-                  <div>
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {t('backtestStudio.labelLatencyP95')}
-                    </Label>
-                    <Input
-                      value={submitP95}
-                      onChange={(e) => setSubmitP95(e.target.value)}
-                      placeholder={t('backtestStudio.labelMeasured')}
-                      className="h-8"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title={t('backtestStudio.impactTooltip')}>
-                      {t('backtestStudio.labelImpactBps')}
-                    </Label>
-                    <Input
-                      value={impactBps}
-                      onChange={(e) => setImpactBps(e.target.value)}
-                      placeholder={t('backtestStudio.placeholderOff')}
-                      className="h-8"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title={t('backtestStudio.makerRebateTooltip')}>
-                      {t('backtestStudio.labelMakerRebate')}
-                    </Label>
-                    <Input
-                      value={makerRebateBps}
-                      onChange={(e) => setMakerRebateBps(e.target.value)}
-                      placeholder={t('backtestStudio.placeholderOff')}
-                      className="h-8"
-                    />
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {t('backtestStudio.labelCapital')}
+                      </Label>
+                      <Input
+                        value={initialCapital}
+                        onChange={(e) => setInitialCapital(e.target.value)}
+                        className="h-8"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {t('backtestStudio.labelSeed')}
+                      </Label>
+                      <Input
+                        value={seed}
+                        onChange={(e) => setSeed(e.target.value)}
+                        placeholder={t('backtestStudio.labelSeedAuto')}
+                        className="h-8"
+                      />
+                    </div>
                   </div>
                 </div>
-              </details>
 
-              {/* Continue button */}
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <Button
-                  size="lg"
-                  className="bg-amber-600 hover:bg-amber-700 text-white"
-                  onClick={() => setStage('run')}
-                >
-                  {t('backtestStudio.setupContinue', { defaultValue: 'Continue to Run' })}
-                  <Play className="ml-2 h-4 w-4" />
-                </Button>
+                {/* Run mechanics — latency, impact, rebate */}
+                <details className="group rounded-md border border-border/50 bg-card/40">
+                  <summary className="cursor-pointer list-none px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Sliders className="h-3.5 w-3.5 text-amber-400" />
+                      {t('backtestStudio.setupMechanicsTitle', { defaultValue: 'Run mechanics' })}
+                      <span className="ml-2 text-[10px] font-normal text-muted-foreground/70 normal-case">
+                        {t('backtestStudio.setupMechanicsHint', { defaultValue: 'defaults are fine' })}
+                      </span>
+                    </span>
+                    <span className="text-[12px] text-muted-foreground transition-transform group-open:rotate-90">▸</span>
+                  </summary>
+                  <div className="grid grid-cols-2 gap-3 px-3 pb-3">
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {t('backtestStudio.labelLatencyP50')}
+                      </Label>
+                      <Input
+                        value={submitP50}
+                        onChange={(e) => setSubmitP50(e.target.value)}
+                        placeholder={t('backtestStudio.labelMeasured')}
+                        className="h-8"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {t('backtestStudio.labelLatencyP95')}
+                      </Label>
+                      <Input
+                        value={submitP95}
+                        onChange={(e) => setSubmitP95(e.target.value)}
+                        placeholder={t('backtestStudio.labelMeasured')}
+                        className="h-8"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title={t('backtestStudio.impactTooltip')}>
+                        {t('backtestStudio.labelImpactBps')}
+                      </Label>
+                      <Input
+                        value={impactBps}
+                        onChange={(e) => setImpactBps(e.target.value)}
+                        placeholder={t('backtestStudio.placeholderOff')}
+                        className="h-8"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground" title={t('backtestStudio.makerRebateTooltip')}>
+                        {t('backtestStudio.labelMakerRebate')}
+                      </Label>
+                      <Input
+                        value={makerRebateBps}
+                        onChange={(e) => setMakerRebateBps(e.target.value)}
+                        placeholder={t('backtestStudio.placeholderOff')}
+                        className="h-8"
+                      />
+                    </div>
+                  </div>
+                </details>
+                <div className="flex-1" />
               </div>
             </div>
-          </ScrollArea>
+
+            {/* Sticky footer — Continue action */}
+            <div className="flex items-center justify-between gap-2 border-t border-border/50 bg-background/60 px-4 py-3">
+              <p className="text-[11px] text-muted-foreground">
+                {t('backtestStudio.setupSubtitle', { defaultValue: 'Strategy parameters come next on Run.' })}
+              </p>
+              <Button
+                size="lg"
+                className="bg-amber-600 hover:bg-amber-700 text-white"
+                onClick={() => setStage('run')}
+              >
+                {t('backtestStudio.setupContinue', { defaultValue: 'Continue to Run' })}
+                <Play className="ml-2 h-4 w-4" />
+              </Button>
+            </div>
+          </div>
         ) : null}
 
-        {/* ─────────── ② RUN — review params + launch ─────────── */}
+        {/* ─────────── ② RUN — review params + launch ───────────
+            App-shell layout: full width.  The summary recap is
+            compact at top.  The params panel is the only region
+            that can grow tall (50+ fields possible) — it gets its
+            own internal ScrollArea so the page itself stays fixed. */}
         {stage === 'run' ? (
           <div className="flex h-full flex-col">
-            <ScrollArea className="flex-1 min-h-0">
-              <div className="mx-auto max-w-3xl space-y-4 p-6">
-                <div>
-                  <h2 className="text-lg font-semibold">{t('backtestStudio.runTitle', { defaultValue: 'Review & launch' })}</h2>
-                  <p className="text-[12px] text-muted-foreground">
-                    {t('backtestStudio.runSubtitle', { defaultValue: 'Tweak strategy parameters then click Run.  Skeleton appears below while the worker chews on it.' })}
-                  </p>
-                </div>
-
-                {/* Setup summary recap */}
-                <div className="rounded-md border border-border/50 bg-card/40 p-3 grid grid-cols-3 gap-3 text-[11px]">
+            <div className="flex flex-1 min-h-0 flex-col gap-3 p-4">
+                {/* Setup summary recap — compact horizontal strip */}
+                <div className="rounded-md border border-border/50 bg-card/40 p-3 grid grid-cols-3 gap-3 text-[11px] shrink-0">
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('backtestStudio.labelCapital')}</div>
                     <div className="font-mono tabular-nums">{fmtUsd(parseFloat(initialCapital) || 1000)}</div>
@@ -2352,10 +2380,33 @@ export default function BacktestStudio({
                   </div>
                 </div>
 
-                {/* Param groups — collapsible inline (no nested tabs) */}
-                {paramFieldGroups.length > 0 ? (
-                  <div className="rounded-md border border-border/50 bg-card/40">
-                    <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+                {/* In-flight skeleton — when the run is in flight,
+                    the skeleton takes the params slot.  Auto-promotes
+                    to Inspect once the run completes (see auto-advance
+                    effect on activeRun). */}
+                {(runMutation.isPending || pendingRunId) ? (
+                  <ScrollArea className="flex-1 min-h-0">
+                    <RunningBacktestSkeleton
+                      variant="running"
+                      caption={
+                        pendingRunId
+                          ? t('backtestStudio.skeletonRunning')
+                          : t('backtestStudio.skeletonEnqueueing')
+                      }
+                      status={runStatusQuery.data ?? null}
+                      onCancel={
+                        pendingRunId
+                          ? () => {
+                              if (!pendingRunId) return
+                              cancelMutation.mutate(pendingRunId)
+                            }
+                          : undefined
+                      }
+                    />
+                  </ScrollArea>
+                ) : paramFieldGroups.length > 0 ? (
+                  <div className="rounded-md border border-border/50 bg-card/40 flex flex-1 min-h-0 flex-col">
+                    <div className="flex items-center justify-between border-b border-border/30 px-3 py-2 shrink-0">
                       <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         <Sliders className="h-3.5 w-3.5 text-cyan-400" />
                         {t('backtestStudio.runParamsTitle', { defaultValue: 'Strategy parameters' })}
@@ -2382,64 +2433,43 @@ export default function BacktestStudio({
                         {t('backtestStudio.reset')}
                       </Button>
                     </div>
-                    <div className="divide-y divide-border/30">
-                      {paramFieldGroups.map((group, idx) => (
-                        <details key={group.key} open={idx === 0} className="group">
-                          <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold flex items-center justify-between hover:bg-card/20">
-                            <span>
-                              {group.label}
-                              <span className="ml-2 text-[10px] font-normal text-muted-foreground">
-                                {group.fields.length}
+                    {/* Internal scroll — the only place inside the
+                        Run stage that can exceed viewport height. */}
+                    <ScrollArea className="flex-1 min-h-0">
+                      <div className="divide-y divide-border/30">
+                        {paramFieldGroups.map((group, idx) => (
+                          <details key={group.key} open={idx === 0} className="group">
+                            <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold flex items-center justify-between hover:bg-card/20">
+                              <span>
+                                {group.label}
+                                <span className="ml-2 text-[10px] font-normal text-muted-foreground">
+                                  {group.fields.length}
+                                </span>
                               </span>
-                            </span>
-                            <span className="text-[12px] text-muted-foreground transition-transform group-open:rotate-90">▸</span>
-                          </summary>
-                          <div className="px-3 pb-3">
-                            <StrategyConfigForm
-                              schema={{ param_fields: group.fields as any[] }}
-                              values={paramOverrides}
-                              onChange={(next) => setParamOverrides(next)}
-                            />
-                          </div>
-                        </details>
-                      ))}
-                    </div>
+                              <span className="text-[12px] text-muted-foreground transition-transform group-open:rotate-90">▸</span>
+                            </summary>
+                            <div className="px-3 pb-3">
+                              <StrategyConfigForm
+                                schema={{ param_fields: group.fields as any[] }}
+                                values={paramOverrides}
+                                onChange={(next) => setParamOverrides(next)}
+                              />
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    </ScrollArea>
                   </div>
                 ) : (
-                  <div className="rounded-md border border-dashed border-border/50 bg-card/20 p-4 text-center">
-                    <Sliders className="h-5 w-5 mx-auto text-muted-foreground/50" />
-                    <div className="mt-1 text-[11px] text-muted-foreground">
+                  <div className="rounded-md border border-dashed border-border/50 bg-card/20 p-6 text-center flex flex-1 flex-col items-center justify-center">
+                    <Sliders className="h-6 w-6 text-muted-foreground/50" />
+                    <div className="mt-2 text-[11px] text-muted-foreground">
                       {t('backtestStudio.noDynamicParams')}
                     </div>
                     <div className="mt-1 text-[10px] text-muted-foreground/70" dangerouslySetInnerHTML={{ __html: t('backtestStudio.noDynamicParamsHint') }} />
                   </div>
                 )}
-
-                {/* In-flight skeleton — replaces the run button area
-                    while the worker is chewing.  Auto-promotes to
-                    Inspect once the run completes (see auto-advance
-                    effect on activeRun). */}
-                {(runMutation.isPending || pendingRunId) ? (
-                  <RunningBacktestSkeleton
-                    variant="running"
-                    caption={
-                      pendingRunId
-                        ? t('backtestStudio.skeletonRunning')
-                        : t('backtestStudio.skeletonEnqueueing')
-                    }
-                    status={runStatusQuery.data ?? null}
-                    onCancel={
-                      pendingRunId
-                        ? () => {
-                            if (!pendingRunId) return
-                            cancelMutation.mutate(pendingRunId)
-                          }
-                        : undefined
-                    }
-                  />
-                ) : null}
               </div>
-            </ScrollArea>
 
             {/* Sticky footer — Run button + warnings + errors */}
             <div className="border-t border-border/50 bg-background/60 px-6 py-3 space-y-2">
@@ -2541,9 +2571,11 @@ export default function BacktestStudio({
               </ScrollArea>
             </div>
 
-            {/* Main scrolling report */}
+            {/* Main scrolling report — full width, no max-w cap so
+                wide screens use all available space.  This is the
+                only stage that legitimately scrolls (long report). */}
             <ScrollArea className="flex-1 min-h-0">
-              <div className="mx-auto max-w-5xl space-y-6 p-6">
+              <div className="space-y-4 p-4">
                 {!activeRun && !pendingRunId ? (
                   <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border/40 bg-card/20 px-6 py-12 text-center">
                     <Flame className="h-8 w-8 text-amber-300/50" />
