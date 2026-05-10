@@ -111,7 +111,14 @@ async def test_submit_execution_leg_live_prefers_live_context_price_over_stale_l
 
 
 @pytest.mark.asyncio
-async def test_submit_execution_leg_live_taker_limit_caps_execution_to_dynamic_price_bound(monkeypatch):
+async def test_submit_execution_leg_live_taker_limit_caps_execution_to_explicit_execution_price_bound(monkeypatch):
+    """Live taker_limit BUY caps to the explicit execution-price cap.
+
+    Per Plan 0035, ``max_probability`` and ``min_upside_percent`` are
+    entry-band guards (gate signal emission) and must NOT collapse the
+    chase-up ceiling.  Only ``max_execution_price`` /
+    ``max_entry_price`` are eligible execution-price caps.
+    """
     execution_mock = AsyncMock(
         return_value=LiveOrderExecution(
             status="open",
@@ -148,6 +155,7 @@ async def test_submit_execution_leg_live_taker_limit_caps_execution_to_dynamic_p
         strategy_params={
             "min_upside_percent": 5.0,
             "max_probability": 0.999,
+            "max_execution_price": 0.96,
         },
     )
 
@@ -156,7 +164,63 @@ async def test_submit_execution_leg_live_taker_limit_caps_execution_to_dynamic_p
     submit_kwargs = execution_mock.await_args.kwargs
     assert submit_kwargs["quote_aggressively"] is True
     assert submit_kwargs["enforce_fallback_bound"] is False
-    assert submit_kwargs["max_execution_price"] == pytest.approx(100.0 / 105.0, rel=1e-9)
+    assert submit_kwargs["max_execution_price"] == pytest.approx(0.96, rel=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_submit_execution_leg_live_ignores_entry_band_caps_for_max_execution_price(monkeypatch):
+    """Plan 0035: entry-band guards alone don't collapse live max_execution_price.
+
+    With only ``max_probability`` and ``min_upside_percent`` set (no
+    ``max_execution_price`` / ``max_entry_price``), the live path's
+    ``max_execution_price`` falls back to the signal price for
+    ``taker_limit``-policy legs (the ``allow_taker_limit_buy_above_signal=False``
+    branch), not to the entry-band-derived cap.  Pre-fix, this would
+    have returned ``100/(100+5) ≈ 0.9524``.
+    """
+    execution_mock = AsyncMock(
+        return_value=LiveOrderExecution(
+            status="open",
+            effective_price=0.99,
+            error_message=None,
+            payload={"order_id": "ord-fallback-taker"},
+            order_id="ord-fallback-taker",
+        )
+    )
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    signal = SimpleNamespace(
+        id="sig-fallback-taker",
+        market_id="123456789012345678",
+        direction="buy_yes",
+        entry_price=0.99,
+        market_question="Will entry-band caps stay out of execution bound?",
+        payload_json={"selected_token_id": "123456789012345678901"},
+    )
+
+    result = await order_manager.submit_execution_leg(
+        mode="live",
+        signal=signal,
+        leg={
+            "leg_id": "leg_1",
+            "market_id": signal.market_id,
+            "market_question": signal.market_question,
+            "side": "buy",
+            "outcome": "yes",
+            "limit_price": 0.99,
+            "price_policy": "taker_limit",
+        },
+        notional_usd=99.0,
+        strategy_params={
+            "min_upside_percent": 5.0,
+            "max_probability": 0.999,
+        },
+    )
+
+    assert result.status == "open"
+    execution_mock.assert_awaited_once()
+    submit_kwargs = execution_mock.await_args.kwargs
+    assert submit_kwargs["max_execution_price"] == pytest.approx(0.99, rel=1e-9)
 
 
 @pytest.mark.asyncio
@@ -655,3 +719,178 @@ async def test_shadow_buy_with_chase_up_lifts_simulator_limit_so_asks_above_mid_
     assert chase_result.effective_price == pytest.approx(0.60, rel=1e-9)
     assert chase_result.payload["submission"] == "shadow_microstructure_simulated"
     assert chase_result.payload["shadow_simulation"]["execution_estimate"]["levels_consumed"] >= 1
+
+
+def test_chase_up_execution_caps_excludes_entry_band_guards():
+    """Plan 0035: ``max_probability`` and ``min_upside_percent`` are
+    entry-band guards (gate signal emission) and must NOT collapse the
+    chase-up ceiling alongside execution-price caps.
+    """
+    caps = order_manager._chase_up_execution_caps(
+        leg={"max_execution_price": 0.9478},
+        metadata={},
+        params={
+            "max_probability": 0.905,
+            "min_upside_percent": 6.0,
+            "max_entry_price": 0.95,
+        },
+    )
+    assert sorted(caps) == [pytest.approx(0.9478), pytest.approx(0.95)], (
+        "Only execution-price caps (max_execution_price, max_entry_price) "
+        "should pass through; entry-band guards must be filtered out."
+    )
+
+
+def test_chase_up_execution_caps_returns_empty_when_only_entry_band_caps_present():
+    """No execution-price cap → empty list, which the shadow chase-up
+    branch interprets as ``shadow_limit_price = 1.0`` (the natural
+    market boundary).  Entry-band-only configs must not collapse the
+    chase ceiling to themselves.
+    """
+    caps = order_manager._chase_up_execution_caps(
+        leg={},
+        metadata={},
+        params={"max_probability": 0.905, "min_upside_percent": 6.0},
+    )
+    assert caps == []
+
+
+@pytest.mark.asyncio
+async def test_shadow_chase_up_uses_explicit_max_execution_price_over_max_probability(monkeypatch):
+    """Plan 0035 regression — Tail-End cancellation cluster.
+
+    Pre-fix: ``shadow_limit_price = min(max_probability=0.905,
+    max_execution_price=0.9478, ...) = 0.905`` → simulator rejects
+    ask=0.92 with ``limit_price_not_executable``.
+
+    Post-fix: ``shadow_limit_price`` only reduces over execution-price
+    caps → 0.9478 → simulator crosses ask=0.92 and fills.
+
+    The pre-fix branch was the source of 25/27 evidenced cancellations
+    in `docs/plans/work-artifacts/0033-bucket-classification.md`.
+    """
+    execution_mock = AsyncMock(side_effect=AssertionError("shadow must not call live broker"))
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    token_id = "111122223333444455566"
+    signal = SimpleNamespace(
+        id="sig-tailend-chase",
+        market_id="m-tailend-chase",
+        direction="buy_yes",
+        entry_price=0.905,
+        market_question="Will Plan 0035 chase-up cap split unblock the fill?",
+        payload_json={
+            "selected_token_id": token_id,
+            "live_market": {
+                "live_selected_price": 0.905,
+                "execution_order_book": {
+                    "bids": [{"price": 0.90, "size": 200.0}],
+                    "asks": [{"price": 0.92, "size": 250.0}],
+                },
+                "execution_recent_trades": [
+                    {"price": 0.92, "size": 80.0, "side": "BUY", "timestamp": 100.0},
+                ],
+                "execution_order_book_age_ms": 100.0,
+            },
+        },
+    )
+
+    leg = {
+        "leg_id": "leg_tailend",
+        "market_id": signal.market_id,
+        "market_question": signal.market_question,
+        "side": "buy",
+        "outcome": "yes",
+        "limit_price": 0.905,
+        "price_policy": "taker_limit",
+        "max_execution_price": 0.9478,
+        "max_entry_price": 0.9478,
+        "allow_taker_limit_buy_above_signal": True,
+    }
+
+    result = await order_manager.submit_execution_leg(
+        mode="shadow",
+        signal=signal,
+        leg=dict(leg),
+        notional_usd=20.0,
+        strategy_params={
+            "max_probability": 0.905,
+            "min_upside_percent": 6.0,
+        },
+        risk_limits={"allow_taker_limit_buy_above_signal": True},
+    )
+
+    assert result.status == "executed", (
+        "Plan 0035 fix: chase-up must lift shadow_limit_price to "
+        "max_execution_price (0.9478) and let the simulator cross "
+        f"ask=0.92; got status={result.status} "
+        f"reason={result.payload.get('reason')!r}"
+    )
+    assert result.effective_price == pytest.approx(0.92, rel=1e-9)
+    assert result.payload["submission"] == "shadow_microstructure_simulated"
+    assert result.payload["shadow_simulation"]["execution_estimate"]["levels_consumed"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_shadow_chase_up_falls_back_to_one_when_no_execution_price_cap(monkeypatch):
+    """Plan 0035 safety pin: with chase-up enabled and no execution-
+    price cap anywhere, ``shadow_limit_price`` must default to 1.0
+    (the natural market boundary), not collapse to the entry-band
+    cap or to the signal price.  Guards against regressions in the
+    helper's filter logic.
+    """
+    execution_mock = AsyncMock(side_effect=AssertionError("shadow must not call live broker"))
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    token_id = "555566667777888899900"
+    signal = SimpleNamespace(
+        id="sig-no-cap",
+        market_id="m-no-cap",
+        direction="buy_yes",
+        entry_price=0.50,
+        market_question="Will entry-band-only config still allow chase to 1.0?",
+        payload_json={
+            "selected_token_id": token_id,
+            "live_market": {
+                "live_selected_price": 0.50,
+                "execution_order_book": {
+                    "bids": [{"price": 0.49, "size": 300.0}],
+                    "asks": [{"price": 0.99, "size": 400.0}],
+                },
+                "execution_recent_trades": [
+                    {"price": 0.99, "size": 120.0, "side": "BUY", "timestamp": 100.0},
+                ],
+                "execution_order_book_age_ms": 100.0,
+            },
+        },
+    )
+
+    leg = {
+        "leg_id": "leg_no_cap",
+        "market_id": signal.market_id,
+        "market_question": signal.market_question,
+        "side": "buy",
+        "outcome": "yes",
+        "limit_price": 0.50,
+        "price_policy": "taker_limit",
+        "allow_taker_limit_buy_above_signal": True,
+    }
+
+    result = await order_manager.submit_execution_leg(
+        mode="shadow",
+        signal=signal,
+        leg=dict(leg),
+        notional_usd=15.0,
+        strategy_params={
+            "max_probability": 0.95,
+            "min_upside_percent": 6.0,
+        },
+        risk_limits={"allow_taker_limit_buy_above_signal": True},
+    )
+
+    assert result.status == "executed", (
+        "With no execution-price cap, chase-up must lift the ceiling to "
+        f"1.0 and let the simulator cross ask=0.99; got status={result.status} "
+        f"reason={result.payload.get('reason')!r}"
+    )
+    assert result.effective_price == pytest.approx(0.99, rel=1e-9)

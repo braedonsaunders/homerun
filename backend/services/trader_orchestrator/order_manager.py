@@ -246,6 +246,31 @@ def _derive_min_upside_price_cap(min_upside_percent: Any) -> float | None:
     return _valid_execution_bound(100.0 / (100.0 + float(upside)))
 
 
+def _chase_up_execution_caps(
+    *,
+    leg: dict[str, Any],
+    metadata: dict[str, Any],
+    params: dict[str, Any],
+) -> list[float]:
+    """Return only the execution-price caps eligible for chase-up.
+
+    Excludes entry-band guards (``max_probability``,
+    derived-from-``min_upside_percent``), which apply at
+    signal-emission, not at submit.  Mixing the two collapses the
+    chase-up ceiling to the entry-band ceiling and produces the
+    Plan 0033 / 0035 cancellation cluster where the simulator was
+    handed ``shadow_limit_price = max_probability`` and (correctly)
+    rejected every ask above it.  See Plan 0035.
+    """
+    candidates = [
+        _valid_execution_bound(leg.get("max_execution_price")),
+        _valid_execution_bound(metadata.get("max_execution_price")),
+        _valid_execution_bound(params.get("max_execution_price")),
+        _valid_execution_bound(params.get("max_entry_price")),
+    ]
+    return [cap for cap in candidates if cap is not None]
+
+
 _ALLOW_TAKER_LIMIT_BUY_ABOVE_SIGNAL_ALIASES = (
     "allow_taker_limit_buy_above_signal",
     "allow_taker_limit_pay_up",
@@ -336,22 +361,19 @@ def _resolve_execution_price_bounds(
     fallback_bound = _valid_execution_bound(fallback_price)
 
     if side_key == "buy":
-        candidates = [
-            _valid_execution_bound(leg.get("max_execution_price")),
-            _valid_execution_bound(metadata.get("max_execution_price")),
-            _valid_execution_bound(strategy_params.get("max_execution_price")),
-            _valid_execution_bound(strategy_params.get("max_entry_price")),
-            _valid_execution_bound(strategy_params.get("max_probability")),
-            _derive_min_upside_price_cap(strategy_params.get("min_upside_percent")),
-        ]
-        has_explicit_cap = any(candidate is not None for candidate in candidates)
+        candidates = _chase_up_execution_caps(
+            leg=leg,
+            metadata=metadata,
+            params=strategy_params,
+        )
+        has_explicit_cap = bool(candidates)
         if price_policy == "taker_limit" and fallback_bound is not None:
             if allow_taker_limit_buy_above_signal:
                 if not has_explicit_cap:
                     candidates.append(fallback_bound)
             else:
                 candidates.append(fallback_bound)
-        resolved = min((candidate for candidate in candidates if candidate is not None), default=None)
+        resolved = min(candidates, default=None)
         return resolved, None
 
     if side_key == "sell":
@@ -959,12 +981,17 @@ async def submit_execution_leg(
 
         # Effective ceiling fed into the simulator.  Default = live mid /
         # signal entry price (current behaviour).  When chase-up is on
-        # for a BUY, lift the ceiling to the strongest explicit cap from
-        # strategy_params / leg / metadata; if none, use 1.0 (the natural
-        # market boundary).  Note: `max_execution_price` from
-        # `_resolve_execution_price_bounds` includes the signal-price
-        # fallback even when chase=True, so it cannot be used here — the
-        # whole point of chase-up is to ignore that fallback.
+        # for a BUY, lift the ceiling to the strongest explicit
+        # execution-price cap from strategy_params / leg / metadata; if
+        # none, use 1.0 (the natural market boundary).  Entry-band
+        # guards (``max_probability``, ``min_upside_percent``-derived)
+        # are explicitly excluded — they apply at signal-emission, not
+        # at chase-up; mixing them collapses the chase-up ceiling to
+        # the entry-band ceiling (Plan 0033 / 0035).  Note:
+        # ``max_execution_price`` from ``_resolve_execution_price_bounds``
+        # includes the signal-price fallback even when chase=True, so
+        # it cannot be used here — the whole point of chase-up is to
+        # ignore that fallback.
         shadow_limit_price = float(price or 0.0)
         if (
             allow_taker_limit_buy_above_signal
@@ -972,18 +999,12 @@ async def submit_execution_leg(
             and shadow_limit_price > 0.0
         ):
             metadata_for_caps = leg.get("metadata") if isinstance(leg.get("metadata"), dict) else {}
-            explicit_buy_caps = [
-                _valid_execution_bound(leg.get("max_execution_price")),
-                _valid_execution_bound(metadata_for_caps.get("max_execution_price")),
-                _valid_execution_bound(params.get("max_execution_price")),
-                _valid_execution_bound(params.get("max_entry_price")),
-                _valid_execution_bound(params.get("max_probability")),
-                _derive_min_upside_price_cap(params.get("min_upside_percent")),
-            ]
-            tightest_explicit_cap = min(
-                (cap for cap in explicit_buy_caps if cap is not None),
-                default=None,
+            explicit_buy_caps = _chase_up_execution_caps(
+                leg=leg,
+                metadata=metadata_for_caps,
+                params=params,
             )
+            tightest_explicit_cap = min(explicit_buy_caps, default=None)
             if tightest_explicit_cap is not None and tightest_explicit_cap > shadow_limit_price:
                 shadow_limit_price = float(tightest_explicit_cap)
             elif tightest_explicit_cap is None:
