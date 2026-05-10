@@ -2069,5 +2069,44 @@
     "backfillIdempotent": "冪等 — 既に記録された秒はスキップされます。",
     "close": "閉じる",
     "runBackfill": "バックフィル実行"
+  },
+  "errorBoundary": {
+    "viewFailed": "このビューを描画できませんでした。"
+  },
+  "themeToggle": {
+    "auto": "自動",
+    "light": "ライト",
+    "dark": "ダーク",
+    "ariaLabel": "テーマ：{{current}}。クリックで {{next}} に切り替え。",
+    "tooltipSystem": "自動 · {{theme}}（システムに追従）。クリックで {{next}}。",
+    "tooltipManual": "{{label}}（手動）。クリックで {{next}}。"
+  },
+  "keyboardShortcuts": {
+    "title": "キーボードショートカット",
+    "description": "キーボードショートカットで素早く操作",
+    "toggleHintPrefix": "押下：",
+    "toggleHintSuffix": "でこのヘルプを切り替え"
+  },
+  "uiLockScreen": {
+    "title": "Homerun ロック中",
+    "inactivityTimeout": "操作なしのタイムアウト：{{count}} 分",
+    "inactivityTimeout_plural": "操作なしのタイムアウト：{{count}} 分",
+    "checkingSession": "ロックセッションを確認中...",
+    "passwordPlaceholder": "パスワードを入力",
+    "unlocking": "解除中...",
+    "unlock": "ロック解除"
+  },
+  "rssSourceForm": {
+    "feedUrl": "フィード URL",
+    "urlInvalid": "有効な HTTP または HTTPS の URL を指定してください",
+    "pollInterval": "ポーリング間隔",
+    "categoryFilter": "カテゴリフィルター",
+    "categoryPlaceholder": "例：テクノロジー、ファイナンス",
+    "poll5m": "5 分",
+    "poll15m": "15 分",
+    "poll30m": "30 分",
+    "poll1h": "1 時間",
+    "poll4h": "4 時間",
+    "poll24h": "24 時間"
   }
 }

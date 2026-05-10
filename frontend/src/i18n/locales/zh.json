@@ -2069,5 +2069,44 @@
     "backfillIdempotent": "幂等 — 已记录的秒数将被跳过。",
     "close": "关闭",
     "runBackfill": "运行回填"
+  },
+  "errorBoundary": {
+    "viewFailed": "此视图渲染失败。"
+  },
+  "themeToggle": {
+    "auto": "自动",
+    "light": "浅色",
+    "dark": "深色",
+    "ariaLabel": "主题：{{current}}。点击切换到 {{next}}。",
+    "tooltipSystem": "自动 · {{theme}}（跟随系统）。点击切换到 {{next}}。",
+    "tooltipManual": "{{label}}（手动）。点击切换到 {{next}}。"
+  },
+  "keyboardShortcuts": {
+    "title": "键盘快捷键",
+    "description": "使用键盘快捷键更快地导航",
+    "toggleHintPrefix": "按",
+    "toggleHintSuffix": "切换此帮助"
+  },
+  "uiLockScreen": {
+    "title": "Homerun 已锁定",
+    "inactivityTimeout": "闲置超时：{{count}} 分钟",
+    "inactivityTimeout_plural": "闲置超时：{{count}} 分钟",
+    "checkingSession": "正在检查锁定会话...",
+    "passwordPlaceholder": "输入密码",
+    "unlocking": "解锁中...",
+    "unlock": "解锁"
+  },
+  "rssSourceForm": {
+    "feedUrl": "Feed 地址",
+    "urlInvalid": "必须是有效的 HTTP 或 HTTPS 地址",
+    "pollInterval": "轮询间隔",
+    "categoryFilter": "类别筛选",
+    "categoryPlaceholder": "例如：科技、财经",
+    "poll5m": "5 分钟",
+    "poll15m": "15 分钟",
+    "poll30m": "30 分钟",
+    "poll1h": "1 小时",
+    "poll4h": "4 小时",
+    "poll24h": "24 小时"
   }
 }

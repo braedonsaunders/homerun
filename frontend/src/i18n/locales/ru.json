@@ -2069,5 +2069,44 @@
     "backfillIdempotent": "Идемпотентно — уже записанные секунды пропускаются.",
     "close": "Закрыть",
     "runBackfill": "Запустить backfill"
+  },
+  "errorBoundary": {
+    "viewFailed": "Не удалось отобразить это представление."
+  },
+  "themeToggle": {
+    "auto": "Авто",
+    "light": "Светлая",
+    "dark": "Тёмная",
+    "ariaLabel": "Тема: {{current}}. Нажмите, чтобы переключить на {{next}}.",
+    "tooltipSystem": "Авто · {{theme}} (следует за системой). Нажмите для {{next}}.",
+    "tooltipManual": "{{label}} (вручную). Нажмите для {{next}}."
+  },
+  "keyboardShortcuts": {
+    "title": "Сочетания клавиш",
+    "description": "Перемещайтесь быстрее с помощью сочетаний клавиш",
+    "toggleHintPrefix": "Нажмите",
+    "toggleHintSuffix": "чтобы переключить эту справку"
+  },
+  "uiLockScreen": {
+    "title": "Homerun заблокирован",
+    "inactivityTimeout": "Тайм-аут бездействия: {{count}} минута",
+    "inactivityTimeout_plural": "Тайм-аут бездействия: {{count}} минут",
+    "checkingSession": "Проверка сессии блокировки...",
+    "passwordPlaceholder": "Введите пароль",
+    "unlocking": "Разблокировка...",
+    "unlock": "Разблокировать"
+  },
+  "rssSourceForm": {
+    "feedUrl": "URL фида",
+    "urlInvalid": "Должен быть корректный HTTP или HTTPS URL",
+    "pollInterval": "Интервал опроса",
+    "categoryFilter": "Фильтр категорий",
+    "categoryPlaceholder": "напр. технологии, финансы",
+    "poll5m": "5 минут",
+    "poll15m": "15 минут",
+    "poll30m": "30 минут",
+    "poll1h": "1 час",
+    "poll4h": "4 часа",
+    "poll24h": "24 часа"
   }
 }

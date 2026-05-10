@@ -1,5 +1,6 @@
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { Sun, Moon, Monitor } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { cn } from '../lib/utils'
 import { systemThemeAtom, themeAtom, themePreferenceAtom, ThemePreference } from '../store/atoms'
 import { useEffect } from 'react'
@@ -8,16 +9,17 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
 const PREFERENCE_CYCLE: ThemePreference[] = ['system', 'light', 'dark']
 
-const PREFERENCE_LABEL: Record<ThemePreference, string> = {
-  system: 'Auto',
-  light: 'Light',
-  dark: 'Dark',
-}
-
 export default function ThemeToggle({ className = '' }: { className?: string }) {
+  const { t } = useTranslation()
   const theme = useAtomValue(themeAtom)
   const setSystemTheme = useSetAtom(systemThemeAtom)
   const [themePreference, setThemePreference] = useAtom(themePreferenceAtom)
+
+  const PREFERENCE_LABEL: Record<ThemePreference, string> = {
+    system: t('themeToggle.auto'),
+    light: t('themeToggle.light'),
+    dark: t('themeToggle.dark'),
+  }
 
   const currentIndex = PREFERENCE_CYCLE.indexOf(themePreference)
   const nextPreference = PREFERENCE_CYCLE[(currentIndex + 1) % PREFERENCE_CYCLE.length]
@@ -64,7 +66,7 @@ export default function ThemeToggle({ className = '' }: { className?: string }) 
           variant="ghost"
           size="sm"
           onClick={cycleTheme}
-          aria-label={`Theme: ${PREFERENCE_LABEL[themePreference]}. Click to switch to ${PREFERENCE_LABEL[nextPreference]}.`}
+          aria-label={t('themeToggle.ariaLabel', { current: PREFERENCE_LABEL[themePreference], next: PREFERENCE_LABEL[nextPreference] })}
           className={cn('h-8 px-2', className)}
         >
           <Icon className="w-3.5 h-3.5" />
@@ -72,8 +74,8 @@ export default function ThemeToggle({ className = '' }: { className?: string }) 
       </TooltipTrigger>
       <TooltipContent>
         {themePreference === 'system'
-          ? `Auto · ${theme} (follows system). Click for ${PREFERENCE_LABEL[nextPreference]}.`
-          : `${PREFERENCE_LABEL[themePreference]} (manual). Click for ${PREFERENCE_LABEL[nextPreference]}.`}
+          ? t('themeToggle.tooltipSystem', { theme, next: PREFERENCE_LABEL[nextPreference] })
+          : t('themeToggle.tooltipManual', { label: PREFERENCE_LABEL[themePreference], next: PREFERENCE_LABEL[nextPreference] })}
       </TooltipContent>
     </Tooltip>
   )

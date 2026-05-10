@@ -2069,5 +2069,44 @@
     "backfillIdempotent": "Idempotente — segundos já gravados são pulados.",
     "close": "Fechar",
     "runBackfill": "Executar backfill"
+  },
+  "errorBoundary": {
+    "viewFailed": "Esta visualização falhou ao renderizar."
+  },
+  "themeToggle": {
+    "auto": "Automático",
+    "light": "Claro",
+    "dark": "Escuro",
+    "ariaLabel": "Tema: {{current}}. Clique para alternar para {{next}}.",
+    "tooltipSystem": "Automático · {{theme}} (segue o sistema). Clique para {{next}}.",
+    "tooltipManual": "{{label}} (manual). Clique para {{next}}."
+  },
+  "keyboardShortcuts": {
+    "title": "Atalhos de teclado",
+    "description": "Navegue mais rápido com atalhos de teclado",
+    "toggleHintPrefix": "Pressione",
+    "toggleHintSuffix": "para alternar esta ajuda"
+  },
+  "uiLockScreen": {
+    "title": "Homerun Bloqueado",
+    "inactivityTimeout": "Tempo de inatividade: {{count}} minuto",
+    "inactivityTimeout_plural": "Tempo de inatividade: {{count}} minutos",
+    "checkingSession": "Verificando sessão de bloqueio...",
+    "passwordPlaceholder": "Digite a senha",
+    "unlocking": "Desbloqueando...",
+    "unlock": "Desbloquear"
+  },
+  "rssSourceForm": {
+    "feedUrl": "URL do feed",
+    "urlInvalid": "Deve ser uma URL HTTP ou HTTPS válida",
+    "pollInterval": "Intervalo de coleta",
+    "categoryFilter": "Filtro de categoria",
+    "categoryPlaceholder": "ex: tecnologia, finanças",
+    "poll5m": "5 minutos",
+    "poll15m": "15 minutos",
+    "poll30m": "30 minutos",
+    "poll1h": "1 hora",
+    "poll4h": "4 horas",
+    "poll24h": "24 horas"
   }
 }

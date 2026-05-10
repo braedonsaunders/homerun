@@ -2069,5 +2069,44 @@
     "backfillIdempotent": "Idempotent — les secondes déjà enregistrées sont ignorées.",
     "close": "Fermer",
     "runBackfill": "Exécuter le backfill"
+  },
+  "errorBoundary": {
+    "viewFailed": "Cette vue n'a pas pu s'afficher."
+  },
+  "themeToggle": {
+    "auto": "Auto",
+    "light": "Clair",
+    "dark": "Sombre",
+    "ariaLabel": "Thème : {{current}}. Cliquez pour passer à {{next}}.",
+    "tooltipSystem": "Auto · {{theme}} (suit le système). Cliquez pour {{next}}.",
+    "tooltipManual": "{{label}} (manuel). Cliquez pour {{next}}."
+  },
+  "keyboardShortcuts": {
+    "title": "Raccourcis clavier",
+    "description": "Naviguez plus vite avec les raccourcis clavier",
+    "toggleHintPrefix": "Appuyez sur",
+    "toggleHintSuffix": "pour afficher/masquer cette aide"
+  },
+  "uiLockScreen": {
+    "title": "Homerun verrouillé",
+    "inactivityTimeout": "Délai d'inactivité : {{count}} minute",
+    "inactivityTimeout_plural": "Délai d'inactivité : {{count}} minutes",
+    "checkingSession": "Vérification de la session de verrouillage...",
+    "passwordPlaceholder": "Saisir le mot de passe",
+    "unlocking": "Déverrouillage...",
+    "unlock": "Déverrouiller"
+  },
+  "rssSourceForm": {
+    "feedUrl": "URL du flux",
+    "urlInvalid": "L'URL doit être HTTP ou HTTPS valide",
+    "pollInterval": "Intervalle de sondage",
+    "categoryFilter": "Filtre de catégorie",
+    "categoryPlaceholder": "ex. technologie, finance",
+    "poll5m": "5 minutes",
+    "poll15m": "15 minutes",
+    "poll30m": "30 minutes",
+    "poll1h": "1 heure",
+    "poll4h": "4 heures",
+    "poll24h": "24 heures"
   }
 }

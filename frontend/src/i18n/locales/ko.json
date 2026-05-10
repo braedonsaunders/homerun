@@ -2069,5 +2069,44 @@
     "backfillIdempotent": "멱등 — 이미 기록된 초는 건너뜁니다.",
     "close": "닫기",
     "runBackfill": "백필 실행"
+  },
+  "errorBoundary": {
+    "viewFailed": "이 뷰를 렌더링하지 못했습니다."
+  },
+  "themeToggle": {
+    "auto": "자동",
+    "light": "라이트",
+    "dark": "다크",
+    "ariaLabel": "테마: {{current}}. {{next}}(으)로 전환하려면 클릭.",
+    "tooltipSystem": "자동 · {{theme}} (시스템 따름). {{next}}(으)로 전환하려면 클릭.",
+    "tooltipManual": "{{label}} (수동). {{next}}(으)로 전환하려면 클릭."
+  },
+  "keyboardShortcuts": {
+    "title": "키보드 단축키",
+    "description": "키보드 단축키로 더 빠르게 이동",
+    "toggleHintPrefix": "누르세요",
+    "toggleHintSuffix": "(을)를 눌러 이 도움말을 토글"
+  },
+  "uiLockScreen": {
+    "title": "Homerun 잠김",
+    "inactivityTimeout": "유휴 시간 초과: {{count}}분",
+    "inactivityTimeout_plural": "유휴 시간 초과: {{count}}분",
+    "checkingSession": "잠금 세션 확인 중...",
+    "passwordPlaceholder": "비밀번호 입력",
+    "unlocking": "잠금 해제 중...",
+    "unlock": "잠금 해제"
+  },
+  "rssSourceForm": {
+    "feedUrl": "피드 URL",
+    "urlInvalid": "유효한 HTTP 또는 HTTPS URL이어야 합니다",
+    "pollInterval": "폴링 간격",
+    "categoryFilter": "카테고리 필터",
+    "categoryPlaceholder": "예: 기술, 금융",
+    "poll5m": "5분",
+    "poll15m": "15분",
+    "poll30m": "30분",
+    "poll1h": "1시간",
+    "poll4h": "4시간",
+    "poll24h": "24시간"
   }
 }

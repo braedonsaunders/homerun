@@ -1,4 +1,5 @@
 import { Keyboard } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { cn } from '../lib/utils'
 import { Shortcut, formatShortcutKey } from '../hooks/useKeyboardShortcuts'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog'
@@ -13,6 +14,7 @@ interface KeyboardShortcutsHelpProps {
 }
 
 export default function KeyboardShortcutsHelp({ isOpen, onClose, shortcuts }: KeyboardShortcutsHelpProps) {
+  const { t } = useTranslation()
   // Group shortcuts by category
   const grouped = shortcuts.reduce<Record<string, Shortcut[]>>((acc, s) => {
     if (!acc[s.category]) acc[s.category] = []
@@ -28,9 +30,9 @@ export default function KeyboardShortcutsHelp({ isOpen, onClose, shortcuts }: Ke
             <div className="p-2 bg-primary/10 rounded-lg">
               <Keyboard className="w-5 h-5 text-primary" />
             </div>
-            Keyboard Shortcuts
+            {t('keyboardShortcuts.title')}
           </DialogTitle>
-          <DialogDescription>Navigate faster with keyboard shortcuts</DialogDescription>
+          <DialogDescription>{t('keyboardShortcuts.description')}</DialogDescription>
         </DialogHeader>
 
         <ScrollArea className="max-h-[60vh]">
@@ -68,14 +70,14 @@ export default function KeyboardShortcutsHelp({ isOpen, onClose, shortcuts }: Ke
         {/* Footer */}
         <div className="border-t border-border pt-3 text-center">
           <p className="text-xs text-muted-foreground">
-            Press{' '}
+            {t('keyboardShortcuts.toggleHintPrefix')}{' '}
             <Badge
               variant="outline"
               className="px-1.5 py-0.5 bg-muted text-muted-foreground border-border text-[10px] font-mono"
             >
               ?
             </Badge>
-            {' '}to toggle this help
+            {' '}{t('keyboardShortcuts.toggleHintSuffix')}
           </p>
         </div>
       </DialogContent>

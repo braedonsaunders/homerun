@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Lock, ShieldCheck } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -20,6 +21,7 @@ export default function UILockScreen({
   error: string | null
   onUnlock: (password: string) => Promise<void> | void
 }) {
+  const { t } = useTranslation()
   const [password, setPassword] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -88,9 +90,9 @@ export default function UILockScreen({
                   <Lock className="h-5 w-5 text-emerald-300" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-100">Homerun Locked</h2>
+                  <h2 className="text-lg font-semibold text-slate-100">{t('uiLockScreen.title')}</h2>
                   <p className="text-xs text-slate-400">
-                    Inactivity timeout: {timeoutMinutes} minute{timeoutMinutes === 1 ? '' : 's'}
+                    {t('uiLockScreen.inactivityTimeout', { count: timeoutMinutes })}
                   </p>
                 </div>
               </div>
@@ -98,7 +100,7 @@ export default function UILockScreen({
               {checking ? (
                 <div className="flex items-center gap-2 text-sm text-slate-300">
                   <ShieldCheck className="h-4 w-4 text-emerald-300" />
-                  Checking lock session...
+                  {t('uiLockScreen.checkingSession')}
                 </div>
               ) : (
                 <form onSubmit={handleSubmit} className="space-y-3">
@@ -107,7 +109,7 @@ export default function UILockScreen({
                     type="password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    placeholder="Enter password"
+                    placeholder={t('uiLockScreen.passwordPlaceholder')}
                     autoComplete="current-password"
                     className="h-10 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500"
                   />
@@ -117,7 +119,7 @@ export default function UILockScreen({
                     disabled={unlocking || password.trim().length === 0}
                     className="w-full h-10 bg-emerald-600 text-white hover:bg-emerald-500"
                   >
-                    {unlocking ? 'Unlocking...' : 'Unlock'}
+                    {unlocking ? t('uiLockScreen.unlocking') : t('uiLockScreen.unlock')}
                   </Button>
                 </form>
               )}
