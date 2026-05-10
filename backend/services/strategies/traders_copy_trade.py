@@ -491,15 +491,19 @@ class TradersCopyTradeStrategy(BaseStrategy):
                     "price": entry_price,
                     "token_id": token_id,
                     "market_id": market_id,
-                    # direction: keep buy_yes/buy_no for binary so
-                    # downstream code paths that match on those exact
-                    # strings continue to work; for multi-outcome
-                    # markets the token_id is the actual identity of
-                    # the position being copied.
+                    # direction: emit the canonical buy_yes/buy_no for
+                    # binary markets where the outcome is unambiguous;
+                    # leave it empty for everything else so the
+                    # session_engine fallback (_resolve_leg_direction)
+                    # builds it from (side, outcome) and the simulator/
+                    # lifecycle widen via token_id. Emitting a synthetic
+                    # bare "buy" here was the upstream cause of stuck
+                    # shadow positions on traders_copy_trade — cf. plan
+                    # 0018.
                     "direction": (
                         "buy_yes" if outcome == "YES"
                         else "buy_no" if outcome == "NO"
-                        else "buy"
+                        else ""
                     ),
                 }
             ],

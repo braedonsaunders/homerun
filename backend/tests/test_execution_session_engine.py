@@ -265,6 +265,38 @@ def test_build_plan_normalizes_limit_sell_action_from_position_payload():
     assert [leg["side"] for leg in legs] == ["buy", "sell"]
 
 
+def test_resolve_leg_direction_uses_explicit_direction_when_present():
+    direction = session_engine_module._resolve_leg_direction(
+        {"direction": "buy_yes", "side": "sell", "outcome": "no"},
+        fallback_direction="buy_no",
+    )
+    assert direction == "buy_yes"
+
+
+def test_resolve_leg_direction_builds_buy_yes_from_side_and_outcome_when_direction_empty():
+    direction = session_engine_module._resolve_leg_direction(
+        {"direction": "", "side": "buy", "outcome": "yes"},
+        fallback_direction="",
+    )
+    assert direction == "buy_yes"
+
+
+def test_resolve_leg_direction_builds_buy_no_from_side_and_outcome_when_direction_empty():
+    direction = session_engine_module._resolve_leg_direction(
+        {"direction": "", "side": "buy", "outcome": "no"},
+        fallback_direction="",
+    )
+    assert direction == "buy_no"
+
+
+def test_resolve_leg_direction_falls_back_to_bare_buy_for_non_binary_outcome():
+    direction = session_engine_module._resolve_leg_direction(
+        {"direction": "", "side": "buy", "outcome": "fighter a"},
+        fallback_direction="",
+    )
+    assert direction == "buy"
+
+
 @pytest.mark.asyncio
 async def test_execute_signal_rejects_self_crossing_same_token_plan(monkeypatch):
     db = _FailureProjectionDb()
