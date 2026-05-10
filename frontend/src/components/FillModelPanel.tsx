@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import {
   Activity,
   AlertTriangle,
@@ -35,27 +36,27 @@ import {
   updateLatencyFallbacks,
 } from '../services/apiFillModel'
 
-const COVARIATE_LABELS: Record<string, string> = {
-  queue_ahead_shares: 'Queue ahead (shares)',
-  depth_behind_shares: 'Depth behind (shares)',
-  spread_bps: 'Spread (bps)',
-  mid_distance_bps: 'Mid distance (bps)',
-  recent_trade_intensity_per_sec: 'Trade intensity (/s)',
-  time_to_resolution_seconds: 'Time to resolution (s)',
-  side_imbalance: 'Side imbalance',
-  underlying_volatility_bps_per_min: 'Underlying vol (bps/min)',
-  latency_p95_ms: 'Latency p95 (ms)',
-  book_age_ms: 'Book age (ms)',
-  notional_usd: 'Notional ($)',
+const COVARIATE_LABEL_KEYS: Record<string, string> = {
+  queue_ahead_shares: 'fillModelPanel.covariates.queue_ahead_shares',
+  depth_behind_shares: 'fillModelPanel.covariates.depth_behind_shares',
+  spread_bps: 'fillModelPanel.covariates.spread_bps',
+  mid_distance_bps: 'fillModelPanel.covariates.mid_distance_bps',
+  recent_trade_intensity_per_sec: 'fillModelPanel.covariates.recent_trade_intensity_per_sec',
+  time_to_resolution_seconds: 'fillModelPanel.covariates.time_to_resolution_seconds',
+  side_imbalance: 'fillModelPanel.covariates.side_imbalance',
+  underlying_volatility_bps_per_min: 'fillModelPanel.covariates.underlying_volatility_bps_per_min',
+  latency_p95_ms: 'fillModelPanel.covariates.latency_p95_ms',
+  book_age_ms: 'fillModelPanel.covariates.book_age_ms',
+  notional_usd: 'fillModelPanel.covariates.notional_usd',
 }
 
-const CONSTANT_LABELS: Record<keyof EmpiricalConstantsResponse['values'], string> = {
-  displayed_depth_factor: 'Displayed depth factor',
-  maker_queue_ahead_fraction: 'Maker queue-ahead fraction',
-  maker_trade_flow_multiplier: 'Maker trade-flow multiplier',
-  adverse_selection_multiplier: 'Adverse selection multiplier',
-  stale_depth_decay: 'Stale depth decay',
-  min_depth_factor: 'Min depth factor',
+const CONSTANT_LABEL_KEYS: Record<keyof EmpiricalConstantsResponse['values'], string> = {
+  displayed_depth_factor: 'fillModelPanel.constants.displayed_depth_factor',
+  maker_queue_ahead_fraction: 'fillModelPanel.constants.maker_queue_ahead_fraction',
+  maker_trade_flow_multiplier: 'fillModelPanel.constants.maker_trade_flow_multiplier',
+  adverse_selection_multiplier: 'fillModelPanel.constants.adverse_selection_multiplier',
+  stale_depth_decay: 'fillModelPanel.constants.stale_depth_decay',
+  min_depth_factor: 'fillModelPanel.constants.min_depth_factor',
 }
 
 function StatPill({
@@ -137,6 +138,7 @@ function LatencyCard({
       }
     | undefined
 }) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<{ p50: string; p95: string; p99: string }>({
@@ -156,9 +158,11 @@ function LatencyCard({
   const isFallback = latency != null && latency.sample_count === 0
   const fallbackHint =
     latency != null && latency.fallback_p50_ms != null
-      ? `defaults: p50=${Math.round(latency.fallback_p50_ms)}ms · p95=${Math.round(
-          latency.fallback_p95_ms ?? 0,
-        )}ms · p99=${Math.round(latency.fallback_p99_ms ?? 0)}ms`
+      ? t('fillModelPanel.latency.fallbackDefaults', {
+          p50: Math.round(latency.fallback_p50_ms),
+          p95: Math.round(latency.fallback_p95_ms ?? 0),
+          p99: Math.round(latency.fallback_p99_ms ?? 0),
+        })
       : ''
 
   return (
@@ -166,11 +170,11 @@ function LatencyCard({
       <div className="mb-2 flex items-center gap-2 text-xs font-medium">
         <Clock className="h-3.5 w-3.5 text-sky-300" />
         {latency && latency.sample_count > 0
-          ? 'Measured latency (rolling 15 min)'
-          : 'Latency (defaults — no samples)'}
+          ? t('fillModelPanel.latency.measuredTitle')
+          : t('fillModelPanel.latency.defaultsTitle')}
         {isFallback ? (
           <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-300">
-            fallback
+            {t('fillModelPanel.latency.fallbackBadge')}
           </span>
         ) : null}
         {isFallback && !editing ? (
@@ -186,7 +190,7 @@ function LatencyCard({
             }}
             className="rounded-sm border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted/40"
           >
-            Edit
+            {t('fillModelPanel.latency.edit')}
           </button>
         ) : null}
       </div>
@@ -194,7 +198,7 @@ function LatencyCard({
         editing ? (
           <div className="grid grid-cols-3 gap-2">
             <div>
-              <Label className="text-[9px] text-muted-foreground">p50 (ms)</Label>
+              <Label className="text-[9px] text-muted-foreground">{t('fillModelPanel.latency.p50Label')}</Label>
               <Input
                 type="number"
                 min={1}
@@ -205,7 +209,7 @@ function LatencyCard({
               />
             </div>
             <div>
-              <Label className="text-[9px] text-muted-foreground">p95 (ms)</Label>
+              <Label className="text-[9px] text-muted-foreground">{t('fillModelPanel.latency.p95Label')}</Label>
               <Input
                 type="number"
                 min={1}
@@ -216,7 +220,7 @@ function LatencyCard({
               />
             </div>
             <div>
-              <Label className="text-[9px] text-muted-foreground">p99 (ms)</Label>
+              <Label className="text-[9px] text-muted-foreground">{t('fillModelPanel.latency.p99Label')}</Label>
               <Input
                 type="number"
                 min={1}
@@ -229,21 +233,21 @@ function LatencyCard({
           </div>
         ) : (
           <div className={`grid grid-cols-3 gap-2 ${isFallback ? 'opacity-70' : ''}`}>
-            <StatPill label="p50" value={`${Math.round(latency.p50_ms)} ms`} tone="neutral" />
+            <StatPill label={t('fillModelPanel.latency.p50')} value={`${Math.round(latency.p50_ms)} ms`} tone="neutral" />
             <StatPill
-              label="p95"
+              label={t('fillModelPanel.latency.p95')}
               value={`${Math.round(latency.p95_ms)} ms`}
               tone={latency.sample_count > 0 && latency.p95_ms > 800 ? 'warn' : 'neutral'}
             />
             <StatPill
-              label="p99"
+              label={t('fillModelPanel.latency.p99')}
               value={`${Math.round(latency.p99_ms)} ms`}
               tone={latency.sample_count > 0 && latency.p99_ms > 1500 ? 'bad' : 'neutral'}
             />
           </div>
         )
       ) : (
-        <div className="text-xs text-muted-foreground">loading…</div>
+        <div className="text-xs text-muted-foreground">{t('fillModelPanel.common.loading')}</div>
       )}
       {editing ? (
         <div className="mt-2 flex items-center gap-2">
@@ -259,7 +263,7 @@ function LatencyCard({
             }
             disabled={saveMutation.isPending}
           >
-            {saveMutation.isPending ? 'Saving…' : 'Save'}
+            {saveMutation.isPending ? t('fillModelPanel.latency.saving') : t('fillModelPanel.latency.save')}
           </Button>
           <Button
             size="sm"
@@ -267,7 +271,7 @@ function LatencyCard({
             className="h-6 text-[10px]"
             onClick={() => setEditing(false)}
           >
-            Cancel
+            {t('fillModelPanel.latency.cancel')}
           </Button>
           <Button
             size="sm"
@@ -275,19 +279,19 @@ function LatencyCard({
             className="h-6 text-[10px] text-muted-foreground"
             onClick={() => saveMutation.mutate({ p50_ms: 0, p95_ms: 0, p99_ms: 0 })}
             disabled={saveMutation.isPending}
-            title="Reset all three to module defaults (200/600/1500 ms)"
+            title={t('fillModelPanel.latency.resetTooltip')}
           >
-            Reset to defaults
+            {t('fillModelPanel.latency.resetToDefaults')}
           </Button>
           {saveMutation.error ? (
-            <span className="text-[10px] text-red-300">save failed</span>
+            <span className="text-[10px] text-red-300">{t('fillModelPanel.latency.saveFailed')}</span>
           ) : null}
         </div>
       ) : latency ? (
         <div className="mt-2 text-[10px] text-muted-foreground">
           {latency.sample_count > 0
-            ? `Used by the ensemble: pessimistic = p95, realistic = p50, optimistic = p50/2. ${latency.sample_count.toLocaleString()} samples in window.`
-            : `No measured submit/cancel latencies in the last 15 min — using ${fallbackHint}. Click Edit to override; values will be replaced once orders flow through.`}
+            ? t('fillModelPanel.latency.usageMeasured', { samples: latency.sample_count.toLocaleString() })
+            : t('fillModelPanel.latency.usageFallback', { hint: fallbackHint })}
         </div>
       ) : null}
     </div>
@@ -296,6 +300,7 @@ function LatencyCard({
 
 
 function BaselineSurvivalChart({ baseline }: { baseline: Record<string, number> }) {
+  const { t } = useTranslation()
   const points = Object.entries(baseline)
     .map(([t, s]) => ({ t: parseFloat(t), s: Number(s) }))
     .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.s))
@@ -303,7 +308,7 @@ function BaselineSurvivalChart({ baseline }: { baseline: Record<string, number> 
   if (points.length < 2) {
     return (
       <div className="text-xs text-muted-foreground italic">
-        No baseline survival curve yet. Trigger a retrain to populate this.
+        {t('fillModelPanel.baseline.empty')}
       </div>
     )
   }
@@ -320,8 +325,8 @@ function BaselineSurvivalChart({ baseline }: { baseline: Record<string, number> 
   return (
     <div className="rounded-md border border-border/40 bg-card/40 p-2">
       <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>P(fill within Δt) baseline</span>
-        <span>{`0…${Math.round(maxT)} s`}</span>
+        <span>{t('fillModelPanel.baseline.legendY')}</span>
+        <span>{t('fillModelPanel.baseline.legendRange', { max: Math.round(maxT) })}</span>
       </div>
       <svg width={w} height={h} className="mt-1">
         <line x1={6} y1={h - 8} x2={w - 6} y2={h - 8} stroke="rgb(var(--border))" strokeWidth={0.5} />
@@ -330,7 +335,7 @@ function BaselineSurvivalChart({ baseline }: { baseline: Record<string, number> 
       </svg>
       <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
         <span>0</span>
-        <span>S(t) = baseline survival probability</span>
+        <span>{t('fillModelPanel.baseline.legendCenter')}</span>
         <span>1</span>
       </div>
     </div>
@@ -352,6 +357,7 @@ function fmtNum(value: number | null | undefined, digits = 2): string {
 }
 
 export default function FillModelPanel() {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
 
   const activeQuery = useQuery({
@@ -430,16 +436,16 @@ export default function FillModelPanel() {
           <div>
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-amber-300" />
-              <div className="text-sm font-semibold">Fill Probability Model</div>
+              <div className="text-sm font-semibold">{t('fillModelPanel.header.title')}</div>
               <Badge variant="outline" className="text-[10px]">
-                {active?.family ?? 'no model loaded'}
+                {active?.family ?? t('fillModelPanel.header.noModelLoaded')}
               </Badge>
               {active?.active ? (
-                <Badge className="bg-emerald-500/10 text-emerald-300 text-[10px]">active</Badge>
+                <Badge className="bg-emerald-500/10 text-emerald-300 text-[10px]">{t('fillModelPanel.header.active')}</Badge>
               ) : null}
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              Cox proportional hazards / Kaplan-Meier fill predictor — drives the shadow simulator.
+              {t('fillModelPanel.header.subtitle')}
             </div>
           </div>
           <Button
@@ -453,16 +459,16 @@ export default function FillModelPanel() {
             ) : (
               <RefreshCcw className="mr-1 h-3 w-3" />
             )}
-            Retrain (30d)
+            {t('fillModelPanel.header.retrain')}
           </Button>
         </div>
 
         {/* ACTIVE MODEL SUMMARY */}
         <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
           <StatPill
-            label="C-index"
+            label={t('fillModelPanel.summary.cIndex')}
             value={active?.concordance_index != null ? fmtNum(active.concordance_index, 3) : '—'}
-            hint={active?.family === 'cox_ph' ? 'higher = more discriminating' : 'KM has no covariate signal'}
+            hint={active?.family === 'cox_ph' ? t('fillModelPanel.summary.cIndexHintCox') : t('fillModelPanel.summary.cIndexHintKm')}
             tone={
               active?.concordance_index != null
                 ? active.concordance_index > 0.62
@@ -474,19 +480,19 @@ export default function FillModelPanel() {
             }
           />
           <StatPill
-            label="Events"
+            label={t('fillModelPanel.summary.events')}
             value={active ? active.n_events.toLocaleString() : '—'}
-            hint={active ? `${active.n_observations.toLocaleString()} obs` : undefined}
+            hint={active ? t('fillModelPanel.summary.eventsHint', { obs: active.n_observations.toLocaleString() }) : undefined}
           />
           <StatPill
-            label="Strata"
+            label={t('fillModelPanel.summary.strata')}
             value={active?.strata_key ?? '—'}
             hint={active?.notes ? active.notes.slice(0, 80) : undefined}
           />
           <StatPill
-            label="Trained"
+            label={t('fillModelPanel.summary.trained')}
             value={active?.trained_at ? new Date(active.trained_at).toLocaleString() : '—'}
-            hint={active?.promoted_at ? `promoted ${fmtTs(active.promoted_at)}` : undefined}
+            hint={active?.promoted_at ? t('fillModelPanel.summary.promotedHint', { ts: fmtTs(active.promoted_at) }) : undefined}
           />
         </div>
 
@@ -495,14 +501,14 @@ export default function FillModelPanel() {
           <div className="rounded-md border border-border/50 bg-card/40 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium">
               <TrendingUp className="h-3.5 w-3.5 text-amber-300" />
-              Hazard ratios (per 1 standard deviation)
-              <span className="ml-auto text-[10px] text-muted-foreground">HR &gt; 1 = faster fill</span>
+              {t('fillModelPanel.hazard.title')}
+              <span className="ml-auto text-[10px] text-muted-foreground">{t('fillModelPanel.hazard.legend')}</span>
             </div>
             <div className="space-y-0.5">
               {Object.entries(active.coefficients)
                 .sort((a, b) => Math.abs(Math.log(b[1])) - Math.abs(Math.log(a[1])))
                 .map(([cov, hr]) => (
-                  <HazardRatioBar key={cov} label={COVARIATE_LABELS[cov] ?? cov} hr={hr} />
+                  <HazardRatioBar key={cov} label={COVARIATE_LABEL_KEYS[cov] ? t(COVARIATE_LABEL_KEYS[cov]) : cov} hr={hr} />
                 ))}
             </div>
           </div>
@@ -513,7 +519,7 @@ export default function FillModelPanel() {
           <div className="rounded-md border border-border/50 bg-card/40 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium">
               <Activity className="h-3.5 w-3.5 text-emerald-300" />
-              Baseline survival curve
+              {t('fillModelPanel.baseline.title')}
             </div>
             <BaselineSurvivalChart baseline={active.baseline_survival} />
           </div>
@@ -526,26 +532,26 @@ export default function FillModelPanel() {
           <div className="rounded-md border border-border/50 bg-card/40 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium">
               <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-              Trade vs cancel decomposition (24h)
+              {t('fillModelPanel.decomposition.title')}
             </div>
             {decomp ? (
               <div className="grid grid-cols-2 gap-2">
                 <StatPill
-                  label="Trade events"
+                  label={t('fillModelPanel.decomposition.tradeEvents')}
                   value={decomp.trade_count.toLocaleString()}
                   hint={
                     decomp.trade_count_pct != null
-                      ? `${fmtNum(decomp.trade_count_pct, 1)}% by count`
+                      ? t('fillModelPanel.decomposition.byCount', { pct: fmtNum(decomp.trade_count_pct, 1) })
                       : undefined
                   }
                   tone="good"
                 />
                 <StatPill
-                  label="Cancel events"
+                  label={t('fillModelPanel.decomposition.cancelEvents')}
                   value={decomp.cancel_count.toLocaleString()}
                   hint={
                     decomp.trade_count_pct != null
-                      ? `${fmtNum(100 - decomp.trade_count_pct, 1)}% by count`
+                      ? t('fillModelPanel.decomposition.byCount', { pct: fmtNum(100 - decomp.trade_count_pct, 1) })
                       : undefined
                   }
                   tone={
@@ -556,11 +562,10 @@ export default function FillModelPanel() {
                 />
               </div>
             ) : (
-              <div className="text-xs text-muted-foreground">loading…</div>
+              <div className="text-xs text-muted-foreground">{t('fillModelPanel.common.loading')}</div>
             )}
             <div className="mt-2 text-[10px] text-muted-foreground">
-              High cancel-rate = spoofy book = lower effective displayed depth factor (auto-applied to the
-              empirical constants below).
+              {t('fillModelPanel.decomposition.hint')}
             </div>
           </div>
         </div>
@@ -570,20 +575,20 @@ export default function FillModelPanel() {
           <div className="mb-2 flex items-center justify-between text-xs">
             <div className="flex items-center gap-2 font-medium">
               <Gauge className="h-3.5 w-3.5 text-amber-300" />
-              Empirical constants
+              {t('fillModelPanel.constantsSection.title')}
             </div>
             <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
               {constants?.measured ? (
-                <Badge className="bg-emerald-500/10 text-emerald-300">measured</Badge>
+                <Badge className="bg-emerald-500/10 text-emerald-300">{t('fillModelPanel.constantsSection.measuredBadge')}</Badge>
               ) : (
-                <Badge className="bg-amber-500/10 text-amber-300">defaults</Badge>
+                <Badge className="bg-amber-500/10 text-amber-300">{t('fillModelPanel.constantsSection.defaultsBadge')}</Badge>
               )}
               <span>{constants?.notes ?? ''}</span>
             </div>
           </div>
           <div className="grid gap-2 md:grid-cols-2">
             {constants
-              ? (Object.keys(CONSTANT_LABELS) as Array<keyof EmpiricalConstantsResponse['values']>).map(
+              ? (Object.keys(CONSTANT_LABEL_KEYS) as Array<keyof EmpiricalConstantsResponse['values']>).map(
                   (key) => {
                     const measured = constants.values[key]
                     const override = constants.overrides[key]
@@ -594,7 +599,7 @@ export default function FillModelPanel() {
                         className="flex flex-col gap-1 rounded-md border border-border/40 bg-background/40 px-2 py-1.5"
                       >
                         <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          {CONSTANT_LABELS[key]}
+                          {t(CONSTANT_LABEL_KEYS[key])}
                         </Label>
                         <div className="flex items-center gap-2">
                           <Input
@@ -613,7 +618,9 @@ export default function FillModelPanel() {
                             placeholder={String(measured.toFixed(3))}
                           />
                           <span className="font-mono text-[10px] text-muted-foreground">
-                            {override != null ? `override` : `measured ${fmtNum(measured, 3)}`}
+                            {override != null
+                              ? t('fillModelPanel.constantsSection.overrideLabel')
+                              : t('fillModelPanel.constantsSection.measuredLabel', { value: fmtNum(measured, 3) })}
                           </span>
                         </div>
                       </div>
@@ -634,7 +641,7 @@ export default function FillModelPanel() {
               ) : (
                 <CheckCircle2 className="mr-1 h-3 w-3" />
               )}
-              Apply overrides
+              {t('fillModelPanel.constantsSection.applyOverrides')}
             </Button>
             <Button
               size="sm"
@@ -645,13 +652,13 @@ export default function FillModelPanel() {
               }}
               disabled={overridesMutation.isPending}
             >
-              Revert to measured
+              {t('fillModelPanel.constantsSection.revertToMeasured')}
             </Button>
           </div>
           {overridesMutation.isError ? (
             <div className="mt-2 flex items-center gap-1 text-xs text-red-300">
               <AlertTriangle className="h-3 w-3" />
-              {(overridesMutation.error as { message?: string })?.message ?? 'Override failed'}
+              {(overridesMutation.error as { message?: string })?.message ?? t('fillModelPanel.constantsSection.overrideFailed')}
             </div>
           ) : null}
         </div>
@@ -660,9 +667,11 @@ export default function FillModelPanel() {
         <div className="rounded-md border border-border/50 bg-card/40 p-3">
           <div className="mb-2 flex items-center gap-2 text-xs font-medium">
             <Boxes className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-            ML capabilities registered
+            {t('fillModelPanel.capabilities.title')}
             <span className="ml-auto text-[10px] text-muted-foreground">
-              {capabilitiesQuery.data?.length ?? 0} task{(capabilitiesQuery.data?.length ?? 0) === 1 ? '' : 's'}
+              {(capabilitiesQuery.data?.length ?? 0) === 1
+                ? t('fillModelPanel.capabilities.taskCountOne', { n: capabilitiesQuery.data?.length ?? 0 })
+                : t('fillModelPanel.capabilities.taskCountOther', { n: capabilitiesQuery.data?.length ?? 0 })}
             </span>
           </div>
           <div className="space-y-1">
@@ -675,11 +684,11 @@ export default function FillModelPanel() {
                   <span className="font-mono text-xs">{cap.task_key}</span>
                   {cap.owner_strategy_slug ? (
                     <Badge className="bg-violet-500/10 text-violet-700 dark:text-violet-300 text-[9px]">
-                      strategy: {cap.owner_strategy_slug}
+                      {t('fillModelPanel.capabilities.strategyBadge', { slug: cap.owner_strategy_slug })}
                     </Badge>
                   ) : (
                     <Badge variant="outline" className="text-[9px]">
-                      built-in fallback
+                      {t('fillModelPanel.capabilities.builtInFallback')}
                     </Badge>
                   )}
                 </div>
@@ -698,21 +707,20 @@ export default function FillModelPanel() {
                     </span>
                   ))}
                   <span className="ml-auto rounded-sm bg-emerald-500/10 px-1 py-px font-mono text-emerald-300">
-                    {cap.feature_names.length} features
+                    {t('fillModelPanel.capabilities.featureCount', { n: cap.feature_names.length })}
                   </span>
                 </div>
               </div>
             ))}
             {(capabilitiesQuery.data ?? []).length === 0 ? (
               <div className="text-xs text-muted-foreground">
-                No ML capabilities registered. Declare one on a strategy class via{' '}
+                {t('fillModelPanel.capabilities.emptyPrefix')}{' '}
                 <code className="rounded-sm bg-muted/40 px-1 font-mono text-[10px]">ml_capability = MLCapability(...)</code>.
               </div>
             ) : null}
           </div>
           <div className="mt-2 text-[10px] text-muted-foreground">
-            Adding a new ML task is a one-attribute edit on a strategy class — strategies are DB-managed
-            and hot-reload, so it shows up here automatically.
+            {t('fillModelPanel.capabilities.hint')}
           </div>
         </div>
 
@@ -720,12 +728,12 @@ export default function FillModelPanel() {
         <div className="rounded-md border border-border/50 bg-card/40 p-3">
           <div className="mb-2 flex items-center gap-2 text-xs font-medium">
             <Layers3 className="h-3.5 w-3.5 text-emerald-300" />
-            Recent training runs
+            {t('fillModelPanel.history.title')}
           </div>
           <div className="space-y-1">
             {history.length === 0 ? (
               <div className="text-xs text-muted-foreground">
-                No training runs yet. Click <strong>Retrain (30d)</strong> to fit the first one.
+                {t('fillModelPanel.history.emptyPrefix')} <strong>{t('fillModelPanel.header.retrain')}</strong> {t('fillModelPanel.history.emptySuffix')}
               </div>
             ) : null}
             {history.map((row: FillModelRow) => (
@@ -742,12 +750,14 @@ export default function FillModelPanel() {
                 <div>{row.family}</div>
                 <div className="font-mono">{row.strata_key}</div>
                 <div className="text-muted-foreground">
-                  {row.n_events.toLocaleString()} events, C-idx{' '}
-                  {row.concordance_index != null ? fmtNum(row.concordance_index, 3) : '—'}
+                  {t('fillModelPanel.history.eventsCidx', {
+                    events: row.n_events.toLocaleString(),
+                    cidx: row.concordance_index != null ? fmtNum(row.concordance_index, 3) : '—',
+                  })}
                 </div>
                 <div className="flex justify-end">
                   {row.active ? (
-                    <Badge className="bg-emerald-500/10 text-emerald-300 text-[10px]">active</Badge>
+                    <Badge className="bg-emerald-500/10 text-emerald-300 text-[10px]">{t('fillModelPanel.header.active')}</Badge>
                   ) : (
                     <Button
                       size="sm"
@@ -757,7 +767,7 @@ export default function FillModelPanel() {
                       disabled={promoteMutation.isPending}
                     >
                       <Rocket className="mr-1 h-3 w-3" />
-                      Promote
+                      {t('fillModelPanel.history.promote')}
                     </Button>
                   )}
                 </div>

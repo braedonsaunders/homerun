@@ -5139,5 +5139,114 @@
     "liquidity": "流动性: {{value}}",
     "ends": "结束: {{date}}",
     "viewOnPolymarket": "在 Polymarket 查看"
+  },
+  "fillModelPanel": {
+    "common": {
+      "loading": "加载中…"
+    },
+    "header": {
+      "title": "成交概率模型",
+      "noModelLoaded": "未加载模型",
+      "active": "活动",
+      "subtitle": "Cox 比例风险 / Kaplan-Meier 成交预测器 — 驱动影子模拟器。",
+      "retrain": "重新训练 (30天)"
+    },
+    "summary": {
+      "cIndex": "C-指数",
+      "cIndexHintCox": "越高 = 越具区分性",
+      "cIndexHintKm": "KM 无协变量信号",
+      "events": "事件",
+      "eventsHint": "{{obs}} 观测",
+      "strata": "分层",
+      "trained": "已训练",
+      "promotedHint": "已晋升 {{ts}}"
+    },
+    "hazard": {
+      "title": "风险比 (每1个标准差)",
+      "legend": "HR > 1 = 更快成交"
+    },
+    "baseline": {
+      "title": "基线生存曲线",
+      "empty": "尚无基线生存曲线。触发重新训练以填充此项。",
+      "legendY": "P(在 Δt 内成交) 基线",
+      "legendRange": "0…{{max}} 秒",
+      "legendCenter": "S(t) = 基线生存概率"
+    },
+    "latency": {
+      "measuredTitle": "测量延迟 (滚动 15 分钟)",
+      "defaultsTitle": "延迟 (默认值 — 无样本)",
+      "fallbackBadge": "回退",
+      "edit": "编辑",
+      "p50": "p50",
+      "p95": "p95",
+      "p99": "p99",
+      "p50Label": "p50 (ms)",
+      "p95Label": "p95 (ms)",
+      "p99Label": "p99 (ms)",
+      "save": "保存",
+      "saving": "保存中…",
+      "cancel": "取消",
+      "resetToDefaults": "重置为默认值",
+      "resetTooltip": "将三个值全部重置为模块默认值 (200/600/1500 ms)",
+      "saveFailed": "保存失败",
+      "fallbackDefaults": "默认值: p50={{p50}}ms · p95={{p95}}ms · p99={{p99}}ms",
+      "usageMeasured": "由集成模型使用: 悲观 = p95, 现实 = p50, 乐观 = p50/2。窗口内 {{samples}} 个样本。",
+      "usageFallback": "过去 15 分钟无测量的提交/取消延迟 — 使用 {{hint}}。点击编辑以覆盖; 一旦订单流入,值将被替换。"
+    },
+    "decomposition": {
+      "title": "成交与取消分解 (24小时)",
+      "tradeEvents": "成交事件",
+      "cancelEvents": "取消事件",
+      "byCount": "{{pct}}% 按计数",
+      "hint": "高取消率 = 虚假订单簿 = 较低的有效显示深度因子 (自动应用于下面的经验常数)。"
+    },
+    "constantsSection": {
+      "title": "经验常数",
+      "measuredBadge": "已测量",
+      "defaultsBadge": "默认值",
+      "overrideLabel": "覆盖",
+      "measuredLabel": "已测量 {{value}}",
+      "applyOverrides": "应用覆盖",
+      "revertToMeasured": "恢复为已测量",
+      "overrideFailed": "覆盖失败"
+    },
+    "capabilities": {
+      "title": "已注册 ML 能力",
+      "taskCountOne": "{{n}} 个任务",
+      "taskCountOther": "{{n}} 个任务",
+      "strategyBadge": "策略: {{slug}}",
+      "builtInFallback": "内置回退",
+      "featureCount": "{{n}} 个特征",
+      "emptyPrefix": "未注册 ML 能力。通过以下方式在策略类上声明",
+      "hint": "添加新的 ML 任务只是策略类上一个属性的编辑 — 策略由数据库管理且热重载,因此会自动显示在此处。"
+    },
+    "history": {
+      "title": "最近训练运行",
+      "emptyPrefix": "尚无训练运行。点击",
+      "emptySuffix": "以拟合第一个。",
+      "eventsCidx": "{{events}} 事件, C-idx {{cidx}}",
+      "promote": "晋升"
+    },
+    "covariates": {
+      "queue_ahead_shares": "前方队列 (股数)",
+      "depth_behind_shares": "后方深度 (股数)",
+      "spread_bps": "价差 (bps)",
+      "mid_distance_bps": "中间距离 (bps)",
+      "recent_trade_intensity_per_sec": "交易强度 (/s)",
+      "time_to_resolution_seconds": "至解析时间 (s)",
+      "side_imbalance": "方向失衡",
+      "underlying_volatility_bps_per_min": "标的波动率 (bps/分钟)",
+      "latency_p95_ms": "延迟 p95 (ms)",
+      "book_age_ms": "订单簿年龄 (ms)",
+      "notional_usd": "名义价值 ($)"
+    },
+    "constants": {
+      "displayed_depth_factor": "显示深度因子",
+      "maker_queue_ahead_fraction": "Maker 前方队列分数",
+      "maker_trade_flow_multiplier": "Maker 交易流乘数",
+      "adverse_selection_multiplier": "逆向选择乘数",
+      "stale_depth_decay": "过期深度衰减",
+      "min_depth_factor": "最小深度因子"
+    }
   }
 }

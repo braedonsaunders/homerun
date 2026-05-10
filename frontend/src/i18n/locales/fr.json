@@ -5139,5 +5139,114 @@
     "liquidity": "Liq : {{value}}",
     "ends": "Fin : {{date}}",
     "viewOnPolymarket": "Voir sur Polymarket"
+  },
+  "fillModelPanel": {
+    "common": {
+      "loading": "chargement…"
+    },
+    "header": {
+      "title": "Modèle de Probabilité d'Exécution",
+      "noModelLoaded": "aucun modèle chargé",
+      "active": "actif",
+      "subtitle": "Prédicteur d'exécution Cox à risques proportionnels / Kaplan-Meier — alimente le simulateur ombre.",
+      "retrain": "Réentraîner (30j)"
+    },
+    "summary": {
+      "cIndex": "Indice C",
+      "cIndexHintCox": "plus élevé = plus discriminant",
+      "cIndexHintKm": "KM n'a pas de signal de covariables",
+      "events": "Événements",
+      "eventsHint": "{{obs}} obs",
+      "strata": "Strates",
+      "trained": "Entraîné",
+      "promotedHint": "promu {{ts}}"
+    },
+    "hazard": {
+      "title": "Rapports de risque (par 1 écart-type)",
+      "legend": "HR > 1 = exécution plus rapide"
+    },
+    "baseline": {
+      "title": "Courbe de survie de référence",
+      "empty": "Pas encore de courbe de survie de référence. Déclenchez un réentraînement pour la remplir.",
+      "legendY": "P(exécution dans Δt) référence",
+      "legendRange": "0…{{max}} s",
+      "legendCenter": "S(t) = probabilité de survie de référence"
+    },
+    "latency": {
+      "measuredTitle": "Latence mesurée (15 min glissantes)",
+      "defaultsTitle": "Latence (par défaut — pas d'échantillons)",
+      "fallbackBadge": "repli",
+      "edit": "Modifier",
+      "p50": "p50",
+      "p95": "p95",
+      "p99": "p99",
+      "p50Label": "p50 (ms)",
+      "p95Label": "p95 (ms)",
+      "p99Label": "p99 (ms)",
+      "save": "Enregistrer",
+      "saving": "Enregistrement…",
+      "cancel": "Annuler",
+      "resetToDefaults": "Réinitialiser aux valeurs par défaut",
+      "resetTooltip": "Réinitialiser les trois aux valeurs par défaut du module (200/600/1500 ms)",
+      "saveFailed": "échec de l'enregistrement",
+      "fallbackDefaults": "par défaut : p50={{p50}}ms · p95={{p95}}ms · p99={{p99}}ms",
+      "usageMeasured": "Utilisé par l'ensemble : pessimiste = p95, réaliste = p50, optimiste = p50/2. {{samples}} échantillons dans la fenêtre.",
+      "usageFallback": "Aucune latence de soumission/annulation mesurée dans les 15 dernières minutes — utilisation de {{hint}}. Cliquez sur Modifier pour remplacer ; les valeurs seront remplacées une fois que les ordres circuleront."
+    },
+    "decomposition": {
+      "title": "Décomposition trade vs annulation (24h)",
+      "tradeEvents": "Événements de trade",
+      "cancelEvents": "Événements d'annulation",
+      "byCount": "{{pct}}% par nombre",
+      "hint": "Taux d'annulation élevé = carnet trompeur = facteur de profondeur affichée effectif plus faible (appliqué automatiquement aux constantes empiriques ci-dessous)."
+    },
+    "constantsSection": {
+      "title": "Constantes empiriques",
+      "measuredBadge": "mesuré",
+      "defaultsBadge": "par défaut",
+      "overrideLabel": "remplacement",
+      "measuredLabel": "mesuré {{value}}",
+      "applyOverrides": "Appliquer les remplacements",
+      "revertToMeasured": "Revenir au mesuré",
+      "overrideFailed": "Échec du remplacement"
+    },
+    "capabilities": {
+      "title": "Capacités ML enregistrées",
+      "taskCountOne": "{{n}} tâche",
+      "taskCountOther": "{{n}} tâches",
+      "strategyBadge": "stratégie : {{slug}}",
+      "builtInFallback": "repli intégré",
+      "featureCount": "{{n}} caractéristiques",
+      "emptyPrefix": "Aucune capacité ML enregistrée. Déclarez-en une sur une classe de stratégie via",
+      "hint": "Ajouter une nouvelle tâche ML est une modification d'un attribut sur une classe de stratégie — les stratégies sont gérées par la BD et se rechargent à chaud, elles apparaissent donc ici automatiquement."
+    },
+    "history": {
+      "title": "Exécutions d'entraînement récentes",
+      "emptyPrefix": "Pas encore d'exécutions d'entraînement. Cliquez",
+      "emptySuffix": "pour ajuster la première.",
+      "eventsCidx": "{{events}} événements, C-idx {{cidx}}",
+      "promote": "Promouvoir"
+    },
+    "covariates": {
+      "queue_ahead_shares": "File devant (actions)",
+      "depth_behind_shares": "Profondeur derrière (actions)",
+      "spread_bps": "Spread (bps)",
+      "mid_distance_bps": "Distance médiane (bps)",
+      "recent_trade_intensity_per_sec": "Intensité des trades (/s)",
+      "time_to_resolution_seconds": "Temps jusqu'à résolution (s)",
+      "side_imbalance": "Déséquilibre de côté",
+      "underlying_volatility_bps_per_min": "Vol sous-jacente (bps/min)",
+      "latency_p95_ms": "Latence p95 (ms)",
+      "book_age_ms": "Âge du carnet (ms)",
+      "notional_usd": "Notionnel ($)"
+    },
+    "constants": {
+      "displayed_depth_factor": "Facteur de profondeur affichée",
+      "maker_queue_ahead_fraction": "Fraction de file devant le maker",
+      "maker_trade_flow_multiplier": "Multiplicateur de flux de trades du maker",
+      "adverse_selection_multiplier": "Multiplicateur de sélection adverse",
+      "stale_depth_decay": "Déclin de profondeur obsolète",
+      "min_depth_factor": "Facteur minimum de profondeur"
+    }
   }
 }

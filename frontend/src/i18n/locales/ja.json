@@ -5139,5 +5139,114 @@
     "liquidity": "流動性: {{value}}",
     "ends": "終了: {{date}}",
     "viewOnPolymarket": "Polymarket で表示"
+  },
+  "fillModelPanel": {
+    "common": {
+      "loading": "読み込み中…"
+    },
+    "header": {
+      "title": "約定確率モデル",
+      "noModelLoaded": "モデル未読込",
+      "active": "アクティブ",
+      "subtitle": "Cox 比例ハザード / Kaplan-Meier 約定予測器 — シャドウシミュレータを駆動。",
+      "retrain": "再訓練 (30日)"
+    },
+    "summary": {
+      "cIndex": "C-指数",
+      "cIndexHintCox": "高いほど = 識別力が高い",
+      "cIndexHintKm": "KM には共変量シグナルなし",
+      "events": "イベント",
+      "eventsHint": "{{obs}} 観測",
+      "strata": "層",
+      "trained": "訓練済み",
+      "promotedHint": "昇格 {{ts}}"
+    },
+    "hazard": {
+      "title": "ハザード比 (1標準偏差あたり)",
+      "legend": "HR > 1 = より速い約定"
+    },
+    "baseline": {
+      "title": "ベースライン生存曲線",
+      "empty": "まだベースライン生存曲線がありません。これを設定するには再訓練をトリガーしてください。",
+      "legendY": "P(Δt 以内の約定) ベースライン",
+      "legendRange": "0…{{max}} 秒",
+      "legendCenter": "S(t) = ベースライン生存確率"
+    },
+    "latency": {
+      "measuredTitle": "測定レイテンシ (15分ローリング)",
+      "defaultsTitle": "レイテンシ (デフォルト — サンプルなし)",
+      "fallbackBadge": "フォールバック",
+      "edit": "編集",
+      "p50": "p50",
+      "p95": "p95",
+      "p99": "p99",
+      "p50Label": "p50 (ms)",
+      "p95Label": "p95 (ms)",
+      "p99Label": "p99 (ms)",
+      "save": "保存",
+      "saving": "保存中…",
+      "cancel": "キャンセル",
+      "resetToDefaults": "デフォルトにリセット",
+      "resetTooltip": "3つすべてをモジュールのデフォルト (200/600/1500 ms) にリセット",
+      "saveFailed": "保存失敗",
+      "fallbackDefaults": "デフォルト: p50={{p50}}ms · p95={{p95}}ms · p99={{p99}}ms",
+      "usageMeasured": "アンサンブルで使用: 悲観 = p95, 現実 = p50, 楽観 = p50/2。ウィンドウ内 {{samples}} サンプル。",
+      "usageFallback": "過去 15 分間に測定された送信/キャンセルレイテンシなし — {{hint}} を使用。編集をクリックして上書き; 注文が流れると値が置き換えられます。"
+    },
+    "decomposition": {
+      "title": "約定 vs キャンセル分解 (24時間)",
+      "tradeEvents": "約定イベント",
+      "cancelEvents": "キャンセルイベント",
+      "byCount": "{{pct}}% (カウント別)",
+      "hint": "高キャンセル率 = スプーフィー板 = 有効表示深さ係数の低下 (下記の経験定数に自動適用)。"
+    },
+    "constantsSection": {
+      "title": "経験定数",
+      "measuredBadge": "測定済み",
+      "defaultsBadge": "デフォルト",
+      "overrideLabel": "上書き",
+      "measuredLabel": "測定済み {{value}}",
+      "applyOverrides": "上書きを適用",
+      "revertToMeasured": "測定値に戻す",
+      "overrideFailed": "上書き失敗"
+    },
+    "capabilities": {
+      "title": "登録済み ML 機能",
+      "taskCountOne": "{{n}} タスク",
+      "taskCountOther": "{{n}} タスク",
+      "strategyBadge": "戦略: {{slug}}",
+      "builtInFallback": "組込みフォールバック",
+      "featureCount": "{{n}} 特徴量",
+      "emptyPrefix": "ML 機能が登録されていません。以下を介して戦略クラスに宣言してください",
+      "hint": "新しい ML タスクの追加は戦略クラスの 1 属性の編集のみ — 戦略は DB 管理でホットリロードされるため、ここに自動的に表示されます。"
+    },
+    "history": {
+      "title": "最近の訓練実行",
+      "emptyPrefix": "まだ訓練実行がありません。クリック",
+      "emptySuffix": "で最初の 1 つをフィットします。",
+      "eventsCidx": "{{events}} イベント, C-idx {{cidx}}",
+      "promote": "昇格"
+    },
+    "covariates": {
+      "queue_ahead_shares": "前方キュー (株数)",
+      "depth_behind_shares": "後方深度 (株数)",
+      "spread_bps": "スプレッド (bps)",
+      "mid_distance_bps": "ミッド距離 (bps)",
+      "recent_trade_intensity_per_sec": "取引強度 (/s)",
+      "time_to_resolution_seconds": "解決までの時間 (s)",
+      "side_imbalance": "サイド不均衡",
+      "underlying_volatility_bps_per_min": "原資産ボラ (bps/分)",
+      "latency_p95_ms": "レイテンシ p95 (ms)",
+      "book_age_ms": "板の経過時間 (ms)",
+      "notional_usd": "想定元本 ($)"
+    },
+    "constants": {
+      "displayed_depth_factor": "表示深度係数",
+      "maker_queue_ahead_fraction": "Maker 前方キュー比率",
+      "maker_trade_flow_multiplier": "Maker 取引フロー乗数",
+      "adverse_selection_multiplier": "逆選択乗数",
+      "stale_depth_decay": "古い深度の減衰",
+      "min_depth_factor": "最小深度係数"
+    }
   }
 }

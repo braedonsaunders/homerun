@@ -5139,5 +5139,114 @@
     "liquidity": "Liq: {{value}}",
     "ends": "Ends: {{date}}",
     "viewOnPolymarket": "View on Polymarket"
+  },
+  "fillModelPanel": {
+    "common": {
+      "loading": "loading…"
+    },
+    "header": {
+      "title": "Fill Probability Model",
+      "noModelLoaded": "no model loaded",
+      "active": "active",
+      "subtitle": "Cox proportional hazards / Kaplan-Meier fill predictor — drives the shadow simulator.",
+      "retrain": "Retrain (30d)"
+    },
+    "summary": {
+      "cIndex": "C-index",
+      "cIndexHintCox": "higher = more discriminating",
+      "cIndexHintKm": "KM has no covariate signal",
+      "events": "Events",
+      "eventsHint": "{{obs}} obs",
+      "strata": "Strata",
+      "trained": "Trained",
+      "promotedHint": "promoted {{ts}}"
+    },
+    "hazard": {
+      "title": "Hazard ratios (per 1 standard deviation)",
+      "legend": "HR > 1 = faster fill"
+    },
+    "baseline": {
+      "title": "Baseline survival curve",
+      "empty": "No baseline survival curve yet. Trigger a retrain to populate this.",
+      "legendY": "P(fill within Δt) baseline",
+      "legendRange": "0…{{max}} s",
+      "legendCenter": "S(t) = baseline survival probability"
+    },
+    "latency": {
+      "measuredTitle": "Measured latency (rolling 15 min)",
+      "defaultsTitle": "Latency (defaults — no samples)",
+      "fallbackBadge": "fallback",
+      "edit": "Edit",
+      "p50": "p50",
+      "p95": "p95",
+      "p99": "p99",
+      "p50Label": "p50 (ms)",
+      "p95Label": "p95 (ms)",
+      "p99Label": "p99 (ms)",
+      "save": "Save",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "resetToDefaults": "Reset to defaults",
+      "resetTooltip": "Reset all three to module defaults (200/600/1500 ms)",
+      "saveFailed": "save failed",
+      "fallbackDefaults": "defaults: p50={{p50}}ms · p95={{p95}}ms · p99={{p99}}ms",
+      "usageMeasured": "Used by the ensemble: pessimistic = p95, realistic = p50, optimistic = p50/2. {{samples}} samples in window.",
+      "usageFallback": "No measured submit/cancel latencies in the last 15 min — using {{hint}}. Click Edit to override; values will be replaced once orders flow through."
+    },
+    "decomposition": {
+      "title": "Trade vs cancel decomposition (24h)",
+      "tradeEvents": "Trade events",
+      "cancelEvents": "Cancel events",
+      "byCount": "{{pct}}% by count",
+      "hint": "High cancel-rate = spoofy book = lower effective displayed depth factor (auto-applied to the empirical constants below)."
+    },
+    "constantsSection": {
+      "title": "Empirical constants",
+      "measuredBadge": "measured",
+      "defaultsBadge": "defaults",
+      "overrideLabel": "override",
+      "measuredLabel": "measured {{value}}",
+      "applyOverrides": "Apply overrides",
+      "revertToMeasured": "Revert to measured",
+      "overrideFailed": "Override failed"
+    },
+    "capabilities": {
+      "title": "ML capabilities registered",
+      "taskCountOne": "{{n}} task",
+      "taskCountOther": "{{n}} tasks",
+      "strategyBadge": "strategy: {{slug}}",
+      "builtInFallback": "built-in fallback",
+      "featureCount": "{{n}} features",
+      "emptyPrefix": "No ML capabilities registered. Declare one on a strategy class via",
+      "hint": "Adding a new ML task is a one-attribute edit on a strategy class — strategies are DB-managed and hot-reload, so it shows up here automatically."
+    },
+    "history": {
+      "title": "Recent training runs",
+      "emptyPrefix": "No training runs yet. Click",
+      "emptySuffix": "to fit the first one.",
+      "eventsCidx": "{{events}} events, C-idx {{cidx}}",
+      "promote": "Promote"
+    },
+    "covariates": {
+      "queue_ahead_shares": "Queue ahead (shares)",
+      "depth_behind_shares": "Depth behind (shares)",
+      "spread_bps": "Spread (bps)",
+      "mid_distance_bps": "Mid distance (bps)",
+      "recent_trade_intensity_per_sec": "Trade intensity (/s)",
+      "time_to_resolution_seconds": "Time to resolution (s)",
+      "side_imbalance": "Side imbalance",
+      "underlying_volatility_bps_per_min": "Underlying vol (bps/min)",
+      "latency_p95_ms": "Latency p95 (ms)",
+      "book_age_ms": "Book age (ms)",
+      "notional_usd": "Notional ($)"
+    },
+    "constants": {
+      "displayed_depth_factor": "Displayed depth factor",
+      "maker_queue_ahead_fraction": "Maker queue-ahead fraction",
+      "maker_trade_flow_multiplier": "Maker trade-flow multiplier",
+      "adverse_selection_multiplier": "Adverse selection multiplier",
+      "stale_depth_decay": "Stale depth decay",
+      "min_depth_factor": "Min depth factor"
+    }
   }
 }

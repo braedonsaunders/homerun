@@ -5139,5 +5139,114 @@
     "liquidity": "유동성: {{value}}",
     "ends": "종료: {{date}}",
     "viewOnPolymarket": "Polymarket에서 보기"
+  },
+  "fillModelPanel": {
+    "common": {
+      "loading": "로드 중…"
+    },
+    "header": {
+      "title": "체결 확률 모델",
+      "noModelLoaded": "모델 미로드",
+      "active": "활성",
+      "subtitle": "Cox 비례위험 / Kaplan-Meier 체결 예측기 — 섀도우 시뮬레이터를 구동합니다.",
+      "retrain": "재학습 (30일)"
+    },
+    "summary": {
+      "cIndex": "C-지수",
+      "cIndexHintCox": "높을수록 = 더 잘 구별됨",
+      "cIndexHintKm": "KM은 공변량 신호 없음",
+      "events": "이벤트",
+      "eventsHint": "{{obs}} 관측",
+      "strata": "계층",
+      "trained": "학습됨",
+      "promotedHint": "승격됨 {{ts}}"
+    },
+    "hazard": {
+      "title": "위험비 (1 표준편차당)",
+      "legend": "HR > 1 = 더 빠른 체결"
+    },
+    "baseline": {
+      "title": "기준 생존 곡선",
+      "empty": "아직 기준 생존 곡선이 없습니다. 재학습을 실행하여 채우세요.",
+      "legendY": "P(Δt 내 체결) 기준",
+      "legendRange": "0…{{max}} 초",
+      "legendCenter": "S(t) = 기준 생존 확률"
+    },
+    "latency": {
+      "measuredTitle": "측정 지연 (15분 롤링)",
+      "defaultsTitle": "지연 (기본값 — 샘플 없음)",
+      "fallbackBadge": "폴백",
+      "edit": "편집",
+      "p50": "p50",
+      "p95": "p95",
+      "p99": "p99",
+      "p50Label": "p50 (ms)",
+      "p95Label": "p95 (ms)",
+      "p99Label": "p99 (ms)",
+      "save": "저장",
+      "saving": "저장 중…",
+      "cancel": "취소",
+      "resetToDefaults": "기본값으로 재설정",
+      "resetTooltip": "3개 모두 모듈 기본값으로 재설정 (200/600/1500 ms)",
+      "saveFailed": "저장 실패",
+      "fallbackDefaults": "기본값: p50={{p50}}ms · p95={{p95}}ms · p99={{p99}}ms",
+      "usageMeasured": "앙상블에서 사용: 비관적 = p95, 현실적 = p50, 낙관적 = p50/2. 창 내 {{samples}}개 샘플.",
+      "usageFallback": "지난 15분간 측정된 제출/취소 지연 없음 — {{hint}} 사용 중. 편집을 클릭하여 재정의; 주문이 흐르면 값이 대체됩니다."
+    },
+    "decomposition": {
+      "title": "체결 vs 취소 분해 (24시간)",
+      "tradeEvents": "체결 이벤트",
+      "cancelEvents": "취소 이벤트",
+      "byCount": "{{pct}}% (개수 기준)",
+      "hint": "높은 취소율 = 가짜 호가창 = 유효 표시 깊이 계수 감소 (아래 경험적 상수에 자동 적용)."
+    },
+    "constantsSection": {
+      "title": "경험적 상수",
+      "measuredBadge": "측정됨",
+      "defaultsBadge": "기본값",
+      "overrideLabel": "재정의",
+      "measuredLabel": "측정됨 {{value}}",
+      "applyOverrides": "재정의 적용",
+      "revertToMeasured": "측정값으로 되돌리기",
+      "overrideFailed": "재정의 실패"
+    },
+    "capabilities": {
+      "title": "등록된 ML 기능",
+      "taskCountOne": "{{n}}개 작업",
+      "taskCountOther": "{{n}}개 작업",
+      "strategyBadge": "전략: {{slug}}",
+      "builtInFallback": "내장 폴백",
+      "featureCount": "{{n}}개 특징",
+      "emptyPrefix": "등록된 ML 기능이 없습니다. 다음을 통해 전략 클래스에 선언하세요",
+      "hint": "새 ML 작업 추가는 전략 클래스의 한 속성 편집입니다 — 전략은 DB 관리되며 핫 리로드되므로 여기에 자동으로 표시됩니다."
+    },
+    "history": {
+      "title": "최근 학습 실행",
+      "emptyPrefix": "아직 학습 실행이 없습니다. 클릭",
+      "emptySuffix": "하여 첫 번째를 적합하세요.",
+      "eventsCidx": "{{events}}개 이벤트, C-idx {{cidx}}",
+      "promote": "승격"
+    },
+    "covariates": {
+      "queue_ahead_shares": "앞 대기열 (주식)",
+      "depth_behind_shares": "뒤 깊이 (주식)",
+      "spread_bps": "스프레드 (bps)",
+      "mid_distance_bps": "중간 거리 (bps)",
+      "recent_trade_intensity_per_sec": "거래 강도 (/s)",
+      "time_to_resolution_seconds": "해결까지의 시간 (s)",
+      "side_imbalance": "사이드 불균형",
+      "underlying_volatility_bps_per_min": "기초 변동성 (bps/분)",
+      "latency_p95_ms": "지연 p95 (ms)",
+      "book_age_ms": "호가창 연령 (ms)",
+      "notional_usd": "명목 ($)"
+    },
+    "constants": {
+      "displayed_depth_factor": "표시 깊이 계수",
+      "maker_queue_ahead_fraction": "Maker 앞 대기열 비율",
+      "maker_trade_flow_multiplier": "Maker 거래 흐름 승수",
+      "adverse_selection_multiplier": "역선택 승수",
+      "stale_depth_decay": "오래된 깊이 감쇠",
+      "min_depth_factor": "최소 깊이 계수"
+    }
   }
 }

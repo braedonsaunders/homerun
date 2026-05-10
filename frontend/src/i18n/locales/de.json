@@ -5139,5 +5139,114 @@
     "liquidity": "Liq: {{value}}",
     "ends": "Endet: {{date}}",
     "viewOnPolymarket": "Auf Polymarket ansehen"
+  },
+  "fillModelPanel": {
+    "common": {
+      "loading": "lädt…"
+    },
+    "header": {
+      "title": "Ausführungswahrscheinlichkeitsmodell",
+      "noModelLoaded": "kein Modell geladen",
+      "active": "aktiv",
+      "subtitle": "Cox proportionale Hazards / Kaplan-Meier Ausführungs-Prädiktor — treibt den Schatten-Simulator an.",
+      "retrain": "Neu trainieren (30T)"
+    },
+    "summary": {
+      "cIndex": "C-Index",
+      "cIndexHintCox": "höher = unterscheidungskräftiger",
+      "cIndexHintKm": "KM hat kein Kovariaten-Signal",
+      "events": "Ereignisse",
+      "eventsHint": "{{obs}} Beob.",
+      "strata": "Schichten",
+      "trained": "Trainiert",
+      "promotedHint": "befördert {{ts}}"
+    },
+    "hazard": {
+      "title": "Hazard Ratios (pro 1 Standardabweichung)",
+      "legend": "HR > 1 = schnellere Ausführung"
+    },
+    "baseline": {
+      "title": "Baseline-Überlebenskurve",
+      "empty": "Noch keine Baseline-Überlebenskurve. Lösen Sie ein Neutraining aus, um dies zu füllen.",
+      "legendY": "P(Ausführung innerhalb Δt) Baseline",
+      "legendRange": "0…{{max}} s",
+      "legendCenter": "S(t) = Baseline-Überlebenswahrscheinlichkeit"
+    },
+    "latency": {
+      "measuredTitle": "Gemessene Latenz (rollierend 15 Min)",
+      "defaultsTitle": "Latenz (Standardwerte — keine Stichproben)",
+      "fallbackBadge": "Fallback",
+      "edit": "Bearbeiten",
+      "p50": "p50",
+      "p95": "p95",
+      "p99": "p99",
+      "p50Label": "p50 (ms)",
+      "p95Label": "p95 (ms)",
+      "p99Label": "p99 (ms)",
+      "save": "Speichern",
+      "saving": "Speichert…",
+      "cancel": "Abbrechen",
+      "resetToDefaults": "Auf Standardwerte zurücksetzen",
+      "resetTooltip": "Alle drei auf Modul-Standardwerte zurücksetzen (200/600/1500 ms)",
+      "saveFailed": "Speichern fehlgeschlagen",
+      "fallbackDefaults": "Standardwerte: p50={{p50}}ms · p95={{p95}}ms · p99={{p99}}ms",
+      "usageMeasured": "Vom Ensemble verwendet: pessimistisch = p95, realistisch = p50, optimistisch = p50/2. {{samples}} Stichproben im Fenster.",
+      "usageFallback": "Keine gemessenen Sende-/Stornierungs-Latenzen in den letzten 15 Min — verwende {{hint}}. Klicken Sie auf Bearbeiten zum Überschreiben; Werte werden ersetzt, sobald Aufträge fließen."
+    },
+    "decomposition": {
+      "title": "Trade vs. Stornierung Zerlegung (24h)",
+      "tradeEvents": "Trade-Ereignisse",
+      "cancelEvents": "Stornierungs-Ereignisse",
+      "byCount": "{{pct}}% nach Anzahl",
+      "hint": "Hohe Stornierungsrate = täuschendes Orderbuch = niedrigerer effektiver angezeigter Tiefenfaktor (automatisch auf die empirischen Konstanten unten angewendet)."
+    },
+    "constantsSection": {
+      "title": "Empirische Konstanten",
+      "measuredBadge": "gemessen",
+      "defaultsBadge": "Standardwerte",
+      "overrideLabel": "Überschreibung",
+      "measuredLabel": "gemessen {{value}}",
+      "applyOverrides": "Überschreibungen anwenden",
+      "revertToMeasured": "Auf gemessen zurücksetzen",
+      "overrideFailed": "Überschreibung fehlgeschlagen"
+    },
+    "capabilities": {
+      "title": "Registrierte ML-Fähigkeiten",
+      "taskCountOne": "{{n}} Aufgabe",
+      "taskCountOther": "{{n}} Aufgaben",
+      "strategyBadge": "Strategie: {{slug}}",
+      "builtInFallback": "Eingebauter Fallback",
+      "featureCount": "{{n}} Merkmale",
+      "emptyPrefix": "Keine ML-Fähigkeiten registriert. Deklarieren Sie eine an einer Strategieklasse über",
+      "hint": "Eine neue ML-Aufgabe hinzuzufügen ist eine Ein-Attribut-Bearbeitung an einer Strategieklasse — Strategien sind DB-verwaltet und werden im laufenden Betrieb neu geladen, sodass sie hier automatisch erscheint."
+    },
+    "history": {
+      "title": "Letzte Trainingsläufe",
+      "emptyPrefix": "Noch keine Trainingsläufe. Klicken Sie auf",
+      "emptySuffix": "um den ersten anzupassen.",
+      "eventsCidx": "{{events}} Ereignisse, C-Idx {{cidx}}",
+      "promote": "Befördern"
+    },
+    "covariates": {
+      "queue_ahead_shares": "Warteschlange voraus (Anteile)",
+      "depth_behind_shares": "Tiefe dahinter (Anteile)",
+      "spread_bps": "Spread (bps)",
+      "mid_distance_bps": "Mittlere Distanz (bps)",
+      "recent_trade_intensity_per_sec": "Trade-Intensität (/s)",
+      "time_to_resolution_seconds": "Zeit bis zur Auflösung (s)",
+      "side_imbalance": "Seiten-Ungleichgewicht",
+      "underlying_volatility_bps_per_min": "Basis-Volatilität (bps/Min)",
+      "latency_p95_ms": "Latenz p95 (ms)",
+      "book_age_ms": "Orderbuch-Alter (ms)",
+      "notional_usd": "Nominal ($)"
+    },
+    "constants": {
+      "displayed_depth_factor": "Angezeigter Tiefenfaktor",
+      "maker_queue_ahead_fraction": "Maker-Warteschlangen-Voraus-Anteil",
+      "maker_trade_flow_multiplier": "Maker-Trade-Fluss-Multiplikator",
+      "adverse_selection_multiplier": "Adverse-Selection-Multiplikator",
+      "stale_depth_decay": "Veraltete-Tiefe-Zerfall",
+      "min_depth_factor": "Minimaler Tiefenfaktor"
+    }
   }
 }

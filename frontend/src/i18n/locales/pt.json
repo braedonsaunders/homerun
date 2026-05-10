@@ -5139,5 +5139,114 @@
     "liquidity": "Liq: {{value}}",
     "ends": "Termina: {{date}}",
     "viewOnPolymarket": "Ver no Polymarket"
+  },
+  "fillModelPanel": {
+    "common": {
+      "loading": "carregando…"
+    },
+    "header": {
+      "title": "Modelo de Probabilidade de Execução",
+      "noModelLoaded": "nenhum modelo carregado",
+      "active": "ativo",
+      "subtitle": "Preditor de execução Cox de riscos proporcionais / Kaplan-Meier — alimenta o simulador sombra.",
+      "retrain": "Retreinar (30d)"
+    },
+    "summary": {
+      "cIndex": "Índice C",
+      "cIndexHintCox": "maior = mais discriminante",
+      "cIndexHintKm": "KM não tem sinal de covariáveis",
+      "events": "Eventos",
+      "eventsHint": "{{obs}} obs",
+      "strata": "Estratos",
+      "trained": "Treinado",
+      "promotedHint": "promovido {{ts}}"
+    },
+    "hazard": {
+      "title": "Razões de risco (por 1 desvio padrão)",
+      "legend": "HR > 1 = execução mais rápida"
+    },
+    "baseline": {
+      "title": "Curva de sobrevivência base",
+      "empty": "Ainda não há curva de sobrevivência base. Acione um retreino para preencher isso.",
+      "legendY": "P(execução em Δt) base",
+      "legendRange": "0…{{max}} s",
+      "legendCenter": "S(t) = probabilidade de sobrevivência base"
+    },
+    "latency": {
+      "measuredTitle": "Latência medida (15 min móveis)",
+      "defaultsTitle": "Latência (padrões — sem amostras)",
+      "fallbackBadge": "fallback",
+      "edit": "Editar",
+      "p50": "p50",
+      "p95": "p95",
+      "p99": "p99",
+      "p50Label": "p50 (ms)",
+      "p95Label": "p95 (ms)",
+      "p99Label": "p99 (ms)",
+      "save": "Salvar",
+      "saving": "Salvando…",
+      "cancel": "Cancelar",
+      "resetToDefaults": "Redefinir para padrões",
+      "resetTooltip": "Redefinir os três para padrões do módulo (200/600/1500 ms)",
+      "saveFailed": "falha ao salvar",
+      "fallbackDefaults": "padrões: p50={{p50}}ms · p95={{p95}}ms · p99={{p99}}ms",
+      "usageMeasured": "Usado pelo conjunto: pessimista = p95, realista = p50, otimista = p50/2. {{samples}} amostras na janela.",
+      "usageFallback": "Sem latências de envio/cancelamento medidas nos últimos 15 min — usando {{hint}}. Clique em Editar para sobrepor; os valores serão substituídos quando as ordens fluírem."
+    },
+    "decomposition": {
+      "title": "Decomposição operação vs cancelamento (24h)",
+      "tradeEvents": "Eventos de operação",
+      "cancelEvents": "Eventos de cancelamento",
+      "byCount": "{{pct}}% por contagem",
+      "hint": "Alta taxa de cancelamento = livro enganoso = menor fator efetivo de profundidade exibida (auto-aplicado às constantes empíricas abaixo)."
+    },
+    "constantsSection": {
+      "title": "Constantes empíricas",
+      "measuredBadge": "medido",
+      "defaultsBadge": "padrões",
+      "overrideLabel": "sobreposição",
+      "measuredLabel": "medido {{value}}",
+      "applyOverrides": "Aplicar sobreposições",
+      "revertToMeasured": "Reverter para medido",
+      "overrideFailed": "Falha na sobreposição"
+    },
+    "capabilities": {
+      "title": "Capacidades de ML registradas",
+      "taskCountOne": "{{n}} tarefa",
+      "taskCountOther": "{{n}} tarefas",
+      "strategyBadge": "estratégia: {{slug}}",
+      "builtInFallback": "fallback integrado",
+      "featureCount": "{{n}} recursos",
+      "emptyPrefix": "Nenhuma capacidade de ML registrada. Declare uma em uma classe de estratégia via",
+      "hint": "Adicionar uma nova tarefa de ML é uma edição de um atributo em uma classe de estratégia — as estratégias são gerenciadas pelo BD e recarregam a quente, então aparece aqui automaticamente."
+    },
+    "history": {
+      "title": "Execuções de treinamento recentes",
+      "emptyPrefix": "Ainda não há execuções de treinamento. Clique em",
+      "emptySuffix": "para ajustar a primeira.",
+      "eventsCidx": "{{events}} eventos, C-idx {{cidx}}",
+      "promote": "Promover"
+    },
+    "covariates": {
+      "queue_ahead_shares": "Fila à frente (ações)",
+      "depth_behind_shares": "Profundidade atrás (ações)",
+      "spread_bps": "Spread (bps)",
+      "mid_distance_bps": "Distância média (bps)",
+      "recent_trade_intensity_per_sec": "Intensidade de operação (/s)",
+      "time_to_resolution_seconds": "Tempo até resolução (s)",
+      "side_imbalance": "Desequilíbrio de lado",
+      "underlying_volatility_bps_per_min": "Vol subjacente (bps/min)",
+      "latency_p95_ms": "Latência p95 (ms)",
+      "book_age_ms": "Idade do livro (ms)",
+      "notional_usd": "Nocional ($)"
+    },
+    "constants": {
+      "displayed_depth_factor": "Fator de profundidade exibida",
+      "maker_queue_ahead_fraction": "Fração de fila à frente do maker",
+      "maker_trade_flow_multiplier": "Multiplicador de fluxo de operações do maker",
+      "adverse_selection_multiplier": "Multiplicador de seleção adversa",
+      "stale_depth_decay": "Decaimento de profundidade obsoleta",
+      "min_depth_factor": "Fator mínimo de profundidade"
+    }
   }
 }
