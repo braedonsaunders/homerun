@@ -1182,6 +1182,23 @@ async def submit_execution_leg(
     )
 
     _stage_started = time.monotonic()
+    # Transient-failure retry policy from per-trader risk_limits.
+    # retry_limit=N means up to N RETRIES after the initial attempt (i.e. N+1
+    # total tries). Only retry when execute_live_order returns
+    # status="failed" with payload.submission == "exception" — that is the
+    # transport/SDK exception path in live_execution_adapter.py. Logic
+    # rejections ("rejected", "not_ready", "not_executable") are NOT retried.
+    _retry_limit_raw = (risk_limits or {}).get("retry_limit")
+    _retry_backoff_raw = (risk_limits or {}).get("retry_backoff_ms")
+    try:
+        _retry_limit = max(0, min(50, int(_retry_limit_raw))) if _retry_limit_raw is not None else 0
+    except (TypeError, ValueError):
+        _retry_limit = 0
+    try:
+        _retry_backoff_ms = max(0, min(60_000, int(_retry_backoff_raw))) if _retry_backoff_raw is not None else 0
+    except (TypeError, ValueError):
+        _retry_backoff_ms = 0
+    _attempts_used = 0
     execution = await execute_live_order(
         token_id=token_id,
         side=order_side,
@@ -1200,6 +1217,36 @@ async def submit_execution_leg(
         skip_buy_pre_submit_gate=skip_buy_pre_submit_gate,
         metadata=_clob_metadata_from_leg(leg),
     )
+    while (
+        _retry_limit > 0
+        and _attempts_used < _retry_limit
+        and execution.status == "failed"
+        and isinstance(execution.payload, dict)
+        and str(execution.payload.get("submission") or "") == "exception"
+    ):
+        _attempts_used += 1
+        if _retry_backoff_ms > 0:
+            await asyncio.sleep(_retry_backoff_ms / 1000.0)
+        execution = await execute_live_order(
+            token_id=token_id,
+            side=order_side,
+            size=shares,
+            fallback_price=price,
+            market_question=str(leg.get("market_question") or getattr(signal, "market_question", "") or ""),
+            opportunity_id=str(getattr(signal, "id", "") or ""),
+            time_in_force=time_in_force,
+            post_only=post_only,
+            quote_aggressively=quote_aggressively,
+            enforce_fallback_bound=enforce_fallback,
+            max_execution_price=max_execution_price,
+            min_execution_price=min_execution_price,
+            allow_taker_limit_buy_above_signal=allow_taker_limit_buy_above_signal,
+            aggressive_limit_buy_submit_as_gtc=aggressive_limit_buy_submit_as_gtc,
+            skip_buy_pre_submit_gate=skip_buy_pre_submit_gate,
+            metadata=_clob_metadata_from_leg(leg),
+        )
+    if _attempts_used > 0 and isinstance(execution.payload, dict):
+        execution.payload["transient_retry_attempts"] = _attempts_used
     _leg_record("execute_live_order", _stage_started)
 
     execution_error_text = str(execution.error_message or "").lower()
