@@ -3591,34 +3591,90 @@ async def recover_missing_live_trader_orders(
 
     if touched_session_ids:
         await session.flush()
-    for session_id in touched_session_ids:
-        session_row = await _refresh_execution_session_rollups(session, session_id=session_id)
-        if session_row is None:
-            continue
-        previous_session_status = _normalize_status_key(session_row.status)
-        next_session_status = previous_session_status
-        legs_open = int(session_row.legs_open or 0)
-        legs_completed = int(session_row.legs_completed or 0)
-        legs_failed = int(session_row.legs_failed or 0)
-        if legs_open <= 0:
-            if legs_completed > 0 and legs_failed == 0:
-                next_session_status = "completed"
-                session_row.error_message = None
-            elif legs_completed == 0 and legs_failed > 0:
-                next_session_status = "failed"
-                if not session_row.error_message:
-                    session_row.error_message = "All execution legs failed during live authority recovery."
-            elif legs_completed > 0 and legs_failed > 0:
-                next_session_status = "failed"
-                if not session_row.error_message:
-                    session_row.error_message = "Execution session closed with partial fills and failed legs during live authority recovery."
-        elif previous_session_status in {"pending", "placing", "partial", "hedging"}:
-            next_session_status = "working"
-        if next_session_status in TERMINAL_EXECUTION_SESSION_STATUSES and session_row.completed_at is None:
-            session_row.completed_at = now
-        session_row.status = next_session_status
-        session_row.updated_at = now
-        updated_execution_session_rows[str(session_row.id)] = session_row
+    # 2026-05-10: batch the rollup refresh.  The previous code called
+    # ``_refresh_execution_session_rollups()`` once per touched
+    # session inside the held authority-recovery transaction, and each
+    # call did its own ``session.get(ExecutionSession, ...)`` + aggregation
+    # SELECT — i.e. 2 sequential RTTs per session.  Under WAL contention
+    # this loop dominated the 16-29 s ``_authority_recovery`` slow_tx
+    # window observed in the 2026-05-09/10 12-h soak (28 events,
+    # max 28.73 s; directly responsible for 43 reconcile timeouts in
+    # the same 3-h sample).  We replace the per-session calls with two
+    # batch SELECTs (sessions + their full leg sets) and the existing
+    # pure-Python sister function ``_apply_execution_session_rollups_from_rows``,
+    # turning N×2 RTTs into 2 RTTs flat regardless of how many sessions
+    # were touched.  We can't simply rollback-and-reopen to release
+    # the held transaction window: this function holds a transaction-
+    # scoped advisory lock (``pg_advisory_xact_lock``, see
+    # ``_acquire_live_order_authority_recovery_lock``) and rolling back
+    # would release it mid-recovery, allowing a concurrent pass to
+    # create duplicate trader_orders.  Batching reads inside the same
+    # transaction is the safe shrink.
+    if touched_session_ids:
+        touched_id_list = [str(sid) for sid in touched_session_ids if str(sid).strip()]
+        session_rows_by_id: dict[str, ExecutionSession] = {}
+        if touched_id_list:
+            session_rows_by_id = {
+                str(row.id): row
+                for row in (
+                    await session.execute(
+                        select(ExecutionSession).where(
+                            ExecutionSession.id.in_(touched_id_list)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            }
+        legs_by_session: dict[str, list[ExecutionSessionLeg]] = {}
+        if touched_id_list:
+            for leg in (
+                (
+                    await session.execute(
+                        select(ExecutionSessionLeg).where(
+                            ExecutionSessionLeg.session_id.in_(touched_id_list)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            ):
+                legs_by_session.setdefault(str(leg.session_id), []).append(leg)
+        for session_id in touched_session_ids:
+            session_row = session_rows_by_id.get(str(session_id))
+            if session_row is None:
+                continue
+            legs_for_session = legs_by_session.get(str(session_id), [])
+            # Pure-Python rollup compute — no DB round-trip.  SQLAlchemy's
+            # identity map ensures the leg rows we already mutated
+            # earlier in the function (via leg_state_updates / leg_row.x =
+            # ...) are the SAME instances returned by the bulk SELECT
+            # above, so the in-memory updates are already applied.
+            _apply_execution_session_rollups_from_rows(session_row, legs_for_session)
+            previous_session_status = _normalize_status_key(session_row.status)
+            next_session_status = previous_session_status
+            legs_open = int(session_row.legs_open or 0)
+            legs_completed = int(session_row.legs_completed or 0)
+            legs_failed = int(session_row.legs_failed or 0)
+            if legs_open <= 0:
+                if legs_completed > 0 and legs_failed == 0:
+                    next_session_status = "completed"
+                    session_row.error_message = None
+                elif legs_completed == 0 and legs_failed > 0:
+                    next_session_status = "failed"
+                    if not session_row.error_message:
+                        session_row.error_message = "All execution legs failed during live authority recovery."
+                elif legs_completed > 0 and legs_failed > 0:
+                    next_session_status = "failed"
+                    if not session_row.error_message:
+                        session_row.error_message = "Execution session closed with partial fills and failed legs during live authority recovery."
+            elif previous_session_status in {"pending", "placing", "partial", "hedging"}:
+                next_session_status = "working"
+            if next_session_status in TERMINAL_EXECUTION_SESSION_STATUSES and session_row.completed_at is None:
+                session_row.completed_at = now
+            session_row.status = next_session_status
+            session_row.updated_at = now
+            updated_execution_session_rows[str(session_row.id)] = session_row
 
     if (
         not recovered_rows
