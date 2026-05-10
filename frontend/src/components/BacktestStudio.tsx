@@ -3926,7 +3926,24 @@ function DataSourceSelector({
                 </div>
               </div>
             ) : (
-              <div className="max-h-44 space-y-0.5 overflow-y-auto">
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-muted-foreground">
+                    {sessionId
+                      ? t('backtestStudio.dsSessionPicked', { defaultValue: '1 session picked' })
+                      : t('backtestStudio.dsSessionPickHint', { n: sessions.length, defaultValue: `${sessions.length} session${sessions.length === 1 ? '' : 's'} available` })}
+                  </span>
+                  {sessionId ? (
+                    <button
+                      type="button"
+                      className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      onClick={() => setSessionId(null)}
+                    >
+                      {t('backtestStudio.dsSelectNone', { defaultValue: 'Select none' })}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="max-h-44 space-y-0.5 overflow-y-auto">
                 {sessions.map((s) => {
                   const active = sessionId === s.id
                   const tokens = s.target_token_ids.length || s.target_values.length
@@ -3981,7 +3998,8 @@ function DataSourceSelector({
                     </button>
                   )
                 })}
-              </div>
+                </div>
+              </>
             )}
           </div>
         ) : null}
@@ -4005,21 +4023,48 @@ function DataSourceSelector({
               </div>
             ) : (
               <>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-[10px] text-muted-foreground">
                     {providerDatasetIds.length === 0
                       ? t('backtestStudio.dsDatasetsPickHint', { defaultValue: 'Pick one or more — windows union' })
-                      : t('backtestStudio.dsDatasetsSelected', { n: providerDatasetIds.length, defaultValue: `${providerDatasetIds.length} selected` })}
+                      : t('backtestStudio.dsDatasetsSelectedCount', { n: providerDatasetIds.length, total: datasets.length, defaultValue: `${providerDatasetIds.length} of ${datasets.length} selected` })}
                   </span>
-                  {providerDatasetIds.length > 0 ? (
-                    <button
-                      type="button"
-                      className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                      onClick={() => setProviderDatasetIds([])}
-                    >
-                      {t('backtestStudio.clearAll')}
-                    </button>
-                  ) : null}
+                  <div className="flex items-center gap-2 text-[10px]">
+                    {providerDatasetIds.length < datasets.length ? (
+                      <button
+                        type="button"
+                        className="text-violet-700 underline-offset-2 hover:underline dark:text-violet-300"
+                        onClick={() => setProviderDatasetIds(datasets.map((d) => d.id))}
+                        title={t('backtestStudio.dsSelectAllTip', { defaultValue: 'Select every dataset' })}
+                      >
+                        {t('backtestStudio.dsSelectAll', { defaultValue: 'Select all' })}
+                      </button>
+                    ) : null}
+                    {providerDatasetIds.length > 0 ? (
+                      <button
+                        type="button"
+                        className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                        onClick={() => setProviderDatasetIds([])}
+                      >
+                        {t('backtestStudio.dsSelectNone', { defaultValue: 'Select none' })}
+                      </button>
+                    ) : null}
+                    {providerDatasetIds.length > 0 && providerDatasetIds.length < datasets.length ? (
+                      <button
+                        type="button"
+                        className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                        onClick={() => {
+                          const allIds = datasets.map((d) => d.id)
+                          setProviderDatasetIds(
+                            allIds.filter((id) => !providerDatasetIds.includes(id)),
+                          )
+                        }}
+                        title={t('backtestStudio.dsInvertTip', { defaultValue: 'Flip selection' })}
+                      >
+                        {t('backtestStudio.dsInvert', { defaultValue: 'Invert' })}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="max-h-44 space-y-0.5 overflow-y-auto">
                   {datasets.map((d) => {
