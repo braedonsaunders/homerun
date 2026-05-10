@@ -112,6 +112,59 @@ _wallet_buy_trades_cache: tuple[float, dict[str, list[dict[str, Any]]]] = (0.0, 
 _wallet_sell_trades_cache: tuple[float, dict[str, dict[str, Any]]] = (0.0, {})
 _wallet_activity_cache: tuple[float, dict[str, dict[str, Any]]] = (0.0, {})
 _wallet_activity_last_refresh_succeeded = False
+
+# 2026-05-10: single-flight locks for the wallet-history loaders.
+# ``reconcile_live_positions`` runs an ``asyncio.gather`` of 4 of these
+# loaders.  ``_load_execution_wallet_recent_buy_trades_by_token`` and
+# ``_load_execution_wallet_recent_sell_trades_by_token`` BOTH call
+# ``_load_execution_wallet_trade_history`` — so a single cache miss
+# was firing TWO paginated Polymarket calls concurrently, plus the
+# closed-positions and activity calls in parallel.  Soak measured
+# ``external_io=12-20s`` against an API that responds in ms; the
+# cause was thundering-herd on cache expiry, not API latency.
+#
+# The locks are stored per-running-loop so pytest's per-test loop
+# rotation doesn't leave us holding a Lock bound to a closed loop
+# (which would silently raise during the test that triggers the
+# next acquire).  Production has exactly one loop for the worker
+# process lifetime, so the dict only ever holds one entry there.
+_wallet_locks_loop_id: Optional[int] = None
+_wallet_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_wallet_lock(name: str) -> asyncio.Lock:
+    global _wallet_locks_loop_id, _wallet_locks
+    loop_id = id(asyncio.get_running_loop())
+    if loop_id != _wallet_locks_loop_id:
+        # New event loop (typically a fresh pytest test) — abandon
+        # the old locks, which were bound to a now-defunct loop.
+        _wallet_locks_loop_id = loop_id
+        _wallet_locks = {}
+    lock = _wallet_locks.get(name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _wallet_locks[name] = lock
+    return lock
+
+
+def _get_wallet_closed_positions_lock() -> asyncio.Lock:
+    return _get_wallet_lock("closed_positions")
+
+
+def _get_wallet_trades_lock() -> asyncio.Lock:
+    return _get_wallet_lock("trades")
+
+
+def _get_wallet_buy_trades_lock() -> asyncio.Lock:
+    return _get_wallet_lock("buy_trades")
+
+
+def _get_wallet_sell_trades_lock() -> asyncio.Lock:
+    return _get_wallet_lock("sell_trades")
+
+
+def _get_wallet_activity_lock() -> asyncio.Lock:
+    return _get_wallet_lock("activity")
 _WALLET_SIZE_EPSILON = 1e-9
 _MARK_TOUCH_INTERVAL_SECONDS = 0.5
 _MAX_LIVE_EXIT_FALLBACK_MARK_AGE_SECONDS = 120.0
@@ -3713,40 +3766,50 @@ async def _load_execution_wallet_closed_positions_by_token() -> dict[str, dict[s
     if _wallet_closed_positions_last_refresh_succeeded and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
         return cached_data
 
-    # Hot-path gate: orchestrator must not block on REST.  Return
-    # whatever cache we have (even stale or empty) — the reconciliation
-    # worker is responsible for refreshing this off the hot path.
-    if not allow_polymarket_rest_call("closed_positions"):
-        return cached_data or {}
+    # Single-flight: serialize concurrent cache misses so we don't
+    # fire duplicate paginated Polymarket calls under the
+    # ``asyncio.gather`` that drives ``external_io``.
+    async with _get_wallet_closed_positions_lock():
+        # Re-check cache after acquiring the lock — a peer caller may
+        # have just populated it while we were queued.
+        cached_at, cached_data = _wallet_closed_positions_cache
+        if _wallet_closed_positions_last_refresh_succeeded and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
+            return cached_data
 
-    wallet = await _resolve_execution_wallet_address()
-    if not wallet:
-        _wallet_closed_positions_last_refresh_succeeded = False
-        return {}
+        # Hot-path gate: orchestrator must not block on REST.  Return
+        # whatever cache we have (even stale or empty) — the reconciliation
+        # worker is responsible for refreshing this off the hot path.
+        if not allow_polymarket_rest_call("closed_positions"):
+            return cached_data or {}
 
-    try:
-        positions = await polymarket_client.get_closed_positions_paginated(
-            wallet,
-            max_positions=_WALLET_HISTORY_MAX_CLOSED_POSITIONS,
-        )
-    except Exception:
-        _wallet_closed_positions_last_refresh_succeeded = False
-        return {}
+        wallet = await _resolve_execution_wallet_address()
+        if not wallet:
+            _wallet_closed_positions_last_refresh_succeeded = False
+            return {}
 
-    by_token: dict[str, dict[str, Any]] = {}
-    for position in positions:
-        if not isinstance(position, dict):
-            continue
-        token_id = str(position.get("asset") or position.get("asset_id") or position.get("token_id") or "").strip()
-        if token_id:
-            by_token[token_id] = position
-        cid = str(position.get("conditionId") or position.get("condition_id") or "").strip()
-        outcome_idx = position.get("outcomeIndex")
-        if cid and outcome_idx is not None:
-            by_token[f"{cid}:{outcome_idx}"] = position
-    _wallet_closed_positions_cache = (_time_mod.monotonic(), by_token)
-    _wallet_closed_positions_last_refresh_succeeded = True
-    return by_token
+        try:
+            positions = await polymarket_client.get_closed_positions_paginated(
+                wallet,
+                max_positions=_WALLET_HISTORY_MAX_CLOSED_POSITIONS,
+            )
+        except Exception:
+            _wallet_closed_positions_last_refresh_succeeded = False
+            return {}
+
+        by_token: dict[str, dict[str, Any]] = {}
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            token_id = str(position.get("asset") or position.get("asset_id") or position.get("token_id") or "").strip()
+            if token_id:
+                by_token[token_id] = position
+            cid = str(position.get("conditionId") or position.get("condition_id") or "").strip()
+            outcome_idx = position.get("outcomeIndex")
+            if cid and outcome_idx is not None:
+                by_token[f"{cid}:{outcome_idx}"] = position
+        _wallet_closed_positions_cache = (_time_mod.monotonic(), by_token)
+        _wallet_closed_positions_last_refresh_succeeded = True
+        return by_token
 
 
 async def _load_execution_wallet_trade_history() -> list[dict[str, Any]]:
@@ -3755,27 +3818,38 @@ async def _load_execution_wallet_trade_history() -> list[dict[str, Any]]:
     if cached_data and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
         return list(cached_data)
 
-    # Hot-path gate: never issue REST from the orchestrator hot loop.
-    if not allow_polymarket_rest_call("wallet_trades"):
-        return list(cached_data) if cached_data else []
+    # Single-flight: ``_load_execution_wallet_recent_buy_trades_by_token``
+    # and ``_load_execution_wallet_recent_sell_trades_by_token`` both
+    # call this concurrently inside ``reconcile_live_positions``'s
+    # ``asyncio.gather``.  Without serialization, a single cache miss
+    # fired TWO paginated ``get_wallet_trades_paginated`` calls in
+    # parallel against an already-loaded API.
+    async with _get_wallet_trades_lock():
+        cached_at, cached_data = _wallet_trades_cache
+        if cached_data and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
+            return list(cached_data)
 
-    wallet = await _resolve_execution_wallet_address()
-    if not wallet:
-        return []
-    try:
-        trades = await polymarket_client.get_wallet_trades_paginated(
-            wallet,
-            max_trades=_WALLET_HISTORY_MAX_TRADES,
-            page_size=_WALLET_HISTORY_TRADE_PAGE_SIZE,
-        )
-    except Exception:
-        return []
-    if not isinstance(trades, list):
-        return []
+        # Hot-path gate: never issue REST from the orchestrator hot loop.
+        if not allow_polymarket_rest_call("wallet_trades"):
+            return list(cached_data) if cached_data else []
 
-    normalized = [dict(trade) for trade in trades if isinstance(trade, dict)]
-    _wallet_trades_cache = (_time_mod.monotonic(), normalized)
-    return list(normalized)
+        wallet = await _resolve_execution_wallet_address()
+        if not wallet:
+            return []
+        try:
+            trades = await polymarket_client.get_wallet_trades_paginated(
+                wallet,
+                max_trades=_WALLET_HISTORY_MAX_TRADES,
+                page_size=_WALLET_HISTORY_TRADE_PAGE_SIZE,
+            )
+        except Exception:
+            return []
+        if not isinstance(trades, list):
+            return []
+
+        normalized = [dict(trade) for trade in trades if isinstance(trade, dict)]
+        _wallet_trades_cache = (_time_mod.monotonic(), normalized)
+        return list(normalized)
 
 
 async def _load_execution_wallet_recent_buy_trades_by_token() -> dict[str, list[dict[str, Any]]]:
@@ -4021,53 +4095,59 @@ async def _load_execution_wallet_recent_close_activity_by_token() -> dict[str, d
     if _wallet_activity_last_refresh_succeeded and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
         return cached_data
 
-    # Hot-path gate: orchestrator hot loop must not issue REST.
-    if not allow_polymarket_rest_call("wallet_activity"):
-        return cached_data or {}
+    # Single-flight (see ``_load_execution_wallet_closed_positions_by_token``).
+    async with _get_wallet_activity_lock():
+        cached_at, cached_data = _wallet_activity_cache
+        if _wallet_activity_last_refresh_succeeded and (_time_mod.monotonic() - cached_at) < _WALLET_HISTORY_CACHE_TTL_SECONDS:
+            return cached_data
 
-    wallet = await _resolve_execution_wallet_address()
-    if not wallet:
-        _wallet_activity_last_refresh_succeeded = False
-        return {}
+        # Hot-path gate: orchestrator hot loop must not issue REST.
+        if not allow_polymarket_rest_call("wallet_activity"):
+            return cached_data or {}
 
-    try:
-        activities = await polymarket_client.get_wallet_activity_paginated(
-            wallet,
-            max_items=_WALLET_HISTORY_MAX_ACTIVITY_ITEMS,
-            page_size=_WALLET_HISTORY_ACTIVITY_PAGE_SIZE,
-            activity_types=("TRADE", "MERGE", "REDEEM", "CLAIM", "CONVERSION", "CONVERT"),
-        )
-    except Exception:
-        _wallet_activity_last_refresh_succeeded = False
-        return {}
-    if not isinstance(activities, list):
-        _wallet_activity_last_refresh_succeeded = False
-        return {}
+        wallet = await _resolve_execution_wallet_address()
+        if not wallet:
+            _wallet_activity_last_refresh_succeeded = False
+            return {}
 
-    latest_by_token: dict[str, dict[str, Any]] = {}
+        try:
+            activities = await polymarket_client.get_wallet_activity_paginated(
+                wallet,
+                max_items=_WALLET_HISTORY_MAX_ACTIVITY_ITEMS,
+                page_size=_WALLET_HISTORY_ACTIVITY_PAGE_SIZE,
+                activity_types=("TRADE", "MERGE", "REDEEM", "CLAIM", "CONVERSION", "CONVERT"),
+            )
+        except Exception:
+            _wallet_activity_last_refresh_succeeded = False
+            return {}
+        if not isinstance(activities, list):
+            _wallet_activity_last_refresh_succeeded = False
+            return {}
 
-    def _remember(key: str, activity: dict[str, Any]) -> None:
-        if not key:
-            return
-        timestamp = _parse_wallet_activity_time(activity)
-        current = latest_by_token.get(key)
-        current_timestamp = _parse_wallet_activity_time(current) if isinstance(current, dict) else None
-        if current_timestamp is None or (timestamp is not None and timestamp >= current_timestamp):
-            latest_by_token[key] = activity
+        latest_by_token: dict[str, dict[str, Any]] = {}
 
-    for activity in activities:
-        if not isinstance(activity, dict) or not _wallet_activity_is_close_authority(activity):
-            continue
-        token_id = _extract_wallet_activity_token_id(activity)
-        if token_id:
-            _remember(token_id, activity)
-        cond_key = _wallet_activity_condition_outcome_key(activity)
-        if cond_key:
-            _remember(cond_key, activity)
+        def _remember(key: str, activity: dict[str, Any]) -> None:
+            if not key:
+                return
+            timestamp = _parse_wallet_activity_time(activity)
+            current = latest_by_token.get(key)
+            current_timestamp = _parse_wallet_activity_time(current) if isinstance(current, dict) else None
+            if current_timestamp is None or (timestamp is not None and timestamp >= current_timestamp):
+                latest_by_token[key] = activity
 
-    _wallet_activity_cache = (_time_mod.monotonic(), latest_by_token)
-    _wallet_activity_last_refresh_succeeded = True
-    return latest_by_token
+        for activity in activities:
+            if not isinstance(activity, dict) or not _wallet_activity_is_close_authority(activity):
+                continue
+            token_id = _extract_wallet_activity_token_id(activity)
+            if token_id:
+                _remember(token_id, activity)
+            cond_key = _wallet_activity_condition_outcome_key(activity)
+            if cond_key:
+                _remember(cond_key, activity)
+
+        _wallet_activity_cache = (_time_mod.monotonic(), latest_by_token)
+        _wallet_activity_last_refresh_succeeded = True
+        return latest_by_token
 
 
 async def _load_mapping_with_timeout(
