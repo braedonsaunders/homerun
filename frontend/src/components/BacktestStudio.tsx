@@ -85,6 +85,10 @@ import {
   listProviderDatasets,
   type ProviderDataset,
 } from '../services/apiProviders'
+import {
+  listRecordingSessions,
+  type RecordingSession,
+} from '../services/apiDataset'
 // Detect live-trading-enabled state so we can warn before kicking off a
 // backtest while real money is on the wire.  Backtests intentionally
 // raise statement_timeout to 5 minutes and read multi-GB tables; even
@@ -1446,11 +1450,26 @@ export default function BacktestStudio({
   // preset chips.
   const [windowDays, setWindowDays] = useState<string>('1')
 
-  // Imported provider dataset(s) the operator picked from Data Lab →
-  // Providers.  When non-empty the backend resolves these into the
-  // (token_ids, start, end) scope for the run; window/days/start/end
-  // controls above are ignored.  Mutually exclusive with session_id
-  // (recording session wins on the backend if both are present).
+  // ───────── Data source picker (3 modes) ─────────
+  //
+  // The backend supports three orthogonal scopes:
+  //
+  //   'auto'     — rolling N-day window over the live ingestor's
+  //                ``market_microstructure_snapshots`` + ``book_delta_events``.
+  //   'session'  — a single Recording Session captured at a specific
+  //                time over a known token universe.  Backend reads
+  //                ``session_id`` and resolves to (token_ids, window).
+  //   'datasets' — one OR MORE imported provider datasets (parquet
+  //                or legacy polybacktest).  Backend reads
+  //                ``provider_dataset_ids[]`` and unions the
+  //                token_ids + [min start, max end].
+  //
+  // Each mode's selection persists when the operator switches modes,
+  // so a quick A/B between auto and a specific dataset doesn't lose
+  // their picks.  Only the active mode's selection is sent on Run.
+  type DataSourceMode = 'auto' | 'session' | 'datasets'
+  const [dataSourceMode, setDataSourceMode] = useState<DataSourceMode>('auto')
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const [providerDatasetIds, setProviderDatasetIds] = useState<string[]>([])
   // (Legacy center-pane subtab state removed — Inspect stage renders
   // every section in a single scroll.)
@@ -1927,18 +1946,36 @@ export default function BacktestStudio({
       )
       if (!confirmed) return
     }
-    // Window is "last N days" measured from now.  Skip when the
-    // operator left it blank or set to a non-positive number, in
-    // which case the backend's 7d default applies.
-    const days = parseFloat(windowDays || '0')
+    // ── Resolve the data-source scope based on the active mode ──
+    //
+    // The backend accepts THREE mutually-exclusive scope envelopes
+    // (in priority order — earlier wins on the server):
+    //   1. session_id              → resolves to (token_ids, window)
+    //                                 from the captured session.
+    //   2. provider_dataset_ids[]  → resolves to union of dataset
+    //                                 (token_ids, [min start, max end]).
+    //   3. start/end (or omitted)  → rolling window over live mms.
+    //
+    // We send EXACTLY the envelope matching the active mode so a
+    // stale selection in another mode doesn't accidentally win.
     let startIso: string | undefined
     let endIso: string | undefined
-    if (Number.isFinite(days) && days > 0) {
-      const end = new Date()
-      const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
-      startIso = start.toISOString()
-      endIso = end.toISOString()
+    let dsetIds: string[] | undefined
+    let sessIdToSend: string | undefined
+    if (dataSourceMode === 'auto') {
+      const days = parseFloat(windowDays || '0')
+      if (Number.isFinite(days) && days > 0) {
+        const end = new Date()
+        const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
+        startIso = start.toISOString()
+        endIso = end.toISOString()
+      }
+    } else if (dataSourceMode === 'session') {
+      sessIdToSend = sessionId || undefined
+    } else if (dataSourceMode === 'datasets') {
+      dsetIds = providerDatasetIds.length > 0 ? providerDatasetIds : undefined
     }
+
     runMutation.mutate({
       source_code: sourceCode,
       slug,
@@ -1954,9 +1991,8 @@ export default function BacktestStudio({
       initial_capital_usd: parseFloat(initialCapital) || 1000,
       start: startIso,
       end: endIso,
-      // Provider datasets win over the (start, end) controls — the
-      // backend resolves them into the union of (token_ids, window).
-      provider_dataset_ids: providerDatasetIds.length > 0 ? providerDatasetIds : undefined,
+      session_id: sessIdToSend,
+      provider_dataset_ids: dsetIds,
       submit_p50_ms: submitP50 ? parseFloat(submitP50) : undefined,
       submit_p95_ms: submitP95 ? parseFloat(submitP95) : undefined,
       seed: seed ? parseInt(seed, 10) : undefined,
@@ -2157,77 +2193,26 @@ export default function BacktestStudio({
         {stage === 'setup' ? (
           <div className="flex h-full flex-col">
             <div className="flex-1 min-h-0 grid grid-cols-12 gap-3 p-4">
-              {/* Left column — primary inputs (capital, window, dataset) */}
+              {/* Left column — unified data source selector (3 modes:
+                  Auto rolling-window / Recording session / multi-select
+                  Datasets).  Replaces the legacy "dataset picker +
+                  separate Time-window card" pair. */}
               <div className="col-span-12 lg:col-span-7 flex min-h-0 flex-col gap-3">
-                {/* Provider dataset picker — flex-1 so it absorbs
-                    excess vertical space; the picker's own list
-                    scrolls internally. */}
                 <div className="rounded-md border border-border/50 bg-card/40 p-3 flex min-h-0 flex-col gap-2">
                   <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     <Layers3 className="h-3.5 w-3.5 text-violet-400" />
                     {t('backtestStudio.setupDatasetTitle', { defaultValue: 'Data source' })}
                   </div>
-                  <ProviderDatasetSelector
-                    selected={providerDatasetIds}
-                    onChange={setProviderDatasetIds}
+                  <DataSourceSelector
+                    mode={dataSourceMode}
+                    setMode={setDataSourceMode}
+                    windowDays={windowDays}
+                    setWindowDays={setWindowDays}
+                    sessionId={sessionId}
+                    setSessionId={setSessionId}
+                    providerDatasetIds={providerDatasetIds}
+                    setProviderDatasetIds={setProviderDatasetIds}
                   />
-                  <p className="text-[10px] text-muted-foreground">
-                    {t('backtestStudio.setupDatasetHint', { defaultValue: 'Pick imported parquet datasets, or leave empty to use the rolling window below.' })}
-                  </p>
-                </div>
-
-                {/* Window — disabled when a provider dataset is selected */}
-                <div
-                  className={cn(
-                    'rounded-md border border-border/50 bg-card/40 p-3 transition-opacity',
-                    providerDatasetIds.length > 0 && 'opacity-50',
-                  )}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      <Clock className="h-3.5 w-3.5 text-sky-400" />
-                      {t('backtestStudio.setupWindowTitle', { defaultValue: 'Time window' })}
-                    </div>
-                    {providerDatasetIds.length > 0 ? (
-                      <span className="text-[10px] text-muted-foreground italic">
-                        {t('backtestStudio.setupWindowDisabled', { defaultValue: 'overridden by selected dataset(s)' })}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Input
-                      value={windowDays}
-                      onChange={(e) => setWindowDays(e.target.value)}
-                      placeholder="1"
-                      className="h-8 w-24"
-                      disabled={providerDatasetIds.length > 0}
-                    />
-                    <div className="flex items-center gap-1">
-                      {([
-                        ['1', t('backtestStudio.presetQuick'), t('backtestStudio.presetQuickEta')],
-                        ['7', t('backtestStudio.presetStandard'), t('backtestStudio.presetStandardEta')],
-                        ['30', t('backtestStudio.presetThorough'), t('backtestStudio.presetThoroughEta')],
-                      ] as const).map(([val, label, eta]) => (
-                        <button
-                          key={val}
-                          type="button"
-                          onClick={() => setWindowDays(val)}
-                          disabled={providerDatasetIds.length > 0}
-                          title={t('backtestStudio.presetTitle', { label, val, eta })}
-                          className={cn(
-                            'rounded-sm border px-2 py-1 text-[10px] font-medium transition-colors',
-                            windowDays === val
-                              ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-300'
-                              : 'border-border/40 bg-card/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
-                            providerDatasetIds.length > 0 && 'cursor-not-allowed opacity-50',
-                          )}
-                        >
-                          {label}
-                          <span className="ml-1 opacity-60">{eta}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                 </div>
               </div>
 
@@ -2351,22 +2336,30 @@ export default function BacktestStudio({
         {stage === 'run' ? (
           <div className="flex h-full flex-col">
             <div className="flex flex-1 min-h-0 flex-col gap-3 p-4">
-                {/* Setup summary recap — compact horizontal strip */}
+                {/* Setup summary recap — compact horizontal strip.
+                    Reflects the active data-source mode so the
+                    operator sees the same scope they configured. */}
                 <div className="rounded-md border border-border/50 bg-card/40 p-3 grid grid-cols-3 gap-3 text-[11px] shrink-0">
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t('backtestStudio.labelCapital')}</div>
                     <div className="font-mono tabular-nums">{fmtUsd(parseFloat(initialCapital) || 1000)}</div>
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {providerDatasetIds.length > 0
-                        ? t('backtestStudio.runSummaryDataset', { defaultValue: 'Dataset' })
-                        : t('backtestStudio.labelWindowDays')}
+                      {dataSourceMode === 'auto'
+                        ? t('backtestStudio.runSummaryAuto', { defaultValue: 'Window (auto)' })
+                        : dataSourceMode === 'session'
+                          ? t('backtestStudio.runSummarySession', { defaultValue: 'Session' })
+                          : t('backtestStudio.runSummaryDatasets', { defaultValue: 'Datasets' })}
                     </div>
-                    <div className="font-mono tabular-nums">
-                      {providerDatasetIds.length > 0
-                        ? t('backtestStudio.providerDatasetCount', { n: providerDatasetIds.length })
-                        : `${windowDays} d`}
+                    <div className="truncate font-mono tabular-nums">
+                      {dataSourceMode === 'auto'
+                        ? `${windowDays || '7'} d`
+                        : dataSourceMode === 'session'
+                          ? (sessionId ? sessionId.slice(0, 8) : t('backtestStudio.runSummaryNone', { defaultValue: '— none picked' }))
+                          : (providerDatasetIds.length > 0
+                              ? t('backtestStudio.providerDatasetCount', { n: providerDatasetIds.length })
+                              : t('backtestStudio.runSummaryNone', { defaultValue: '— none picked' }))}
                     </div>
                   </div>
                   <div className="text-right">
@@ -3560,103 +3553,440 @@ export default function BacktestStudio({
 
 
 /**
- * Compact picker for imported provider datasets.
+ * Smart 3-mode data source selector for the backtest Setup stage.
  *
- * Pulls the catalog from /api/providers/datasets, lets the operator
- * multi-select.  When at least one dataset is selected the run uses
- * the union of those datasets' (token_ids, window) instead of the
- * standard Window field — backend resolves on the server side via
- * the `provider_dataset_ids` request field.
+ * Replaces the legacy "ProviderDatasetSelector + separate Time-window
+ * card" pair with one cohesive control:
+ *
+ *   ① Auto      — rolling N-day window over the live ingestor's
+ *                 mms + book_delta_events tables.  Best when the
+ *                 strategy's universe matches what's currently
+ *                 being captured by the live ingestor.
+ *   ② Session   — single recording session captured at a specific
+ *                 time over a known token universe.  Picks one
+ *                 from /dataset/sessions.
+ *   ③ Datasets  — multi-select one or more imported provider
+ *                 datasets (parquet + legacy polybacktest).  The
+ *                 backend unions their token_ids + [min start, max
+ *                 end].
+ *
+ * Each mode's selection persists when the operator switches modes,
+ * so quick A/B comparisons don't wipe state.  Only the active
+ * mode's selection is sent at run time.
+ *
+ * Below the mode-specific picker, an always-visible scope-summary
+ * strip surfaces the resolved (tokens, time-span) so the operator
+ * sees what they're about to backtest BEFORE clicking Run.
  */
-function ProviderDatasetSelector({
-  selected,
-  onChange,
+function DataSourceSelector({
+  mode,
+  setMode,
+  windowDays,
+  setWindowDays,
+  sessionId,
+  setSessionId,
+  providerDatasetIds,
+  setProviderDatasetIds,
 }: {
-  selected: string[]
-  onChange: (ids: string[]) => void
+  mode: 'auto' | 'session' | 'datasets'
+  setMode: (m: 'auto' | 'session' | 'datasets') => void
+  windowDays: string
+  setWindowDays: (s: string) => void
+  sessionId: string | null
+  setSessionId: (s: string | null) => void
+  providerDatasetIds: string[]
+  setProviderDatasetIds: (ids: string[]) => void
 }) {
   const { t } = useTranslation()
+
+  // Pull recording sessions ONLY when the session mode is active —
+  // this avoids hitting /dataset/sessions on every studio mount for
+  // operators who never use captured sessions.
+  const sessionsQuery = useQuery({
+    queryKey: ['recording-sessions', 'for-backtest'],
+    queryFn: () => listRecordingSessions(['completed', 'running', 'paused'], 50),
+    enabled: mode === 'session',
+    staleTime: 30_000,
+  })
+  const sessions: RecordingSession[] = sessionsQuery.data ?? []
+
+  // Pull datasets ONLY when datasets mode is active OR something is
+  // already selected (so the scope summary can render even mid-mode-
+  // switch).  Same rationale.
   const datasetsQuery = useQuery({
-    queryKey: ['providers', 'datasets', 'backtest-picker'],
+    queryKey: ['providers', 'datasets', 'backtest-source'],
     queryFn: () => listProviderDatasets({ limit: 200 }),
+    enabled: mode === 'datasets' || providerDatasetIds.length > 0,
     staleTime: 60_000,
   })
   const datasets: ProviderDataset[] = datasetsQuery.data ?? []
-  const [open, setOpen] = useState(false)
 
-  const selectedSet = useMemo(() => new Set(selected), [selected])
-  const summary = useMemo(() => {
-    if (selected.length === 0) return t('backtestStudio.providerDatasetNone')
-    if (selected.length === 1) {
-      const d = datasets.find((x) => x.id === selected[0])
-      return d ? (d.title || d.external_slug || d.external_id) : t('backtestStudio.providerDatasetCount', { n: selected.length })
+  // ── Resolve active scope for the summary strip ──
+  const activeScope = useMemo(() => {
+    if (mode === 'auto') {
+      const days = parseFloat(windowDays || '0')
+      if (!Number.isFinite(days) || days <= 0) {
+        return {
+          tokens: 0,
+          windowLabel: t('backtestStudio.dsAutoBackendDefault', { defaultValue: 'backend default (7d)' }),
+          tokenLabel: t('backtestStudio.dsAutoTokensLive', { defaultValue: 'live ingestor universe' }),
+        }
+      }
+      return {
+        tokens: 0,
+        windowLabel: t('backtestStudio.dsAutoWindow', { days, defaultValue: `last ${days}d` }),
+        tokenLabel: t('backtestStudio.dsAutoTokensLive', { defaultValue: 'live ingestor universe' }),
+      }
     }
-    return t('backtestStudio.providerDatasetCount', { n: selected.length })
-  }, [selected, datasets, t])
+    if (mode === 'session' && sessionId) {
+      const s = sessions.find((x) => x.id === sessionId)
+      if (!s) return null
+      const tokens = s.target_token_ids.length || s.target_values.length
+      const startMs = s.started_at ? new Date(s.started_at).getTime() : null
+      const endMs = s.ended_at
+        ? new Date(s.ended_at).getTime()
+        : s.last_capture_at
+          ? new Date(s.last_capture_at).getTime()
+          : null
+      const windowLabel =
+        startMs && endMs
+          ? `${new Date(startMs).toLocaleDateString()} → ${new Date(endMs).toLocaleDateString()}`
+          : t('backtestStudio.dsSessionUnscoped', { defaultValue: 'no captured window yet' })
+      return {
+        tokens,
+        windowLabel,
+        tokenLabel: t('backtestStudio.dsTokensCount', { n: tokens, defaultValue: `${tokens} token${tokens === 1 ? '' : 's'}` }),
+      }
+    }
+    if (mode === 'datasets' && providerDatasetIds.length > 0) {
+      const picked = datasets.filter((d) => providerDatasetIds.includes(d.id))
+      const tokenSet = new Set<string>()
+      let minStart: number | null = null
+      let maxEnd: number | null = null
+      for (const d of picked) {
+        for (const tid of d.token_ids || []) tokenSet.add(tid)
+        if (d.start_ts) {
+          const ms = new Date(d.start_ts).getTime()
+          if (minStart === null || ms < minStart) minStart = ms
+        }
+        if (d.end_ts) {
+          const ms = new Date(d.end_ts).getTime()
+          if (maxEnd === null || ms > maxEnd) maxEnd = ms
+        }
+      }
+      const tokens = tokenSet.size
+      const windowLabel =
+        minStart && maxEnd
+          ? `${new Date(minStart).toLocaleDateString()} → ${new Date(maxEnd).toLocaleDateString()}`
+          : t('backtestStudio.dsDatasetsNoWindow', { defaultValue: 'window not yet computed' })
+      return {
+        tokens,
+        windowLabel,
+        tokenLabel: t('backtestStudio.dsTokensCount', { n: tokens, defaultValue: `${tokens} token${tokens === 1 ? '' : 's'}` }),
+      }
+    }
+    return null
+  }, [mode, windowDays, sessionId, sessions, providerDatasetIds, datasets, t])
 
-  return (
-    <div className="rounded-md border border-violet-500/20 bg-violet-500/5 p-2">
-      <div className="flex items-center justify-between gap-2">
-        <Label className="text-[10px] uppercase tracking-wide text-violet-700 dark:text-violet-300">
-          {t('backtestStudio.providerDataset')}
-        </Label>
-        {selected.length > 0 ? (
-          <button
-            type="button"
-            className="text-[10px] text-muted-foreground hover:text-foreground"
-            onClick={() => onChange([])}
-          >
-            {t('backtestStudio.clearAll')}
-          </button>
-        ) : null}
-      </div>
+  // ── Mode pill (segmented control) ──
+  const ModeButton = ({
+    value,
+    icon: Icon,
+    label,
+    sub,
+  }: {
+    value: 'auto' | 'session' | 'datasets'
+    icon: typeof Sparkles
+    label: string
+    sub: string
+  }) => {
+    const active = mode === value
+    return (
       <button
         type="button"
-        className="mt-1 flex w-full items-center justify-between rounded-sm border border-border/40 bg-background/40 px-2 py-1 text-[11px] hover:bg-background/60"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => setMode(value)}
+        className={cn(
+          'flex flex-1 items-center gap-2 rounded-sm border px-2.5 py-1.5 text-left transition-colors',
+          active
+            ? 'border-violet-500/60 bg-violet-500/10 dark:border-violet-400/50 dark:bg-violet-500/15'
+            : 'border-border/40 bg-background/40 hover:border-border/60 hover:bg-background/60',
+        )}
       >
-        <span className="truncate">{summary}</span>
-        <span className="text-muted-foreground">{open ? '▴' : '▾'}</span>
-      </button>
-      {open ? (
-        <div className="mt-1 max-h-44 overflow-auto rounded-sm border border-border/30 bg-background/40 p-1">
-          {datasetsQuery.isLoading ? (
-            <div className="px-2 py-1 text-[10px] text-muted-foreground">{t('backtestStudio.providerDatasetLoading')}</div>
-          ) : datasets.length === 0 ? (
-            <div className="px-2 py-1 text-[10px] text-muted-foreground">
-              {t('backtestStudio.providerDatasetEmpty')}
-            </div>
-          ) : (
-            datasets.map((d) => {
-              const checked = selectedSet.has(d.id)
-              return (
-                <label
-                  key={d.id}
-                  className="flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-1 hover:bg-card/40"
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => {
-                      const next = new Set(selectedSet)
-                      if (e.target.checked) next.add(d.id)
-                      else next.delete(d.id)
-                      onChange(Array.from(next))
-                    }}
-                    className="h-3 w-3 accent-violet-500"
-                  />
-                  <span className="flex-1 truncate text-[10.5px]">
-                    {d.title || d.external_slug || d.external_id}
-                  </span>
-                  <span className="ml-1 text-[9px] text-muted-foreground">
-                    {(d.coin || '?').toUpperCase()} · {d.snapshot_count.toLocaleString()}
-                  </span>
-                </label>
-              )
-            })
+        <Icon
+          className={cn(
+            'h-3.5 w-3.5 shrink-0',
+            active ? 'text-violet-700 dark:text-violet-300' : 'text-muted-foreground',
           )}
+        />
+        <div className="min-w-0 flex-1">
+          <div
+            className={cn(
+              'truncate text-[11px] font-semibold leading-tight',
+              active ? 'text-violet-900 dark:text-violet-100' : 'text-foreground',
+            )}
+          >
+            {label}
+          </div>
+          <div className="truncate text-[9px] uppercase tracking-wide text-muted-foreground">
+            {sub}
+          </div>
         </div>
-      ) : null}
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Mode segmented control */}
+      <div className="flex gap-1.5">
+        <ModeButton
+          value="auto"
+          icon={Sparkles}
+          label={t('backtestStudio.dsModeAuto', { defaultValue: 'Auto' })}
+          sub={t('backtestStudio.dsModeAutoSub', { defaultValue: 'rolling window' })}
+        />
+        <ModeButton
+          value="session"
+          icon={Clock}
+          label={t('backtestStudio.dsModeSession', { defaultValue: 'Recording session' })}
+          sub={t('backtestStudio.dsModeSessionSub', { defaultValue: 'captured window' })}
+        />
+        <ModeButton
+          value="datasets"
+          icon={Layers3}
+          label={t('backtestStudio.dsModeDatasets', { defaultValue: 'Datasets' })}
+          sub={t('backtestStudio.dsModeDatasetsSub', { defaultValue: 'multi-select vendor data' })}
+        />
+      </div>
+
+      {/* Mode-specific picker */}
+      <div className="rounded-md border border-border/40 bg-background/30 p-2 min-h-[80px]">
+        {mode === 'auto' ? (
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {t('backtestStudio.labelWindowDays')}
+              </Label>
+              <Input
+                value={windowDays}
+                onChange={(e) => setWindowDays(e.target.value)}
+                placeholder="1"
+                className="h-7 w-20"
+              />
+              <div className="flex items-center gap-1">
+                {([
+                  ['1', t('backtestStudio.presetQuick'), t('backtestStudio.presetQuickEta')],
+                  ['7', t('backtestStudio.presetStandard'), t('backtestStudio.presetStandardEta')],
+                  ['30', t('backtestStudio.presetThorough'), t('backtestStudio.presetThoroughEta')],
+                ] as const).map(([val, label, eta]) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setWindowDays(val)}
+                    title={t('backtestStudio.presetTitle', { label, val, eta })}
+                    className={cn(
+                      'rounded-sm border px-2 py-1 text-[10px] font-medium transition-colors',
+                      windowDays === val
+                        ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-300'
+                        : 'border-border/40 bg-card/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
+                    )}
+                  >
+                    {label}
+                    <span className="ml-1 opacity-60">{eta}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {t('backtestStudio.dsAutoHint', { defaultValue: 'Pulls live-ingestor microstructure snapshots + book deltas for the rolling window.  Token universe matches whatever the live ingestor is currently capturing.' })}
+            </p>
+          </div>
+        ) : null}
+
+        {mode === 'session' ? (
+          <div className="space-y-1.5">
+            {sessionsQuery.isLoading ? (
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {t('backtestStudio.dsSessionLoading', { defaultValue: 'Loading recording sessions…' })}
+              </div>
+            ) : sessions.length === 0 ? (
+              <div className="rounded-sm border border-dashed border-border/40 bg-card/20 px-3 py-3 text-center">
+                <Clock className="mx-auto h-5 w-5 text-muted-foreground/50" />
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {t('backtestStudio.dsSessionEmpty', { defaultValue: 'No recording sessions yet.' })}
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground/70">
+                  {t('backtestStudio.dsSessionEmptyHint', { defaultValue: 'Capture one in Data Lab → Record.' })}
+                </div>
+              </div>
+            ) : (
+              <div className="max-h-44 space-y-0.5 overflow-y-auto">
+                {sessions.map((s) => {
+                  const active = sessionId === s.id
+                  const tokens = s.target_token_ids.length || s.target_values.length
+                  const dur =
+                    s.started_at && (s.ended_at || s.last_capture_at)
+                      ? Math.round(
+                          (new Date(s.ended_at || s.last_capture_at!).getTime() -
+                            new Date(s.started_at).getTime()) /
+                            3600_000,
+                        )
+                      : null
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setSessionId(active ? null : s.id)}
+                      className={cn(
+                        'flex w-full items-center gap-2 rounded-sm border px-2 py-1.5 text-left text-[11px] transition-colors',
+                        active
+                          ? 'border-violet-500/50 bg-violet-500/10 dark:border-violet-400/50 dark:bg-violet-500/15'
+                          : 'border-border/30 bg-card/30 hover:border-border/60 hover:bg-card/50',
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border',
+                          active
+                            ? 'border-violet-500 bg-violet-500 dark:border-violet-400 dark:bg-violet-400'
+                            : 'border-border/60',
+                        )}
+                      >
+                        {active ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">{s.name}</div>
+                        <div className="truncate text-[10px] text-muted-foreground">
+                          {tokens} {t('backtestStudio.dsTokensWord', { defaultValue: 'tokens' })}
+                          {dur !== null ? ` · ${dur}h` : ''}
+                          {s.rows_captured ? ` · ${s.rows_captured.toLocaleString()} ${t('backtestStudio.dsRowsWord', { defaultValue: 'rows' })}` : ''}
+                        </div>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          'text-[9px] uppercase tracking-wide',
+                          s.status === 'completed' && 'border-emerald-500/40 text-emerald-700 dark:text-emerald-300',
+                          s.status === 'running' && 'border-amber-500/40 text-amber-700 dark:text-amber-300 animate-pulse',
+                        )}
+                      >
+                        {s.status}
+                      </Badge>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {mode === 'datasets' ? (
+          <div className="space-y-1.5">
+            {datasetsQuery.isLoading ? (
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {t('backtestStudio.dsDatasetsLoading', { defaultValue: 'Loading datasets…' })}
+              </div>
+            ) : datasets.length === 0 ? (
+              <div className="rounded-sm border border-dashed border-border/40 bg-card/20 px-3 py-3 text-center">
+                <Layers3 className="mx-auto h-5 w-5 text-muted-foreground/50" />
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {t('backtestStudio.providerDatasetEmpty')}
+                </div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground/70">
+                  {t('backtestStudio.dsDatasetsEmptyHint', { defaultValue: 'Import or drop parquet files in Data Lab → Providers.' })}
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-muted-foreground">
+                    {providerDatasetIds.length === 0
+                      ? t('backtestStudio.dsDatasetsPickHint', { defaultValue: 'Pick one or more — windows union' })
+                      : t('backtestStudio.dsDatasetsSelected', { n: providerDatasetIds.length, defaultValue: `${providerDatasetIds.length} selected` })}
+                  </span>
+                  {providerDatasetIds.length > 0 ? (
+                    <button
+                      type="button"
+                      className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      onClick={() => setProviderDatasetIds([])}
+                    >
+                      {t('backtestStudio.clearAll')}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="max-h-44 space-y-0.5 overflow-y-auto">
+                  {datasets.map((d) => {
+                    const checked = providerDatasetIds.includes(d.id)
+                    return (
+                      <label
+                        key={d.id}
+                        className={cn(
+                          'flex cursor-pointer items-center gap-2 rounded-sm border px-2 py-1 text-[11px] transition-colors',
+                          checked
+                            ? 'border-violet-500/50 bg-violet-500/10 dark:border-violet-400/50 dark:bg-violet-500/15'
+                            : 'border-border/30 bg-card/30 hover:border-border/60 hover:bg-card/50',
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const next = new Set(providerDatasetIds)
+                            if (e.target.checked) next.add(d.id)
+                            else next.delete(d.id)
+                            setProviderDatasetIds(Array.from(next))
+                          }}
+                          className="h-3 w-3 accent-violet-500"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">
+                            {d.title || d.external_slug || d.external_id}
+                          </div>
+                          <div className="truncate text-[10px] text-muted-foreground">
+                            {(d.coin || '?').toUpperCase()} · {d.snapshot_count.toLocaleString()} {t('backtestStudio.dsSnapsWord', { defaultValue: 'snaps' })}
+                            {d.token_ids?.length ? ` · ${d.token_ids.length} ${t('backtestStudio.dsTokensWord', { defaultValue: 'tokens' })}` : ''}
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+
+      {/* Resolved scope summary — always visible.  Tells the operator
+          exactly what scope the run will receive BEFORE they click Run. */}
+      {activeScope ? (
+        <div className="flex items-center gap-2 rounded-md border border-border/30 bg-card/20 px-2.5 py-1.5 text-[10.5px]">
+          <Sparkles className="h-3 w-3 shrink-0 text-violet-600 dark:text-violet-300" />
+          <span className="text-muted-foreground uppercase tracking-wide text-[9px]">
+            {t('backtestStudio.dsScopeLabel', { defaultValue: 'Scope' })}
+          </span>
+          <span className="truncate font-medium">{activeScope.tokenLabel}</span>
+          <span className="text-muted-foreground">·</span>
+          <span className="truncate font-mono tabular-nums text-muted-foreground">
+            {activeScope.windowLabel}
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 rounded-md border border-dashed border-amber-500/30 bg-amber-50 px-2.5 py-1.5 text-[10.5px] text-amber-900 dark:bg-amber-500/5 dark:text-amber-300">
+          <AlertTriangle className="h-3 w-3 shrink-0" />
+          <span>
+            {mode === 'session'
+              ? t('backtestStudio.dsScopeNoSession', { defaultValue: 'Pick a recording session below.' })
+              : mode === 'datasets'
+                ? t('backtestStudio.dsScopeNoDatasets', { defaultValue: 'Pick at least one dataset below.' })
+                : t('backtestStudio.dsScopeNoAuto', { defaultValue: 'Set a window above.' })}
+          </span>
+        </div>
+      )}
     </div>
   )
 }
+
+
