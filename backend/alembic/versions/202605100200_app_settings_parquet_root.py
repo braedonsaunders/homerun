@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column
 
 
 # revision identifiers, used by Alembic.
@@ -29,7 +30,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column("parquet_root_override", sa.String(), nullable=True),
     )
