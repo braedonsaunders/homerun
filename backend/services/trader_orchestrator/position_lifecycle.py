@@ -1177,20 +1177,23 @@ def _direction_outcome_index(
 ) -> Optional[int]:
     """Map a leg ``direction`` to the binary outcome index (0=YES, 1=NO).
 
-    Canonical fast path: ``buy_yes`` → 0, ``buy_no`` → 1 (perf + back-compat).
-    Defensive widening: when the direction is bare ``buy``/``sell`` (emitted
-    by ``traders_copy_trade`` when the leader trade lands on a non-canonical
-    outcome label) and a ``token_id`` plus binary ``market_info`` are both
-    available, resolve via the market's ``token_ids`` array.  Truly
-    multi-outcome single-market structures (>2 tokens) and missing tokens
-    return ``None`` so the caller skips the row instead of silently
-    misclassifying it.
+    Canonical fast path: ``buy_yes`` / ``sell_yes`` → 0, ``buy_no`` /
+    ``sell_no`` → 1 (perf + back-compat).  The outcome index identifies
+    the side of the binary market the leg sits on, regardless of the
+    buy/sell action — closing a YES position is still index 0.
+    Defensive widening: when the direction is bare ``buy``/``sell``
+    (emitted by ``traders_copy_trade`` when the leader trade lands on a
+    non-canonical outcome label) and a ``token_id`` plus binary
+    ``market_info`` are both available, resolve via the market's
+    ``token_ids`` array.  Truly multi-outcome single-market structures
+    (>2 tokens) and missing tokens return ``None`` so the caller skips
+    the row instead of silently misclassifying it.
     """
 
     normalized = str(direction or "").strip().lower()
-    if normalized == "buy_yes":
+    if normalized in {"buy_yes", "sell_yes"}:
         return 0
-    if normalized == "buy_no":
+    if normalized in {"buy_no", "sell_no"}:
         return 1
     if normalized in {"buy", "sell"}:
         token_text = str(token_id or "").strip()

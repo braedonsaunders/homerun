@@ -281,6 +281,19 @@ def test_direction_outcome_index_returns_none_when_widening_inputs_missing():
     )
 
 
+def test_direction_outcome_index_canonical_sell_yes_resolves_to_yes_index():
+    assert position_lifecycle._direction_outcome_index("sell_yes") == 0
+    assert position_lifecycle._direction_outcome_index("sell_no") == 1
+    assert (
+        position_lifecycle._direction_outcome_index(
+            "sell_yes",
+            market_info={"token_ids": ["only-one"]},
+            token_id="ignored",
+        )
+        == 0
+    )
+
+
 def test_extract_leg_token_id_prefers_top_level_then_leg_then_yes_no_aliases():
     assert position_lifecycle._extract_leg_token_id({"token_id": "t1"}) == "t1"
     assert position_lifecycle._extract_leg_token_id({"selected_token_id": "t2"}) == "t2"

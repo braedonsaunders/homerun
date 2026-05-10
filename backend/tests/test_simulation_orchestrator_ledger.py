@@ -237,6 +237,18 @@ def test_direction_to_position_side_still_raises_when_token_id_unknown():
         )
 
 
+def test_direction_to_position_side_resolves_sell_yes_to_yes_side():
+    side, outcome = SimulationService._direction_to_position_side("sell_yes")
+    assert side == PositionSide.YES
+    assert outcome == "YES"
+
+
+def test_direction_to_position_side_resolves_sell_no_to_no_side():
+    side, outcome = SimulationService._direction_to_position_side("sell_no")
+    assert side == PositionSide.NO
+    assert outcome == "NO"
+
+
 @pytest.mark.asyncio
 async def test_record_orchestrator_shadow_fill_succeeds_with_bare_buy_direction(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)

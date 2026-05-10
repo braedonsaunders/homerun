@@ -59,10 +59,13 @@ class SimulationService:
     ) -> tuple[PositionSide, str]:
         """Map a leg ``direction`` to a binary ``PositionSide``.
 
-        Canonical fast path: ``buy_yes``/``buy_no`` resolve directly to
-        YES/NO.  Defensive widening: when the direction is the bare
-        ``buy``/``sell`` (emitted by ``traders_copy_trade`` when the
-        leader trade lands on a non-canonical outcome label and by
+        Canonical fast path: ``buy_yes`` / ``sell_yes`` resolve to YES,
+        ``buy_no`` / ``sell_no`` resolve to NO.  ``PositionSide`` denotes
+        which side of the binary market the leg sits on, regardless of
+        the buy/sell action — selling out of a YES position is still on
+        the YES side.  Defensive widening: when the direction is the
+        bare ``buy``/``sell`` (emitted by ``traders_copy_trade`` when
+        the leader trade lands on a non-canonical outcome label and by
         any pre-fix in-flight orders that already shipped without the
         ``_yes``/``_no`` suffix), resolve via the payload's market
         ``token_ids`` / ``clob_token_ids`` array and the leg's
@@ -72,10 +75,10 @@ class SimulationService:
         """
 
         normalized = str(direction or "").strip().lower()
-        if normalized == "buy_no":
-            return PositionSide.NO, "NO"
-        if normalized == "buy_yes":
+        if normalized in {"buy_yes", "sell_yes"}:
             return PositionSide.YES, "YES"
+        if normalized in {"buy_no", "sell_no"}:
+            return PositionSide.NO, "NO"
         if normalized in {"buy", "sell"} and isinstance(payload, dict):
             token_id = str(payload.get("token_id") or "").strip()
             market_info: Optional[dict[str, Any]] = None
