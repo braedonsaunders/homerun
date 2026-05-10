@@ -625,3 +625,133 @@ def test_default_collateral_resolution_falls_back_to_pusd(monkeypatch):
     monkeypatch.setattr(mod.settings, "POLYMARKET_DEFAULT_COLLATERAL", "garbage_value", raising=False)
     # Unknown values fall through to pUSD rather than crashing.
     assert mod._resolve_default_collateral_address() == PUSD_ADDRESS
+
+
+# ── CLOB V2 exchange-operator approvals ─────────────────────────────
+#
+# Polymarket cut over from CLOB V1 (single 0x4bFb…982E exchange) to
+# V2 (CtfExchangeV2 + NegRiskCtfExchangeV2) on 2026-04-28. The CTF
+# must have ``setApprovalForAll`` granted to **both** V2 operators —
+# normal markets execute on CtfExchangeV2 and negrisk markets execute
+# on NegRiskCtfExchangeV2; missing either operator silently breaks
+# half of the market universe. These tests lock in the
+# ``ensure_exchange_approval`` contract end-to-end.
+
+
+def test_v2_exchange_addresses_match_sdk():
+    """Class attrs must equal what ``py_clob_client_v2`` ships with so
+    we don't drift from the live exchange contracts."""
+    from py_clob_client_v2.config import get_contract_config
+
+    cfg = get_contract_config(137)
+    assert (
+        CTFExecutionService.POLYMARKET_EXCHANGE_V2.lower()
+        == cfg.exchange_v2.lower()
+    )
+    assert (
+        CTFExecutionService.POLYMARKET_NEG_RISK_EXCHANGE_V2.lower()
+        == cfg.neg_risk_exchange_v2.lower()
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_exchange_approval_calls_both_v2_operators(monkeypatch):
+    """Both CtfExchangeV2 and NegRiskCtfExchangeV2 must be approved.
+    A first-call short-circuit on the negrisk operator would silently
+    leave negrisk markets unable to execute."""
+    from services import ctf_execution as mod
+
+    service = CTFExecutionService()
+    invocations: list[str] = []
+
+    async def _approve(*, operator_address, action):
+        invocations.append(operator_address)
+        return mod.CTFExecutionResult(
+            status="executed",
+            action=action,
+            tx_hash=None,  # already approved
+            error_message=None,
+            payload={"already_approved": True, "operator": operator_address},
+        )
+
+    monkeypatch.setattr(service, "_ensure_ctf_operator_approval", _approve)
+
+    result = await service.ensure_exchange_approval()
+
+    assert result.status == "executed"
+    assert invocations == [
+        service.POLYMARKET_EXCHANGE_V2,
+        service.POLYMARKET_NEG_RISK_EXCHANGE_V2,
+    ]
+    operators = [a["operator"] for a in result.payload["approvals"]]
+    assert operators == [
+        service.POLYMARKET_EXCHANGE_V2,
+        service.POLYMARKET_NEG_RISK_EXCHANGE_V2,
+    ]
+    assert all(a["already_approved"] for a in result.payload["approvals"])
+    assert result.tx_hash is None  # nothing actually submitted
+
+
+@pytest.mark.asyncio
+async def test_ensure_exchange_approval_aggregates_mixed_already_approved(monkeypatch):
+    """One operator already approved, the other needs a fresh tx —
+    the aggregate result must still be ``executed`` and the payload
+    must record the per-operator state (``already_approved`` +
+    ``tx_hash``) so an operator can audit which calls actually hit
+    the chain."""
+    from services import ctf_execution as mod
+
+    service = CTFExecutionService()
+
+    async def _approve(*, operator_address, action):
+        already = operator_address == service.POLYMARKET_EXCHANGE_V2
+        return mod.CTFExecutionResult(
+            status="executed",
+            action=action,
+            tx_hash=None if already else "0xfreshtx",
+            error_message=None,
+            payload={"already_approved": already, "operator": operator_address},
+        )
+
+    monkeypatch.setattr(service, "_ensure_ctf_operator_approval", _approve)
+
+    result = await service.ensure_exchange_approval()
+
+    assert result.status == "executed"
+    assert result.tx_hash == "0xfreshtx"  # propagates the fresh leg's hash
+    by_op = {a["operator"]: a for a in result.payload["approvals"]}
+    assert by_op[service.POLYMARKET_EXCHANGE_V2]["already_approved"] is True
+    assert by_op[service.POLYMARKET_NEG_RISK_EXCHANGE_V2]["already_approved"] is False
+    assert by_op[service.POLYMARKET_NEG_RISK_EXCHANGE_V2]["tx_hash"] == "0xfreshtx"
+
+
+@pytest.mark.asyncio
+async def test_ensure_exchange_approval_aborts_on_first_failure(monkeypatch):
+    """If the first operator's approval reverts, we must stop — no
+    point submitting against the second operator if the first one
+    failed for a reason that will likely repeat (e.g. nonce race or
+    insufficient gas)."""
+    from services import ctf_execution as mod
+
+    service = CTFExecutionService()
+    invocations: list[str] = []
+
+    async def _approve(*, operator_address, action):
+        invocations.append(operator_address)
+        return mod.CTFExecutionResult(
+            status="failed",
+            action=action,
+            tx_hash=None,
+            error_message="revert",
+            payload={"operator": operator_address},
+        )
+
+    monkeypatch.setattr(service, "_ensure_ctf_operator_approval", _approve)
+
+    result = await service.ensure_exchange_approval()
+
+    assert result.status == "failed"
+    assert result.error_message == "revert"
+    # Stopped after the first operator — never tried negrisk.
+    assert invocations == [service.POLYMARKET_EXCHANGE_V2]
+    assert result.payload["operator"] == service.POLYMARKET_EXCHANGE_V2

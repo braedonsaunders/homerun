@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -10,8 +11,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from services.wallet_ws_monitor import (
-    CTF_EXCHANGE_ADDRESSES,
     ORDER_FILLED_TOPIC,
+    POLYMARKET_EXCHANGE_ADDRESSES_V2,
     WalletMonitorEvent,
     WalletWebSocketMonitor,
     _build_rpc_candidates,
@@ -24,6 +25,42 @@ from services.ws_feeds import KalshiWSFeed, PriceCache
 
 def _word(value: int) -> str:
     return f"{value:064x}"
+
+
+def _v2_order_filled_log(
+    *,
+    maker: str,
+    taker: str,
+    side: int,
+    token_id: int,
+    maker_amount: int,
+    taker_amount: int,
+    fee: int = 0,
+    order_hash: str = "0x" + ("11" * 32),
+    builder_word: str = "00" * 32,
+    metadata_word: str = "00" * 32,
+) -> dict:
+    """Build a CLOB V2 ``OrderFilled`` log payload (4 topics + 7 data words)."""
+    data = "0x" + "".join(
+        [
+            _word(side),
+            _word(token_id),
+            _word(maker_amount),
+            _word(taker_amount),
+            _word(fee),
+            builder_word,
+            metadata_word,
+        ]
+    )
+    return {
+        "topics": [
+            ORDER_FILLED_TOPIC,
+            order_hash,
+            "0x" + ("0" * 24) + maker[2:],
+            "0x" + ("0" * 24) + taker[2:],
+        ],
+        "data": data,
+    }
 
 
 def test_exception_text_falls_back_to_repr_for_empty_message():
@@ -69,82 +106,311 @@ def test_build_rpc_candidates_ignores_invalid_scheme():
     assert len(urls) > 0
 
 
-def test_parse_order_filled_log_handles_indexed_layout():
+def test_parse_order_filled_log_decodes_v2_buy_from_maker_perspective():
+    """Maker side=BUY, leader is the maker → leader's effective side is BUY.
+
+    Maker pays 6.919996 USDC, receives 8.987008 outcome tokens at
+    price 0.77 USDC per token.
+    """
     maker = "0xb83f717cd03598dde412bc63e8ec1f18914fb5b2"
-    taker = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
-    token_id = int("17534298117009088653925892532629674654011194647421335094162202923073472881781")
-    data = "0x" + "".join(
-        [
-            _word(0),
-            _word(token_id),
-            _word(6_919_996),
-            _word(8_987_008),
-            _word(0),
-        ]
-    )
+    taker = "0xc0d63c0d63c0d63c0d63c0d63c0d63c0d63c0d63"
+    token_id = 17534298117009088653925892532629674654011194647421335094162202923073472881781
     parsed = _parse_order_filled_log(
-        {
-            "topics": [
-                ORDER_FILLED_TOPIC,
-                "0x" + ("11" * 32),
-                "0x" + ("0" * 24) + maker[2:],
-                "0x" + ("0" * 24) + taker[2:],
-            ],
-            "data": data,
-        }
+        _v2_order_filled_log(
+            maker=maker,
+            taker=taker,
+            side=0,
+            token_id=token_id,
+            maker_amount=6_919_996,
+            taker_amount=8_987_008,
+        )
     )
 
     assert parsed is not None
     assert parsed["maker"] == maker
     assert parsed["taker"] == taker
-    assert parsed["maker_asset_id"] == "0"
-    assert parsed["taker_asset_id"] == str(token_id)
+    assert parsed["side"] == 0
+    assert parsed["token_id"] == str(token_id)
+    assert parsed["builder"] == "0x" + "00" * 32
+    assert parsed["metadata"] == "0x" + "00" * 32
 
     side, token, size, price = _determine_trade_side_and_details(parsed, maker)
     assert side == "BUY"
     assert token == str(token_id)
     assert size == pytest.approx(8.987008)
-    assert price == pytest.approx(0.7699999811, rel=1e-6)
+    assert price == pytest.approx(0.77, rel=1e-4)
 
 
-def test_parse_order_filled_log_handles_legacy_layout():
+def test_parse_order_filled_log_decodes_v2_sell_from_maker_perspective():
+    """Maker side=SELL, leader is the maker → leader's effective side is SELL.
+
+    Maker gives 1.21 outcome tokens, receives 1.1979 USDC at
+    price 0.99 USDC per token.
+    """
     maker = "0xb83f717cd03598dde412bc63e8ec1f18914fb5b2"
-    taker = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
-    token_id = int("31855172254305735984935876906797193204237964575325148621271964334710253764045")
-    maker_word = ("0" * 24) + maker[2:]
-    taker_word = ("0" * 24) + taker[2:]
-    data = "0x" + "".join(
-        [
-            maker_word,
-            taker_word,
-            _word(token_id),
-            _word(0),
-            _word(1_210_000),
-            _word(1_197_900),
-            _word(0),
-        ]
-    )
+    taker = "0xc0d63c0d63c0d63c0d63c0d63c0d63c0d63c0d63"
+    token_id = 31855172254305735984935876906797193204237964575325148621271964334710253764045
     parsed = _parse_order_filled_log(
-        {
-            "topics": [
-                ORDER_FILLED_TOPIC,
-                "0x" + ("22" * 32),
-            ],
-            "data": data,
-        }
+        _v2_order_filled_log(
+            maker=maker,
+            taker=taker,
+            side=1,
+            token_id=token_id,
+            maker_amount=1_210_000,
+            taker_amount=1_197_900,
+        )
     )
 
     assert parsed is not None
-    assert parsed["maker"] == maker
-    assert parsed["taker"] == taker
-    assert parsed["maker_asset_id"] == str(token_id)
-    assert parsed["taker_asset_id"] == "0"
+    assert parsed["side"] == 1
+    assert parsed["token_id"] == str(token_id)
 
     side, token, size, price = _determine_trade_side_and_details(parsed, maker)
     assert side == "SELL"
     assert token == str(token_id)
     assert size == pytest.approx(1.21)
     assert price == pytest.approx(0.99)
+
+
+def test_parse_order_filled_log_decodes_v2_buy_from_taker_perspective():
+    """Maker side=BUY, leader is the taker → leader's effective side is SELL.
+
+    The maker buys 8.987008 tokens for 6.919996 USDC; from the taker's
+    perspective the taker is selling those tokens at price 0.77.
+    """
+    maker = "0xb83f717cd03598dde412bc63e8ec1f18914fb5b2"
+    taker = "0xa11ce0a11ce0a11ce0a11ce0a11ce0a11ce0a11c"
+    token_id = 17534298117009088653925892532629674654011194647421335094162202923073472881781
+    parsed = _parse_order_filled_log(
+        _v2_order_filled_log(
+            maker=maker,
+            taker=taker,
+            side=0,
+            token_id=token_id,
+            maker_amount=6_919_996,
+            taker_amount=8_987_008,
+        )
+    )
+    assert parsed is not None
+
+    side, token, size, price = _determine_trade_side_and_details(parsed, taker)
+    assert side == "SELL"
+    assert token == str(token_id)
+    assert size == pytest.approx(8.987008)
+    assert price == pytest.approx(0.77, rel=1e-4)
+
+
+def test_parse_order_filled_log_decodes_v2_sell_from_taker_perspective():
+    """Maker side=SELL, leader is the taker → leader's effective side is BUY.
+
+    The maker sells 1.21 tokens for 1.1979 USDC; from the taker's
+    perspective the taker is buying those tokens at price 0.99.
+    """
+    maker = "0xb83f717cd03598dde412bc63e8ec1f18914fb5b2"
+    taker = "0xa11ce0a11ce0a11ce0a11ce0a11ce0a11ce0a11c"
+    token_id = 31855172254305735984935876906797193204237964575325148621271964334710253764045
+    parsed = _parse_order_filled_log(
+        _v2_order_filled_log(
+            maker=maker,
+            taker=taker,
+            side=1,
+            token_id=token_id,
+            maker_amount=1_210_000,
+            taker_amount=1_197_900,
+        )
+    )
+    assert parsed is not None
+
+    side, token, size, price = _determine_trade_side_and_details(parsed, taker)
+    assert side == "BUY"
+    assert token == str(token_id)
+    assert size == pytest.approx(1.21)
+    assert price == pytest.approx(0.99)
+
+
+def test_parse_order_filled_log_propagates_builder_and_metadata_words():
+    """Both ``bytes32`` payload tail words should round-trip as 0x-hex."""
+    maker = "0xb83f717cd03598dde412bc63e8ec1f18914fb5b2"
+    taker = "0xc0d63c0d63c0d63c0d63c0d63c0d63c0d63c0d63"
+    builder_hex = "ab" * 32
+    metadata_hex = "cd" * 32
+    parsed = _parse_order_filled_log(
+        _v2_order_filled_log(
+            maker=maker,
+            taker=taker,
+            side=0,
+            token_id=42,
+            maker_amount=10,
+            taker_amount=10,
+            builder_word=builder_hex,
+            metadata_word=metadata_hex,
+        )
+    )
+    assert parsed is not None
+    assert parsed["builder"] == "0x" + builder_hex
+    assert parsed["metadata"] == "0x" + metadata_hex
+
+
+_REAL_LOGS_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "polymarket_v2_order_filled_logs.json"
+)
+
+
+def _load_real_v2_logs() -> list[dict]:
+    """Load the captured live ``eth_getLogs`` response.
+
+    Provenance lives inside the fixture's ``_provenance`` block —
+    block number, transaction hash, polygonscan URL. Reviewers can
+    re-derive every expected value below by visiting the polygonscan
+    page for the captured tx and decoding the Logs tab against the V2
+    ``OrderFilled`` ABI.
+    """
+    with _REAL_LOGS_FIXTURE.open() as fh:
+        payload = json.load(fh)
+    return list(payload["logs"])
+
+
+def test_parse_order_filled_log_v2_real_block_buy_leg():
+    """Pin the parser against a real BUY ``OrderFilled`` event captured
+    from Polygon (tx 0x36bbcf…0766, logIndex 0x169). If Polygon ever
+    changes the on-chain encoding, this assertion catches it before
+    synthetic ``_v2_order_filled_log()`` builders silently agree with
+    themselves."""
+    log = _load_real_v2_logs()[0]
+    parsed = _parse_order_filled_log(log)
+    assert parsed is not None
+
+    assert parsed["order_hash"] == (
+        "0xa2d356c1739a2bd23409138cb471030a5aab8defcff2e6b5b7c26eddcf0c1bff"
+    )
+    assert parsed["maker"] == "0x43b3467e41f2f8d1da53fe712685b20095bc0ccc"
+    assert parsed["taker"] == "0xe8b5e506aeadb393310523a24ddc726a7d8de05c"
+    assert parsed["side"] == 0  # BUY
+    assert parsed["token_id"] == str(
+        int(
+            "e12fcbb2d900f097795bc3226d4e7754ef649c45f0f5da1951c5b8f6625b9925",
+            16,
+        )
+    )
+    assert parsed["maker_amount_filled"] == 1_232_800  # 1.2328 USDC base units
+    assert parsed["taker_amount_filled"] == 1_840_000  # 1.84 outcome tokens
+    assert parsed["fee"] == 0
+    assert parsed["builder"] == "0x" + "00" * 32
+    assert parsed["metadata"] == "0x" + "00" * 32
+
+    # Maker perspective: paid 1.2328 USDC for 1.84 tokens at price 0.67.
+    side, token, size, price = _determine_trade_side_and_details(
+        parsed, parsed["maker"]
+    )
+    assert side == "BUY"
+    assert token == parsed["token_id"]
+    assert size == pytest.approx(1.84)
+    assert price == pytest.approx(0.67)
+
+    # Taker perspective is the inverse: sold 1.84 tokens for 1.2328 USDC.
+    side, _token, size, price = _determine_trade_side_and_details(
+        parsed, parsed["taker"]
+    )
+    assert side == "SELL"
+    assert size == pytest.approx(1.84)
+    assert price == pytest.approx(0.67)
+
+
+def test_parse_order_filled_log_v2_real_block_sell_leg():
+    """Pin the parser against a real SELL ``OrderFilled`` event from
+    the same captured tx (logIndex 0x16b)."""
+    log = _load_real_v2_logs()[1]
+    parsed = _parse_order_filled_log(log)
+    assert parsed is not None
+
+    assert parsed["order_hash"] == (
+        "0x4edc4412b1da873522ec58ffffc94a74e9922657a600d2459a4d32b1d2fe1804"
+    )
+    assert parsed["maker"] == "0xc89d5c0f4d12aa83475b2b7804995578c46d9dc0"
+    assert parsed["taker"] == "0xe8b5e506aeadb393310523a24ddc726a7d8de05c"
+    assert parsed["side"] == 1  # SELL
+    assert parsed["token_id"] == str(
+        int(
+            "6d516a601989d5875423553ba46a7a1ee5ade7a033a7bfc441ba99045d76159f",
+            16,
+        )
+    )
+    assert parsed["maker_amount_filled"] == 3_160_000  # 3.16 outcome tokens
+    assert parsed["taker_amount_filled"] == 1_042_800  # 1.0428 USDC base units
+    assert parsed["fee"] == 0
+
+    # Maker perspective: gave 3.16 tokens, received 1.0428 USDC at 0.33.
+    side, token, size, price = _determine_trade_side_and_details(
+        parsed, parsed["maker"]
+    )
+    assert side == "SELL"
+    assert token == parsed["token_id"]
+    assert size == pytest.approx(3.16)
+    assert price == pytest.approx(0.33)
+
+    # Taker perspective: bought 3.16 tokens for 1.0428 USDC at 0.33.
+    side, _token, size, price = _determine_trade_side_and_details(
+        parsed, parsed["taker"]
+    )
+    assert side == "BUY"
+    assert size == pytest.approx(3.16)
+    assert price == pytest.approx(0.33)
+
+
+def test_real_v2_log_address_in_v2_exchange_set():
+    """Sanity: every fixture log's ``address`` field belongs to the V2
+    exchange set we filter against. Catches a future regression where
+    we accidentally re-introduced a V1 address."""
+    v2_set = {addr.lower() for addr in POLYMARKET_EXCHANGE_ADDRESSES_V2}
+    for log in _load_real_v2_logs():
+        assert log["address"].lower() in v2_set
+
+
+def test_real_v2_log_topic_matches_module_constant():
+    """Sanity: every fixture log's ``topics[0]`` equals our
+    ``ORDER_FILLED_TOPIC`` constant. If Polymarket ever re-keys the
+    event signature, this assertion fails before production
+    ``eth_getLogs`` filters silently start returning zero events."""
+    for log in _load_real_v2_logs():
+        assert log["topics"][0] == ORDER_FILLED_TOPIC
+
+
+def test_parse_order_filled_log_rejects_v1_layout():
+    """V1 emitted 2 topics + 7 data words. Must return ``None`` now —
+    accepting it would be dead code (V1 contracts emit zero events on
+    Polygon since the 2026-04-28 cutover) and would silently misroute
+    the payload through a non-V2 schema."""
+    maker = "0xb83f717cd03598dde412bc63e8ec1f18914fb5b2"
+    taker = "0xc0d63c0d63c0d63c0d63c0d63c0d63c0d63c0d63"
+    maker_word = ("0" * 24) + maker[2:]
+    taker_word = ("0" * 24) + taker[2:]
+    data = "0x" + "".join(
+        [maker_word, taker_word, _word(0), _word(123), _word(1), _word(1), _word(0)]
+    )
+    log = {
+        "topics": [ORDER_FILLED_TOPIC, "0x" + ("22" * 32)],
+        "data": data,
+    }
+    assert _parse_order_filled_log(log) is None
+
+
+def test_parse_order_filled_log_rejects_v1_indexed_layout():
+    """V1's later 4-topics + 5 data-words layout must also be rejected."""
+    maker = "0xb83f717cd03598dde412bc63e8ec1f18914fb5b2"
+    taker = "0xc0d63c0d63c0d63c0d63c0d63c0d63c0d63c0d63"
+    data = "0x" + "".join(
+        [_word(0), _word(123), _word(1), _word(1), _word(0)]
+    )
+    log = {
+        "topics": [
+            ORDER_FILLED_TOPIC,
+            "0x" + ("11" * 32),
+            "0x" + ("0" * 24) + maker[2:],
+            "0x" + ("0" * 24) + taker[2:],
+        ],
+        "data": data,
+    }
+    assert _parse_order_filled_log(log) is None
 
 
 @pytest.mark.asyncio
@@ -202,7 +468,7 @@ async def test_get_logs_for_block_uses_all_exchange_addresses(monkeypatch):
     assert captured["method"] == "eth_getLogs"
     assert captured["block_hex"] == "0x123"
     params = captured["payload"]["params"][0]
-    assert params["address"] == list(CTF_EXCHANGE_ADDRESSES)
+    assert params["address"] == list(POLYMARKET_EXCHANGE_ADDRESSES_V2)
     assert params["topics"] == [ORDER_FILLED_TOPIC]
 
 
