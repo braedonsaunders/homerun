@@ -944,6 +944,15 @@ async def run_unified_backtest(
     maker_rebate_bps: float | None = None,
     maker_rebate_max_spread_bps: float | None = None,
     latency_correlation_window_ms: float | None = None,
+    # Number of independent parameter trials this run was selected
+    # from.  Drives the López de Prado Deflated Sharpe correction:
+    #   n_trials=1   → no over-fitting penalty (sr_zero = 0)
+    #   n_trials=50  → meaningful penalty (sr_zero ≈ Φ⁻¹(0.98)/sqrt(T))
+    # Studio's "Run backtest" button passes 1 (single-shot, no
+    # search).  Studio's "Iterate params" loop passes the total
+    # iteration count so the BEST run's DSR reflects the search size.
+    # Hardcoded =1 default keeps legacy callers working unchanged.
+    n_trials: int = 1,
     # Async-job-queue path: when the dedicated backtest worker process
     # invokes this function, it passes a pre-allocated ``run_id`` (so
     # the operator's polling already has a stable pointer) and a
@@ -1044,8 +1053,10 @@ async def run_unified_backtest(
 
     # Deflated Sharpe — derive from the equity-curve sample, treat
     # the run's parameter sweep size as n_trials when present (defaults
-    # to 1, i.e. no penalty, when the strategy wasn't tuned).
-    deflated = _compute_deflated_sharpe(exec_dict, n_trials=1)
+    # to 1, i.e. no penalty, when the strategy wasn't tuned).  The
+    # iteration loop in the studio passes the iteration count so the
+    # over-fitting deflation correction actually kicks in.
+    deflated = _compute_deflated_sharpe(exec_dict, n_trials=max(1, int(n_trials)))
     regime = _compute_regime_breakdown(exec_dict)
     partial_fills = _compute_partial_fill_aggregates(exec_dict)
 

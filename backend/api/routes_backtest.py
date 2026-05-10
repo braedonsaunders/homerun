@@ -81,6 +81,12 @@ class UnifiedBacktestRequest(BaseModel):
     impact_strength_bps: float | None = Field(default=None, ge=0.0, le=500.0)
     maker_rebate_bps: float | None = Field(default=None, ge=0.0, le=20.0)
     maker_rebate_max_spread_bps: float | None = Field(default=None, ge=0.0, le=500.0)
+    # Number of independent parameter trials this run was selected
+    # from.  Drives the López de Prado deflated-Sharpe correction:
+    # higher n_trials = larger search = stronger over-fitting penalty.
+    # Studio's "Run backtest" button leaves this at 1 (no penalty).
+    # Studio's "Iterate params" loop passes the iteration count.
+    n_trials: int = Field(default=1, ge=1, le=10_000)
 
 
 @router.post("/run")
@@ -155,6 +161,7 @@ async def run_backtest(req: UnifiedBacktestRequest):
             impact_strength_bps=req.impact_strength_bps,
             maker_rebate_bps=req.maker_rebate_bps,
             maker_rebate_max_spread_bps=req.maker_rebate_max_spread_bps,
+            n_trials=req.n_trials,
         )
     except Exception as exc:
         logger.exception("Unified backtest failed")
@@ -232,6 +239,7 @@ async def enqueue_run_route(req: UnifiedBacktestRequest) -> dict[str, Any]:
         "impact_strength_bps": req.impact_strength_bps,
         "maker_rebate_bps": req.maker_rebate_bps,
         "maker_rebate_max_spread_bps": req.maker_rebate_max_spread_bps,
+        "n_trials": req.n_trials,
     }
     row = await enqueue_run(payload)
     return {

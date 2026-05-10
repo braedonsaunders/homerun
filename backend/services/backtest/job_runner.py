@@ -328,6 +328,10 @@ async def run_job(run_id: str) -> dict[str, Any]:
                     "counterfactual_sample_size", "ensemble_sample_size",
                     "impact_strength_bps", "maker_rebate_bps",
                     "maker_rebate_max_spread_bps",
+                    # n_trials drives the López de Prado deflated-Sharpe
+                    # correction; the iteration loop passes the search
+                    # size so over-fitting deflation actually applies.
+                    "n_trials",
                 )
             },
             progress_callback=_on_progress,

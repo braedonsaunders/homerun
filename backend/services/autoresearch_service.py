@@ -1468,6 +1468,13 @@ class AutoresearchService:
                                     source_code=proposed_source,
                                     slug=strategy_slug,
                                     config=strategy_config,
+                                    # Drives López de Prado deflated-Sharpe
+                                    # correction — the iteration count IS the
+                                    # search size, so the over-fitting penalty
+                                    # actually applies.  Without this the DSR
+                                    # always equals PSR (sr_zero=0 when
+                                    # n_trials=1).
+                                    n_trials=int(max(1, iteration_num)),
                                 )
                                 bt_result = await _augment_with_walk_forward_gate(
                                     result=bt_result,
@@ -1898,6 +1905,9 @@ class AutoresearchService:
                             source_code=strategy_source,
                             slug=strategy_slug,
                             config=test_config,
+                            # Iteration count = López de Prado's n_trials
+                            # for the deflated-Sharpe over-fitting penalty.
+                            n_trials=int(max(1, iteration_num)),
                         )
                         bt = await _augment_with_walk_forward_gate(
                             result=bt,
