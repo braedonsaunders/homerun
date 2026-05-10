@@ -2554,16 +2554,29 @@ class LiveExecutionService:
             _persist_breakdown["attempts"] = float(attempt + 1)
             _stage_started = _time.monotonic()
             async with AsyncSessionLocal() as session:
-                # ``session_checkout`` is always ~0 because ``async with
-                # AsyncSessionLocal()`` does NOT acquire a pool connection
-                # until the first ``session.execute()`` runs. The actual
-                # pool wait + first-statement round-trip lands in
-                # ``set_local_lock_timeout`` below.  Without that split
-                # the slow-log shows e.g. ``upsert=328 + commit=141 =
-                # 469ms`` against a ``total_ms=7172``, with 6.7s
-                # invisible to operators.
+                # ``session_checkout`` measures only the cost of
+                # entering ``async with AsyncSessionLocal()`` — that
+                # does NOT acquire a pool connection (lazy checkout).
+                # The actual pool wait is measured in ``pool_wait``
+                # below via an explicit ``session.connection()`` so
+                # operators can tell pool starvation from SET LOCAL
+                # round-trip cost from in-DB upsert work.
                 _persist_record("session_checkout", _stage_started)
                 try:
+                    # Force-eager the pool checkout into its own
+                    # ``pool_wait`` bucket so pool starvation no longer
+                    # hides inside ``set_local_lock_timeout``.  Without
+                    # this split, the soak 2026-05-10 19:28-20:10
+                    # captured ``set_local_lock_timeout`` at 1.1-4.7s
+                    # while ``upsert``+``commit`` were 100-900ms — i.e.
+                    # ~4s of invisible pool wait per call, masquerading
+                    # as SET LOCAL cost.  ``session.connection()``
+                    # blocks on the pool checkout but does not issue
+                    # any SQL, so the next stage's elapsed time is the
+                    # real SET LOCAL round-trip.
+                    _stage_started = _time.monotonic()
+                    await session.connection()
+                    _persist_record("pool_wait", _stage_started)
                     _stage_started = _time.monotonic()
                     await session.execute(text("SET LOCAL lock_timeout = '1500ms'"))
                     _persist_record("set_local_lock_timeout", _stage_started)
@@ -2699,11 +2712,13 @@ class LiveExecutionService:
                     # Surface unaccounted time so operators can tell
                     # event-loop / GC stalls apart from in-DB cost.
                     # Stages explicitly measured: session_checkout,
-                    # set_local_lock_timeout, select_signals (optional),
-                    # upsert, commit. Anything else (pure-Python loops,
-                    # asyncio scheduler delay, GC pauses) shows up here.
+                    # pool_wait, set_local_lock_timeout, select_signals
+                    # (optional), upsert, commit. Anything else
+                    # (pure-Python loops, asyncio scheduler delay, GC
+                    # pauses) shows up here.
                     _accounted = (
                         _persist_breakdown.get("session_checkout", 0.0)
+                        + _persist_breakdown.get("pool_wait", 0.0)
                         + _persist_breakdown.get("set_local_lock_timeout", 0.0)
                         + _persist_breakdown.get("select_signals", 0.0)
                         + _persist_breakdown.get("upsert", 0.0)
