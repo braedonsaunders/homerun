@@ -2296,7 +2296,11 @@ def _normalize_source_configs(trader: dict[str, Any]) -> dict[str, dict[str, Any
     return normalized
 
 
-def _source_open_order_timeout_seconds(source_config: dict[str, Any]) -> float | None:
+def _source_open_order_timeout_seconds(
+    source_config: dict[str, Any],
+    *,
+    trader_risk_limits: dict[str, Any] | None = None,
+) -> float | None:
     source_key = normalize_source_key(source_config.get("source_key"))
     strategy_params = dict(source_config.get("strategy_params") or {})
     explicit_timeout_seconds = StrategySDK.resolve_open_order_timeout_seconds(
@@ -2317,6 +2321,16 @@ def _source_open_order_timeout_seconds(source_config: dict[str, Any]) -> float |
                     strategy_defaults,
                     default_seconds=None,
                 )
+    # Fallback to per-trader risk_limits.order_ttl_seconds when strategy_params + strategy
+    # defaults are both silent. This makes the per-trader Risk Limits flyout's
+    # order_ttl_seconds knob actually drive the reaper.
+    if not timeout_explicit and default_seconds is None and isinstance(trader_risk_limits, dict):
+        risk_limits_default = StrategySDK.resolve_open_order_timeout_seconds(
+            trader_risk_limits,
+            default_seconds=None,
+        )
+        if risk_limits_default is not None:
+            default_seconds = float(risk_limits_default)
     timeout_seconds = StrategySDK.resolve_open_order_timeout_seconds(
         strategy_params,
         default_seconds=default_seconds,
@@ -2782,6 +2796,7 @@ async def _enforce_source_open_order_timeouts(
     trader_id: str,
     run_mode: str,
     source_configs: dict[str, dict[str, Any]],
+    trader_risk_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not source_configs:
         return {
@@ -2850,7 +2865,10 @@ async def _enforce_source_open_order_timeouts(
     provider_ready_for_cleanup = bool(provider_reconcile.get("provider_ready", True))
 
     for source_key, source_config in source_configs.items():
-        timeout_seconds = _source_open_order_timeout_seconds(source_config)
+        timeout_seconds = _source_open_order_timeout_seconds(
+            source_config,
+            trader_risk_limits=trader_risk_limits,
+        )
         if timeout_seconds is None:
             continue
         configured += 1
@@ -4838,6 +4856,7 @@ async def _run_trader_once_inner(
                         trader_id=trader_id,
                         run_mode=run_mode,
                         source_configs=source_configs,
+                        trader_risk_limits=risk_limits,
                     ),
                     timeout=_TRADER_MAINTENANCE_STEP_TIMEOUT_SECONDS,
                 )
