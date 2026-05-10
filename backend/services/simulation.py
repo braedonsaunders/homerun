@@ -53,12 +53,63 @@ class SimulationService:
     DB_RETRY_MAX_DELAY_SECONDS = 1.5
 
     @staticmethod
-    def _direction_to_position_side(direction: str) -> tuple[PositionSide, str]:
+    def _direction_to_position_side(
+        direction: str,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> tuple[PositionSide, str]:
+        """Map a leg ``direction`` to a binary ``PositionSide``.
+
+        Canonical fast path: ``buy_yes``/``buy_no`` resolve directly to
+        YES/NO.  Defensive widening: when the direction is the bare
+        ``buy``/``sell`` (emitted by ``traders_copy_trade`` when the
+        leader trade lands on a non-canonical outcome label and by
+        any pre-fix in-flight orders that already shipped without the
+        ``_yes``/``_no`` suffix), resolve via the payload's market
+        ``token_ids`` / ``clob_token_ids`` array and the leg's
+        ``token_id`` (index 0 → YES, index 1 → NO).  Truly multi-outcome
+        single-market structures (>2 tokens) still raise — those need
+        first-class support.
+        """
+
         normalized = str(direction or "").strip().lower()
         if normalized == "buy_no":
             return PositionSide.NO, "NO"
         if normalized == "buy_yes":
             return PositionSide.YES, "YES"
+        if normalized in {"buy", "sell"} and isinstance(payload, dict):
+            token_id = str(payload.get("token_id") or "").strip()
+            market_info: Optional[dict[str, Any]] = None
+            for key in ("market", "live_market"):
+                candidate = payload.get(key)
+                if isinstance(candidate, dict):
+                    market_info = candidate
+                    break
+            if not isinstance(market_info, dict):
+                market_info = payload
+            tokens: list[str] = []
+            for key in ("token_ids", "tokenIds", "clob_token_ids", "clobTokenIds"):
+                raw = market_info.get(key) if isinstance(market_info, dict) else None
+                if isinstance(raw, list):
+                    tokens = [str(t or "").strip() for t in raw if str(t or "").strip()]
+                    if tokens:
+                        break
+            if token_id and tokens:
+                if len(tokens) > 2:
+                    raise ValueError(
+                        f"Unsupported direction '{direction}' on multi-outcome market "
+                        f"({len(tokens)} tokens); first-class support required"
+                    )
+                try:
+                    idx = tokens.index(token_id)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Unsupported direction '{direction}'; token_id={token_id} "
+                        f"not in market tokens={tokens}"
+                    ) from exc
+                if idx == 0:
+                    return PositionSide.YES, "YES"
+                if idx == 1:
+                    return PositionSide.NO, "NO"
         raise ValueError(f"Unsupported direction '{direction}'")
 
     @staticmethod
@@ -329,7 +380,12 @@ class SimulationService:
                     )
                 )
 
-            side, outcome = self._direction_to_position_side(direction)
+            simulator_payload: dict[str, Any] = {}
+            if isinstance(payload, dict):
+                simulator_payload.update(payload)
+            if token_id and "token_id" not in simulator_payload:
+                simulator_payload["token_id"] = token_id
+            side, outcome = self._direction_to_position_side(direction, simulator_payload)
             quantity = normalized_notional / normalized_entry_price
             now = utcnow()
             trade_id = str(uuid.uuid4())

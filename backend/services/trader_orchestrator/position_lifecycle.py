@@ -1140,12 +1140,69 @@ def _is_rapid_close_trigger(close_trigger: Any) -> bool:
     return any(marker in normalized for marker in rapid_markers)
 
 
-def _direction_outcome_index(direction: Any) -> Optional[int]:
+def _extract_leg_token_id(payload: Any) -> str:
+    """Pull the leg's token_id out of a TraderOrder payload.
+
+    Mirrors the lookup ``_shadow_ledger_token_id`` performs in the
+    worker so the lifecycle reconciler can resolve a bare
+    ``direction='buy'`` order back to a binary outcome index without
+    threading the worker helper through.
+    """
+
+    if not isinstance(payload, dict):
+        return ""
+    candidates = (
+        payload.get("token_id"),
+        payload.get("selected_token_id"),
+        payload.get("yes_token_id") if "yes" in str(payload.get("direction") or "").lower() else None,
+        payload.get("no_token_id") if "no" in str(payload.get("direction") or "").lower() else None,
+    )
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if text:
+            return text
+    leg = payload.get("leg")
+    if isinstance(leg, dict):
+        text = str(leg.get("token_id") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _direction_outcome_index(
+    direction: Any,
+    *,
+    market_info: Optional[dict[str, Any]] = None,
+    token_id: Any = None,
+) -> Optional[int]:
+    """Map a leg ``direction`` to the binary outcome index (0=YES, 1=NO).
+
+    Canonical fast path: ``buy_yes`` → 0, ``buy_no`` → 1 (perf + back-compat).
+    Defensive widening: when the direction is bare ``buy``/``sell`` (emitted
+    by ``traders_copy_trade`` when the leader trade lands on a non-canonical
+    outcome label) and a ``token_id`` plus binary ``market_info`` are both
+    available, resolve via the market's ``token_ids`` array.  Truly
+    multi-outcome single-market structures (>2 tokens) and missing tokens
+    return ``None`` so the caller skips the row instead of silently
+    misclassifying it.
+    """
+
     normalized = str(direction or "").strip().lower()
     if normalized == "buy_yes":
         return 0
     if normalized == "buy_no":
         return 1
+    if normalized in {"buy", "sell"}:
+        token_text = str(token_id or "").strip()
+        if not token_text:
+            return None
+        tokens = _extract_market_token_ids(market_info)
+        if len(tokens) != 2:
+            return None
+        try:
+            return tokens.index(token_text)
+        except ValueError:
+            return None
     return None
 
 
@@ -4435,7 +4492,14 @@ async def reconcile_shadow_positions(
         if entry_price is None or entry_price <= 0:
             entry_price = safe_float(row.entry_price)
         notional = safe_float(row.notional_usd) or 0.0
-        outcome_idx = _direction_outcome_index(row.direction)
+        row_market_info = market_info_by_id.get(str(row.market_id or ""))
+        row_payload_for_idx = dict(row.payload_json or {})
+        row_token_id_for_idx = _extract_leg_token_id(row_payload_for_idx)
+        outcome_idx = _direction_outcome_index(
+            row.direction,
+            market_info=row_market_info,
+            token_id=row_token_id_for_idx,
+        )
         if outcome_idx is None or entry_price is None or entry_price <= 0 or notional <= 0:
             payload = dict(row.payload_json or {})
             provider_snapshot_status = _provider_snapshot_status(payload)
@@ -7004,8 +7068,12 @@ async def reconcile_live_positions(
                 )
                 closed += 1
             continue
-        pending_outcome_idx = _direction_outcome_index(row.direction)
         pending_market_info = market_info_by_id.get(str(row.market_id or ""))
+        pending_outcome_idx = _direction_outcome_index(
+            row.direction,
+            market_info=pending_market_info,
+            token_id=_extract_leg_token_id(row.payload_json),
+        )
         pending_market_tradable = polymarket_client.is_market_tradable(pending_market_info, now=now)
         pending_winning_idx = _extract_winning_outcome_index(pending_market_info)
 
@@ -9196,7 +9264,11 @@ async def reconcile_live_positions(
         if entry_price is None or entry_price <= 0:
             entry_price = safe_float(row.entry_price)
         notional = filled_notional if filled_notional > 0.0 else (safe_float(row.notional_usd) or 0.0)
-        outcome_idx = _direction_outcome_index(row.direction)
+        outcome_idx = _direction_outcome_index(
+            row.direction,
+            market_info=pending_market_info,
+            token_id=_extract_leg_token_id(payload),
+        )
         if outcome_idx is None or entry_price is None or entry_price <= 0 or notional <= 0:
             if (
                 wallet_position_size <= _WALLET_SIZE_EPSILON

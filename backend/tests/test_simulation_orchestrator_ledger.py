@@ -10,6 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from models.database import (  # noqa: E402
     Base,
+    PositionSide,
     SimulationAccount,
     SimulationPosition,
     SimulationTrade,
@@ -186,5 +187,95 @@ async def test_record_orchestrator_fill_tracks_entry_fee_and_slippage(tmp_path):
             assert trade.fees_paid == pytest.approx(3.0, rel=1e-9)
             assert trade.slippage == pytest.approx(1.25, rel=1e-9)
             assert position.entry_cost == pytest.approx(203.0, rel=1e-9)
+    finally:
+        await engine.dispose()
+
+
+def test_direction_to_position_side_resolves_buy_via_token_id_at_index_zero():
+    side, outcome = SimulationService._direction_to_position_side(
+        "buy",
+        {
+            "token_id": "token-yes",
+            "market": {"token_ids": ["token-yes", "token-no"]},
+        },
+    )
+    assert side == PositionSide.YES
+    assert outcome == "YES"
+
+
+def test_direction_to_position_side_resolves_buy_via_token_id_at_index_one():
+    side, outcome = SimulationService._direction_to_position_side(
+        "buy",
+        {
+            "token_id": "token-no",
+            "market": {"token_ids": ["token-yes", "token-no"]},
+        },
+    )
+    assert side == PositionSide.NO
+    assert outcome == "NO"
+
+
+def test_direction_to_position_side_still_raises_on_truly_multi_outcome():
+    with pytest.raises(ValueError, match="multi-outcome"):
+        SimulationService._direction_to_position_side(
+            "buy",
+            {
+                "token_id": "fighter-b",
+                "market": {"token_ids": ["fighter-a", "fighter-b", "fighter-c"]},
+            },
+        )
+
+
+def test_direction_to_position_side_still_raises_when_token_id_unknown():
+    with pytest.raises(ValueError):
+        SimulationService._direction_to_position_side(
+            "buy",
+            {
+                "token_id": "ghost",
+                "market": {"token_ids": ["token-yes", "token-no"]},
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_record_orchestrator_shadow_fill_succeeds_with_bare_buy_direction(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    service = SimulationService()
+    account_id = uuid.uuid4().hex
+    try:
+        async with session_factory() as session:
+            account = SimulationAccount(
+                id=account_id,
+                name="Bare Buy Account",
+                initial_capital=1000.0,
+                current_capital=1000.0,
+            )
+            session.add(account)
+            await session.commit()
+
+            opened = await service.record_orchestrator_shadow_fill(
+                account_id=account_id,
+                trader_id="trader-bare-buy",
+                signal_id="signal-bare-buy",
+                market_id="market-bare-buy",
+                market_question="Bare buy direction shadow fill",
+                direction="buy",
+                notional_usd=100.0,
+                entry_price=0.4,
+                strategy_type="traders_copy_trade",
+                token_id="token-yes",
+                payload={
+                    "market": {"token_ids": ["token-yes", "token-no"]},
+                    "edge_percent": 5.0,
+                },
+                session=session,
+                commit=False,
+            )
+            await session.commit()
+
+            position = await session.get(SimulationPosition, opened["position_id"])
+            assert position is not None
+            assert position.side == PositionSide.YES
+            assert position.token_id == "token-yes"
     finally:
         await engine.dispose()

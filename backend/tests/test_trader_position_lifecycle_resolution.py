@@ -218,6 +218,82 @@ async def test_load_market_info_merges_partial_lookup_with_payload_fallback(monk
     assert result["market-1"]["token_ids"] == ["token-1", "token-2"]
 
 
+def test_direction_outcome_index_canonical_buy_yes_unchanged_by_widening():
+    assert position_lifecycle._direction_outcome_index("buy_yes") == 0
+    assert position_lifecycle._direction_outcome_index("buy_no") == 1
+    assert (
+        position_lifecycle._direction_outcome_index(
+            "buy_yes",
+            market_info={"token_ids": ["only-one"]},
+            token_id="ignored",
+        )
+        == 0
+    )
+
+
+def test_direction_outcome_index_resolves_buy_via_token_id_with_market_info():
+    market_info = {"clob_token_ids": ["token-yes", "token-no"]}
+    assert (
+        position_lifecycle._direction_outcome_index(
+            "buy",
+            market_info=market_info,
+            token_id="token-no",
+        )
+        == 1
+    )
+    assert (
+        position_lifecycle._direction_outcome_index(
+            "buy",
+            market_info=market_info,
+            token_id="token-yes",
+        )
+        == 0
+    )
+
+
+def test_direction_outcome_index_returns_none_when_token_id_not_in_market():
+    assert (
+        position_lifecycle._direction_outcome_index(
+            "buy",
+            market_info={"token_ids": ["token-yes", "token-no"]},
+            token_id="ghost-token",
+        )
+        is None
+    )
+
+
+def test_direction_outcome_index_returns_none_for_truly_multi_outcome():
+    assert (
+        position_lifecycle._direction_outcome_index(
+            "buy",
+            market_info={"token_ids": ["fighter-a", "fighter-b", "fighter-c"]},
+            token_id="fighter-b",
+        )
+        is None
+    )
+
+
+def test_direction_outcome_index_returns_none_when_widening_inputs_missing():
+    assert position_lifecycle._direction_outcome_index("buy") is None
+    assert (
+        position_lifecycle._direction_outcome_index("buy", market_info=None, token_id="t")
+        is None
+    )
+
+
+def test_extract_leg_token_id_prefers_top_level_then_leg_then_yes_no_aliases():
+    assert position_lifecycle._extract_leg_token_id({"token_id": "t1"}) == "t1"
+    assert position_lifecycle._extract_leg_token_id({"selected_token_id": "t2"}) == "t2"
+    assert position_lifecycle._extract_leg_token_id({"leg": {"token_id": "t3"}}) == "t3"
+    assert (
+        position_lifecycle._extract_leg_token_id(
+            {"direction": "buy_yes", "yes_token_id": "t4", "no_token_id": "t5"}
+        )
+        == "t4"
+    )
+    assert position_lifecycle._extract_leg_token_id({}) == ""
+
+
 def test_extract_wallet_settlement_price_treats_non_open_redeemable_position_as_winner():
     settlement_price = position_lifecycle._extract_wallet_settlement_price(
         {
