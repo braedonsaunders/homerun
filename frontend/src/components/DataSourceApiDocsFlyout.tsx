@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import {
   BookOpen,
@@ -87,6 +88,7 @@ function FieldTable({ fields }: { fields: Record<string, string | Record<string,
 }
 
 function StageCard({ stage }: { stage: Record<string, string> }) {
+  const { t } = useTranslation()
   return (
     <div className="border border-border/20 rounded-md p-2 space-y-1">
       <div className="flex items-center gap-2">
@@ -95,13 +97,14 @@ function StageCard({ stage }: { stage: Record<string, string> }) {
       </div>
       <code className="text-[10px] text-cyan-400 font-mono block">{stage.method}</code>
       <p className="text-[10px] text-muted-foreground">
-        <span className="text-emerald-400/80">Output:</span> {stage.output}
+        <span className="text-emerald-400/80">{t('dataSourceApiDocsFlyout.labels.output')}:</span> {stage.output}
       </p>
     </div>
   )
 }
 
 function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
+  const { t } = useTranslation()
   const overview = docs.overview as Record<string, any> | undefined
   const quickStart = docs.quick_start as string[] | undefined
   const base = docs.base_data_source as Record<string, any> | undefined
@@ -122,7 +125,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {quickStart && (
-        <Section title="Quick Start" icon={Rocket} iconColor="text-emerald-400" defaultOpen>
+        <Section title={t('dataSourceApiDocsFlyout.sections.quickStart')} icon={Rocket} iconColor="text-emerald-400" defaultOpen>
           <ol className="space-y-1 pt-2">
             {quickStart.map((step, i) => (
               <li key={i} className="text-[11px] text-muted-foreground flex items-start gap-2">
@@ -135,7 +138,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {overview?.concepts && (
-        <Section title="Core Concepts" icon={Database} iconColor="text-blue-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.coreConcepts')} icon={Database} iconColor="text-blue-400">
           <div className="pt-2">
             <FieldTable fields={overview.concepts as Record<string, string>} />
           </div>
@@ -143,7 +146,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {overview?.three_stage_lifecycle && (
-        <Section title="Three-Stage Lifecycle" icon={Play} iconColor="text-amber-400" defaultOpen>
+        <Section title={t('dataSourceApiDocsFlyout.sections.threeStageLifecycle')} icon={Play} iconColor="text-amber-400" defaultOpen>
           <div className="space-y-2 pt-2">
             <p className="text-[11px] text-muted-foreground">
               {(overview.three_stage_lifecycle as Record<string, any>).description as string}
@@ -156,7 +159,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {base && (
-        <Section title="BaseDataSource Interface" icon={Code2} iconColor="text-cyan-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.baseDataSourceInterface')} icon={Code2} iconColor="text-cyan-400">
           <div className="space-y-3 pt-2">
             {base.import && (
               <code className="text-[11px] text-cyan-400 font-mono block">
@@ -166,20 +169,20 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
 
             {base.class_attributes && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Class Attributes</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.classAttributes')}</div>
                 <FieldTable fields={base.class_attributes as Record<string, Record<string, any>>} />
               </div>
             )}
 
             {base.methods && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Lifecycle Methods</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.lifecycleMethods')}</div>
                 {Object.entries(base.methods as Record<string, Record<string, any>>).map(([name, info]) => (
                   <div key={name} className="border border-border/20 rounded-md p-2 mb-1.5 space-y-1">
                     <div className="flex items-center gap-2">
                       <code className="text-[10px] text-emerald-400 font-mono">{name}</code>
                       <Badge variant="outline" className="text-[9px] h-4 font-semibold">
-                        {info.required ? 'Required' : 'Optional'}
+                        {info.required ? t('dataSourceApiDocsFlyout.labels.required') : t('dataSourceApiDocsFlyout.labels.optional')}
                       </Badge>
                     </div>
                     {info.signature && (
@@ -195,7 +198,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
 
             {base.method_selection && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Method Selection</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.methodSelection')}</div>
                 {(base.method_selection as Record<string, any>).note && (
                   <p className="text-[10px] text-muted-foreground">{(base.method_selection as Record<string, any>).note as string}</p>
                 )}
@@ -209,7 +212,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {recordContract && (
-        <Section title="Record Contract" icon={ListChecks} iconColor="text-violet-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.recordContract')} icon={ListChecks} iconColor="text-violet-400">
           <div className="space-y-2 pt-2">
             <p className="text-[11px] text-muted-foreground">{recordContract.description as string}</p>
             {recordContract.fields && (
@@ -217,7 +220,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
             )}
             {recordContract.normalization_rules && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Normalization Rules</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.normalizationRules')}</div>
                 <ol className="space-y-0.5">
                   {(recordContract.normalization_rules as string[]).map((rule, i) => (
                     <li key={i} className="text-[10px] text-muted-foreground flex items-start gap-1">
@@ -233,23 +236,23 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {runner && (
-        <Section title="Runner & Storage" icon={Database} iconColor="text-teal-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.runnerAndStorage')} icon={Database} iconColor="text-teal-400">
           <div className="space-y-3 pt-2">
             {runner.run_status_values && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Run Status Values</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.runStatusValues')}</div>
                 <FieldTable fields={runner.run_status_values as Record<string, string>} />
               </div>
             )}
             {runner.run_metrics && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Run Metrics</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.runMetrics')}</div>
                 <FieldTable fields={runner.run_metrics as Record<string, string>} />
               </div>
             )}
             {runner.storage_tables && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Storage Tables</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.storageTables')}</div>
                 <FieldTable fields={runner.storage_tables as Record<string, string>} />
               </div>
             )}
@@ -258,7 +261,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {sdk && (
-        <Section title="Data Source SDK" icon={Code2} iconColor="text-orange-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.dataSourceSdk')} icon={Code2} iconColor="text-orange-400">
           <div className="space-y-3 pt-2">
             {sdk.import && (
               <code className="text-[10px] text-cyan-400 font-mono block">{sdk.import as string}</code>
@@ -266,7 +269,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
 
             {sdk.read_methods && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Read Methods</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.readMethods')}</div>
                 {Object.entries(sdk.read_methods as Record<string, Record<string, string>>).map(([method, info]) => (
                   <div key={method} className="border border-border/20 rounded-md p-2 mb-1.5 space-y-1">
                     <code className="text-[10px] text-emerald-400 font-mono">{method}</code>
@@ -279,7 +282,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
 
             {sdk.management_methods && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Management Methods</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.managementMethods')}</div>
                 {Object.entries(sdk.management_methods as Record<string, Record<string, string>>).map(([method, info]) => (
                   <div key={method} className="border border-border/20 rounded-md p-2 mb-1.5 space-y-1">
                     <code className="text-[10px] text-emerald-400 font-mono">{method}</code>
@@ -292,7 +295,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
 
             {sdk.strategy_sdk_bridge && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">StrategySDK Bridge</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.strategySdkBridge')}</div>
                 {(sdk.strategy_sdk_bridge as Record<string, any>).description && (
                   <p className="text-[10px] text-muted-foreground mb-1">
                     {(sdk.strategy_sdk_bridge as Record<string, any>).description as string}
@@ -308,17 +311,17 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {imports && (
-        <Section title="Available Imports" icon={Package} iconColor="text-emerald-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.availableImports')} icon={Package} iconColor="text-emerald-400">
           <div className="space-y-3 pt-2">
             {imports.app_modules && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">App Modules</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.appModules')}</div>
                 <FieldTable fields={imports.app_modules as Record<string, string>} />
               </div>
             )}
             {imports.standard_library && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Standard Library</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.standardLibrary')}</div>
                 <div className="flex flex-wrap gap-1">
                   {(imports.standard_library as string[]).map((mod) => (
                     <code key={mod} className="text-[9px] text-cyan-400/80 font-mono bg-cyan-400/5 px-1.5 py-0.5 rounded">{mod}</code>
@@ -328,7 +331,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
             )}
             {imports.third_party && (
               <div>
-                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">Third Party</div>
+                <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">{t('dataSourceApiDocsFlyout.labels.thirdParty')}</div>
                 <FieldTable fields={imports.third_party as Record<string, string>} />
               </div>
             )}
@@ -337,7 +340,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {validation && (
-        <Section title="Validation" icon={Shield} iconColor="text-yellow-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.validation')} icon={Shield} iconColor="text-yellow-400">
           <div className="space-y-2 pt-2">
             <p className="text-[11px] text-muted-foreground">{validation.description as string}</p>
             {validation.endpoint && (
@@ -361,11 +364,11 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {endpoints && (
-        <Section title="API Endpoints" icon={ListChecks} iconColor="text-teal-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.apiEndpoints')} icon={ListChecks} iconColor="text-teal-400">
           <div className="space-y-3 pt-2">
             {Object.entries(endpoints).map(([group, groupEndpoints]) => {
               const endpointMap = typeof groupEndpoints === 'string' ? { [group]: groupEndpoints } : groupEndpoints
-              const label = typeof groupEndpoints === 'string' ? 'endpoints' : group.replace(/_/g, ' ')
+              const label = typeof groupEndpoints === 'string' ? t('dataSourceApiDocsFlyout.labels.endpoints') : group.replace(/_/g, ' ')
               return (
                 <div key={group}>
                   <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1">
@@ -387,7 +390,7 @@ function DataSourceDocs({ docs }: { docs: Record<string, any> }) {
       )}
 
       {examples && (
-        <Section title="Complete Examples" icon={BookOpen} iconColor="text-orange-400">
+        <Section title={t('dataSourceApiDocsFlyout.sections.completeExamples')} icon={BookOpen} iconColor="text-orange-400">
           <div className="space-y-3 pt-2">
             {Object.entries(examples).map(([key, example]) => (
               <div key={key}>
@@ -411,6 +414,7 @@ export default function DataSourceApiDocsFlyout({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const { t } = useTranslation()
   const docsQuery = useQuery({
     queryKey: ['data-source-docs'],
     queryFn: getUnifiedDataSourceDocs,
@@ -427,21 +431,21 @@ export default function DataSourceApiDocsFlyout({
             <SheetHeader className="space-y-1 text-left">
               <SheetTitle className="text-base flex items-center gap-2">
                 <BookOpen className="w-4 h-4" />
-                Data Source Developer Reference
+                {t('dataSourceApiDocsFlyout.title')}
                 <Badge variant="outline" className="text-[9px] h-4 font-normal">v2.0</Badge>
               </SheetTitle>
               <SheetDescription>
-                {'Source lifecycle: FETCH -> TRANSFORM -> UPSERT. Covers ingestion + SDK integration.'}
+                {t('dataSourceApiDocsFlyout.headerDescription')}
               </SheetDescription>
             </SheetHeader>
           </div>
 
           <ScrollArea className="flex-1 min-h-0 px-4 py-3">
             {docsQuery.isLoading && (
-              <div className="text-xs text-muted-foreground text-center py-8">Loading API reference...</div>
+              <div className="text-xs text-muted-foreground text-center py-8">{t('dataSourceApiDocsFlyout.loadingApiReference')}</div>
             )}
             {docsQuery.error && (
-              <div className="text-xs text-red-400 text-center py-8">Failed to load docs</div>
+              <div className="text-xs text-red-400 text-center py-8">{t('dataSourceApiDocsFlyout.failedToLoadDocs')}</div>
             )}
             {docsQuery.data && <DataSourceDocs docs={docsQuery.data} />}
           </ScrollArea>

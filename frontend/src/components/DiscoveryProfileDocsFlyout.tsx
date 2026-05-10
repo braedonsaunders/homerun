@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   BookOpen,
   ChevronDown,
@@ -98,16 +99,17 @@ function FieldTable({ fields }: { fields: [string, string][] }) {
 // ==================== MAIN COMPONENT ====================
 
 export default function DiscoveryProfileDocsFlyout({ open, onOpenChange }: Props) {
+  const { t } = useTranslation()
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[640px] sm:max-w-[640px] p-0 border-l border-border/50">
         <SheetHeader className="px-4 py-3 border-b border-border/30">
           <div className="flex items-center gap-2">
             <BookOpen className="w-4 h-4 text-purple-400" />
-            <SheetTitle className="text-sm">Discovery Profile SDK</SheetTitle>
+            <SheetTitle className="text-sm">{t('discoveryProfileDocsFlyout.title')}</SheetTitle>
           </div>
           <SheetDescription className="text-[11px] text-muted-foreground">
-            BaseDiscoveryProfile API reference and examples
+            {t('discoveryProfileDocsFlyout.headerDescription')}
           </SheetDescription>
         </SheetHeader>
 
@@ -115,16 +117,16 @@ export default function DiscoveryProfileDocsFlyout({ open, onOpenChange }: Props
           <div className="p-4 space-y-2">
 
             {/* ==================== 1. QUICK START ==================== */}
-            <Section title="Quick Start" icon={Rocket} iconColor="text-emerald-400" defaultOpen>
+            <Section title={t('discoveryProfileDocsFlyout.sections.quickStart')} icon={Rocket} iconColor="text-emerald-400" defaultOpen>
               <p className="text-[11px] text-muted-foreground pt-1">
-                Create a custom discovery profile in three steps. Profiles control how wallets are scored and which wallets enter your copy-trade pool.
+                {t('discoveryProfileDocsFlyout.quickStart.intro')}
               </p>
 
               <div className="space-y-2 pt-1">
                 <div className="flex items-start gap-2">
                   <span className="text-[10px] font-bold text-emerald-400 mt-0.5 shrink-0">1.</span>
                   <div className="space-y-1">
-                    <p className="text-[11px] text-foreground font-medium">Extend BaseDiscoveryProfile</p>
+                    <p className="text-[11px] text-foreground font-medium">{t('discoveryProfileDocsFlyout.quickStart.step1Title')}</p>
                     <CodeBlock code={`from services.discovery_profile_sdk import BaseDiscoveryProfile
 
 class MyProfile(BaseDiscoveryProfile):
@@ -137,7 +139,7 @@ class MyProfile(BaseDiscoveryProfile):
                 <div className="flex items-start gap-2">
                   <span className="text-[10px] font-bold text-emerald-400 mt-0.5 shrink-0">2.</span>
                   <div className="space-y-1">
-                    <p className="text-[11px] text-foreground font-medium">Override score_wallet() and/or select_pool()</p>
+                    <p className="text-[11px] text-foreground font-medium">{t('discoveryProfileDocsFlyout.quickStart.step2Title')}</p>
                     <CodeBlock code={`def score_wallet(self, wallet, trades, rolling):
     base = self._calculate_rank_score(wallet, trades)
     # Boost wallets with recent high win rate
@@ -150,9 +152,9 @@ class MyProfile(BaseDiscoveryProfile):
                 <div className="flex items-start gap-2">
                   <span className="text-[10px] font-bold text-emerald-400 mt-0.5 shrink-0">3.</span>
                   <div className="space-y-1">
-                    <p className="text-[11px] text-foreground font-medium">Save and set as active profile</p>
+                    <p className="text-[11px] text-foreground font-medium">{t('discoveryProfileDocsFlyout.quickStart.step3Title')}</p>
                     <p className="text-[11px] text-muted-foreground">
-                      Save your file and select it as the active profile in the Discovery settings panel. It will be hot-loaded automatically.
+                      {t('discoveryProfileDocsFlyout.quickStart.step3Desc')}
                     </p>
                   </div>
                 </div>
@@ -160,9 +162,9 @@ class MyProfile(BaseDiscoveryProfile):
             </Section>
 
             {/* ==================== 2. BASE INTERFACE ==================== */}
-            <Section title="BaseDiscoveryProfile Interface" icon={Code2} iconColor="text-cyan-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.baseInterface')} icon={Code2} iconColor="text-cyan-400">
               <p className="text-[11px] text-muted-foreground pt-1">
-                The base class your profile extends. Override any method to customize behavior.
+                {t('discoveryProfileDocsFlyout.baseInterface.intro')}
               </p>
 
               <CodeBlock code={`class BaseDiscoveryProfile:
@@ -172,18 +174,18 @@ class MyProfile(BaseDiscoveryProfile):
 
               <div className="space-y-3 pt-2">
                 <div>
-                  <p className="text-[11px] font-medium text-foreground mb-1">Class Attributes</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.labels.classAttributes')}</p>
                   <FieldTable fields={[
-                    ['name', 'Display name for the profile (shown in UI)'],
-                    ['description', 'Short description of the profile behavior'],
-                    ['default_config', 'Dict of default configuration values, overridden by user config'],
+                    ['name', t('discoveryProfileDocsFlyout.baseInterface.attrName')],
+                    ['description', t('discoveryProfileDocsFlyout.baseInterface.attrDescription')],
+                    ['default_config', t('discoveryProfileDocsFlyout.baseInterface.attrDefaultConfig')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
                   <p className="text-[11px] font-medium text-foreground mb-1">score_wallet(wallet, trades, rolling) → dict</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Score an individual wallet. Called once per wallet per scoring cycle.
+                    {t('discoveryProfileDocsFlyout.baseInterface.scoreWalletDesc')}
                   </p>
                   <CodeBlock code={`# Return type:
 {
@@ -198,7 +200,7 @@ class MyProfile(BaseDiscoveryProfile):
                 <div className="border-t border-border/20 pt-2">
                   <p className="text-[11px] font-medium text-foreground mb-1">select_pool(scored_wallets, current_pool) → dict</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Select which wallets enter the copy-trade pool. Called after all wallets are scored.
+                    {t('discoveryProfileDocsFlyout.baseInterface.selectPoolDesc')}
                   </p>
                   <CodeBlock code={`# scored_wallets: list of (wallet, scores) tuples
 # current_pool: set of addresses currently in pool
@@ -214,7 +216,7 @@ class MyProfile(BaseDiscoveryProfile):
                 <div className="border-t border-border/20 pt-2">
                   <p className="text-[11px] font-medium text-foreground mb-1">configure(config) → None</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Called when user changes profile config in the UI. Merges with default_config.
+                    {t('discoveryProfileDocsFlyout.baseInterface.configureDesc')}
                   </p>
                   <CodeBlock code={`def configure(self, config):
     # self.config is already merged with default_config
@@ -226,73 +228,73 @@ class MyProfile(BaseDiscoveryProfile):
             </Section>
 
             {/* ==================== 3. WALLET DATA CONTRACT ==================== */}
-            <Section title="Wallet Data Contract" icon={Database} iconColor="text-amber-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.walletDataContract')} icon={Database} iconColor="text-amber-400">
               <p className="text-[11px] text-muted-foreground pt-1">
-                Fields available on the <code className="text-amber-400 font-mono">wallet</code> dict passed to score_wallet().
+                <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.walletData.intro') }} />
               </p>
 
               <div className="space-y-3 pt-1">
                 <div>
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Identity</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.walletData.identityHeading')}</p>
                   <FieldTable fields={[
-                    ['address', 'str - Wallet public address'],
-                    ['username', 'str | None - Display name if known'],
-                    ['cluster_id', 'str | None - Cluster group identifier'],
-                    ['tags', 'list[str] - Existing classification tags'],
-                    ['is_bot', 'bool - Whether wallet is flagged as a bot'],
+                    ['address', t('discoveryProfileDocsFlyout.walletData.fieldAddress')],
+                    ['username', t('discoveryProfileDocsFlyout.walletData.fieldUsername')],
+                    ['cluster_id', t('discoveryProfileDocsFlyout.walletData.fieldClusterId')],
+                    ['tags', t('discoveryProfileDocsFlyout.walletData.fieldTags')],
+                    ['is_bot', t('discoveryProfileDocsFlyout.walletData.fieldIsBot')],
                   ]} />
                 </div>
 
                 <div>
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Performance</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.walletData.performanceHeading')}</p>
                   <FieldTable fields={[
-                    ['total_trades', 'int - Lifetime trade count'],
-                    ['wins', 'int - Winning trade count'],
-                    ['losses', 'int - Losing trade count'],
-                    ['win_rate', 'float - Win rate (0.0-1.0)'],
-                    ['total_pnl', 'float - Lifetime PnL in USD'],
-                    ['realized_pnl', 'float - Realized PnL in USD'],
-                    ['unrealized_pnl', 'float - Unrealized PnL in USD'],
-                    ['avg_roi', 'float - Average return on investment'],
+                    ['total_trades', t('discoveryProfileDocsFlyout.walletData.fieldTotalTrades')],
+                    ['wins', t('discoveryProfileDocsFlyout.walletData.fieldWins')],
+                    ['losses', t('discoveryProfileDocsFlyout.walletData.fieldLosses')],
+                    ['win_rate', t('discoveryProfileDocsFlyout.walletData.fieldWinRate')],
+                    ['total_pnl', t('discoveryProfileDocsFlyout.walletData.fieldTotalPnl')],
+                    ['realized_pnl', t('discoveryProfileDocsFlyout.walletData.fieldRealizedPnl')],
+                    ['unrealized_pnl', t('discoveryProfileDocsFlyout.walletData.fieldUnrealizedPnl')],
+                    ['avg_roi', t('discoveryProfileDocsFlyout.walletData.fieldAvgRoi')],
                   ]} />
                 </div>
 
                 <div>
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Risk Metrics</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.walletData.riskMetricsHeading')}</p>
                   <FieldTable fields={[
-                    ['sharpe_ratio', 'float - Risk-adjusted return (Sharpe)'],
-                    ['sortino_ratio', 'float - Downside risk-adjusted return'],
-                    ['max_drawdown', 'float - Maximum drawdown (0.0-1.0)'],
-                    ['profit_factor', 'float - Gross profit / gross loss'],
-                    ['calmar_ratio', 'float - Annual return / max drawdown'],
+                    ['sharpe_ratio', t('discoveryProfileDocsFlyout.walletData.fieldSharpeRatio')],
+                    ['sortino_ratio', t('discoveryProfileDocsFlyout.walletData.fieldSortinoRatio')],
+                    ['max_drawdown', t('discoveryProfileDocsFlyout.walletData.fieldMaxDrawdown')],
+                    ['profit_factor', t('discoveryProfileDocsFlyout.walletData.fieldProfitFactor')],
+                    ['calmar_ratio', t('discoveryProfileDocsFlyout.walletData.fieldCalmarRatio')],
                   ]} />
                 </div>
 
                 <div>
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Rolling Window</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.walletData.rollingWindowHeading')}</p>
                   <FieldTable fields={[
-                    ['rolling_pnl', 'float - PnL over rolling window'],
-                    ['rolling_roi', 'float - ROI over rolling window'],
-                    ['rolling_win_rate', 'float - Win rate over rolling window'],
-                    ['rolling_trade_count', 'int - Trades in rolling window'],
-                    ['trades_1h', 'int - Trade count last 1 hour'],
-                    ['trades_24h', 'int - Trade count last 24 hours'],
-                    ['last_trade_at', 'str - ISO timestamp of last trade'],
+                    ['rolling_pnl', t('discoveryProfileDocsFlyout.walletData.fieldRollingPnl')],
+                    ['rolling_roi', t('discoveryProfileDocsFlyout.walletData.fieldRollingRoi')],
+                    ['rolling_win_rate', t('discoveryProfileDocsFlyout.walletData.fieldRollingWinRate')],
+                    ['rolling_trade_count', t('discoveryProfileDocsFlyout.walletData.fieldRollingTradeCount')],
+                    ['trades_1h', t('discoveryProfileDocsFlyout.walletData.fieldTrades1h')],
+                    ['trades_24h', t('discoveryProfileDocsFlyout.walletData.fieldTrades24h')],
+                    ['last_trade_at', t('discoveryProfileDocsFlyout.walletData.fieldLastTradeAt')],
                   ]} />
                 </div>
 
                 <div>
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Detection</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.walletData.detectionHeading')}</p>
                   <FieldTable fields={[
-                    ['anomaly_score', 'float - Anomaly detection score (0.0-1.0)'],
-                    ['insider_score', 'float - Insider likelihood score (0.0-1.0)'],
+                    ['anomaly_score', t('discoveryProfileDocsFlyout.walletData.fieldAnomalyScore')],
+                    ['insider_score', t('discoveryProfileDocsFlyout.walletData.fieldInsiderScore')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[11px] font-medium text-foreground mb-1">trades list format</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.walletData.tradesListFormatTitle')}</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Each item in the <code className="text-amber-400 font-mono">trades</code> list:
+                    <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.walletData.tradesListFormatDesc') }} />
                   </p>
                   <CodeBlock code={`{
     "size": float,          # Position size in USD
@@ -305,9 +307,9 @@ class MyProfile(BaseDiscoveryProfile):
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[11px] font-medium text-foreground mb-1">rolling dict format</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.walletData.rollingDictFormatTitle')}</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    The <code className="text-amber-400 font-mono">rolling</code> dict contains pre-computed rolling window metrics:
+                    <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.walletData.rollingDictFormatDesc') }} />
                   </p>
                   <CodeBlock code={`{
     "rolling_pnl": float,          # PnL over the window period
@@ -322,30 +324,29 @@ class MyProfile(BaseDiscoveryProfile):
             </Section>
 
             {/* ==================== 4. SCORING COMPONENTS ==================== */}
-            <Section title="Scoring Components" icon={Target} iconColor="text-orange-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.scoringComponents')} icon={Target} iconColor="text-orange-400">
               <p className="text-[11px] text-muted-foreground pt-1">
-                The default <code className="text-amber-400 font-mono">rank_score</code> is a weighted composite of the following components.
-                Override <code className="text-amber-400 font-mono">_calculate_rank_score()</code> to change weights or add components.
+                <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.scoringComponents.intro') }} />
               </p>
 
               <div className="mt-2 border border-border/20 rounded-md overflow-hidden">
                 <table className="w-full text-[11px]">
                   <thead>
                     <tr className="border-b border-border/20 bg-card/30">
-                      <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">Component</th>
-                      <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">Weight</th>
-                      <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">Description</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">{t('discoveryProfileDocsFlyout.scoringComponents.colComponent')}</th>
+                      <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">{t('discoveryProfileDocsFlyout.scoringComponents.colWeight')}</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">{t('discoveryProfileDocsFlyout.scoringComponents.colDescription')}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[
-                      ['Timing Skill', '20.0%', 'Composite of entry/exit timing accuracy and market timing'],
-                      ['Sharpe Ratio', '19.5%', 'Risk-adjusted return normalized to 0-1 range'],
-                      ['Profit Factor', '16.25%', 'Gross profit / gross loss, capped and normalized'],
-                      ['Execution Quality', '15.0%', 'Slippage, fill rate, and order efficiency'],
-                      ['Win Rate', '13.0%', 'Confidence-adjusted win rate score'],
-                      ['PnL', '9.75%', 'Normalized total PnL with logarithmic scaling'],
-                      ['Consistency', '6.5%', 'Variance in returns, lower variance = higher score'],
+                      [t('discoveryProfileDocsFlyout.scoringComponents.timingSkillName'), '20.0%', t('discoveryProfileDocsFlyout.scoringComponents.timingSkillDesc')],
+                      [t('discoveryProfileDocsFlyout.scoringComponents.sharpeRatioName'), '19.5%', t('discoveryProfileDocsFlyout.scoringComponents.sharpeRatioDesc')],
+                      [t('discoveryProfileDocsFlyout.scoringComponents.profitFactorName'), '16.25%', t('discoveryProfileDocsFlyout.scoringComponents.profitFactorDesc')],
+                      [t('discoveryProfileDocsFlyout.scoringComponents.executionQualityName'), '15.0%', t('discoveryProfileDocsFlyout.scoringComponents.executionQualityDesc')],
+                      [t('discoveryProfileDocsFlyout.scoringComponents.winRateName'), '13.0%', t('discoveryProfileDocsFlyout.scoringComponents.winRateDesc')],
+                      [t('discoveryProfileDocsFlyout.scoringComponents.pnlName'), '9.75%', t('discoveryProfileDocsFlyout.scoringComponents.pnlDesc')],
+                      [t('discoveryProfileDocsFlyout.scoringComponents.consistencyName'), '6.5%', t('discoveryProfileDocsFlyout.scoringComponents.consistencyDesc')],
                     ].map(([name, weight, desc]) => (
                       <tr key={name} className="border-b border-border/10 last:border-0">
                         <td className="px-2 py-1.5">
@@ -372,93 +373,91 @@ rank_score = (
             </Section>
 
             {/* ==================== 5. POOL SELECTION ==================== */}
-            <Section title="Pool Selection" icon={Users} iconColor="text-blue-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.poolSelection')} icon={Users} iconColor="text-blue-400">
               <p className="text-[11px] text-muted-foreground pt-1">
-                The default <code className="text-amber-400 font-mono">_default_pool_selection()</code> applies eligibility gates, tiered ranking, churn guards, and diversity constraints.
+                <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.poolSelection.intro') }} />
               </p>
 
               <div className="space-y-3 pt-2">
                 <div>
-                  <p className="text-[11px] font-medium text-foreground mb-1">Eligibility Gates</p>
-                  <p className="text-[11px] text-muted-foreground mb-1">Wallets must pass all gates to be considered:</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.poolSelection.eligibilityGatesTitle')}</p>
+                  <p className="text-[11px] text-muted-foreground mb-1">{t('discoveryProfileDocsFlyout.poolSelection.eligibilityGatesDesc')}</p>
                   <FieldTable fields={[
-                    ['min_trades', 'Minimum lifetime trade count (default: 10)'],
-                    ['min_win_rate', 'Minimum win rate (default: 0.52)'],
-                    ['min_sharpe', 'Minimum Sharpe ratio (default: 0.5)'],
-                    ['min_profit_factor', 'Minimum profit factor (default: 1.1)'],
-                    ['max_anomaly', 'Maximum anomaly score (default: 0.7)'],
+                    ['min_trades', t('discoveryProfileDocsFlyout.poolSelection.fieldMinTrades')],
+                    ['min_win_rate', t('discoveryProfileDocsFlyout.poolSelection.fieldMinWinRate')],
+                    ['min_sharpe', t('discoveryProfileDocsFlyout.poolSelection.fieldMinSharpe')],
+                    ['min_profit_factor', t('discoveryProfileDocsFlyout.poolSelection.fieldMinProfitFactor')],
+                    ['max_anomaly', t('discoveryProfileDocsFlyout.poolSelection.fieldMaxAnomaly')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[11px] font-medium text-foreground mb-1">Tier System</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.poolSelection.tierSystemTitle')}</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Eligible wallets are ranked by rank_score and split into tiers:
+                    {t('discoveryProfileDocsFlyout.poolSelection.tierSystemDesc')}
                   </p>
                   <FieldTable fields={[
-                    ['core', 'Top 70% of pool slots - highest rank_score wallets, stable members'],
-                    ['rising', 'Bottom 30% of pool slots - next best wallets, rotated more freely'],
+                    ['core', t('discoveryProfileDocsFlyout.poolSelection.fieldCoreTier')],
+                    ['rising', t('discoveryProfileDocsFlyout.poolSelection.fieldRisingTier')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[11px] font-medium text-foreground mb-1">Churn Guard</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.poolSelection.churnGuardTitle')}</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Limits pool turnover to prevent excessive rotation:
+                    {t('discoveryProfileDocsFlyout.poolSelection.churnGuardDesc')}
                   </p>
                   <FieldTable fields={[
-                    ['max_hourly_replacement_rate', 'Max fraction of pool replaced per hour (default: 0.15)'],
-                    ['replacement_score_cutoff', 'New wallet must beat removed wallet by this margin (default: 0.05)'],
+                    ['max_hourly_replacement_rate', t('discoveryProfileDocsFlyout.poolSelection.fieldMaxHourlyReplacementRate')],
+                    ['replacement_score_cutoff', t('discoveryProfileDocsFlyout.poolSelection.fieldReplacementScoreCutoff')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[11px] font-medium text-foreground mb-1">Cluster Diversity</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.poolSelection.clusterDiversityTitle')}</p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Prevents any single cluster from dominating the pool:
+                    {t('discoveryProfileDocsFlyout.poolSelection.clusterDiversityDesc')}
                   </p>
                   <FieldTable fields={[
-                    ['max_cluster_share', 'Max fraction of pool from one cluster (default: 0.25)'],
+                    ['max_cluster_share', t('discoveryProfileDocsFlyout.poolSelection.fieldMaxClusterShare')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[11px] font-medium text-foreground mb-1">Target Pool Size</p>
+                  <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.poolSelection.targetPoolSizeTitle')}</p>
                   <p className="text-[11px] text-muted-foreground">
-                    Configurable via <code className="text-amber-400 font-mono">pool_size</code> in config (default: 50).
-                    The pool will fill up to this size from eligible wallets ranked by score.
+                    <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.poolSelection.targetPoolSizeDesc') }} />
                   </p>
                 </div>
               </div>
             </Section>
 
             {/* ==================== 6. INSIDER DETECTION ==================== */}
-            <Section title="Insider Detection" icon={Shield} iconColor="text-red-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.insiderDetection')} icon={Shield} iconColor="text-red-400">
               <p className="text-[11px] text-muted-foreground pt-1">
-                The insider score is computed from 10 weighted behavioral signals. Override{' '}
-                <code className="text-amber-400 font-mono">_compute_insider_score()</code> to customize.
+                <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.insiderDetection.intro') }} />
               </p>
 
               <div className="mt-2 border border-border/20 rounded-md overflow-hidden">
                 <table className="w-full text-[11px]">
                   <thead>
                     <tr className="border-b border-border/20 bg-card/30">
-                      <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">Signal</th>
-                      <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">Weight</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-muted-foreground">{t('discoveryProfileDocsFlyout.insiderDetection.colSignal')}</th>
+                      <th className="text-right px-2 py-1.5 font-medium text-muted-foreground">{t('discoveryProfileDocsFlyout.insiderDetection.colWeight')}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[
-                      ['Early entry frequency', '0.18'],
-                      ['Pre-announcement trading', '0.16'],
-                      ['Abnormal win rate on new tokens', '0.14'],
-                      ['Size concentration before events', '0.12'],
-                      ['Correlated timing with deployers', '0.10'],
-                      ['Unusual PnL consistency', '0.08'],
-                      ['Low-latency trade clustering', '0.07'],
-                      ['Cross-wallet fund flows', '0.06'],
-                      ['Social signal correlation', '0.05'],
-                      ['Anomalous volume timing', '0.04'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalEarlyEntry'), '0.18'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalPreAnnouncement'), '0.16'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalAbnormalWinRate'), '0.14'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalSizeConcentration'), '0.12'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalCorrelatedTiming'), '0.10'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalUnusualPnl'), '0.08'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalLowLatencyClustering'), '0.07'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalCrossWalletFlows'), '0.06'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalSocialCorrelation'), '0.05'],
+                      [t('discoveryProfileDocsFlyout.insiderDetection.signalAnomalousVolume'), '0.04'],
                     ].map(([signal, weight]) => (
                       <tr key={signal} className="border-b border-border/10 last:border-0">
                         <td className="px-2 py-1.5 text-muted-foreground">{signal}</td>
@@ -470,83 +469,83 @@ rank_score = (
               </div>
 
               <div className="mt-2">
-                <p className="text-[11px] font-medium text-foreground mb-1">Classification Thresholds</p>
+                <p className="text-[11px] font-medium text-foreground mb-1">{t('discoveryProfileDocsFlyout.insiderDetection.classificationThresholdsTitle')}</p>
                 <FieldTable fields={[
-                  ['insider_score >= 0.8', '"confirmed_insider" - Excluded from pool by default'],
-                  ['insider_score >= 0.6', '"likely_insider" - Flagged, reduced pool priority'],
-                  ['insider_score >= 0.4', '"suspected_insider" - Monitored, tagged for review'],
-                  ['insider_score < 0.4', '"clean" - No insider indicators'],
+                  ['insider_score >= 0.8', t('discoveryProfileDocsFlyout.insiderDetection.thresholdConfirmed')],
+                  ['insider_score >= 0.6', t('discoveryProfileDocsFlyout.insiderDetection.thresholdLikely')],
+                  ['insider_score >= 0.4', t('discoveryProfileDocsFlyout.insiderDetection.thresholdSuspected')],
+                  ['insider_score < 0.4', t('discoveryProfileDocsFlyout.insiderDetection.thresholdClean')],
                 ]} />
               </div>
             </Section>
 
             {/* ==================== 7. HELPER METHODS ==================== */}
-            <Section title="Available Helper Methods" icon={Zap} iconColor="text-yellow-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.helperMethods')} icon={Zap} iconColor="text-yellow-400">
               <p className="text-[11px] text-muted-foreground pt-1">
-                All <code className="text-amber-400 font-mono">self._</code> methods available on the base class. Call these from your overrides.
+                <span dangerouslySetInnerHTML={{ __html: t('discoveryProfileDocsFlyout.helperMethods.intro') }} />
               </p>
 
               <div className="space-y-3 pt-2">
                 <div>
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Trade Analysis</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.helperMethods.tradeAnalysisHeading')}</p>
                   <FieldTable fields={[
-                    ['_calculate_trade_stats(trades)', 'Returns dict with win_rate, avg_size, avg_pnl, total_volume, etc.'],
-                    ['_calculate_risk_adjusted_metrics(trades)', 'Returns sharpe, sortino, max_drawdown, profit_factor, calmar'],
-                    ['_calculate_rolling_windows(trades, windows)', 'Computes metrics over multiple time windows (1h, 6h, 24h, 7d)'],
+                    ['_calculate_trade_stats(trades)', t('discoveryProfileDocsFlyout.helperMethods.helperCalcTradeStats')],
+                    ['_calculate_risk_adjusted_metrics(trades)', t('discoveryProfileDocsFlyout.helperMethods.helperCalcRiskAdjusted')],
+                    ['_calculate_rolling_windows(trades, windows)', t('discoveryProfileDocsFlyout.helperMethods.helperCalcRollingWindows')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Scoring</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.helperMethods.scoringHeading')}</p>
                   <FieldTable fields={[
-                    ['_calculate_rank_score(wallet, trades)', 'Full weighted composite score, returns dict with rank_score and components'],
-                    ['_compute_timing_skill(trades)', 'Entry/exit timing accuracy (0.0-1.0)'],
-                    ['_compute_execution_quality(trades)', 'Slippage and fill efficiency (0.0-1.0)'],
-                    ['_score_quality(wallet, trades)', 'Trade quality metric (0.0-1.0)'],
-                    ['_score_activity(wallet)', 'Activity recency and frequency (0.0-1.0)'],
-                    ['_score_stability(wallet, trades)', 'Return consistency and drawdown control (0.0-1.0)'],
+                    ['_calculate_rank_score(wallet, trades)', t('discoveryProfileDocsFlyout.helperMethods.helperCalcRankScore')],
+                    ['_compute_timing_skill(trades)', t('discoveryProfileDocsFlyout.helperMethods.helperTimingSkill')],
+                    ['_compute_execution_quality(trades)', t('discoveryProfileDocsFlyout.helperMethods.helperExecutionQuality')],
+                    ['_score_quality(wallet, trades)', t('discoveryProfileDocsFlyout.helperMethods.helperScoreQuality')],
+                    ['_score_activity(wallet)', t('discoveryProfileDocsFlyout.helperMethods.helperScoreActivity')],
+                    ['_score_stability(wallet, trades)', t('discoveryProfileDocsFlyout.helperMethods.helperScoreStability')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Classification</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.helperMethods.classificationHeading')}</p>
                   <FieldTable fields={[
-                    ['_classify_wallet(wallet, scores)', 'Returns tags and recommendation based on scores'],
-                    ['_detect_strategies(trades)', 'Identifies trading patterns (scalper, swing, sniper, etc.)'],
+                    ['_classify_wallet(wallet, scores)', t('discoveryProfileDocsFlyout.helperMethods.helperClassifyWallet')],
+                    ['_detect_strategies(trades)', t('discoveryProfileDocsFlyout.helperMethods.helperDetectStrategies')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Pool Selection</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.helperMethods.poolSelectionHeading')}</p>
                   <FieldTable fields={[
-                    ['_default_pool_selection(scored_wallets, current_pool)', 'Full default pool selection with gates, tiers, churn guard'],
+                    ['_default_pool_selection(scored_wallets, current_pool)', t('discoveryProfileDocsFlyout.helperMethods.helperDefaultPoolSelection')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Insider Detection</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.helperMethods.insiderDetectionHeading')}</p>
                   <FieldTable fields={[
-                    ['_compute_insider_score(wallet, trades)', 'Weighted insider signal score (0.0-1.0)'],
-                    ['_classify_insider(insider_score)', 'Returns classification string based on thresholds'],
+                    ['_compute_insider_score(wallet, trades)', t('discoveryProfileDocsFlyout.helperMethods.helperComputeInsider')],
+                    ['_classify_insider(insider_score)', t('discoveryProfileDocsFlyout.helperMethods.helperClassifyInsider')],
                   ]} />
                 </div>
 
                 <div className="border-t border-border/20 pt-2">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">Utilities</p>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">{t('discoveryProfileDocsFlyout.helperMethods.utilitiesHeading')}</p>
                   <FieldTable fields={[
-                    ['_std_dev(values)', 'Standard deviation of a list of numbers'],
-                    ['_parse_timestamp(ts)', 'Parses ISO timestamp to datetime object'],
-                    ['_to_float(value, default=0.0)', 'Safe float conversion with fallback'],
-                    ['_confidence_adjusted_win_rate(wins, losses)', 'Bayesian-adjusted win rate accounting for sample size'],
+                    ['_std_dev(values)', t('discoveryProfileDocsFlyout.helperMethods.helperStdDev')],
+                    ['_parse_timestamp(ts)', t('discoveryProfileDocsFlyout.helperMethods.helperParseTimestamp')],
+                    ['_to_float(value, default=0.0)', t('discoveryProfileDocsFlyout.helperMethods.helperToFloat')],
+                    ['_confidence_adjusted_win_rate(wins, losses)', t('discoveryProfileDocsFlyout.helperMethods.helperConfidenceWinRate')],
                   ]} />
                 </div>
               </div>
             </Section>
 
             {/* ==================== 8. AVAILABLE IMPORTS ==================== */}
-            <Section title="Available Imports" icon={Package} iconColor="text-violet-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.availableImports')} icon={Package} iconColor="text-violet-400">
               <p className="text-[11px] text-muted-foreground pt-1">
-                These modules are available in the profile sandbox environment.
+                {t('discoveryProfileDocsFlyout.imports.intro')}
               </p>
 
               <CodeBlock code={`# SDK
@@ -568,20 +567,20 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np`} className="mt-1" />
 
               <p className="text-[11px] text-muted-foreground mt-2">
-                Network access, file I/O, and subprocess calls are not permitted in the sandbox.
+                {t('discoveryProfileDocsFlyout.imports.sandboxNote')}
               </p>
             </Section>
 
             {/* ==================== 9. CODE EXAMPLES ==================== */}
-            <Section title="Code Examples" icon={Layers} iconColor="text-pink-400">
+            <Section title={t('discoveryProfileDocsFlyout.sections.codeExamples')} icon={Layers} iconColor="text-pink-400">
               <div className="space-y-4 pt-1">
 
                 <div>
                   <p className="text-[11px] font-medium text-foreground mb-1">
-                    Example 1: Custom Scoring with Boosted Recent Activity
+                    {t('discoveryProfileDocsFlyout.examples.example1Title')}
                   </p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Boosts rank_score for wallets with strong rolling performance.
+                    {t('discoveryProfileDocsFlyout.examples.example1Desc')}
                   </p>
                   <CodeBlock code={`from services.discovery_profile_sdk import BaseDiscoveryProfile
 
@@ -621,10 +620,10 @@ class RecentActivityProfile(BaseDiscoveryProfile):
 
                 <div className="border-t border-border/20 pt-3">
                   <p className="text-[11px] font-medium text-foreground mb-1">
-                    Example 2: Strict Pool with Higher Thresholds
+                    {t('discoveryProfileDocsFlyout.examples.example2Title')}
                   </p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Tighter eligibility gates and smaller pool size for conservative copy-trading.
+                    {t('discoveryProfileDocsFlyout.examples.example2Desc')}
                   </p>
                   <CodeBlock code={`from services.discovery_profile_sdk import BaseDiscoveryProfile
 
@@ -668,10 +667,10 @@ class StrictPoolProfile(BaseDiscoveryProfile):
 
                 <div className="border-t border-border/20 pt-3">
                   <p className="text-[11px] font-medium text-foreground mb-1">
-                    Example 3: Insider-Weighted Scoring
+                    {t('discoveryProfileDocsFlyout.examples.example3Title')}
                   </p>
                   <p className="text-[11px] text-muted-foreground mb-1">
-                    Penalizes rank_score based on insider likelihood, avoids wallets with suspicious patterns.
+                    {t('discoveryProfileDocsFlyout.examples.example3Desc')}
                   </p>
                   <CodeBlock code={`from services.discovery_profile_sdk import BaseDiscoveryProfile
 
