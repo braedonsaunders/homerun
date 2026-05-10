@@ -1,144 +1,72 @@
 {
-  "runId": 1778416461426,
-  "workflowRunId": 25628633559,
+  "runId": 1778420894910,
+  "workflowRunId": 25630162173,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25628633559",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25630162173",
   "branch": "main",
-  "headSha": "8aba560b25203673a2741ea50d491c8bf5f61196",
+  "headSha": "f2034af80a6ac39ded538093e15c67e574461607",
   "prNumber": null,
   "passes": [
     {
       "pass": 1,
       "cluster": {
-        "type": "lint",
+        "type": "test-failure",
         "files": [
-          "backend/models/database.py",
-          "backend/services/strategy_backtester.py"
+          "backend/tests/test_alembic_roundtrip.py"
         ],
         "failures": [
           {
-            "type": "lint",
-            "file": "backend/models/database.py",
-            "line": 5080,
-            "column": 1,
-            "message": "Module level import not at top of file",
-            "rule": "E402",
-            "rawLog": "E402 Module level import not at top of file\n    --> models/database.py:5080:1",
-            "confidence": 0.95
-          },
-          {
-            "type": "lint",
-            "file": "backend/models/database.py",
-            "line": 5080,
-            "column": 21,
-            "message": "[*] `traceback` imported but unused",
-            "rule": "F401",
-            "rawLog": "F401 [*] `traceback` imported but unused\n    --> models/database.py:5080:21",
-            "confidence": 0.95
-          },
-          {
-            "type": "lint",
-            "file": "backend/models/database.py",
-            "line": 5160,
-            "column": 1,
-            "message": "Module level import not at top of file",
-            "rule": "E402",
-            "rawLog": "E402 Module level import not at top of file\n    --> models/database.py:5160:1",
-            "confidence": 0.95
-          },
-          {
-            "type": "lint",
-            "file": "backend/services/strategy_backtester.py",
-            "line": 3575,
-            "column": 20,
-            "message": "Undefined name `AsyncSessionLocal`",
-            "rule": "F821",
-            "rawLog": "F821 Undefined name `AsyncSessionLocal`\n    --> services/strategy_backtester.py:3575:20",
-            "confidence": 0.95
+            "type": "test-failure",
+            "file": "backend/tests/test_alembic_roundtrip.py",
+            "line": null,
+            "column": null,
+            "message": "Failed: alembic replay subprocess exited with 1",
+            "rule": null,
+            "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
+            "confidence": 0.7
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "1005e496a9672161f685f8d0691edfd1719e5022",
+      "commitSha": "27727d03ecd27683341568ad9f308ea681fb658e",
       "filesChanged": [
-        "backend/models/database.py",
-        "backend/services/strategy_backtester.py"
+        "backend/tests/test_alembic_roundtrip.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 77048
+      "durationMs": 72653
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-10T12:34:21.426Z",
+  "startedAt": "2026-05-10T13:48:14.910Z",
   "result": null,
   "commits": [
-    "1005e496a9672161f685f8d0691edfd1719e5022"
+    "27727d03ecd27683341568ad9f308ea681fb658e"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_strategy_backtester.py",
+      "file": "backend/tests/test_alembic_roundtrip.py",
       "line": null,
       "column": null,
-      "message": "assert False is True",
+      "message": "Failed: alembic replay subprocess exited with 1",
       "rule": null,
-      "rawLog": "FAILED tests/test_strategy_backtester.py::test_run_evaluate_backtest_skips_live_execution_freshness_gates - assert False is True",
+      "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_strategy_backtester.py",
+      "file": "backend/tests/test_scanner_market_filter.py",
       "line": null,
       "column": null,
-      "message": "RuntimeError: Event loop is closed",
+      "message": "assert False",
       "rule": null,
-      "rawLog": "FAILED tests/test_strategy_backtester.py::test_replay_discover_runs_strategies_that_only_override_detect - RuntimeError: Event loop is closed",
+      "rawLog": "FAILED tests/test_scanner_market_filter.py::test_whitelist_zero_match_logs_warning - assert False",
       "confidence": 0.7
-    },
-    {
-      "type": "lint",
-      "file": "backend/models/database.py",
-      "line": 5080,
-      "column": 1,
-      "message": "Module level import not at top of file",
-      "rule": "E402",
-      "rawLog": "E402 Module level import not at top of file\n    --> models/database.py:5080:1",
-      "confidence": 0.95
-    },
-    {
-      "type": "lint",
-      "file": "backend/models/database.py",
-      "line": 5080,
-      "column": 21,
-      "message": "[*] `traceback` imported but unused",
-      "rule": "F401",
-      "rawLog": "F401 [*] `traceback` imported but unused\n    --> models/database.py:5080:21",
-      "confidence": 0.95
-    },
-    {
-      "type": "lint",
-      "file": "backend/models/database.py",
-      "line": 5160,
-      "column": 1,
-      "message": "Module level import not at top of file",
-      "rule": "E402",
-      "rawLog": "E402 Module level import not at top of file\n    --> models/database.py:5160:1",
-      "confidence": 0.95
-    },
-    {
-      "type": "lint",
-      "file": "backend/services/strategy_backtester.py",
-      "line": 3575,
-      "column": 20,
-      "message": "Undefined name `AsyncSessionLocal`",
-      "rule": "F821",
-      "rawLog": "F821 Undefined name `AsyncSessionLocal`\n    --> services/strategy_backtester.py:3575:20",
-      "confidence": 0.95
     }
   ],
-  "latestParserUsed": "pytest, ruff",
-  "latestLogPath": ".greencheck/logs/workflow-run-25628633559.log"
+  "latestParserUsed": "pytest",
+  "latestLogPath": ".greencheck/logs/workflow-run-25630162173.log"
 }

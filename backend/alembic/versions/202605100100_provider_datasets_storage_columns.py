@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column, safe_create_index
 
 
 # revision identifiers, used by Alembic.
@@ -35,7 +36,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    safe_add_column(
         "provider_datasets",
         sa.Column(
             "storage_type",
@@ -44,13 +45,13 @@ def upgrade() -> None:
             server_default="postgres",
         ),
     )
-    op.add_column(
+    safe_add_column(
         "provider_datasets",
         sa.Column("storage_uri", sa.String(), nullable=True),
     )
     # Index on (storage_type, provider) so the backtester's "find
     # parquet datasets covering token X in window W" lookup is cheap.
-    op.create_index(
+    safe_create_index(
         "ix_provider_datasets_storage_type_provider",
         "provider_datasets",
         ["storage_type", "provider"],
