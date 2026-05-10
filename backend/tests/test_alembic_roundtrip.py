@@ -278,9 +278,8 @@ async def _drive() -> int:
     # None`` deep in ``MigrationContext``.  The CLI matches what
     # ``init_database`` in production does on cold start.
     proc = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", "/app/backend/alembic.ini",
+        [sys.executable, "-m", "alembic", "-c", "alembic.ini",
          "upgrade", "head"],
-        cwd="/app/backend",
         env={**os.environ},
         capture_output=True,
         text=True,
