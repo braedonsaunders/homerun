@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from models.database import AsyncSessionLocal
 from services.strategy_loader import StrategyLoader, validate_strategy_source
 from services.scanner import scanner
 from utils.logger import get_logger

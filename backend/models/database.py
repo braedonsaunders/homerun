@@ -14,7 +14,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session as _SyncSessionForEvents
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.types import TypeDecorator, DateTime as SADateTime
 from datetime import datetime, timezone
@@ -5077,8 +5077,6 @@ AsyncSessionLocal = sessionmaker(async_engine, class_=RetryableAsyncSession, exp
 # lifetime. The overhead per begin/commit is one ``traceback.extract_stack``
 # (~50us) and one dict insert/lookup; negligible vs the current commit
 # floor.
-import traceback as _traceback
-
 _slow_tx_logger = _logging.getLogger("homerun.db.slow_tx")
 _LONG_TX_THRESHOLD_S: float = 2.0
 _SLOW_TX_LOG_INTERVAL_S: float = 5.0
@@ -5157,7 +5155,6 @@ def _summarize_session_uow(session) -> dict:
 # AsyncSession). Filter to the main pool only by comparing connection's
 # engine; fast/audit have stricter statement_timeout floors and don't
 # need the lifetime-watcher overhead.
-from sqlalchemy.orm import Session as _SyncSessionForEvents
 
 
 def _slow_tx_is_main_pool(connection) -> bool:
