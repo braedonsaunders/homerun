@@ -387,7 +387,7 @@ async def test_run_evaluate_backtest_skips_live_execution_freshness_gates(monkey
 
     import models.database as database_models
 
-    monkeypatch.setattr(database_models, "AsyncSessionLocal", lambda: _FakeSessionContext(signals))
+    monkeypatch.setattr(database_models, "BacktestAsyncSessionLocal", lambda: _FakeSessionContext(signals))
     monkeypatch.setattr(database_models, "TradeSignalEmission", _FakeTradeSignalEmissionModel)
 
     captured_query: dict[str, object] = {}
@@ -484,7 +484,7 @@ async def test_run_exit_backtest_uses_existing_position_columns_and_tracks_actio
 
     import models.database as database_models
 
-    monkeypatch.setattr(database_models, "AsyncSessionLocal", lambda: _FakeSessionContext(positions))
+    monkeypatch.setattr(database_models, "BacktestAsyncSessionLocal", lambda: _FakeSessionContext(positions))
     monkeypatch.setattr(database_models, "TraderPosition", _FakeTraderPositionModel)
 
     captured_query: dict[str, object] = {}
@@ -552,7 +552,7 @@ async def test_run_exit_backtest_supports_opened_at_fallback_column(monkeypatch)
 
     import models.database as database_models
 
-    monkeypatch.setattr(database_models, "AsyncSessionLocal", lambda: _FakeSessionContext(positions))
+    monkeypatch.setattr(database_models, "BacktestAsyncSessionLocal", lambda: _FakeSessionContext(positions))
     monkeypatch.setattr(database_models, "TraderPosition", _FakeLegacyTraderPositionModel)
 
     captured_query: dict[str, object] = {}
@@ -964,7 +964,7 @@ async def test_replay_discover_runs_strategies_that_only_override_detect(monkeyp
             return _R()
 
     monkeypatch.setattr(
-        "models.database.AsyncSessionLocal", lambda: _StubSession()
+        "models.database.BacktestAsyncSessionLocal", lambda: _StubSession()
     )
 
     strategy = _PlainDetectScannerStrategy()
