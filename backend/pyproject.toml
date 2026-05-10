@@ -1,6 +1,11 @@
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 timeout = 60
+markers = [
+    "unit: pure logic, no external IO (default for unmarked tests once the marker sweep lands)",
+    "db: requires a real Postgres reachable via DATABASE_URL — uses build_postgres_session_factory or hits the live engine",
+    "slow: wall-clock > 5 s under normal load; safe to skip for fast pre-commit feedback",
+]
 
 [tool.ruff]
 line-length = 120
