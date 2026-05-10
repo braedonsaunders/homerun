@@ -1,5 +1,6 @@
 import { Fragment, lazy, Suspense, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useTranslation } from 'react-i18next'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
@@ -4108,6 +4109,7 @@ function BotTradePositionModal({
   sellSuccess: string | null
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const bundleDisplayRow = scope.kind === 'trade' && scope.displayRow?.kind === 'bundle'
     ? scope.displayRow
     : null
@@ -4505,9 +4507,9 @@ function BotTradePositionModal({
   const referencePrice = priceToBeat ?? metrics.entryPrice
   const referenceLabel = (
     priceToBeat !== null
-      ? 'Price to beat'
+      ? t('tradingPanel.modal.priceToBeat')
       : metrics.entryPrice !== null
-        ? 'Entry'
+        ? t('tradingPanel.modal.entry')
         : null
   )
   const livelineWindow = Math.max(
@@ -4516,12 +4518,12 @@ function BotTradePositionModal({
       ? livelineData[livelineData.length - 1].time - livelineData[0].time
       : 0
   )
-  const entryMarkLabel = useOracleSeries ? 'Oracle / Price to beat' : 'Entry / Mark'
+  const entryMarkLabel = useOracleSeries ? t('tradingPanel.modal.oraclePriceToBeat') : t('tradingPanel.modal.entryMark')
   const entryValue = useOracleSeries ? oracleValue : metrics.entryPrice
   const markValue = useOracleSeries ? priceToBeat : metrics.markPrice
-  const markUpdateLabel = useOracleSeries ? 'oracle update' : 'mark update'
-  const pnlLabel = metrics.openCount > 0 ? 'Live P&L' : metrics.resolvedCount > 0 ? 'Realized P&L' : 'P&L'
-  const returnLabel = metrics.openCount > 0 ? 'Live Return' : 'Return'
+  const markUpdateLabel = useOracleSeries ? t('tradingPanel.modal.oracleUpdate') : t('tradingPanel.modal.markUpdate')
+  const pnlLabel = metrics.openCount > 0 ? t('tradingPanel.modal.livePnl') : metrics.resolvedCount > 0 ? t('tradingPanel.modal.realizedPnl') : t('tradingPanel.modal.pnl')
+  const returnLabel = metrics.openCount > 0 ? t('tradingPanel.modal.liveReturn') : t('tradingPanel.modal.return')
   const oracleAgeSeconds = toFiniteNumber(market?.oracle_age_seconds)
   const markUpdatedAge = formatRelativeAge(metrics.updatedAt)
   const bundleResolutionLabel = bundleDisplayRow
@@ -4559,10 +4561,10 @@ function BotTradePositionModal({
                 {scope.marketQuestion}
               </h3>
               <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
-                {bundleDisplayRow ? 'Bundle Trade' : scope.kind === 'trade' ? 'Trade' : 'Position'}
+                {bundleDisplayRow ? t('tradingPanel.modal.bundleTrade') : scope.kind === 'trade' ? t('tradingPanel.modal.trade') : t('tradingPanel.modal.position')}
               </Badge>
               <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
-                {scope.directionLabel || 'N/A'}
+                {scope.directionLabel || t('tradingPanel.common.notAvailable')}
               </Badge>
               <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-border/80 bg-muted/60 text-muted-foreground">
                 {scope.traderName}
@@ -4591,7 +4593,7 @@ function BotTradePositionModal({
                   disabled={reconcilePendingOrderId === String(anchorOrder.id || '')}
                 >
                   {reconcilePendingOrderId === String(anchorOrder.id || '') ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                  Reconcile
+                  {t('tradingPanel.modal.reconcile')}
                 </Button>
                 <Button
                   type="button"
@@ -4602,7 +4604,7 @@ function BotTradePositionModal({
                   disabled={sellPendingOrderId === String(anchorOrder.id || '')}
                 >
                   {sellPendingOrderId === String(anchorOrder.id || '') ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                  Sell Now
+                  {t('tradingPanel.modal.sellNow')}
                 </Button>
               </>
             ) : null}
@@ -4612,7 +4614,7 @@ function BotTradePositionModal({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
-                title="Open Polymarket market"
+                title={t('tradingPanel.modal.openPolymarket')}
               >
                 <ExternalLink className="h-3.5 w-3.5" />
               </a>
@@ -4623,13 +4625,13 @@ function BotTradePositionModal({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition-colors hover:text-foreground hover:bg-muted/60"
-                title="Open Kalshi market"
+                title={t('tradingPanel.modal.openKalshi')}
               >
                 <ExternalLink className="h-3.5 w-3.5" />
               </a>
             )}
             <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={onClose}>
-              Close
+              {t('tradingPanel.common.close')}
             </Button>
           </div>
         </div>
@@ -4645,9 +4647,9 @@ function BotTradePositionModal({
             <p className="text-[10px] text-muted-foreground">{returnLabel}: {formatSignedPercent(metrics.returnPercent, 2)}</p>
           </div>
           <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Exposure</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.exposure')}</p>
             <p className="text-sm font-mono">{formatCurrency(metrics.exposureUsd, true)}</p>
-            <p className="text-[10px] text-muted-foreground">{metrics.openCount} open · {metrics.resolvedCount} resolved · {metrics.failedCount} failed</p>
+            <p className="text-[10px] text-muted-foreground">{t('tradingPanel.modal.openResolvedFailed', { open: metrics.openCount, resolved: metrics.resolvedCount, failed: metrics.failedCount })}</p>
           </div>
           <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{entryMarkLabel}</p>
@@ -4659,13 +4661,13 @@ function BotTradePositionModal({
             <p className="text-[10px] text-muted-foreground">{markUpdateLabel} {markUpdatedAge}</p>
           </div>
           <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Edge / Confidence</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.edgeConfidence')}</p>
             <p className="text-sm font-mono">
               {formatSignedPercent(metrics.avgEdgePercent, 2)}
               <span className="mx-1 text-muted-foreground">·</span>
               {formatSignedPercent(metrics.avgConfidencePercent, 1)}
             </p>
-            <p className="text-[10px] text-muted-foreground">{metrics.liveOrderCount} live · {metrics.shadowOrderCount} shadow</p>
+            <p className="text-[10px] text-muted-foreground">{t('tradingPanel.modal.liveShadow', { live: metrics.liveOrderCount, shadow: metrics.shadowOrderCount })}</p>
           </div>
         </div>
 
@@ -4674,7 +4676,7 @@ function BotTradePositionModal({
             <div className="rounded-md border border-cyan-500/25 bg-cyan-500/5 px-2.5 py-2">
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Bundle Settlement</p>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.bundleSettlement')}</p>
                   <p className={cn('mt-1 text-sm font-mono', bundleRangeClassName)}>
                     {RESOLVED_ORDER_STATUSES.has(normalizeStatus(bundleDisplayRow.status))
                       ? formatCurrency(bundleDisplayRow.realizedPnl, true)
@@ -4695,17 +4697,17 @@ function BotTradePositionModal({
               </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-3">
                 <div className="rounded border border-border/50 bg-background/70 px-2 py-1.5">
-                  <p className="text-[9px] uppercase text-muted-foreground">Basis</p>
+                  <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.modal.basis')}</p>
                   <p className="text-xs font-mono">
                     {formatCurrency(bundleDisplayRow.filledNotional > 0 ? bundleDisplayRow.filledNotional : bundleDisplayRow.requestedNotional, true)}
                   </p>
                 </div>
                 <div className="rounded border border-border/50 bg-background/70 px-2 py-1.5">
-                  <p className="text-[9px] uppercase text-muted-foreground">Resolution Payout</p>
+                  <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.modal.resolutionPayout')}</p>
                   <p className="text-xs font-mono">{bundlePayoutLabel}</p>
                 </div>
                 <div className="rounded border border-border/50 bg-background/70 px-2 py-1.5">
-                  <p className="text-[9px] uppercase text-muted-foreground">Mark To Market</p>
+                  <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.modal.markToMarket')}</p>
                   <p className={cn('text-xs font-mono', bundleDisplayRow.unrealized > 0 ? 'text-emerald-500' : bundleDisplayRow.unrealized < 0 ? 'text-red-500' : '')}>
                     {formatCurrency(bundleDisplayRow.unrealized, true)}
                   </p>
@@ -4718,20 +4720,20 @@ function BotTradePositionModal({
 
             <div className="rounded-md border border-border/60 bg-card/80">
               <div className="border-b border-border/50 px-2.5 py-2">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Leg Breakdown</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.legBreakdown')}</p>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-border/40 text-[10px] text-muted-foreground">
-                      <th className="px-2.5 py-2 text-left font-medium">Market</th>
-                      <th className="px-2 py-2 text-left font-medium">Leg</th>
-                      <th className="px-2 py-2 text-right font-medium">Shares</th>
-                      <th className="px-2 py-2 text-right font-medium">Fill</th>
-                      <th className="px-2 py-2 text-right font-medium">Mark</th>
-                      <th className="px-2 py-2 text-right font-medium">Value</th>
-                      <th className="px-2 py-2 text-right font-medium">Win Payout</th>
-                      <th className="px-2 py-2 text-left font-medium">State</th>
+                      <th className="px-2.5 py-2 text-left font-medium">{t('tradingPanel.tableHeaders.market')}</th>
+                      <th className="px-2 py-2 text-left font-medium">{t('tradingPanel.modal.leg')}</th>
+                      <th className="px-2 py-2 text-right font-medium">{t('tradingPanel.modal.shares')}</th>
+                      <th className="px-2 py-2 text-right font-medium">{t('tradingPanel.tableHeaders.fill')}</th>
+                      <th className="px-2 py-2 text-right font-medium">{t('tradingPanel.tableHeaders.mark')}</th>
+                      <th className="px-2 py-2 text-right font-medium">{t('tradingPanel.tableHeaders.value')}</th>
+                      <th className="px-2 py-2 text-right font-medium">{t('tradingPanel.modal.winPayout')}</th>
+                      <th className="px-2 py-2 text-left font-medium">{t('tradingPanel.modal.state')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4818,33 +4820,33 @@ function BotTradePositionModal({
             />
           ) : (
             <div className="h-[280px] flex items-center justify-center text-xs text-muted-foreground">
-              {sharedHistoryLoading ? 'Hydrating shared price history backfill...' : 'Waiting for live price history...'}
+              {sharedHistoryLoading ? t('tradingPanel.modal.hydratingHistory') : t('tradingPanel.modal.waitingHistory')}
             </div>
           )}
         </div>
 
         <div className="grid gap-2 lg:grid-cols-2">
           <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Lifecycle</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.lifecycle')}</p>
             <p className="text-xs mt-0.5">{scope.executionSummary || '—'}</p>
-            <p className="text-[10px] text-muted-foreground mt-1">{scope.outcomeSummary || scope.statusSummary || metrics.statusSummary || 'n/a'}</p>
+            <p className="text-[10px] text-muted-foreground mt-1">{scope.outcomeSummary || scope.statusSummary || metrics.statusSummary || t('tradingPanel.common.notAvailableShort')}</p>
           </div>
           <div className="rounded-md border border-border/60 bg-card/80 px-2.5 py-2">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Timing & Feed</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.timingAndFeed')}</p>
             <p className="text-xs mt-0.5">
-              Opened: {formatTimestamp(metrics.openedAt)}
+              {t('tradingPanel.modal.opened')}: {formatTimestamp(metrics.openedAt)}
               <span className="mx-1 text-muted-foreground">·</span>
-              Updated: {formatTimestamp(metrics.updatedAt)}
+              {t('tradingPanel.modal.updated')}: {formatTimestamp(metrics.updatedAt)}
             </p>
             <p className="text-[10px] text-muted-foreground mt-1">
-              Oracle age: {oracleAgeSeconds !== null ? `${Math.round(oracleAgeSeconds)}s` : 'n/a'}
+              {t('tradingPanel.modal.oracleAge')}: {oracleAgeSeconds !== null ? `${Math.round(oracleAgeSeconds)}s` : t('tradingPanel.common.notAvailableShort')}
             </p>
           </div>
         </div>
 
         {scopedOrders.length === 0 && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-700 dark:text-amber-100">
-            No matching order rows were found in the current order window for this market/direction scope.
+            {t('tradingPanel.modal.noMatchingOrders')}
           </div>
         )}
       </div>
@@ -5321,6 +5323,7 @@ type TradingPanelProps = {
 }
 
 export default function TradingPanel({ isConnected = false }: TradingPanelProps = {}) {
+  const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [selectedAccountId, setSelectedAccountId] = useAtom(selectedAccountIdAtom)
   const [, setAccountMode] = useAtom(accountModeAtom)
@@ -9660,7 +9663,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       rel="noopener noreferrer"
                       onClick={(event) => event.stopPropagation()}
                       className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                      title="Open Polymarket market"
+                      title={t('tradingPanel.modal.openPolymarket')}
                     >
                       <ExternalLink className="h-3 w-3" />
                     </a>
@@ -9672,7 +9675,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       rel="noopener noreferrer"
                       onClick={(event) => event.stopPropagation()}
                       className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                      title="Open Kalshi market"
+                      title={t('tradingPanel.modal.openKalshi')}
                     >
                       <ExternalLink className="h-3 w-3" />
                     </a>
@@ -9685,7 +9688,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     rel="noopener noreferrer"
                     onClick={(event) => event.stopPropagation()}
                     className="truncate hover:underline underline-offset-2"
-                    title="Open market"
+                    title={t('tradingPanel.modal.openMarket')}
                   >
                     {order.market_question || shortId(order.market_id)}
                   </a>
@@ -9915,7 +9918,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     rel="noopener noreferrer"
                     onClick={(event) => event.stopPropagation()}
                     className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                    title="Open primary Polymarket market"
+                    title={t('tradingPanel.modal.openPrimaryPolymarket')}
                   >
                     <ExternalLink className="h-3 w-3" />
                   </a>
@@ -9927,7 +9930,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     rel="noopener noreferrer"
                     onClick={(event) => event.stopPropagation()}
                     className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                    title="Open primary Kalshi market"
+                    title={t('tradingPanel.modal.openPrimaryKalshi')}
                   >
                     <ExternalLink className="h-3 w-3" />
                   </a>
@@ -9940,7 +9943,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   rel="noopener noreferrer"
                   onClick={(event) => event.stopPropagation()}
                   className="truncate hover:underline underline-offset-2"
-                  title="Open primary market"
+                  title={t('tradingPanel.modal.openPrimaryMarket')}
                 >
                   {marketTitle}
                 </a>
@@ -10095,7 +10098,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     return (
       <div className="rounded-lg border border-border bg-card p-8 flex items-center justify-center gap-3 text-sm text-muted-foreground">
         <Loader2 className="w-4 h-4 animate-spin" />
-        Loading orchestrator control plane...
+        {t('tradingPanel.loading.orchestrator')}
       </div>
     )
   }
@@ -10122,11 +10125,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               <Play className="w-3.5 h-3.5 mr-1" />
             )}
             {startStopIsStarting
-              ? 'Starting...'
+              ? t('tradingPanel.controls.starting')
               : startStopIsStopping
-                ? 'Stopping...'
+                ? t('tradingPanel.controls.stopping')
                 : startStopIsConfigured
-                  ? 'Stop'
+                  ? t('tradingPanel.controls.stop')
                   : selectedAccountMode.toUpperCase()}
           </Button>
           <div className="flex items-center gap-1.5 rounded border border-red-500/30 bg-red-500/5 px-1.5 py-0.5">
@@ -10143,14 +10146,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </span>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[320px] text-xs leading-snug">
-                Blocks new entry orders only. Bots stay running in manage-only mode so existing positions and orders can
-                still be monitored, sold, and reconciled.
+                {t('tradingPanel.controls.killSwitchTooltip')}
               </TooltipContent>
             </Tooltip>
             {killSwitchMutation.isPending ? (
               <span className="inline-flex items-center gap-1 text-[10px] font-medium text-red-300">
                 <Loader2 className="w-3 h-3 animate-spin" />
-                {killSwitchSwitchValue ? 'Blocking...' : 'Opening...'}
+                {killSwitchSwitchValue ? t('tradingPanel.controls.blockingDots') : t('tradingPanel.controls.openingDots')}
               </span>
             ) : null}
           </div>
@@ -10180,7 +10182,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           </Badge>
           {orchestratorControlMismatch ? (
             <Badge className="h-5 px-1.5 text-[10px]" variant="destructive">
-              DESYNC
+              {t('tradingPanel.controls.desync')}
             </Badge>
           ) : null}
           <Badge className="h-5 px-1.5 text-[10px]" variant={selectedAccountMode === 'live' ? 'destructive' : 'outline'}>
@@ -10195,19 +10197,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         </div>
 
         <div className="hidden lg:flex items-center gap-3 text-[11px] font-mono text-muted-foreground">
-          <span>Bots {tradersRunningDisplay}/{toNumber(metrics?.traders_total)}</span>
+          <span>{t('tradingPanel.hub.bots')} {tradersRunningDisplay}/{toNumber(metrics?.traders_total)}</span>
           <span className="text-border">|</span>
           <span className={toNumber(metrics?.daily_pnl) >= 0 ? 'text-emerald-500' : 'text-red-500'}>
             {formatCurrency(toNumber(metrics?.daily_pnl))}
           </span>
           <span className="text-border">|</span>
-          <span>Exp {formatCurrency(toNumber(metrics?.gross_exposure_usd), true)}</span>
+          <span>{t('tradingPanel.hub.exp')} {formatCurrency(toNumber(metrics?.gross_exposure_usd), true)}</span>
           <span className="text-border">|</span>
-          <span>{globalSummary.open} open</span>
+          <span>{t('tradingPanel.hub.openCount', { count: globalSummary.open })}</span>
           <span className="text-border">|</span>
-          <span>WR {formatPercent(globalSummary.winRate)}</span>
+          <span>{t('tradingPanel.hub.wr')} {formatPercent(globalSummary.winRate)}</span>
           <span className="text-border">|</span>
-          <span>Edge {formatPercent(displayAvgEdge)}</span>
+          <span>{t('tradingPanel.hub.edge')} {formatPercent(displayAvgEdge)}</span>
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
@@ -10224,11 +10226,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 onClick={() => setCortexFlyoutOpen(true)}
               >
                 <Brain className="w-3 h-3 mr-1" />
-                Cortex
+                {t('tradingPanel.controls.cortex')}
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
-              Autonomous strategy & risk agent
+              {t('tradingPanel.controls.cortexTooltip')}
             </TooltipContent>
           </Tooltip>
           <Button
@@ -10244,7 +10246,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
             ) : (
               <Settings className="w-3 h-3 mr-1" />
             )}
-            Settings
+            {t('tradingPanel.controls.settings')}
           </Button>
         </div>
       </div>
@@ -10283,9 +10285,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 >
                   <div className="shrink-0">
                     <TabsList className="h-auto justify-start gap-1 rounded-lg border border-border/60 bg-card/70 p-1">
-                      <TabsTrigger value="overview" className="h-7 px-2.5 text-[11px]">Overview</TabsTrigger>
-                      <TabsTrigger value="trades" className="h-7 px-2.5 text-[11px]">All Trades</TabsTrigger>
-                      <TabsTrigger value="positions" className="h-7 px-2.5 text-[11px]">All Positions</TabsTrigger>
+                      <TabsTrigger value="overview" className="h-7 px-2.5 text-[11px]">{t('tradingPanel.allBots.overview')}</TabsTrigger>
+                      <TabsTrigger value="trades" className="h-7 px-2.5 text-[11px]">{t('tradingPanel.allBots.allTrades')}</TabsTrigger>
+                      <TabsTrigger value="positions" className="h-7 px-2.5 text-[11px]">{t('tradingPanel.allBots.allPositions')}</TabsTrigger>
                     </TabsList>
                   </div>
 
@@ -10297,7 +10299,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5">
                                 <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
-                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Resolved P&amp;L</span>
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.resolvedPnl')}</span>
                               </div>
                               <span className="text-[9px] font-mono text-muted-foreground">{overviewStartLabel} - {overviewEndLabel}</span>
                             </div>
@@ -10305,7 +10307,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               {formatCurrency(globalSummary.resolvedPnl)}
                             </p>
                             <p className="text-[10px] text-muted-foreground">
-                              Latest day {formatSignedCurrency(overviewLatestBucket?.resolvedPnl ?? 0)}
+                              {t('tradingPanel.allBots.latestDay')} {formatSignedCurrency(overviewLatestBucket?.resolvedPnl ?? 0)}
                             </p>
                             <div className="mt-1.5 h-8">
                               {overviewPnlSeries.length >= 2 && (
@@ -10334,13 +10336,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5">
                                 <BarChart3 className="w-3.5 h-3.5 text-cyan-500" />
-                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Order Throughput</span>
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.orderThroughput')}</span>
                               </div>
                               <span className="text-[9px] font-mono text-muted-foreground">14d</span>
                             </div>
-                            <p className="mt-1 text-sm font-mono">{overviewLatestBucket?.orders ?? 0} orders</p>
+                            <p className="mt-1 text-sm font-mono">{t('tradingPanel.allBots.ordersCount', { count: overviewLatestBucket?.orders ?? 0 })}</p>
                             <p className="text-[10px] text-muted-foreground">
-                              Prev {(overviewPreviousBucket?.orders ?? 0)} · Failed {(overviewLatestBucket?.failed ?? 0)}
+                              {t('tradingPanel.allBots.prev')} {(overviewPreviousBucket?.orders ?? 0)} · {t('tradingPanel.stats.failed')} {(overviewLatestBucket?.failed ?? 0)}
                             </p>
                             <div className="mt-1.5 h-8">
                               {overviewOrdersSeries.length >= 2 && (
@@ -10369,13 +10371,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5">
                                 <Sparkles className="w-3.5 h-3.5 text-violet-400" />
-                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Selected Signals</span>
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.selectedSignals')}</span>
                               </div>
-                              <span className="text-[9px] font-mono text-muted-foreground">{recentSelectedDecisions.length} recent</span>
+                              <span className="text-[9px] font-mono text-muted-foreground">{t('tradingPanel.allBots.recentCount', { count: recentSelectedDecisions.length })}</span>
                             </div>
                             <p className="mt-1 text-sm font-mono">{selectedDecisionCountAllBots}</p>
                             <p className="text-[10px] text-muted-foreground">
-                              Latest day {(overviewLatestBucket?.selected ?? 0)} · WR {formatPercent(globalSummary.winRate)}
+                              {t('tradingPanel.allBots.latestDay')} {(overviewLatestBucket?.selected ?? 0)} · {t('tradingPanel.hub.wr')} {formatPercent(globalSummary.winRate)}
                             </p>
                             <div className="mt-1.5 h-8">
                               {overviewSelectedSeries.length >= 2 && (
@@ -10404,13 +10406,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5">
                                 <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
-                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Risk Pressure</span>
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.riskPressure')}</span>
                               </div>
-                              <span className="text-[9px] font-mono text-muted-foreground">{riskActivityRows.length} alerts</span>
+                              <span className="text-[9px] font-mono text-muted-foreground">{t('tradingPanel.allBots.alertsCount', { count: riskActivityRows.length })}</span>
                             </div>
-                            <p className="mt-1 text-sm font-mono">{overviewLatestBucket?.warnings ?? 0} today</p>
+                            <p className="mt-1 text-sm font-mono">{t('tradingPanel.allBots.todayCount', { count: overviewLatestBucket?.warnings ?? 0 })}</p>
                             <p className="text-[10px] text-muted-foreground">
-                              Prev {overviewPreviousBucket?.warnings ?? 0}
+                              {t('tradingPanel.allBots.prev')} {overviewPreviousBucket?.warnings ?? 0}
                             </p>
                             <div className="mt-1.5 h-8">
                               {overviewRiskSeries.length >= 2 && (
@@ -10438,19 +10440,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 p-2.5">
                             <div className="flex items-center gap-1.5">
                               <Play className="w-3.5 h-3.5 text-emerald-500" />
-                              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Running Bots</span>
+                              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.runningBots')}</span>
                             </div>
                             <p className="mt-1 text-sm font-mono">{runningTraderCount}/{activeTraderCount}</p>
-                            <p className="text-[10px] text-muted-foreground">Inactive {inactiveTraderCount}</p>
+                            <p className="text-[10px] text-muted-foreground">{t('tradingPanel.allBots.inactive')} {inactiveTraderCount}</p>
                           </div>
 
                           <div className="rounded-md border border-blue-500/25 bg-blue-500/10 p-2.5">
                             <div className="flex items-center gap-1.5">
                               <PieChart className="w-3.5 h-3.5 text-blue-500" />
-                              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Exposure</span>
+                              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.exposure')}</span>
                             </div>
                             <p className="mt-1 text-sm font-mono">{formatCurrency(toNumber(metrics?.gross_exposure_usd), true)}</p>
-                            <p className="text-[10px] text-muted-foreground">{globalSummary.open} open orders</p>
+                            <p className="text-[10px] text-muted-foreground">{t('tradingPanel.allBots.openOrders', { count: globalSummary.open })}</p>
                           </div>
                         </div>
 
@@ -10458,10 +10460,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2 shrink-0">
                             <div className="flex items-center gap-1.5">
                               <Clock3 className="w-3.5 h-3.5 text-cyan-500" />
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Live Pulse Feed</span>
+                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.livePulseFeed')}</span>
                             </div>
                             <span className="text-[10px] font-mono text-muted-foreground">
-                              {terminalPaused ? 'PAUSED · ' : ''}{displayedActivityRows.length} events
+                              {terminalPaused ? `${t('tradingPanel.terminal.paused')} · ` : ''}{t('tradingPanel.terminal.eventsCount', { count: displayedActivityRows.length })}
                             </span>
                           </div>
                           {/* Same control surface as the per-trader Terminal tab.
@@ -10475,28 +10477,28 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               </Button>
                             ))}
                             <div className="inline-flex items-center gap-0.5 ml-1 shrink-0">
-                              <Button size="sm" variant={terminalDensity === 'compact' ? 'default' : 'outline'} onClick={() => setTerminalDensity('compact')} title="Compact rows" className="h-5 px-1.5 text-[10px]">
+                              <Button size="sm" variant={terminalDensity === 'compact' ? 'default' : 'outline'} onClick={() => setTerminalDensity('compact')} title={t('tradingPanel.terminal.compactRows')} className="h-5 px-1.5 text-[10px]">
                                 ▤
                               </Button>
-                              <Button size="sm" variant={terminalDensity === 'expanded' ? 'default' : 'outline'} onClick={() => setTerminalDensity('expanded')} title="Expanded rows" className="h-5 px-1.5 text-[10px]">
+                              <Button size="sm" variant={terminalDensity === 'expanded' ? 'default' : 'outline'} onClick={() => setTerminalDensity('expanded')} title={t('tradingPanel.terminal.expandedRows')} className="h-5 px-1.5 text-[10px]">
                                 ☰
                               </Button>
                             </div>
                             <select
                               value={terminalVolume}
                               onChange={(event) => setTerminalVolume(event.target.value as TerminalVolume)}
-                              title={TERMINAL_VOLUME_OPTIONS.find((o) => o.value === terminalVolume)?.hint || 'Firehose volume'}
+                              title={TERMINAL_VOLUME_OPTIONS.find((o) => o.value === terminalVolume)?.hint || t('tradingPanel.terminal.firehoseVolume')}
                               className="h-5 rounded border border-border/40 bg-background px-1 text-[10px] ml-1 shrink-0"
                             >
                               {TERMINAL_VOLUME_OPTIONS.map((opt) => (
-                                <option key={opt.value} value={opt.value}>vol: {opt.label.toLowerCase()}</option>
+                                <option key={opt.value} value={opt.value}>{t('tradingPanel.terminal.volPrefix')} {opt.label.toLowerCase()}</option>
                               ))}
                             </select>
                             <Button
                               size="sm"
                               variant={terminalPaused ? 'default' : 'outline'}
                               onClick={() => setTerminalPaused((v) => !v)}
-                              title={terminalPaused ? 'Resume streaming' : 'Pause incoming events'}
+                              title={terminalPaused ? t('tradingPanel.terminal.resumeStreaming') : t('tradingPanel.terminal.pauseIncoming')}
                               className="h-5 px-1.5 text-[10px] ml-1 shrink-0"
                             >
                               {terminalPaused ? '▶' : '⏸'}
@@ -10505,7 +10507,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               size="sm"
                               variant={terminalSlowMode ? 'default' : 'outline'}
                               onClick={() => setTerminalSlowMode((v) => !v)}
-                              title="Drip new events at one per second so the firehose is readable"
+                              title={t('tradingPanel.terminal.slowModeTooltip')}
                               className="h-5 px-1.5 text-[10px] shrink-0"
                             >
                               🐢{terminalSlowMode && slowModePending > 0 ? ` ${slowModePending}` : ''}
@@ -10513,11 +10515,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <select
                               value={terminalMaxRows}
                               onChange={(event) => setTerminalMaxRows(Number(event.target.value) || TERMINAL_SELECTED_MAX_ROWS_DEFAULT)}
-                              title="Max rows kept in view"
+                              title={t('tradingPanel.terminal.maxRowsTooltip')}
                               className="h-5 rounded border border-border/40 bg-background px-1 text-[10px] ml-1 shrink-0"
                             >
                               {[220, 500, 1000, 2000, 5000].map((n) => (
-                                <option key={n} value={n}>max {n}</option>
+                                <option key={n} value={n}>{t('tradingPanel.terminal.maxN', { n })}</option>
                               ))}
                             </select>
                           </div>
@@ -10526,10 +10528,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               {displayedActivityRows.length === 0 ? (
                                 <p className="py-10 text-center text-muted-foreground text-xs">
                                   {terminalPaused
-                                    ? 'Paused — resume to see new events.'
+                                    ? t('tradingPanel.terminal.pausedHint')
                                     : terminalSlowMode && slowModePending > 0
-                                      ? `Slow mode: ${slowModePending} event${slowModePending === 1 ? '' : 's'} queued (1/sec)…`
-                                      : 'No activity captured yet.'}
+                                      ? t('tradingPanel.terminal.slowModeQueued', { count: slowModePending })
+                                      : t('tradingPanel.terminal.noActivity')}
                                 </p>
                               ) : terminalDensity === 'compact' ? (
                                 displayedActivityRows.map((row) => (
@@ -10601,24 +10603,24 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5">
                               <PieChart className="w-3.5 h-3.5 text-cyan-500" />
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Execution Mix</span>
+                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.executionMix')}</span>
                             </div>
-                            <span className="text-[10px] font-mono text-muted-foreground">{allBotsSourceMixChart.totalOrders} orders</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">{t('tradingPanel.allBots.ordersCount', { count: allBotsSourceMixChart.totalOrders })}</span>
                           </div>
                           <div className="mt-2 grid gap-2 md:grid-cols-2">
                             <div className="rounded-md border border-border/50 bg-background/40 p-2">
-                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Sources</p>
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.sources')}</p>
                               <div className="mt-2 grid grid-cols-[96px_minmax(0,1fr)] gap-2 items-center">
                                 <div className="relative h-24 w-24 rounded-full border border-border/50" style={{ background: allBotsSourceMixChart.gradient }}>
                                   <div className="absolute inset-[18px] rounded-full border border-border/60 bg-card" />
                                   <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
                                     <span className="text-sm font-mono">{allBotsSourceMixChart.totalOrders}</span>
-                                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground">orders</span>
+                                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.orders')}</span>
                                   </div>
                                 </div>
                                 <div className="space-y-1">
                                   {allBotsSourceMixChart.slices.length === 0 ? (
-                                    <p className="text-[10px] text-muted-foreground">No source activity yet.</p>
+                                    <p className="text-[10px] text-muted-foreground">{t('tradingPanel.allBots.noSourceActivity')}</p>
                                   ) : (
                                     allBotsSourceMixChart.slices.map((slice) => (
                                       <div key={slice.key} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 text-[10px]">
@@ -10631,18 +10633,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 </div>
                               </div>
                               <p className={cn('mt-2 text-[10px] font-mono', allBotsSourceMixChart.totalPnl > 0 ? 'text-emerald-500' : allBotsSourceMixChart.totalPnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
-                                Mix P&amp;L {formatCurrency(allBotsSourceMixChart.totalPnl)}
+                                {t('tradingPanel.allBots.mixPnl')} {formatCurrency(allBotsSourceMixChart.totalPnl)}
                               </p>
                             </div>
 
                             <div className="rounded-md border border-border/50 bg-background/40 p-2">
-                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Lifecycle</p>
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.modal.lifecycle')}</p>
                               <div className="mt-2 grid grid-cols-[96px_minmax(0,1fr)] gap-2 items-center">
                                 <div className="relative h-24 w-24 rounded-full border border-border/50" style={{ background: allBotsLifecycleMixChart.gradient }}>
                                   <div className="absolute inset-[18px] rounded-full border border-border/60 bg-card" />
                                   <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
                                     <span className="text-sm font-mono">{allBotsLifecycleMixChart.total}</span>
-                                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground">orders</span>
+                                    <span className="text-[9px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.orders')}</span>
                                   </div>
                                 </div>
                                 <div className="space-y-1">
@@ -10657,7 +10659,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               </div>
                               <div className="mt-2 space-y-1">
                                 {riskActivityRows.length === 0 ? (
-                                  <p className="text-[10px] text-muted-foreground">No active risk alerts.</p>
+                                  <p className="text-[10px] text-muted-foreground">{t('tradingPanel.allBots.noRiskAlerts')}</p>
                                 ) : (
                                   riskActivityRows.slice(0, 3).map((row) => (
                                     <p key={`${row.kind}:${row.id}`} className="truncate text-[10px] text-muted-foreground" title={row.title}>
@@ -10674,14 +10676,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="px-2.5 py-2 border-b border-border/40 flex items-center justify-between gap-2">
                             <div className="flex items-center gap-1.5">
                               <Trophy className="w-3.5 h-3.5 text-cyan-500" />
-                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Bot Leaderboard</span>
+                              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{t('tradingPanel.allBots.leaderboard')}</span>
                             </div>
-                            <span className="text-[10px] font-mono text-muted-foreground">Top {allBotsLeaderboardWithTrend.length}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground">{t('tradingPanel.allBots.top')} {allBotsLeaderboardWithTrend.length}</span>
                           </div>
                           <ScrollArea className="h-[280px] xl:h-full">
                             <div className="space-y-1.5 p-2">
                               {allBotsLeaderboardWithTrend.length === 0 ? (
-                                <p className="py-8 text-center text-[11px] text-muted-foreground">No bot performance data yet.</p>
+                                <p className="py-8 text-center text-[11px] text-muted-foreground">{t('tradingPanel.allBots.noBotData')}</p>
                               ) : (
                                 allBotsLeaderboardWithTrend.map((row) => {
                                   const traderStatus = resolveTraderStatusPresentation(row.trader, orchestratorRunning)
@@ -10715,18 +10717,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                           <p className={cn('text-[11px] font-mono', row.pnl > 0 ? 'text-emerald-500' : row.pnl < 0 ? 'text-red-500' : 'text-muted-foreground')}>
                                             {formatCurrency(row.pnl, true)}
                                           </p>
-                                          <p className="text-[9px] text-muted-foreground">WR {formatPercent(row.winRate)}</p>
+                                          <p className="text-[9px] text-muted-foreground">{t('tradingPanel.hub.wr')} {formatPercent(row.winRate)}</p>
                                         </div>
                                       </div>
                                       <div className="mt-1.5 flex items-center justify-between gap-2">
                                         <span className="text-[9px] text-muted-foreground">
-                                          <span>{row.open} open</span>
+                                          <span>{t('tradingPanel.allBots.openCount', { count: row.open })}</span>
                                           {row.partialOpenBundles > 0 && (
-                                            <span className="text-amber-500" title="Bundles with one filled leg and one still working">
-                                              {' · '}{row.partialOpenBundles} partial
+                                            <span className="text-amber-500" title={t('tradingPanel.allBots.partialBundlesTooltip')}>
+                                              {' · '}{t('tradingPanel.allBots.partialCount', { count: row.partialOpenBundles })}
                                             </span>
                                           )}
-                                          <span>{' · '}{row.resolved} resolved</span>
+                                          <span>{' · '}{t('tradingPanel.allBots.resolvedCount', { count: row.resolved })}</span>
                                         </span>
                                         {row.trend.length >= 2 && (
                                           <Liveline
@@ -10765,7 +10767,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         <Input
                           value={allBotsTradeSearch}
                           onChange={(event) => setAllBotsTradeSearch(event.target.value)}
-                          placeholder="Search bot, market, source..."
+                          placeholder={t('tradingPanel.search.botMarketSource')}
                           className="h-6 w-56 text-[11px]"
                         />
                         {TRADE_STATUS_FILTER_OPTIONS.map((statusOption) => (
@@ -10780,32 +10782,32 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           </Button>
                         ))}
                         <span className="ml-auto text-[10px] font-mono text-muted-foreground">
-                          {filteredAllTradeHistory.length} rows
-                          {ordersTotalCount > ordersPageSize && ` (page ${ordersPage + 1}/${ordersTotalPages})`}
+                          {t('tradingPanel.allBots.rowsCount', { count: filteredAllTradeHistory.length })}
+                          {ordersTotalCount > ordersPageSize && ` (${t('tradingPanel.pagination.pageOf', { current: ordersPage + 1, total: ordersTotalPages })})`}
                         </span>
                       </div>
                       <div className="flex-1 min-h-0 flex flex-col rounded-md border border-border/60 bg-card/80">
                         {filteredAllTradeHistory.length === 0 ? (
-                          <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No trades matching filters.</div>
+                          <div className="h-full flex items-center justify-center text-sm text-muted-foreground">{t('tradingPanel.allBots.noTradesFilters')}</div>
                         ) : (
                           <>
                             <div className="flex-1 min-h-0 overflow-auto" ref={tradesTableParentRef}>
                               <Table className="w-full table-fixed">
                                 <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                                   <TableRow>
-                                    <TableHead className="w-[32%] text-[10px]">Market</TableHead>
-                                    <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
-                                    <TableHead className="w-[8%] text-[10px] text-right">Value</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
+                                    <TableHead className="w-[32%] text-[10px]">{t('tradingPanel.tableHeaders.market')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px]">{t('tradingPanel.tableHeaders.dir')}</TableHead>
+                                    <TableHead className="w-[8%] text-[10px] text-right">{t('tradingPanel.tableHeaders.value')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.fill')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.fillProgress')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.mark')}</TableHead>
                                     <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
                                     <TableHead className="w-[7%] text-[10px] text-right">Edge Δ</TableHead>
                                     <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
-                                    <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
-                                    <TableHead className="w-[5%] text-[10px]">Mark Age</TableHead>
-                                    <TableHead className="w-[5%] text-[10px]">Eval Age</TableHead>
+                                    <TableHead className="w-[8%] text-[10px]">{t('tradingPanel.tableHeaders.venue')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.exitPercent')}</TableHead>
+                                    <TableHead className="w-[5%] text-[10px]">{t('tradingPanel.tableHeaders.markAge')}</TableHead>
+                                    <TableHead className="w-[5%] text-[10px]">{t('tradingPanel.tableHeaders.evalAge')}</TableHead>
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>
@@ -10816,7 +10818,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             {ordersTotalPages > 1 && (
                               <div className="shrink-0 flex items-center justify-between border-t border-border/60 px-3 py-1.5">
                                 <div className="flex items-center gap-1.5">
-                                  <span className="text-[10px] text-muted-foreground">Page size:</span>
+                                  <span className="text-[10px] text-muted-foreground">{t('tradingPanel.pagination.pageSize')}:</span>
                                   <Select
                                     value={String(ordersPageSize)}
                                     onValueChange={(value) => { setOrdersPageSize(Number(value)); setOrdersPage(0) }}
@@ -10839,7 +10841,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     onClick={() => setOrdersPage(0)}
                                     className="h-5 px-1.5 text-[10px]"
                                   >
-                                    First
+                                    {t('tradingPanel.pagination.first')}
                                   </Button>
                                   <Button
                                     size="sm"
@@ -10848,7 +10850,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     onClick={() => setOrdersPage((p) => Math.max(0, p - 1))}
                                     className="h-5 px-1.5 text-[10px]"
                                   >
-                                    Prev
+                                    {t('tradingPanel.pagination.prev')}
                                   </Button>
                                   <span className="text-[10px] font-mono text-muted-foreground px-1">
                                     {ordersPage + 1} / {ordersTotalPages}
@@ -10860,7 +10862,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     onClick={() => setOrdersPage((p) => Math.min(ordersTotalPages - 1, p + 1))}
                                     className="h-5 px-1.5 text-[10px]"
                                   >
-                                    Next
+                                    {t('tradingPanel.pagination.next')}
                                   </Button>
                                   <Button
                                     size="sm"
@@ -10869,11 +10871,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     onClick={() => setOrdersPage(ordersTotalPages - 1)}
                                     className="h-5 px-1.5 text-[10px]"
                                   >
-                                    Last
+                                    {t('tradingPanel.pagination.last')}
                                   </Button>
                                 </div>
                                 <span className="text-[10px] font-mono text-muted-foreground">
-                                  {ordersTotalCount} total
+                                  {t('tradingPanel.pagination.totalCount', { count: ordersTotalCount })}
                                 </span>
                               </div>
                             )}
@@ -10889,7 +10891,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         <Input
                           value={allBotsPositionSearch}
                           onChange={(event) => setAllBotsPositionSearch(event.target.value)}
-                          placeholder="Search bot, market, source..."
+                          placeholder={t('tradingPanel.search.botMarketSource')}
                           className="h-6 w-56 text-[11px]"
                         />
                         {(['all', 'yes', 'no'] as PositionDirectionFilter[]).map((direction) => (
@@ -10911,11 +10913,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="exposure">Exposure</SelectItem>
+                            <SelectItem value="exposure">{t('tradingPanel.modal.exposure')}</SelectItem>
                             <SelectItem value="unrealized">U-P&L</SelectItem>
-                            <SelectItem value="edge">Edge</SelectItem>
-                            <SelectItem value="confidence">Confidence</SelectItem>
-                            <SelectItem value="updated">Updated</SelectItem>
+                            <SelectItem value="edge">{t('tradingPanel.tableHeaders.edge')}</SelectItem>
+                            <SelectItem value="confidence">{t('tradingPanel.tableHeaders.confidence')}</SelectItem>
+                            <SelectItem value="updated">{t('tradingPanel.tableHeaders.updated')}</SelectItem>
                           </SelectContent>
                         </Select>
                         <Button
@@ -10926,11 +10928,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         >
                           {allBotsPositionSortDirection === 'desc' ? 'desc' : 'asc'}
                         </Button>
-                        <span className="ml-auto text-[10px] font-mono text-muted-foreground">{filteredAllPositionBook.length} rows</span>
+                        <span className="ml-auto text-[10px] font-mono text-muted-foreground">{t('tradingPanel.allBots.rowsCount', { count: filteredAllPositionBook.length })}</span>
                       </div>
                       <div className="shrink-0 grid grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-8">
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Positions</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.positions')}</p>
                           <p className="text-xs font-mono">{allBotsPositionSummary.totalRows}</p>
                         </div>
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
@@ -10938,7 +10940,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <p className="text-xs font-mono">{allBotsPositionSummary.yesRows} / {allBotsPositionSummary.noRows}</p>
                         </div>
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Exposure</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.modal.exposure')}</p>
                           <p className="text-xs font-mono">{formatCurrency(allBotsPositionSummary.totalExposure, true)}</p>
                         </div>
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
@@ -10954,43 +10956,43 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           </p>
                         </div>
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Avg Edge</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.avgEdge')}</p>
                           <p className="text-xs font-mono">{formatPercent(allBotsPositionSummary.avgEdge)}</p>
                         </div>
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Avg Conf</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.avgConf')}</p>
                           <p className="text-xs font-mono">{formatPercent(normalizeConfidencePercent(allBotsPositionSummary.avgConfidence))}</p>
                         </div>
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Live / Shadow</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.liveShadow')}</p>
                           <p className="text-xs font-mono">{allBotsPositionSummary.liveOrders} / {allBotsPositionSummary.shadowOrders}</p>
                         </div>
                         <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                          <p className="text-[9px] uppercase text-muted-foreground">Marks</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.marks')}</p>
                           <p className="text-xs font-mono">{allBotsPositionSummary.freshMarks} / {allBotsPositionSummary.markedRows}</p>
                         </div>
                       </div>
                       <div className="flex-1 min-h-0 flex flex-col rounded-md border border-border/60 bg-card/80">
                         {filteredAllPositionBook.length === 0 ? (
-                          <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No positions matching filters.</div>
+                          <div className="h-full flex items-center justify-center text-sm text-muted-foreground">{t('tradingPanel.allBots.noPositionsFilters')}</div>
                         ) : (
                           <>
                             <div className="flex-1 min-h-0 overflow-auto" ref={positionsTableParentRef}>
                               <Table className="w-full table-fixed">
                                 <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                                   <TableRow>
-                                    <TableHead className="w-[28%] text-[10px]">Market</TableHead>
+                                    <TableHead className="w-[28%] text-[10px]">{t('tradingPanel.tableHeaders.market')}</TableHead>
                                     <TableHead className="w-[5%] text-[10px]">L</TableHead>
-                                    <TableHead className="w-[10%] text-[10px]">Dir</TableHead>
-                                    <TableHead className="w-[8%] text-[10px] text-right">Exposure</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Avg Px</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
+                                    <TableHead className="w-[10%] text-[10px]">{t('tradingPanel.tableHeaders.dir')}</TableHead>
+                                    <TableHead className="w-[8%] text-[10px] text-right">{t('tradingPanel.modal.exposure')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.avgPx')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.mark')}</TableHead>
                                     <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Edge</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Conf</TableHead>
-                                    <TableHead className="w-[5%] text-[10px] text-right">Orders</TableHead>
-                                    <TableHead className="w-[6%] text-[10px] text-right">Mode</TableHead>
-                                    <TableHead className="w-[6%] text-[10px]">Updated</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.edge')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.conf')}</TableHead>
+                                    <TableHead className="w-[5%] text-[10px] text-right">{t('tradingPanel.tableHeaders.orders')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.mode')}</TableHead>
+                                    <TableHead className="w-[6%] text-[10px]">{t('tradingPanel.tableHeaders.updated')}</TableHead>
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>
@@ -11022,7 +11024,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                             rel="noopener noreferrer"
                                             onClick={(event) => event.stopPropagation()}
                                             className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                            title="Open Polymarket market"
+                                            title={t('tradingPanel.modal.openPolymarket')}
                                           >
                                             <ExternalLink className="h-3 w-3" />
                                           </a>
@@ -11034,7 +11036,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                             rel="noopener noreferrer"
                                             onClick={(event) => event.stopPropagation()}
                                             className="inline-flex h-4 w-4 items-center justify-center rounded border border-border/70 text-muted-foreground transition-colors hover:text-foreground"
-                                            title="Open Kalshi market"
+                                            title={t('tradingPanel.modal.openKalshi')}
                                           >
                                             <ExternalLink className="h-3 w-3" />
                                           </a>
@@ -11092,25 +11094,25 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     variant={selectedTraderStatus.badgeVariant}
                   >
                     {selectedTraderPendingAction === 'start'
-                      ? 'Starting...'
+                      ? t('tradingPanel.controls.starting')
                       : selectedTraderPendingAction === 'stop'
-                        ? 'Stopping...'
+                        ? t('tradingPanel.controls.stopping')
                         : selectedTraderPendingAction === 'activate'
-                          ? 'Activating...'
+                          ? t('tradingPanel.controls.activating')
                           : selectedTraderPendingAction === 'deactivate'
-                            ? 'Deactivating...'
+                            ? t('tradingPanel.controls.deactivating')
                         : selectedTraderStatus.label}
                   </Badge>
                   <div className="hidden md:flex items-center gap-2 text-[11px] font-mono text-muted-foreground">
                     <span className={selectedTraderSummary.pnl >= 0 ? 'text-emerald-500' : 'text-red-500'}>{formatCurrency(selectedTraderSummary.pnl)}</span>
                     <span className="text-border">|</span>
-                    <span>WR {formatPercent(selectedTraderSummary.winRate)}</span>
+                    <span>{t('tradingPanel.hub.wr')} {formatPercent(selectedTraderSummary.winRate)}</span>
                     <span className="text-border">|</span>
-                    <span>{selectedTraderPerformanceRow?.orders ?? selectedOrders.length} orders</span>
+                    <span>{t('tradingPanel.allBots.ordersCount', { count: selectedTraderPerformanceRow?.orders ?? selectedOrders.length })}</span>
                     <span className="text-border">|</span>
-                    <span>Exp {formatCurrency(selectedTraderExposure, true)}</span>
+                    <span>{t('tradingPanel.hub.exp')} {formatCurrency(selectedTraderExposure, true)}</span>
                     <span className="text-border">|</span>
-                    <span>Edge {formatPercent(normalizeEdgePercent(selectedTraderSummary.avgEdge))}</span>
+                    <span>{t('tradingPanel.hub.edge')} {formatPercent(normalizeEdgePercent(selectedTraderSummary.avgEdge))}</span>
                   </div>
                   <div className="ml-auto flex items-center gap-1">
                     <Button
@@ -11122,11 +11124,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     >
                       {selectedTraderPendingAction === 'start' ? (
                         <>
-                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Starting...
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> {t('tradingPanel.controls.starting')}
                         </>
                       ) : (
                         <>
-                          <Play className="w-3 h-3 mr-0.5" /> Start
+                          <Play className="w-3 h-3 mr-0.5" /> {t('tradingPanel.controls.start')}
                         </>
                       )}
                     </Button>
@@ -11139,11 +11141,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     >
                       {selectedTraderPendingAction === 'stop' ? (
                         <>
-                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Stopping...
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> {t('tradingPanel.controls.stopping')}
                         </>
                       ) : (
                         <>
-                          <Square className="w-3 h-3 mr-0.5" /> Stop
+                          <Square className="w-3 h-3 mr-0.5" /> {t('tradingPanel.controls.stop')}
                         </>
                       )}
                     </Button>
@@ -11159,19 +11161,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     >
                       {selectedTraderPendingAction === 'activate' ? (
                         <>
-                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Activating...
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> {t('tradingPanel.controls.activating')}
                         </>
                       ) : selectedTraderPendingAction === 'deactivate' ? (
                         <>
-                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> Deactivating...
+                          <Loader2 className="w-3 h-3 mr-0.5 animate-spin" /> {t('tradingPanel.controls.deactivating')}
                         </>
                       ) : selectedTraderIsActive ? (
                         <>
-                          <Square className="w-3 h-3 mr-0.5" /> Deactivate
+                          <Square className="w-3 h-3 mr-0.5" /> {t('tradingPanel.controls.deactivate')}
                         </>
                       ) : (
                         <>
-                          <Play className="w-3 h-3 mr-0.5" /> Activate
+                          <Play className="w-3 h-3 mr-0.5" /> {t('tradingPanel.controls.activate')}
                         </>
                       )}
                     </Button>
@@ -11182,7 +11184,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       onClick={() => traderRunOnceMutation.mutate(selectedTrader.id)}
                       disabled={traderRunOnceMutation.isPending || selectedTraderControlPending}
                     >
-                      <Zap className="w-3 h-3 mr-0.5" /> Once
+                      <Zap className="w-3 h-3 mr-0.5" /> {t('tradingPanel.controls.once')}
                     </Button>
                     <div className="flex items-center gap-1.5 rounded border border-red-500/30 bg-red-500/5 px-1.5 py-0.5">
                       <ShieldAlert className="w-3 h-3 text-red-400" />
@@ -11203,18 +11205,17 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           </span>
                         </TooltipTrigger>
                         <TooltipContent side="bottom" className="max-w-[320px] text-xs leading-snug">
-                          Per-bot kill switch. Blocks new entry orders for this bot only. Existing positions and
-                          orders keep being monitored, sold, and reconciled.
+                          {t('tradingPanel.controls.perBotKillSwitchTooltip')}
                         </TooltipContent>
                       </Tooltip>
                       {traderBlockNewOrdersMutation.isPending ? (
                         <Loader2 className="w-3 h-3 animate-spin text-red-300" />
                       ) : selectedTrader.block_new_orders ? (
-                        <span className="text-[10px] font-medium text-red-300">Blocking</span>
+                        <span className="text-[10px] font-medium text-red-300">{t('tradingPanel.controls.blocking')}</span>
                       ) : null}
                     </div>
                     <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => openEditTraderFlyout(selectedTrader)}>
-                      <Settings className="w-3 h-3 mr-0.5" /> Config
+                      <Settings className="w-3 h-3 mr-0.5" /> {t('tradingPanel.controls.config')}
                     </Button>
                   </div>
                 </div>
@@ -11235,14 +11236,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     <div className="flex items-center gap-2 flex-wrap">
                       <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                       <span className="text-[11px] font-semibold text-amber-900 dark:text-amber-200">
-                        Strategy demoted
+                        {t('tradingPanel.demotion.strategyDemoted')}
                       </span>
                       <span className="text-[10px] font-mono text-amber-900 dark:text-amber-100">
                         {row.strategy_type}
                       </span>
                       <span className="text-[10px] text-amber-800 dark:text-amber-200/70">
-                        — {row.manual_override ? 'manual override' : 'auto-demoted by guardrail'};
-                        signals recorded but blocked at the decision gate.
+                        — {row.manual_override ? t('tradingPanel.demotion.manualOverride') : t('tradingPanel.demotion.autoDemoted')};
+                        {' '}{t('tradingPanel.demotion.signalsBlocked')}
                       </span>
                       <div className="ml-auto flex items-center gap-1">
                         <Button
@@ -11255,14 +11256,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             strategyType: row.strategy_type,
                             status: 'active',
                           })}
-                          title="Force the strategy back to active — bot will trade it again"
+                          title={t('tradingPanel.demotion.forceActiveTooltip')}
                         >
                           {overrideStrategyHealthMutation.isPending ? (
                             <Loader2 className="w-3 h-3 animate-spin" />
                           ) : (
                             <CheckCircle2 className="w-3 h-3" />
                           )}
-                          Activate
+                          {t('tradingPanel.controls.activate')}
                         </Button>
                         {row.manual_override && (
                           <Button
@@ -11272,14 +11273,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             className="h-6 gap-1 px-2 text-[10px]"
                             disabled={overrideBusy}
                             onClick={() => clearStrategyHealthOverrideMutation.mutate(row.strategy_type)}
-                            title="Clear the manual override — auto-status engine takes over"
+                            title={t('tradingPanel.demotion.clearOverrideTooltip')}
                           >
                             {clearStrategyHealthOverrideMutation.isPending ? (
                               <Loader2 className="w-3 h-3 animate-spin" />
                             ) : (
                               <XCircle className="w-3 h-3" />
                             )}
-                            Clear
+                            {t('tradingPanel.controls.clear')}
                           </Button>
                         )}
                       </div>
@@ -11302,12 +11303,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
               <div className="shrink-0 flex items-center gap-0.5 border-b border-border/50 px-1">
                 {([
-                  { key: 'trades' as const, label: 'Trades' },
-                  { key: 'terminal' as const, label: 'Terminal' },
-                  { key: 'tune' as const, label: 'Tune' },
-                  { key: 'risk' as const, label: 'Risk' },
-                  { key: 'decisions' as const, label: 'Decisions' },
-                  { key: 'performance' as const, label: 'Performance' },
+                  { key: 'trades' as const, label: t('tradingPanel.tabs.trades') },
+                  { key: 'terminal' as const, label: t('tradingPanel.tabs.terminal') },
+                  { key: 'tune' as const, label: t('tradingPanel.tabs.tune') },
+                  { key: 'risk' as const, label: t('tradingPanel.tabs.risk') },
+                  { key: 'decisions' as const, label: t('tradingPanel.tabs.decisions') },
+                  { key: 'performance' as const, label: t('tradingPanel.tabs.performance') },
                 ]).map((tab) => (
                   <button
                     key={tab.key}
@@ -11336,15 +11337,15 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       ))}
                       <div className="ml-1 inline-flex items-center gap-1">
                         <Button size="sm" variant={terminalDensity === 'compact' ? 'default' : 'outline'} onClick={() => setTerminalDensity('compact')} className="h-5 px-2 text-[10px]">
-                          compact
+                          {t('tradingPanel.terminal.compact')}
                         </Button>
                         <Button size="sm" variant={terminalDensity === 'expanded' ? 'default' : 'outline'} onClick={() => setTerminalDensity('expanded')} className="h-5 px-2 text-[10px]">
-                          expanded
+                          {t('tradingPanel.terminal.expanded')}
                         </Button>
                       </div>
                       {/* Firehose volume + flow controls. */}
                       <div className="ml-2 inline-flex items-center gap-1 border-l border-border/40 pl-2">
-                        <span className="text-[10px] uppercase text-muted-foreground tracking-wide">Volume</span>
+                        <span className="text-[10px] uppercase text-muted-foreground tracking-wide">{t('tradingPanel.terminal.volume')}</span>
                         {TERMINAL_VOLUME_OPTIONS.map((opt) => (
                           <Button
                             key={opt.value}
@@ -11363,23 +11364,23 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           size="sm"
                           variant={terminalPaused ? 'default' : 'outline'}
                           onClick={() => setTerminalPaused((v) => !v)}
-                          title={terminalPaused ? 'Resume streaming' : 'Pause incoming events'}
+                          title={terminalPaused ? t('tradingPanel.terminal.resumeStreaming') : t('tradingPanel.terminal.pauseIncoming')}
                           className="h-5 px-2 text-[10px]"
                         >
-                          {terminalPaused ? '▶ Resume' : '⏸ Pause'}
+                          {terminalPaused ? `▶ ${t('tradingPanel.terminal.resume')}` : `⏸ ${t('tradingPanel.terminal.pause')}`}
                         </Button>
                         <Button
                           size="sm"
                           variant={terminalSlowMode ? 'default' : 'outline'}
                           onClick={() => setTerminalSlowMode((v) => !v)}
-                          title="Drip new events at one per second so the firehose is readable"
+                          title={t('tradingPanel.terminal.slowModeTooltip')}
                           className="h-5 px-2 text-[10px]"
                         >
-                          🐢 Slow{terminalSlowMode && slowModePending > 0 ? ` (${slowModePending})` : ''}
+                          🐢 {t('tradingPanel.terminal.slow')}{terminalSlowMode && slowModePending > 0 ? ` (${slowModePending})` : ''}
                         </Button>
                       </div>
                       <div className="ml-1 inline-flex items-center gap-1">
-                        <span className="text-[10px] text-muted-foreground">Max</span>
+                        <span className="text-[10px] text-muted-foreground">{t('tradingPanel.terminal.max')}</span>
                         <select
                           value={terminalMaxRows}
                           onChange={(event) => setTerminalMaxRows(Number(event.target.value) || TERMINAL_SELECTED_MAX_ROWS_DEFAULT)}
@@ -11392,16 +11393,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       </div>
                       <span className="text-[10px] text-muted-foreground ml-1">
                         {terminalPaused
-                          ? 'PAUSED'
-                          : `Auto-truncate: latest ${terminalMaxRows}`}
+                          ? t('tradingPanel.terminal.paused')
+                          : t('tradingPanel.terminal.autoTruncate', { n: terminalMaxRows })}
                       </span>
                       {terminalDensity === 'compact' && (
-                        <span className="text-[10px] text-muted-foreground">Rendering {compactTerminalWindow.rows.length}/{compactTerminalWindow.total}</span>
+                        <span className="text-[10px] text-muted-foreground">{t('tradingPanel.terminal.rendering')} {compactTerminalWindow.rows.length}/{compactTerminalWindow.total}</span>
                       )}
                     </div>
                     {selectedTraderNoNewRows && (
                       <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-100 mx-1">
-                        No new rows since last cycle ({formatTimestamp(selectedTrader?.last_run_at || worker?.last_run_at)}).
+                        {t('tradingPanel.terminal.noNewRows', { ts: formatTimestamp(selectedTrader?.last_run_at || worker?.last_run_at) })}
                       </div>
                     )}
                     <div
@@ -11415,10 +11416,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       {displayedActivityRows.length === 0 ? (
                         <div className="py-8 text-center text-muted-foreground text-xs">
                           {terminalPaused
-                            ? 'Paused — resume to see new events.'
+                            ? t('tradingPanel.terminal.pausedHint')
                             : terminalSlowMode && slowModePending > 0
-                              ? `Slow mode: ${slowModePending} event${slowModePending === 1 ? '' : 's'} queued (1/sec)…`
-                              : 'No events matching filters.'}
+                              ? t('tradingPanel.terminal.slowModeQueued', { count: slowModePending })
+                              : t('tradingPanel.terminal.noEvents')}
                         </div>
                       ) : terminalDensity === 'compact' ? (
                         <div className="p-1.5 font-mono text-[11px]">
@@ -11498,7 +11499,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 {workTab === 'trades' && (
                   <div className="h-full flex flex-col min-h-0 gap-1.5">
                     <div className="shrink-0 flex flex-wrap items-center gap-1 px-1">
-                      <Input value={tradeSearch} onChange={(event) => setTradeSearch(event.target.value)} placeholder="Search..." className="h-6 w-36 text-[11px]" />
+                      <Input value={tradeSearch} onChange={(event) => setTradeSearch(event.target.value)} placeholder={t('tradingPanel.search.search')} className="h-6 w-36 text-[11px]" />
                       {TRADE_STATUS_FILTER_OPTIONS.map((statusOption) => (
                         <Button
                           key={statusOption.value}
@@ -11513,13 +11514,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       {selectedTraderOrdersQuery.isFetching ? (
                         <span className="ml-1 inline-flex items-center gap-1 text-[10px] text-muted-foreground">
                           <Loader2 className="w-3 h-3 animate-spin" />
-                          Loading more...
+                          {t('tradingPanel.common.loadingMore')}
                         </span>
                       ) : null}
                     </div>
                     <div className="shrink-0 grid grid-cols-2 gap-1 px-1 sm:grid-cols-4 lg:grid-cols-8">
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Trades</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.trades')}</p>
                         <p className="text-xs font-mono">
                           {selectedTradeTotals.total}
                           {selectedTraderOrdersQuery.isFetching ? (
@@ -11528,23 +11529,23 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         </p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Open</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.open')}</p>
                         <p className="text-xs font-mono">{selectedTradeTotals.open}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Win / Loss</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.winLoss')}</p>
                         <p className="text-xs font-mono">{selectedTradeTotals.wins} / {selectedTradeTotals.losses}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Win Rate</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.winRate')}</p>
                         <p className="text-xs font-mono">{formatPercent(selectedTradeTotals.winRate)}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Failed</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.failed')}</p>
                         <p className="text-xs font-mono">{selectedTradeTotals.failed}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Notional</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.notional')}</p>
                         <p className="text-xs font-mono">{formatCurrency(selectedTradeTotals.totalNotional, true)}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
@@ -11562,25 +11563,25 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     </div>
                     <div className="flex-1 min-h-0 overflow-hidden px-1">
                       {selectedTradeRows.length === 0 ? (
-                        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">No trades matching filters.</div>
+                        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">{t('tradingPanel.allBots.noTradesFilters')}</div>
                       ) : (
                         <div className="h-full min-h-0 overflow-auto">
                           <Table className="w-full table-fixed">
                             <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                               <TableRow>
-                                <TableHead className="w-[32%] text-[10px]">Market</TableHead>
-                                <TableHead className="w-[6%] text-[10px]">Dir</TableHead>
-                                <TableHead className="w-[8%] text-[10px] text-right">Value</TableHead>
-                                <TableHead className="w-[6%] text-[10px] text-right">Fill</TableHead>
-                                <TableHead className="w-[6%] text-[10px] text-right">Fill Progress</TableHead>
-                                <TableHead className="w-[6%] text-[10px] text-right">Mark</TableHead>
+                                <TableHead className="w-[32%] text-[10px]">{t('tradingPanel.tableHeaders.market')}</TableHead>
+                                <TableHead className="w-[6%] text-[10px]">{t('tradingPanel.tableHeaders.dir')}</TableHead>
+                                <TableHead className="w-[8%] text-[10px] text-right">{t('tradingPanel.tableHeaders.value')}</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.fill')}</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.fillProgress')}</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.mark')}</TableHead>
                                 <TableHead className="w-[8%] text-[10px] text-right">U-P&amp;L</TableHead>
                                 <TableHead className="w-[7%] text-[10px] text-right">Edge Δ</TableHead>
                                 <TableHead className="w-[8%] text-[10px] text-right">R-P&amp;L</TableHead>
-                                <TableHead className="w-[8%] text-[10px]">Venue</TableHead>
-                                <TableHead className="w-[6%] text-[10px] text-right">Exit %</TableHead>
-                                <TableHead className="w-[5%] text-[10px]">Mark Age</TableHead>
-                                <TableHead className="w-[5%] text-[10px]">Eval Age</TableHead>
+                                <TableHead className="w-[8%] text-[10px]">{t('tradingPanel.tableHeaders.venue')}</TableHead>
+                                <TableHead className="w-[6%] text-[10px] text-right">{t('tradingPanel.tableHeaders.exitPercent')}</TableHead>
+                                <TableHead className="w-[5%] text-[10px]">{t('tradingPanel.tableHeaders.markAge')}</TableHead>
+                                <TableHead className="w-[5%] text-[10px]">{t('tradingPanel.tableHeaders.evalAge')}</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -11616,7 +11617,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     <div className="h-full min-h-0 overflow-hidden px-1">
                       <div className="h-full min-h-0 rounded-md border border-border/50 bg-muted/10 p-2">
                         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-100">
-                          Select a bot to tune parameters live.
+                          {t('tradingPanel.tune.selectBot')}
                         </div>
                       </div>
                     </div>
@@ -11639,9 +11640,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 {workTab === 'decisions' && (
                   <div className="h-full min-h-0 grid gap-2 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] px-1">
                     <div className="flex min-w-0 flex-col gap-1.5 min-h-0 overflow-hidden">
-                      <Input value={decisionSearch} onChange={(event) => setDecisionSearch(event.target.value)} placeholder="Search decisions..." className="h-6 text-[11px] shrink-0" />
+                      <Input value={decisionSearch} onChange={(event) => setDecisionSearch(event.target.value)} placeholder={t('tradingPanel.search.searchDecisions')} className="h-6 text-[11px] shrink-0" />
                       <div className="shrink-0 flex items-center justify-between gap-2">
-                        <p className="text-[10px] text-muted-foreground">Showing {filteredDecisions.length}/{selectedDecisions.length}</p>
+                        <p className="text-[10px] text-muted-foreground">{t('tradingPanel.decisions.showing')} {filteredDecisions.length}/{selectedDecisions.length}</p>
                         <Button
                           type="button"
                           size="sm"
@@ -11649,7 +11650,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           className="h-5 px-2 text-[10px]"
                           onClick={() => setDecisionOutcomeFilter('all')}
                         >
-                          all
+                          {t('tradingPanel.decisions.all')}
                         </Button>
                       </div>
                       <div className="shrink-0 grid gap-1 grid-cols-3">
@@ -11663,7 +11664,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               : 'border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10'
                           )}
                         >
-                          <p className="text-[9px] uppercase text-muted-foreground">Selected</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.decisions.selected')}</p>
                           <p className="text-xs font-mono text-emerald-500">{decisionOutcomeSummary.selected}</p>
                         </button>
                         <button
@@ -11676,7 +11677,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               : 'border-red-500/30 bg-red-500/5 hover:bg-red-500/10'
                           )}
                         >
-                          <p className="text-[9px] uppercase text-muted-foreground">Blocked</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.decisions.blocked')}</p>
                           <p className="text-xs font-mono text-red-500">{decisionOutcomeSummary.blocked}</p>
                         </button>
                         <button
@@ -11689,14 +11690,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               : 'border-border/70 bg-background/70 hover:bg-muted/40'
                           )}
                         >
-                          <p className="text-[9px] uppercase text-muted-foreground">Skipped</p>
+                          <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.decisions.skipped')}</p>
                           <p className="text-xs font-mono">{decisionOutcomeSummary.skipped}</p>
                         </button>
                       </div>
                       <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10">
                         <div className="space-y-0.5 p-1.5 pr-2 text-xs">
                           {filteredDecisions.length === 0 ? (
-                            <p className="py-4 text-center text-muted-foreground">No decisions.</p>
+                            <p className="py-4 text-center text-muted-foreground">{t('tradingPanel.decisions.noDecisions')}</p>
                           ) : (
                             filteredDecisions.map((decision) => {
                               const isActive = decision.id === selectedDecisionId
@@ -11733,16 +11734,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="shrink-0 rounded-md border border-border p-2 text-xs space-y-1">
                             <p className="font-medium">{resolveDecisionMarketLabel(selectedDecision)}</p>
                             <div className="grid gap-1 text-[11px] text-muted-foreground sm:grid-cols-2">
-                              <span>Source: {selectedDecision.source}</span>
-                              <span>Strategy: {selectedDecision.strategy_key}</span>
-                              <span>Direction: {selectedDecisionDirection.label}</span>
-                              <span>Price: {toNumber(selectedDecision.market_price).toFixed(3)}</span>
-                              <span>Model: {toNumber(selectedDecision.model_probability).toFixed(3)}</span>
-                              <span>Edge: {formatPercent(toNumber(selectedDecision.edge_percent))}</span>
-                              <span>Confidence: {formatPercent(normalizeConfidencePercent(toNumber(selectedDecision.confidence)))}</span>
-                              <span>Score: {toNumber(selectedDecision.signal_score).toFixed(3)}</span>
+                              <span>{t('tradingPanel.decisions.source')}: {selectedDecision.source}</span>
+                              <span>{t('tradingPanel.decisions.strategy')}: {selectedDecision.strategy_key}</span>
+                              <span>{t('tradingPanel.decisions.direction')}: {selectedDecisionDirection.label}</span>
+                              <span>{t('tradingPanel.decisions.price')}: {toNumber(selectedDecision.market_price).toFixed(3)}</span>
+                              <span>{t('tradingPanel.decisions.model')}: {toNumber(selectedDecision.model_probability).toFixed(3)}</span>
+                              <span>{t('tradingPanel.tableHeaders.edge')}: {formatPercent(toNumber(selectedDecision.edge_percent))}</span>
+                              <span>{t('tradingPanel.tableHeaders.confidence')}: {formatPercent(normalizeConfidencePercent(toNumber(selectedDecision.confidence)))}</span>
+                              <span>{t('tradingPanel.decisions.score')}: {toNumber(selectedDecision.signal_score).toFixed(3)}</span>
                             </div>
-                            <p className="text-[10px]">Reason: {selectedDecision.reason || 'n/a'}</p>
+                            <p className="text-[10px]">{t('tradingPanel.decisions.reason')}: {selectedDecision.reason || t('tradingPanel.common.notAvailableShort')}</p>
                           </div>
 
                           {decisionDetailLoading ? (
@@ -11760,19 +11761,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           ) : decisionChecks.length > 0 ? (
                             <ScrollArea className="flex-1 min-h-0 rounded-md border border-border/50 bg-muted/10">
                               <div className="space-y-1 p-2 text-xs">
-                                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Checks ({decisionPassCount} pass / {decisionFailCount} fail)</p>
+                                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{t('tradingPanel.decisions.checksWithCounts', { pass: decisionPassCount, fail: decisionFailCount })}</p>
                                 {decisionChecks.map((check, i) => (
                                   <div key={i} className={cn('rounded border px-2 py-1', check.passed ? 'border-emerald-500/25' : 'border-red-500/25')}>
                                     <div className="flex items-center gap-1">
                                       {check.passed ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <AlertTriangle className="w-3 h-3 text-red-500" />}
-                                      <span className="font-medium">{check.check_label || check.check_name || check.check_key || 'Check'}</span>
+                                      <span className="font-medium">{check.check_label || check.check_name || check.check_key || t('tradingPanel.decisions.check')}</span>
                                     </div>
                                     {(check.detail || check.message) ? <p className="text-[10px] text-muted-foreground mt-0.5 pl-4">{check.detail || check.message}</p> : null}
                                   </div>
                                 ))}
                                 {riskChecks && riskChecks.length > 0 ? (
                                   <>
-                                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-2 mb-1">Risk Checks — {riskAllowed ? 'Allowed' : 'Blocked'}</p>
+                                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-2 mb-1">{t('tradingPanel.decisions.riskChecks')} — {riskAllowed ? t('tradingPanel.decisions.allowed') : t('tradingPanel.decisions.blocked')}</p>
                                     {riskChecks.map((check: any, i: number) => (
                                       <div key={`risk-${i}`} className={cn('rounded border px-2 py-1', check.passed ? 'border-emerald-500/25' : 'border-red-500/25')}>
                                         <div className="flex items-center gap-1">
@@ -11786,7 +11787,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 ) : null}
                                 {decisionOrders.length > 0 ? (
                                   <>
-                                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-2 mb-1">Linked Orders ({decisionOrders.length})</p>
+                                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-2 mb-1">{t('tradingPanel.decisions.linkedOrders', { count: decisionOrders.length })}</p>
                                     {decisionOrders.map((order: any) => {
                                       const directionPresentation = resolveOrderDirectionPresentation(order as TraderOrder)
                                       return (
@@ -11800,11 +11801,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               </div>
                             </ScrollArea>
                           ) : (
-                            <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">No checks data.</div>
+                            <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">{t('tradingPanel.decisions.noChecksData')}</div>
                           )}
                         </>
                       ) : (
-                        <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">Select a decision to view details.</div>
+                        <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">{t('tradingPanel.decisions.selectDecision')}</div>
                       )}
                     </div>
                   </div>
@@ -11814,31 +11815,31 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   <div className="h-full min-h-0 flex flex-col gap-2 px-1">
                     <div className="shrink-0 grid gap-1 sm:grid-cols-2 lg:grid-cols-6">
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Realized P&amp;L</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.realizedPnl')}</p>
                         <p className={cn('text-xs font-mono', selectedPerformance.resolvedPnl > 0 ? 'text-emerald-500' : selectedPerformance.resolvedPnl < 0 ? 'text-red-500' : '')}>
                           {formatCurrency(selectedPerformance.resolvedPnl)}
                         </p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Resolved ROI</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.resolvedRoi')}</p>
                         <p className={cn('text-xs font-mono', selectedPerformance.roiPercent > 0 ? 'text-emerald-500' : selectedPerformance.roiPercent < 0 ? 'text-red-500' : '')}>
                           {selectedPerformance.roiPercent > 0 ? '+' : ''}{formatPercent(selectedPerformance.roiPercent, 2)}
                         </p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Resolved</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.resolved')}</p>
                         <p className="text-xs font-mono">{selectedPerformance.resolved}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Win / Loss</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.winLoss')}</p>
                         <p className="text-xs font-mono">{selectedPerformance.wins} / {selectedPerformance.losses}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Open</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.open')}</p>
                         <p className="text-xs font-mono">{selectedPerformance.open}</p>
                       </div>
                       <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                        <p className="text-[9px] uppercase text-muted-foreground">Failed</p>
+                        <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.failed')}</p>
                         <p className="text-xs font-mono">{selectedPerformance.failed}</p>
                       </div>
                     </div>
@@ -11849,16 +11850,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     >
                       <div className="shrink-0 flex items-center justify-between gap-2 overflow-x-auto pb-1">
                         <TabsList className="h-auto justify-start gap-1 rounded-lg border border-border/60 bg-card/70 p-1">
-                          <TabsTrigger value="performance" className="h-7 px-2.5 text-[11px]">Performance</TabsTrigger>
-                          <TabsTrigger value="latency" className="h-7 px-2.5 text-[11px]">Latency</TabsTrigger>
-                          <TabsTrigger value="configuration" className="h-7 px-2.5 text-[11px]">Configuration</TabsTrigger>
+                          <TabsTrigger value="performance" className="h-7 px-2.5 text-[11px]">{t('tradingPanel.tabs.performance')}</TabsTrigger>
+                          <TabsTrigger value="latency" className="h-7 px-2.5 text-[11px]">{t('tradingPanel.performance.latency')}</TabsTrigger>
+                          <TabsTrigger value="configuration" className="h-7 px-2.5 text-[11px]">{t('tradingPanel.performance.configuration')}</TabsTrigger>
                         </TabsList>
                         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                           <span className="rounded border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono">
-                            {selectedPerformanceConfig.sections.length} configs
+                            {t('tradingPanel.performance.configsCount', { count: selectedPerformanceConfig.sections.length })}
                           </span>
                           <span className="rounded border border-border/60 bg-background/60 px-1.5 py-0.5 font-mono">
-                            {selectedPerformanceConfig.snapshots.length} orders
+                            {t('tradingPanel.allBots.ordersCount', { count: selectedPerformanceConfig.snapshots.length })}
                           </span>
                         </div>
                       </div>
@@ -11867,25 +11868,25 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         <TabsContent value="performance" className="mt-0 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
                           <div className="shrink-0 grid gap-1 sm:grid-cols-3 xl:grid-cols-6">
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Cumulative P&amp;L</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.cumulativePnl')}</p>
                               <p className={cn('text-xs font-mono', performancePnlSeries.finalPnl > 0 ? 'text-emerald-500' : performancePnlSeries.finalPnl < 0 ? 'text-red-500' : '')}>
                                 {formatSignedCurrency(performancePnlSeries.finalPnl)}
                               </p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">ROI</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.roi')}</p>
                               <p className={cn('text-xs font-mono', selectedPerformance.roiPercent > 0 ? 'text-emerald-500' : selectedPerformance.roiPercent < 0 ? 'text-red-500' : '')}>
                                 {selectedPerformance.roiPercent > 0 ? '+' : ''}{formatPercent(selectedPerformance.roiPercent, 2)}
                               </p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Win Rate</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.stats.winRate')}</p>
                               <p className="text-xs font-mono">
                                 {(() => {
                                   const decided = selectedPerformance.wins + selectedPerformance.losses
                                   const breakdownExtras: string[] = []
                                   if (selectedPerformance.breakeven > 0) breakdownExtras.push(`${selectedPerformance.breakeven}BE`)
-                                  if (selectedPerformance.pendingPnl > 0) breakdownExtras.push(`${selectedPerformance.pendingPnl} pending`)
+                                  if (selectedPerformance.pendingPnl > 0) breakdownExtras.push(`${selectedPerformance.pendingPnl} ${t('tradingPanel.stats.pending')}`)
                                   const extras = breakdownExtras.length > 0 ? ` · ${breakdownExtras.join(' / ')}` : ''
                                   if (decided === 0) return selectedPerformance.resolved > 0 ? `— (${selectedPerformance.wins}W / ${selectedPerformance.losses}L${extras})` : '—'
                                   return `${formatPercent((selectedPerformance.wins / decided) * 100, 1)} (${selectedPerformance.wins}W / ${selectedPerformance.losses}L${extras})`
@@ -11893,17 +11894,17 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               </p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Profit Factor</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.profitFactor')}</p>
                               <p className="text-xs font-mono">
                                 {performancePnlSeries.profitFactor !== null ? performancePnlSeries.profitFactor.toFixed(2) : '—'}
                               </p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Best Streak (Peak)</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.bestStreakPeak')}</p>
                               <p className="text-xs font-mono text-emerald-500">{formatSignedCurrency(performancePnlSeries.peak)}</p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Max Drawdown</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.performance.maxDrawdown')}</p>
                               <p className="text-xs font-mono text-red-500">
                                 {performancePnlSeries.maxDrawdown > 0 ? `-${formatCurrency(performancePnlSeries.maxDrawdown)}` : '—'}
                               </p>
@@ -11912,7 +11913,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
                           <div className="flex-[2] min-h-[260px] rounded-md border border-border/60 bg-card/60 flex flex-col">
                             <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground flex items-center justify-between">
-                              <span>Cumulative P&amp;L Over Time</span>
+                              <span>{t('tradingPanel.performance.cumulativePnlOverTime')}</span>
                               <span className="text-muted-foreground/70 normal-case tracking-normal">
                                 {performancePnlSeries.points.length} resolved · avg {selectedPerformance.resolved > 0 ? formatSignedCurrency(performancePnlSeries.avgPnl) : '—'} · best {formatSignedCurrency(performancePnlSeries.largestWin)} · worst {formatSignedCurrency(performancePnlSeries.largestLoss)}
                               </span>
@@ -11920,7 +11921,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             <div className="flex-1 min-h-0 p-1">
                               {performancePnlSeries.points.length === 0 ? (
                                 <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">
-                                  No resolved orders yet — chart will appear once trades close.
+                                  {t('tradingPanel.performance.noResolvedOrders')}
                                 </div>
                               ) : (
                                 <ResponsiveContainer width="100%" height="100%">
@@ -11993,11 +11994,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                           <div className="flex-1 min-h-[180px] grid gap-2 xl:grid-cols-2">
                             <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
                               <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">
-                                Per-Trade P&amp;L
+                                {t('tradingPanel.performance.perTradePnl')}
                               </div>
                               <div className="flex-1 min-h-0 p-1">
                                 {performancePnlSeries.points.length === 0 ? (
-                                  <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">No trades yet.</div>
+                                  <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">{t('tradingPanel.performance.noTradesYet')}</div>
                                 ) : (
                                   <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={performancePnlSeries.points} margin={{ top: 6, right: 8, left: 4, bottom: 6 }}>
@@ -12039,11 +12040,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
                             <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
                               <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">
-                                Drawdown (Underwater)
+                                {t('tradingPanel.performance.drawdownUnderwater')}
                               </div>
                               <div className="flex-1 min-h-0 p-1">
                                 {performancePnlSeries.points.length === 0 ? (
-                                  <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">No trades yet.</div>
+                                  <div className="h-full flex items-center justify-center text-[11px] text-muted-foreground">{t('tradingPanel.performance.noTradesYet')}</div>
                                 ) : (
                                   <ResponsiveContainer width="100%" height="100%">
                                     <AreaChart data={performancePnlSeries.points} margin={{ top: 6, right: 8, left: 4, bottom: 6 }}>
@@ -12112,71 +12113,71 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         {executionLatency ? (
                           <div className="shrink-0 grid gap-1 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Internal SLA</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.internalSla')}</p>
                               <p className="text-xs font-mono">{formatLatencyMs(executionLatencyTargetMs) || '—'}</p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Rolling Window</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.rollingWindow')}</p>
                               <p className="text-xs font-mono">
                                 {executionLatencyWindowLabel}{executionLatencySampleCount !== null ? ` · n=${executionLatencySampleCount}` : ''}
                               </p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Trader Release to Submit</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.traderReleaseToSubmit')}</p>
                               <p className={cn('text-xs font-mono', selectedTraderLatencySlaBreached ? 'text-amber-400' : 'text-cyan-400')}>
                                 {selectedTraderLatencyLabel}
                               </p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Overall Release to Submit</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.overallReleaseToSubmit')}</p>
                               <p className={cn('text-xs font-mono', executionLatencySlaBreached ? 'text-amber-400' : 'text-cyan-400')}>
                                 {executionLatencyOverallLabel}
                               </p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Trader Armed to Release</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.traderArmedToRelease')}</p>
                               <p className="text-xs font-mono">{selectedTraderArmedToReleaseLabel}</p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Trader Release to Decision</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.traderReleaseToDecision')}</p>
                               <p className="text-xs font-mono">{selectedTraderReleaseToDecisionLabel}</p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Worst Source</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.worstSource')}</p>
                               <p className="text-xs font-mono">{worstLatencySourceLabel}</p>
                             </div>
                             <div className="rounded border border-border/60 bg-background/70 px-2 py-1">
-                              <p className="text-[9px] uppercase text-muted-foreground">Worst Strategy</p>
+                              <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.latency.worstStrategy')}</p>
                               <p className="text-xs font-mono">{worstLatencyStrategyLabel}</p>
                             </div>
                           </div>
                         ) : (
                           <div className="shrink-0 rounded-md border border-border/60 bg-background/70 px-3 py-2 text-[11px] text-muted-foreground">
-                            No execution latency samples are available yet for the current rolling window.
+                            {t('tradingPanel.latency.noSamples')}
                           </div>
                         )}
 
                         {selectedPerformance.allowanceErrorCount > 0 ? (
                           <div className="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-100">
-                            Found {selectedPerformance.allowanceErrorCount} orders with `not enough balance / allowance` in execution payloads.
+                            {t('tradingPanel.latency.allowanceErrors', { count: selectedPerformance.allowanceErrorCount })}
                           </div>
                         ) : null}
                         {selectedPerformance.gasErrorCount > 0 ? (
                           <div className="shrink-0 rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-[11px] text-orange-700 dark:text-orange-100">
-                            Found {selectedPerformance.gasErrorCount} orders with `not enough gas` / native-token gas funding errors.
+                            {t('tradingPanel.latency.gasErrors', { count: selectedPerformance.gasErrorCount })}
                           </div>
                         ) : null}
 
                         <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
                           <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
-                            <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Stage Breakdown</div>
+                            <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.latency.stageBreakdown')}</div>
                             <div className="flex-1 min-h-0 overflow-auto">
                               <Table>
                                 <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                                   <TableRow>
-                                    <TableHead className="text-[10px]">Stage</TableHead>
-                                    <TableHead className="text-[10px] text-right">Trader</TableHead>
-                                    <TableHead className="text-[10px] text-right">Overall</TableHead>
+                                    <TableHead className="text-[10px]">{t('tradingPanel.latency.stage')}</TableHead>
+                                    <TableHead className="text-[10px] text-right">{t('tradingPanel.latency.trader')}</TableHead>
+                                    <TableHead className="text-[10px] text-right">{t('tradingPanel.latency.overall')}</TableHead>
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>
@@ -12194,21 +12195,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
                           <div className="min-h-0 grid gap-2 xl:grid-rows-2">
                             <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
-                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Slowest Sources</div>
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.latency.slowestSources')}</div>
                               <div className="flex-1 min-h-0 overflow-auto">
                                 <Table>
                                   <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                                     <TableRow>
-                                      <TableHead className="text-[10px]">Source</TableHead>
-                                      <TableHead className="text-[10px] text-right">Release to Submit</TableHead>
-                                      <TableHead className="text-[10px] text-right">Samples</TableHead>
+                                      <TableHead className="text-[10px]">{t('tradingPanel.latency.source')}</TableHead>
+                                      <TableHead className="text-[10px] text-right">{t('tradingPanel.latency.releaseToSubmit')}</TableHead>
+                                      <TableHead className="text-[10px] text-right">{t('tradingPanel.latency.samples')}</TableHead>
                                     </TableRow>
                                   </TableHeader>
                                   <TableBody>
                                     {latencySourceRows.length === 0 ? (
                                       <TableRow>
                                         <TableCell colSpan={3} className="py-6 text-center text-[11px] text-muted-foreground">
-                                          No per-source latency samples yet.
+                                          {t('tradingPanel.latency.noSourceSamples')}
                                         </TableCell>
                                       </TableRow>
                                     ) : (
@@ -12226,21 +12227,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                             </div>
 
                             <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
-                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Slowest Strategies</div>
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.latency.slowestStrategies')}</div>
                               <div className="flex-1 min-h-0 overflow-auto">
                                 <Table>
                                   <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                                     <TableRow>
-                                      <TableHead className="text-[10px]">Strategy</TableHead>
-                                      <TableHead className="text-[10px] text-right">Release to Submit</TableHead>
-                                      <TableHead className="text-[10px] text-right">Samples</TableHead>
+                                      <TableHead className="text-[10px]">{t('tradingPanel.latency.strategy')}</TableHead>
+                                      <TableHead className="text-[10px] text-right">{t('tradingPanel.latency.releaseToSubmit')}</TableHead>
+                                      <TableHead className="text-[10px] text-right">{t('tradingPanel.latency.samples')}</TableHead>
                                     </TableRow>
                                   </TableHeader>
                                   <TableBody>
                                     {latencyStrategyRows.length === 0 ? (
                                       <TableRow>
                                         <TableCell colSpan={3} className="py-6 text-center text-[11px] text-muted-foreground">
-                                          No per-strategy latency samples yet.
+                                          {t('tradingPanel.latency.noStrategySamples')}
                                         </TableCell>
                                       </TableRow>
                                     ) : (
@@ -12263,11 +12264,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                         <TabsContent value="configuration" className="mt-0 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
                         <div className="shrink-0 flex flex-wrap items-end gap-2">
                           <div className="min-w-[220px] max-w-[320px] flex-1">
-                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Strategy Section</Label>
+                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.strategySection')}</Label>
                             {selectedPerformanceConfig.sections.length > 1 ? (
                               <Select value={activePerformanceSection?.sectionKey || ''} onValueChange={setPerformanceSectionKey}>
                                 <SelectTrigger className="mt-1 h-8 text-[11px]">
-                                  <SelectValue placeholder="Select configuration" />
+                                  <SelectValue placeholder={t('tradingPanel.config.selectConfiguration')} />
                                 </SelectTrigger>
                                 <SelectContent>
                                   {selectedPerformanceConfig.sections.map((section) => (
@@ -12279,16 +12280,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               </Select>
                             ) : (
                               <div className="mt-1 rounded-md border border-border/60 bg-background/70 px-2 py-1.5 text-[11px]">
-                                {activePerformanceSection?.sectionLabel || 'No configured strategy sections'}
+                                {activePerformanceSection?.sectionLabel || t('tradingPanel.config.noConfiguredSections')}
                               </div>
                             )}
                           </div>
                           <div className="min-w-[220px] max-w-[320px] flex-1">
-                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Parameter</Label>
+                            <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.parameter')}</Label>
                             {activePerformanceParamSummaryRows.length > 0 ? (
                               <Select value={performanceParamKey} onValueChange={setPerformanceParamKey}>
                                 <SelectTrigger className="mt-1 h-8 text-[11px]">
-                                  <SelectValue placeholder="Select parameter" />
+                                  <SelectValue placeholder={t('tradingPanel.config.selectParameter')} />
                                 </SelectTrigger>
                                 <SelectContent>
                                   {activePerformanceParamSummaryRows.map((row) => (
@@ -12300,7 +12301,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                               </Select>
                             ) : (
                               <div className="mt-1 rounded-md border border-border/60 bg-background/70 px-2 py-1.5 text-[11px] text-muted-foreground">
-                                No parameter fields recorded for this strategy.
+                                {t('tradingPanel.config.noParameterFields')}
                               </div>
                             )}
                           </div>
@@ -12308,29 +12309,29 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
                         {selectedPerformanceConfig.fallbackOrderCount > 0 ? (
                           <div className="shrink-0 rounded-md border border-blue-500/25 bg-blue-500/10 px-2 py-1 text-[11px] text-blue-700 dark:text-blue-100">
-                            {selectedPerformanceConfig.fallbackOrderCount} historical orders are using the trader&apos;s current config as a fallback because those order rows did not persist `strategy_params`.
+                            {t('tradingPanel.config.fallbackOrders', { count: selectedPerformanceConfig.fallbackOrderCount })}
                           </div>
                         ) : null}
 
                         <div className="flex-1 min-h-0 grid gap-2 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
                           <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
-                            <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Observed Configurations</div>
+                            <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.observedConfigurations')}</div>
                             <div className="flex-1 min-h-0 overflow-auto">
                               <Table>
                                 <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                                   <TableRow>
-                                    <TableHead className="text-[10px]">Config</TableHead>
-                                    <TableHead className="text-[10px] text-right">Orders</TableHead>
-                                    <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                                    <TableHead className="text-[10px]">{t('tradingPanel.config.configHeader')}</TableHead>
+                                    <TableHead className="text-[10px] text-right">{t('tradingPanel.tableHeaders.orders')}</TableHead>
+                                    <TableHead className="text-[10px] text-right">{t('tradingPanel.performance.resolved')}</TableHead>
                                     <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                                    <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                    <TableHead className="text-[10px] text-right">{t('tradingPanel.performance.roi')}</TableHead>
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>
                                   {selectedPerformanceConfig.configurationRows.length === 0 ? (
                                     <TableRow>
                                       <TableCell colSpan={5} className="py-6 text-center text-[11px] text-muted-foreground">
-                                        No configuration-linked orders yet.
+                                        {t('tradingPanel.config.noConfigOrders')}
                                       </TableCell>
                                     </TableRow>
                                   ) : (
@@ -12367,22 +12368,22 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
                           <div className="min-h-0 flex flex-col gap-2">
                             <div className="min-h-0 rounded-md border border-border/60 bg-card/60 flex flex-col">
-                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Parameter Performance</div>
+                              <div className="px-2 py-1 border-b border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.parameterPerformance')}</div>
                               <div className="shrink-0 grid gap-1 border-b border-border/40 px-2 py-1 sm:grid-cols-3">
                                 <div>
-                                  <p className="text-[9px] uppercase text-muted-foreground">Current Value</p>
+                                  <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.config.currentValue')}</p>
                                   <p className="text-[11px] font-mono">
                                     {activePerformanceParamSummaryByKey.get(performanceParamKey)?.currentValueLabel || '—'}
                                   </p>
                                 </div>
                                 <div>
-                                  <p className="text-[9px] uppercase text-muted-foreground">Observed Buckets</p>
+                                  <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.config.observedBuckets')}</p>
                                   <p className="text-[11px] font-mono">
                                     {activePerformanceParamSummaryByKey.get(performanceParamKey)?.observedValueCount || 0}
                                   </p>
                                 </div>
                                 <div>
-                                  <p className="text-[9px] uppercase text-muted-foreground">Resolved At Current</p>
+                                  <p className="text-[9px] uppercase text-muted-foreground">{t('tradingPanel.config.resolvedAtCurrent')}</p>
                                   <p className="text-[11px] font-mono">
                                     {activePerformanceParamSummaryByKey.get(performanceParamKey)?.currentResolved || 0}
                                   </p>
@@ -12392,11 +12393,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 <Table>
                                   <TableHeader className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm">
                                     <TableRow>
-                                      <TableHead className="text-[10px]">Value</TableHead>
-                                      <TableHead className="text-[10px] text-right">Orders</TableHead>
-                                      <TableHead className="text-[10px] text-right">Resolved</TableHead>
+                                      <TableHead className="text-[10px]">{t('tradingPanel.tableHeaders.value')}</TableHead>
+                                      <TableHead className="text-[10px] text-right">{t('tradingPanel.tableHeaders.orders')}</TableHead>
+                                      <TableHead className="text-[10px] text-right">{t('tradingPanel.performance.resolved')}</TableHead>
                                       <TableHead className="text-[10px] text-right">P&amp;L</TableHead>
-                                      <TableHead className="text-[10px] text-right">ROI</TableHead>
+                                      <TableHead className="text-[10px] text-right">{t('tradingPanel.performance.roi')}</TableHead>
                                       <TableHead className="text-[10px] text-right">W/L</TableHead>
                                     </TableRow>
                                   </TableHeader>
@@ -12404,7 +12405,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                     {activePerformanceParamRows.length === 0 ? (
                                       <TableRow>
                                         <TableCell colSpan={6} className="py-6 text-center text-[11px] text-muted-foreground">
-                                          Select a parameter with recorded values to compare its buckets.
+                                          {t('tradingPanel.config.selectParameterCompare')}
                                         </TableCell>
                                       </TableRow>
                                     ) : (
@@ -12412,7 +12413,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         <TableRow key={`param-row-${performanceParamKey}-${row.key}`} className={cn('text-xs', row.isCurrent && 'bg-cyan-500/5')}>
                                           <TableCell className="py-1">
                                             <div className="font-medium">{row.valueLabel}</div>
-                                            <div className="text-[9px] text-muted-foreground">{row.isCurrent ? 'current value' : row.isMissing ? 'missing from snapshot' : 'historical bucket'}</div>
+                                            <div className="text-[9px] text-muted-foreground">{row.isCurrent ? t('tradingPanel.config.currentValueLabel') : row.isMissing ? t('tradingPanel.config.missingFromSnapshot') : t('tradingPanel.config.historicalBucket')}</div>
                                           </TableCell>
                                           <TableCell className="text-right font-mono py-1">{row.orders}</TableCell>
                                           <TableCell className="text-right font-mono py-1">{row.resolved}</TableCell>
@@ -12429,12 +12430,12 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                   </TableBody>
                                 </Table>
                               </div>
-                              <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">Observed Runtime Context</div>
+                              <div className="px-2 py-1 border-y border-border/50 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.observedRuntimeContext')}</div>
                               <div className="flex-1 min-h-0 grid gap-2 p-2 xl:grid-cols-2">
                                 <div className="min-h-0 rounded-md border border-border/50 bg-background/50 flex flex-col">
-                                  <div className="px-2 py-1 border-b border-border/40 text-[10px] uppercase tracking-wider text-muted-foreground">Timeframe / Mode</div>
+                                  <div className="px-2 py-1 border-b border-border/40 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.timeframeMode')}</div>
                                   <div className="flex-1 min-h-0 overflow-auto">
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Timeframe</div>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.timeframe')}</div>
                                     <Table>
                                       <TableBody>
                                         {selectedPerformance.timeframeRows.map((row) => (
@@ -12446,7 +12447,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         ))}
                                       </TableBody>
                                     </Table>
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Mode</div>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.tableHeaders.mode')}</div>
                                     <Table>
                                       <TableBody>
                                         {selectedPerformance.modeRows.map((row) => (
@@ -12458,7 +12459,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         ))}
                                       </TableBody>
                                     </Table>
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Mode + Timeframe</div>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.modeTimeframe')}</div>
                                     <Table>
                                       <TableBody>
                                         {selectedPerformance.timeframeModeRows.slice(0, 16).map((row) => (
@@ -12474,9 +12475,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                 </div>
 
                                 <div className="min-h-0 rounded-md border border-border/50 bg-background/50 flex flex-col">
-                                  <div className="px-2 py-1 border-b border-border/40 text-[10px] uppercase tracking-wider text-muted-foreground">Source / Strategy / Variant</div>
+                                  <div className="px-2 py-1 border-b border-border/40 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.sourceStrategyVariant')}</div>
                                   <div className="flex-1 min-h-0 overflow-auto">
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Source</div>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.latency.source')}</div>
                                     <Table>
                                       <TableBody>
                                         {selectedPerformance.sourceRows.map((row) => (
@@ -12488,7 +12489,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         ))}
                                       </TableBody>
                                     </Table>
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Strategy</div>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.latency.strategy')}</div>
                                     <Table>
                                       <TableBody>
                                         {selectedPerformance.strategyRows.map((row) => (
@@ -12503,7 +12504,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                                         ))}
                                       </TableBody>
                                     </Table>
-                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">Sub-Strategy</div>
+                                    <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">{t('tradingPanel.config.subStrategy')}</div>
                                     <Table>
                                       <TableBody>
                                         {selectedPerformance.subStrategyRows.slice(0, 16).map((row) => (
@@ -12579,21 +12580,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 	      <Dialog open={confirmLiveStartOpen} onOpenChange={setConfirmLiveStartOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm Live Trading Start</DialogTitle>
+            <DialogTitle>{t('tradingPanel.confirmLive.title')}</DialogTitle>
             <DialogDescription>
-              This will start the orchestrator in LIVE mode against your globally selected live account.
+              {t('tradingPanel.confirmLive.description')}
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-100">
-            Live trading can place real orders. Confirm only if preflight checks and risk controls are intentionally set.
+            {t('tradingPanel.confirmLive.warning')}
           </div>
           <div className="grid gap-1 rounded-md border border-border p-2 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Account mode</span>
+              <span className="text-muted-foreground">{t('tradingPanel.confirmLive.accountMode')}</span>
               <span className="font-mono">LIVE</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Block new orders</span>
+              <span className="text-muted-foreground">{t('tradingPanel.confirmLive.blockNewOrders')}</span>
               <span
                 className={cn(
                   'font-mono',
@@ -12604,13 +12605,13 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       : 'text-emerald-600'
                 )}
               >
-                {killSwitchMutation.isPending ? 'UPDATING' : killSwitchOn ? 'ON' : 'OFF'}
+                {killSwitchMutation.isPending ? t('tradingPanel.confirmLive.updating') : killSwitchOn ? t('tradingPanel.confirmLive.on') : t('tradingPanel.confirmLive.off')}
               </span>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmLiveStartOpen(false)}>
-              Cancel
+              {t('tradingPanel.common.cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -12618,7 +12619,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               disabled={startBySelectedAccountMutation.isPending || killSwitchOn || !selectedAccountIsLive}
             >
               {startBySelectedAccountMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-              Confirm Start Live
+              {t('tradingPanel.confirmLive.confirmStart')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -12627,18 +12628,18 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       <Dialog open={confirmTraderStartOpen} onOpenChange={setConfirmTraderStartOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Start Trader</DialogTitle>
+            <DialogTitle>{t('tradingPanel.startTrader.title')}</DialogTitle>
             <DialogDescription>
-              Start this active trader and optionally seed copy signals from currently open source-wallet positions.
+              {t('tradingPanel.startTrader.description')}
             </DialogDescription>
           </DialogHeader>
           {selectedTraderHasCopySource ? (
             <div className="rounded-md border border-border p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className="text-xs font-medium">Copy existing open positions on start</p>
+                  <p className="text-xs font-medium">{t('tradingPanel.startTrader.copyOpenPositions')}</p>
                   <p className="text-[11px] text-muted-foreground">
-                    Generates startup copy signals for current source-wallet positions in configured scope.
+                    {t('tradingPanel.startTrader.copyDescription')}
                   </p>
                 </div>
                 <Switch
@@ -12647,20 +12648,20 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 />
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Strategy default: {selectedTraderCopyExistingOnStartDefault ? 'enabled' : 'disabled'}.
+                {t('tradingPanel.startTrader.strategyDefault')}: {selectedTraderCopyExistingOnStartDefault ? t('tradingPanel.startTrader.enabled') : t('tradingPanel.startTrader.disabled')}.
               </p>
             </div>
           ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmTraderStartOpen(false)}>
-              Cancel
+              {t('tradingPanel.common.cancel')}
             </Button>
             <Button
               onClick={confirmStartTrader}
               disabled={traderStartMutation.isPending || !selectedTrader}
             >
               {traderStartMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-              Start Trader
+              {t('tradingPanel.startTrader.title')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -12669,14 +12670,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
       <Dialog open={confirmTraderStopOpen} onOpenChange={setConfirmTraderStopOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Stop Trader</DialogTitle>
+            <DialogTitle>{t('tradingPanel.stopTrader.title')}</DialogTitle>
             <DialogDescription>
-              Stop this trader and choose how existing positions/orders should be handled.
+              {t('tradingPanel.stopTrader.description')}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
-              <Label>Stop lifecycle</Label>
+              <Label>{t('tradingPanel.stopTrader.stopLifecycle')}</Label>
               <Select
                 value={stopLifecycleMode}
                 onValueChange={(value) => {
@@ -12688,9 +12689,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="keep_positions">Keep existing positions</SelectItem>
-                  <SelectItem value="close_shadow_positions">Close shadow positions</SelectItem>
-                  <SelectItem value="close_all_positions">Close live + shadow positions</SelectItem>
+                  <SelectItem value="keep_positions">{t('tradingPanel.stopTrader.keepPositions')}</SelectItem>
+                  <SelectItem value="close_shadow_positions">{t('tradingPanel.stopTrader.closeShadow')}</SelectItem>
+                  <SelectItem value="close_all_positions">{t('tradingPanel.stopTrader.closeLiveShadow')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -12698,9 +12699,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <p className="text-xs font-medium text-amber-700 dark:text-amber-100">Confirm live close</p>
+                    <p className="text-xs font-medium text-amber-700 dark:text-amber-100">{t('tradingPanel.stopTrader.confirmLiveClose')}</p>
                     <p className="text-[11px] text-amber-700/90 dark:text-amber-100/90">
-                      This action can close live positions and cancel live open orders.
+                      {t('tradingPanel.stopTrader.confirmLiveCloseHint')}
                     </p>
                   </div>
                   <Switch checked={stopConfirmLiveClose} onCheckedChange={setStopConfirmLiveClose} />
@@ -12710,7 +12711,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmTraderStopOpen(false)}>
-              Cancel
+              {t('tradingPanel.common.cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -12722,7 +12723,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               }
             >
               {traderStopMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-              Stop Trader
+              {t('tradingPanel.stopTrader.title')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -12741,9 +12742,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           <div className="h-full min-h-0 flex flex-col">
             <div className="border-b border-border px-4 py-3">
               <SheetHeader className="space-y-1 text-left">
-                <SheetTitle className="text-base">Global Settings</SheetTitle>
+                <SheetTitle className="text-base">{t('tradingPanel.globalSettings.title')}</SheetTitle>
                 <SheetDescription>
-                  Configure orchestrator-wide live/shadow runtime controls, risk clamps, and pending-exit behavior.
+                  {t('tradingPanel.globalSettings.description')}
                 </SheetDescription>
               </SheetHeader>
             </div>
@@ -12751,9 +12752,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
             <ScrollArea className="flex-1 min-h-0 px-4 py-3">
               <div className="space-y-3 pb-2">
                 <div className="rounded-md border border-border p-3 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Loop</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('tradingPanel.globalSettings.loop')}</p>
                   <div>
-                    <Label>Run Interval (seconds)</Label>
+                    <Label>{t('tradingPanel.globalSettings.runIntervalSeconds')}</Label>
                     <Input
                       type="number"
                       min={1}
@@ -12764,22 +12765,22 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     />
                   </div>
                   <div>
-                    <Label>Trader Cycle Timeout (seconds, blank = auto)</Label>
+                    <Label>{t('tradingPanel.globalSettings.traderCycleTimeout')}</Label>
                     <Input
                       type="number"
                       min={3}
                       max={120}
-                      placeholder="auto"
+                      placeholder={t('tradingPanel.globalSettings.autoPlaceholder')}
                       value={globalSettingsDraft.traderCycleTimeoutSeconds}
                       onChange={(event) => setGlobalSettingsField('traderCycleTimeoutSeconds', event.target.value)}
                       className="mt-1"
                     />
                     <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
-                      Cap for full maintenance/exit cycles initiated by the periodic loop. Default 60s when blank.
+                      {t('tradingPanel.globalSettings.traderCycleTimeoutHint')}
                     </p>
                   </div>
                   <div>
-                    <Label>Runtime-Trigger Cycle Timeout (seconds, blank = 10s default)</Label>
+                    <Label>{t('tradingPanel.globalSettings.runtimeTriggerTimeout')}</Label>
                     <Input
                       type="number"
                       min={3}
@@ -12790,18 +12791,16 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       className="mt-1"
                     />
                     <p className="mt-1 text-[10px] text-muted-foreground/75 leading-tight">
-                      Cap for lightweight cycles fired by `signals.publish` runtime triggers (entry path).
-                      The hard-coded default is 10s; raise to 30–45s if `selected` decisions never reach `trader_orders`
-                      due to `cycle_timeout` log lines (Cox-PH / microstructure / multi-gate evaluations exceeding 10s).
+                      {t('tradingPanel.globalSettings.runtimeTriggerHint')}
                     </p>
                   </div>
                 </div>
 
                 <div className="rounded-md border border-border p-3 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Global Risk</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('tradingPanel.globalSettings.globalRisk')}</p>
                   <div className="grid gap-2 sm:grid-cols-3">
                     <div>
-                      <Label>Max Gross Exposure (USD)</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxGrossExposure')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12811,7 +12810,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Daily Loss (USD)</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxDailyLoss')}</Label>
                       <Input
                         type="number"
                         min={0}
@@ -12821,7 +12820,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Orders / Cycle</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxOrdersCycle')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12834,10 +12833,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </div>
 
                 <div className="rounded-md border border-border p-3 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Execution Limits</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('tradingPanel.globalSettings.liveExecutionLimits')}</p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
-                      <Label>Max Trade Size (USD)</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxTradeSize')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12847,7 +12846,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Daily Trade Volume (USD)</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxDailyVolume')}</Label>
                       <Input
                         type="number"
                         min={10}
@@ -12857,7 +12856,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Minimum Account Balance (USD)</Label>
+                      <Label>{t('tradingPanel.globalSettings.minAccountBalance')}</Label>
                       <Input
                         type="number"
                         min={0}
@@ -12867,7 +12866,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Open Positions</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxOpenPositions')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12878,7 +12877,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Slippage (%)</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxSlippage')}</Label>
                       <Input
                         type="number"
                         min={0.1}
@@ -12893,10 +12892,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </div>
 
                 <div className="rounded-md border border-border p-3 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Pending Live Exits</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('tradingPanel.globalSettings.pendingLiveExits')}</p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
-                      <Label>Max Pending Exits Allowed</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxPendingExits')}</Label>
                       <Input
                         type="number"
                         min={0}
@@ -12906,7 +12905,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">Identity Guard Enabled</span>
+                      <span className="text-xs text-muted-foreground">{t('tradingPanel.globalSettings.identityGuardEnabled')}</span>
                       <Switch
                         checked={globalSettingsDraft.pendingExitIdentityGuardEnabled}
                         onCheckedChange={(checked) => setGlobalSettingsField('pendingExitIdentityGuardEnabled', checked)}
@@ -12914,7 +12913,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     </label>
                   </div>
                   <div>
-                    <Label>Terminal Pending-Exit Statuses (comma-separated)</Label>
+                    <Label>{t('tradingPanel.globalSettings.terminalPendingExitStatuses')}</Label>
                     <Input
                       value={globalSettingsDraft.pendingExitTerminalStatuses}
                       onChange={(event) => setGlobalSettingsField('pendingExitTerminalStatuses', event.target.value)}
@@ -12924,17 +12923,17 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </div>
 
                 <div className="rounded-md border border-border p-3 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Risk Clamps</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('tradingPanel.globalSettings.liveRiskClamps')}</p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">Force Averaging Off</span>
+                      <span className="text-xs text-muted-foreground">{t('tradingPanel.globalSettings.forceAveragingOff')}</span>
                       <Switch
                         checked={globalSettingsDraft.enforceAllowAveragingOff}
                         onCheckedChange={(checked) => setGlobalSettingsField('enforceAllowAveragingOff', checked)}
                       />
                     </label>
                     <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">Force Halt on Loss Streak</span>
+                      <span className="text-xs text-muted-foreground">{t('tradingPanel.globalSettings.forceHaltLossStreak')}</span>
                       <Switch
                         checked={globalSettingsDraft.enforceHaltOnConsecutiveLosses}
                         onCheckedChange={(checked) => setGlobalSettingsField('enforceHaltOnConsecutiveLosses', checked)}
@@ -12943,7 +12942,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
-                      <Label>Min Cooldown (seconds)</Label>
+                      <Label>{t('tradingPanel.globalSettings.minCooldown')}</Label>
                       <Input
                         type="number"
                         min={0}
@@ -12953,7 +12952,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Consecutive Losses Cap</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxConsecutiveLossesCap')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12963,7 +12962,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Open Orders Cap</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxOpenOrdersCap')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12973,7 +12972,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Trade Notional Cap (USD)</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxTradeNotionalCap')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12983,7 +12982,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max Orders / Cycle Cap</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxOrdersCycleCap')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -12996,9 +12995,9 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </div>
 
                 <div className="rounded-md border border-border p-3 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Market Context</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('tradingPanel.globalSettings.liveMarketContext')}</p>
                   <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
-                    <span className="text-xs text-muted-foreground">Enabled</span>
+                    <span className="text-xs text-muted-foreground">{t('tradingPanel.startTrader.enabled')}</span>
                     <Switch
                       checked={globalSettingsDraft.liveMarketContextEnabled}
                       onCheckedChange={(checked) => setGlobalSettingsField('liveMarketContextEnabled', checked)}
@@ -13006,14 +13005,14 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                   </label>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <label className="rounded-md border border-border/60 bg-muted/15 px-2.5 py-2 flex items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">Strict WS Pricing Only</span>
+                      <span className="text-xs text-muted-foreground">{t('tradingPanel.globalSettings.strictWsPricing')}</span>
                       <Switch
                         checked={globalSettingsDraft.liveMarketStrictWsPricingOnly}
                         onCheckedChange={(checked) => setGlobalSettingsField('liveMarketStrictWsPricingOnly', checked)}
                       />
                     </label>
                     <div>
-                      <Label>Max Market Data Age (ms)</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxMarketDataAge')}</Label>
                       <Input
                         type="number"
                         min={25}
@@ -13025,11 +13024,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                     </div>
                   </div>
                   <p className="text-[11px] text-muted-foreground/70">
-                    Strict WS pricing forces live market context to use websocket pricing. The age budget caps how stale that pricing can be.
+                    {t('tradingPanel.globalSettings.strictWsHint')}
                   </p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
-                      <Label>History Window (seconds)</Label>
+                      <Label>{t('tradingPanel.globalSettings.historyWindow')}</Label>
                       <Input
                         type="number"
                         min={300}
@@ -13039,7 +13038,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>History Fidelity (seconds)</Label>
+                      <Label>{t('tradingPanel.globalSettings.historyFidelity')}</Label>
                       <Input
                         type="number"
                         min={30}
@@ -13049,7 +13048,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Max History Points</Label>
+                      <Label>{t('tradingPanel.globalSettings.maxHistoryPoints')}</Label>
                       <Input
                         type="number"
                         min={20}
@@ -13059,7 +13058,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Context Timeout (seconds)</Label>
+                      <Label>{t('tradingPanel.globalSettings.contextTimeout')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -13072,10 +13071,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 </div>
 
                 <div className="rounded-md border border-border p-3 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Live Provider Health Guard</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('tradingPanel.globalSettings.providerHealthGuard')}</p>
                   <div className="grid gap-2 sm:grid-cols-3">
                     <div>
-                      <Label>Window (seconds)</Label>
+                      <Label>{t('tradingPanel.globalSettings.windowSeconds')}</Label>
                       <Input
                         type="number"
                         min={30}
@@ -13085,7 +13084,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Min Errors</Label>
+                      <Label>{t('tradingPanel.globalSettings.minErrors')}</Label>
                       <Input
                         type="number"
                         min={1}
@@ -13095,7 +13094,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                       />
                     </div>
                     <div>
-                      <Label>Block (seconds)</Label>
+                      <Label>{t('tradingPanel.globalSettings.blockSeconds')}</Label>
                       <Input
                         type="number"
                         min={15}
@@ -13121,7 +13120,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 onClick={resetGlobalSettingsDraft}
                 disabled={globalSettingsBusy}
               >
-                Reset
+                {t('tradingPanel.common.reset')}
               </Button>
               <Button
                 type="button"
@@ -13129,7 +13128,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 onClick={() => setGlobalSettingsFlyoutOpen(false)}
                 disabled={globalSettingsBusy}
               >
-                Close
+                {t('tradingPanel.common.close')}
               </Button>
               <Button
                 type="button"
@@ -13137,7 +13136,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
                 disabled={globalSettingsBusy}
               >
                 {globalSettingsBusy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                Save Settings
+                {t('tradingPanel.globalSettings.saveSettings')}
               </Button>
             </div>
           </div>
@@ -13202,10 +13201,10 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               <SheetHeader className="space-y-1 text-left">
                 <SheetTitle className="text-base flex items-center gap-2">
                   <Brain className="w-4 h-4 text-orange-400" />
-                  Cortex
+                  {t('tradingPanel.controls.cortex')}
                 </SheetTitle>
                 <SheetDescription>
-                  Autonomous agent that observes performance, adjusts strategies, and manages risk.
+                  {t('tradingPanel.cortex.description')}
                 </SheetDescription>
               </SheetHeader>
             </div>
