@@ -4,6 +4,7 @@ import asyncio
 import copy
 import inspect
 import json
+import logging as _stdlib_logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -1121,7 +1122,8 @@ class ArbitrageScanner:
                 kept_events.append(event)
 
         if pre_count != len(kept_markets):
-            logger.info(
+            _diag = _stdlib_logging.getLogger(__name__)
+            _diag.info(
                 "Catalog tag-whitelist filter: %d → %d markets "
                 "(%d events kept; whitelist=%s; reason=market_filter_tags_no_match)",
                 pre_count,
@@ -1130,7 +1132,7 @@ class ArbitrageScanner:
                 sorted(whitelist),
             )
             if pre_count > 0 and not kept_markets:
-                logger.warning(
+                _diag.warning(
                     "market_filter_tags whitelist matched zero markets out of %d. "
                     "The whitelist may be stale or the upstream tag taxonomy may "
                     "have shifted. Whitelist=%s",
