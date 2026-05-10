@@ -131,6 +131,15 @@ class LiveRiskClampsSettingsRequest(BaseModel):
     max_per_market_exposure_usd_cap: float | None = Field(default=None, ge=1.0, le=1_000_000.0)
     max_orders_per_cycle_cap: int | None = Field(default=None, ge=1, le=1000)
     enforce_halt_on_consecutive_losses: bool | None = None
+    # Caps for the freshly-wired risk knobs. Same precedence as the
+    # existing clamps: global is a ceiling, per-trader is the effective
+    # value if below the ceiling.
+    max_daily_spend_usd_cap: float | None = Field(default=None, ge=1.0, le=100_000_000.0)
+    max_spread_bps_cap: float | None = Field(default=None, ge=0.0, le=10_000.0)
+    slippage_bps_cap: float | None = Field(default=None, ge=0.0, le=10_000.0)
+    retry_limit_cap: int | None = Field(default=None, ge=0, le=50)
+    retry_backoff_ms_cap: int | None = Field(default=None, ge=0, le=60_000)
+    order_ttl_seconds_cap: int | None = Field(default=None, ge=1, le=86_400)
 
 
 class LiveMarketContextSettingsRequest(BaseModel):

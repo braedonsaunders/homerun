@@ -316,6 +316,20 @@ def _normalize_live_risk_clamps(value: Any, *, explicit: bool = False) -> dict[s
         out["max_orders_per_cycle_cap"] = max(1, min(1000, safe_int(source["max_orders_per_cycle_cap"], 1000)))
     if should_apply("enforce_halt_on_consecutive_losses"):
         out["enforce_halt_on_consecutive_losses"] = bool(source["enforce_halt_on_consecutive_losses"])
+    # Newly-wired knob clamps. Bounds mirror the API request validators
+    # in routes_trader_orchestrator.LiveRiskClampsSettingsRequest.
+    if should_apply("max_daily_spend_usd_cap"):
+        out["max_daily_spend_usd_cap"] = max(1.0, min(100_000_000.0, safe_float(source["max_daily_spend_usd_cap"], 100_000_000.0)))
+    if should_apply("max_spread_bps_cap"):
+        out["max_spread_bps_cap"] = max(0.0, min(10_000.0, safe_float(source["max_spread_bps_cap"], 10_000.0)))
+    if should_apply("slippage_bps_cap"):
+        out["slippage_bps_cap"] = max(0.0, min(10_000.0, safe_float(source["slippage_bps_cap"], 10_000.0)))
+    if should_apply("retry_limit_cap"):
+        out["retry_limit_cap"] = max(0, min(50, safe_int(source["retry_limit_cap"], 50)))
+    if should_apply("retry_backoff_ms_cap"):
+        out["retry_backoff_ms_cap"] = max(0, min(60_000, safe_int(source["retry_backoff_ms_cap"], 60_000)))
+    if should_apply("order_ttl_seconds_cap"):
+        out["order_ttl_seconds_cap"] = max(1, min(86_400, safe_int(source["order_ttl_seconds_cap"], 86_400)))
     return out
 
 

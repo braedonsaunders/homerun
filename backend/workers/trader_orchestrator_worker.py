@@ -3700,6 +3700,60 @@ def _apply_live_risk_clamps(
             changes["halt_on_consecutive_losses"] = {"configured": configured_halt, "effective": True}
         effective_risk_limits["halt_on_consecutive_losses"] = True
 
+    # Clamps for the freshly-wired risk knobs. Same ceiling semantics as the
+    # existing clamps: if the trader's configured value is above the global
+    # cap, the cap wins.
+    if "max_daily_spend_usd_cap" in live_risk_clamps:
+        configured = max(1.0, safe_float(effective_risk_limits.get("max_daily_spend_usd"), 2000.0))
+        cap = max(1.0, safe_float(live_risk_clamps["max_daily_spend_usd_cap"], 100_000_000.0))
+        clamped = min(float(configured), float(cap))
+        if clamped != float(configured):
+            changes["max_daily_spend_usd"] = {"configured": float(configured), "effective": clamped}
+        effective_risk_limits["max_daily_spend_usd"] = clamped
+
+    if "max_spread_bps_cap" in live_risk_clamps:
+        configured = max(0.0, safe_float(effective_risk_limits.get("max_spread_bps"), 75.0))
+        cap = max(0.0, safe_float(live_risk_clamps["max_spread_bps_cap"], 10_000.0))
+        clamped = min(float(configured), float(cap)) if configured > 0.0 else float(cap)
+        # When the configured knob is 0 (knob off), the cap still applies
+        # so the global ceiling enforces a real spread limit even for
+        # traders who left their knob untouched.
+        if clamped != float(configured):
+            changes["max_spread_bps"] = {"configured": float(configured), "effective": clamped}
+        effective_risk_limits["max_spread_bps"] = clamped
+
+    if "slippage_bps_cap" in live_risk_clamps:
+        configured = max(0.0, safe_float(effective_risk_limits.get("slippage_bps"), 35.0))
+        cap = max(0.0, safe_float(live_risk_clamps["slippage_bps_cap"], 10_000.0))
+        clamped = min(float(configured), float(cap)) if configured > 0.0 else float(cap)
+        if clamped != float(configured):
+            changes["slippage_bps"] = {"configured": float(configured), "effective": clamped}
+        effective_risk_limits["slippage_bps"] = clamped
+
+    if "retry_limit_cap" in live_risk_clamps:
+        configured = max(0, safe_int(effective_risk_limits.get("retry_limit"), 2))
+        cap = max(0, safe_int(live_risk_clamps["retry_limit_cap"], 50))
+        clamped = min(configured, cap)
+        if clamped != configured:
+            changes["retry_limit"] = {"configured": configured, "effective": clamped}
+        effective_risk_limits["retry_limit"] = clamped
+
+    if "retry_backoff_ms_cap" in live_risk_clamps:
+        configured = max(0, safe_int(effective_risk_limits.get("retry_backoff_ms"), 250))
+        cap = max(0, safe_int(live_risk_clamps["retry_backoff_ms_cap"], 60_000))
+        clamped = min(configured, cap)
+        if clamped != configured:
+            changes["retry_backoff_ms"] = {"configured": configured, "effective": clamped}
+        effective_risk_limits["retry_backoff_ms"] = clamped
+
+    if "order_ttl_seconds_cap" in live_risk_clamps:
+        configured = max(1, safe_int(effective_risk_limits.get("order_ttl_seconds"), 1200))
+        cap = max(1, safe_int(live_risk_clamps["order_ttl_seconds_cap"], 86_400))
+        clamped = min(configured, cap)
+        if clamped != configured:
+            changes["order_ttl_seconds"] = {"configured": configured, "effective": clamped}
+        effective_risk_limits["order_ttl_seconds"] = clamped
+
     return changes
 
 
