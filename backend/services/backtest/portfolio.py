@@ -323,7 +323,37 @@ class Portfolio:
     # ── Reporting ─────────────────────────────────────────────────────
 
     def equity_usd(self) -> float:
-        return self.cash_usd + sum(p.unrealized_pnl_usd() for p in self.positions.values())
+        """Net wealth: cash + marked-to-market value of open positions.
+
+        For a BUY (long): we OWN ``size`` contracts worth ``size × mark``.
+        For a SELL (short): we OWE ``size`` contracts costing ``size × mark``
+        to buy back.  Cash already reflects the entry leg (debited on open
+        for BUY, credited for SELL), so the open-position contribution is
+        the current market value (long) or negative current cost (short).
+
+        Falls back to ``entry_price`` when no mark has arrived yet — at
+        the moment of opening the position is worth what we just paid for
+        it, NOT zero.
+
+        Old formula ``cash + sum(unrealized_pnl)`` only added the
+        gain-relative-to-entry, so a freshly-opened (or mark==entry)
+        position dropped equity by the full notional outlay until the
+        position eventually closed and cash absorbed the proceeds.  That
+        bled into ``equity_history`` and corrupted Sharpe / Sortino /
+        Calmar / max-drawdown for any run that held positions mid-window
+        (i.e. essentially every run).
+        """
+        total = self.cash_usd
+        for p in self.positions.values():
+            if p.size <= 0:
+                continue
+            mark = p.last_mark_price if p.last_mark_price is not None else p.entry_price
+            position_value = p.size * mark
+            if p.side == "BUY":
+                total += position_value
+            else:
+                total -= position_value
+        return total
 
     def gross_exposure_usd(self) -> float:
         return sum(

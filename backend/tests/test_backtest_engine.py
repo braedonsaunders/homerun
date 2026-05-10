@@ -231,6 +231,77 @@ class TestPortfolio:
         assert ok is False
         assert "per_market_cap" in (reason or "")
 
+    def test_equity_usd_marks_open_buy_at_market_value(self):
+        """Regression: opening a position must NOT drop equity by notional.
+
+        Production bug: a +4.83% return run rendered "$1.00K → $556.90"
+        on the equity chart with Sharpe -2.01.  Root cause: equity_usd()
+        = cash + sum(unrealized_pnl), where unrealized_pnl was
+        size*(mark-entry).  At open (or when mark==entry) unrealized=0,
+        so equity dropped by the FULL cost basis until the position
+        eventually closed and cash absorbed the proceeds.  This polluted
+        equity_history and corrupted Sharpe / drawdown / Calmar.
+        """
+        from services.backtest.matching_engine import Fill
+        p = Portfolio(PortfolioConfig(initial_capital_usd=1000.0))
+        assert p.equity_usd() == pytest.approx(1000.0)
+
+        # Open BUY 100 @ $0.50 = $50 notional outlay.
+        p.apply_fill(
+            Fill(order_id="o1", token_id="t", side="BUY", price=0.50, size=100,
+                 fee_usd=0.0, occurred_at=T0, fill_index=0),
+            strategy_slug="x",
+        )
+        # Cash dropped by $50 — but the position is WORTH $50, so net
+        # wealth must remain $1000.  Old broken formula returned $950.
+        assert p.cash_usd == pytest.approx(950.0)
+        assert p.equity_usd() == pytest.approx(1000.0), (
+            "freshly-opened position must contribute its market value, "
+            "not zero — otherwise opening a position is misread as a loss"
+        )
+
+        # After mark at entry: still $1000 (no PnL yet).
+        p.mark(token_id="t", price=0.50, at=T0 + timedelta(seconds=1))
+        assert p.equity_usd() == pytest.approx(1000.0)
+
+        # Mark moves up to $0.60: +$10 unrealized gain.
+        p.mark(token_id="t", price=0.60, at=T0 + timedelta(seconds=2))
+        assert p.equity_usd() == pytest.approx(1010.0)
+
+        # Mark drops to $0.40: -$10 unrealized loss.
+        p.mark(token_id="t", price=0.40, at=T0 + timedelta(seconds=3))
+        assert p.equity_usd() == pytest.approx(990.0)
+
+    def test_equity_usd_marks_open_short_at_buy_back_cost(self):
+        """SELL (short) at $0.50 collects $50 cash but creates a $50
+        liability.  Equity must remain at initial capital, not jump to
+        $1050 (old formula's overstatement).
+        """
+        from services.backtest.matching_engine import Fill
+        p = Portfolio(PortfolioConfig(initial_capital_usd=1000.0))
+
+        p.apply_fill(
+            Fill(order_id="o1", token_id="t", side="SELL", price=0.50, size=100,
+                 fee_usd=0.0, occurred_at=T0, fill_index=0),
+            strategy_slug="x",
+        )
+        # Cash went UP by $50 (entry proceeds).
+        assert p.cash_usd == pytest.approx(1050.0)
+        # But we OWE 100 contracts at current price ≈ $0.50, so equity
+        # must remain $1000.  Old broken formula returned $1050.
+        assert p.equity_usd() == pytest.approx(1000.0), (
+            "freshly-opened short must subtract buy-back liability, "
+            "not zero — otherwise shorting is misread as instant gain"
+        )
+
+        # Mark drops to $0.40 (favorable for short): +$10 gain.
+        p.mark(token_id="t", price=0.40, at=T0 + timedelta(seconds=1))
+        assert p.equity_usd() == pytest.approx(1010.0)
+
+        # Mark rises to $0.60 (adverse): -$10 loss.
+        p.mark(token_id="t", price=0.60, at=T0 + timedelta(seconds=2))
+        assert p.equity_usd() == pytest.approx(990.0)
+
 
 # ── Walk-forward ─────────────────────────────────────────────────────────
 
