@@ -3831,28 +3831,78 @@ async def run_execution_backtest(
                     tokens_with_snaps: set[str] = set()
                     snap_filter_failed = False
                     CHUNK_SIZE = 50
+                    # IMPORTANT: run the snap-availability check in its
+                    # OWN short-lived session so the outer backtest
+                    # session isn't held idle-in-transaction across
+                    # this fan-out.  Production soaks have seen the
+                    # outer connection sit for 6+ minutes here, eating
+                    # past idle_in_transaction_session_timeout (360s)
+                    # and dying with "connection is closed" on the
+                    # NEXT execute().  A separate session also lets us
+                    # set a tight per-chunk statement_timeout (30s) so
+                    # a slow chunk fails fast into the per-chunk
+                    # except-clause below rather than hogging a backtest
+                    # pool slot for the full 5-minute server timeout.
+                    from sqlalchemy import text as _snap_text
                     try:
-                        for i in range(0, len(candidate_tokens), CHUNK_SIZE):
-                            chunk = candidate_tokens[i : i + CHUNK_SIZE]
-                            chunk_stmt = (
-                                select(MarketMicrostructureSnapshot.token_id)
-                                .where(
-                                    MarketMicrostructureSnapshot.observed_at >= start_dt,
-                                    MarketMicrostructureSnapshot.observed_at <= end_dt,
-                                    MarketMicrostructureSnapshot.snapshot_type == "book",
-                                    MarketMicrostructureSnapshot.token_id.in_(chunk),
+                        async with BacktestAsyncSessionLocal() as _snap_session:
+                            for i in range(0, len(candidate_tokens), CHUNK_SIZE):
+                                chunk = candidate_tokens[i : i + CHUNK_SIZE]
+                                chunk_stmt = (
+                                    select(MarketMicrostructureSnapshot.token_id)
+                                    .where(
+                                        MarketMicrostructureSnapshot.observed_at >= start_dt,
+                                        MarketMicrostructureSnapshot.observed_at <= end_dt,
+                                        MarketMicrostructureSnapshot.snapshot_type == "book",
+                                        MarketMicrostructureSnapshot.token_id.in_(chunk),
+                                    )
+                                    .group_by(MarketMicrostructureSnapshot.token_id)
                                 )
-                                .group_by(MarketMicrostructureSnapshot.token_id)
-                            )
-                            chunk_rows = (await session.execute(chunk_stmt)).all()
-                            for r in chunk_rows:
-                                if r[0]:
-                                    tokens_with_snaps.add(str(r[0]))
+                                # Per-chunk fail-fast: each chunk is its
+                                # own transaction so a slow chunk does
+                                # NOT lose results from earlier chunks.
+                                # Server-side 30s statement_timeout +
+                                # client-side asyncio 35s wait_for as a
+                                # belt-and-suspenders guard.
+                                try:
+                                    await _snap_session.execute(
+                                        _snap_text("SET LOCAL statement_timeout = '30000'")
+                                    )
+                                    chunk_rows = (await asyncio.wait_for(
+                                        _snap_session.execute(chunk_stmt),
+                                        timeout=35.0,
+                                    )).all()
+                                    for r in chunk_rows:
+                                        if r[0]:
+                                            tokens_with_snaps.add(str(r[0]))
+                                    # Close the per-chunk transaction
+                                    # so the next chunk starts fresh
+                                    # and SET LOCAL applies to its own
+                                    # transaction scope.
+                                    await _snap_session.rollback()
+                                except (asyncio.TimeoutError, Exception) as chunk_exc:
+                                    logger.warning(
+                                        "Snap-availability chunk %d/%d failed; "
+                                        "trusting these %d tokens: %s",
+                                        (i // CHUNK_SIZE) + 1,
+                                        (len(candidate_tokens) + CHUNK_SIZE - 1) // CHUNK_SIZE,
+                                        len(chunk),
+                                        chunk_exc,
+                                    )
+                                    # Trust this chunk's tokens rather
+                                    # than dropping them — the matcher
+                                    # handles no-snap tokens gracefully.
+                                    for tok in chunk:
+                                        tokens_with_snaps.add(str(tok))
+                                    try:
+                                        await _snap_session.rollback()
+                                    except Exception:
+                                        pass
                     except Exception as exc:
-                        # Fall back to "trust all opp_tokens" rather
-                        # than failing the entire backtest.  The
-                        # matching engine handles missing tokens
-                        # gracefully — they just produce no fills.
+                        # Session-level failure (couldn't even open the
+                        # snap session) — fall back to "trust all
+                        # opp_tokens".  Matching engine produces zero
+                        # fills for tokens without book data.
                         logger.warning(
                             "Snap-availability check failed; trusting opp_tokens universe: %s",
                             exc,

@@ -495,14 +495,31 @@ Return valid JSON only:
         Returns:
             List of DependencyAnalysis results
         """
-        semaphore = asyncio.Semaphore(concurrency)
-
-        async def detect_with_limit(pair: Tuple[MarketInfo, MarketInfo]):
-            async with semaphore:
-                return await self.detect_dependencies(pair[0], pair[1])
-
-        tasks = [detect_with_limit(pair) for pair in market_pairs]
-        return await asyncio.gather(*tasks)
+        # IMPORTANT: process pairs in WAVES of ``concurrency`` size
+        # rather than creating all tasks upfront.  Production soaks
+        # surfaced 180–268 tasks all parked on a single semaphore
+        # (locks.py:acquire:386), which:
+        #   - bloats the asyncio scheduler (every loop tick walks
+        #     every parked task) and inflates GC / cancel cost
+        #   - hides the actual queue depth from observability —
+        #     the semaphore is throttled to ``concurrency`` LLM
+        #     calls in flight, so queueing 268 of them upfront
+        #     buys no throughput, only overhead
+        # With wave-batching the in-flight task count stays bounded
+        # by ``concurrency`` and total throughput is unchanged
+        # (still ``concurrency`` LLM calls in parallel at any time).
+        if not market_pairs:
+            return []
+        results: List[DependencyAnalysis] = []
+        wave = max(1, int(concurrency))
+        for i in range(0, len(market_pairs), wave):
+            batch = market_pairs[i : i + wave]
+            batch_results = await asyncio.gather(
+                *[self.detect_dependencies(p[0], p[1]) for p in batch],
+                return_exceptions=False,
+            )
+            results.extend(batch_results)
+        return results
 
 
 # Singleton instance

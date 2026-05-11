@@ -5058,6 +5058,85 @@ def _on_invalidate(dbapi_connection, connection_record, exception):
         checkout_task_coro,
     )
 
+
+# =====================================================================
+# PER-EXECUTE TIMING DIAGNOSTIC
+# =====================================================================
+#
+# 2026-05-10: production soak surfaced an 18-second event-loop stall
+# correlated with a single Task-N AsyncSession.execute and an
+# 18.1-second connection-invalidate. The watchdog can name the task
+# but not the SQL — asyncpg's C-level row parser doesn't yield during
+# parse and Python frame introspection lands inside the C extension,
+# so we never get the file:func:lineno of the actual query that froze
+# the loop. The before/after_cursor_execute event pair fires from the
+# SQLAlchemy DBAPI dispatch, which DOES capture the statement text
+# (and bind parameters) before asyncpg takes over — enough to identify
+# the culprit on the next soak.
+#
+# Threshold is intentionally generous (5s): noisy enough to catch real
+# loop-killers without flooding the channel during routine ORM work.
+# We log AT MOST one warning per 30s per (statement-key, threshold-tier)
+# tuple so a hot offender doesn't drown the log file.
+_SLOW_EXECUTE_THRESHOLD_S: float = 5.0
+_SLOW_EXECUTE_LOG_INTERVAL_S: float = 30.0
+_SLOW_EXECUTE_LAST_LOG_AT: dict[str, float] = {}
+_slow_exec_logger = _logging.getLogger("homerun.db.slow_execute")
+
+
+def _statement_key_for_log(statement: str | None) -> str:
+    """Compact key used for dedup-throttling slow-execute warnings.
+
+    Take the first 80 chars of the normalized statement so multiple
+    parameter sets for the same query share a throttle bucket.
+    """
+    if not statement:
+        return "<empty>"
+    return " ".join(str(statement).split())[:80]
+
+
+@_sa_event.listens_for(async_engine.sync_engine, "before_cursor_execute")
+def _slow_execute_before(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+    try:
+        if context is not None:
+            context._slow_execute_started_at = _time.monotonic()
+    except Exception:
+        pass
+
+
+@_sa_event.listens_for(async_engine.sync_engine, "after_cursor_execute")
+def _slow_execute_after(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+    try:
+        started_at = getattr(context, "_slow_execute_started_at", None)
+        if started_at is None:
+            return
+        elapsed = _time.monotonic() - started_at
+        if elapsed < _SLOW_EXECUTE_THRESHOLD_S:
+            return
+        stmt_key = _statement_key_for_log(statement)
+        now = _time.monotonic()
+        last = _SLOW_EXECUTE_LAST_LOG_AT.get(stmt_key, 0.0)
+        if now - last < _SLOW_EXECUTE_LOG_INTERVAL_S:
+            return
+        _SLOW_EXECUTE_LAST_LOG_AT[stmt_key] = now
+        task_name, coro_name = _pool_task_context()
+        # Truncate the full statement for the log line but keep the
+        # leading 400 chars — usually enough to identify the table
+        # and predicates without making the log unreadable.
+        full_stmt = " ".join(str(statement or "").split())
+        stmt_short = full_stmt[:400] + ("…" if len(full_stmt) > 400 else "")
+        _slow_exec_logger.warning(
+            "Slow DB execute %.2fs (task=%s, coro=%s, executemany=%s) sql=%s",
+            elapsed,
+            task_name,
+            coro_name,
+            bool(executemany),
+            stmt_short,
+        )
+    except Exception:
+        pass
+
+
 AsyncSessionLocal = sessionmaker(async_engine, class_=RetryableAsyncSession, expire_on_commit=False)
 
 
