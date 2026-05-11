@@ -709,6 +709,12 @@ async def _run_loop() -> None:
                             "signals": firehose_rows,
                         },
                     )
+                    # Tee to the recorded-event bus for replay — see
+                    # news_worker for the design pattern.
+                    try:
+                        await _publish_trader_activity_to_bus(trader_event, firehose_rows)
+                    except Exception:
+                        logger.warning("recorded_event_bus tee failed for trader_activity", exc_info=True)
                     event_opps = await event_dispatcher.dispatch(trader_event)
                     if event_opps:
                         for opp in event_opps:
@@ -901,4 +907,66 @@ async def start_loop() -> None:
         await _run_loop()
     except asyncio.CancelledError:
         logger.info("Tracked-traders worker shutting down")
+
+
+# ── Recorded-event bus tap ──────────────────────────────────────────
+
+
+_TRADER_ACTIVITY_TOPIC = "trader.activity"
+_trader_topic_registered = False
+
+
+async def _ensure_trader_topic_registered() -> None:
+    """Idempotent topic registration — see news_worker pattern."""
+    global _trader_topic_registered
+    if _trader_topic_registered:
+        return
+    from services.recorded_event_bus.catalog import register_topic
+    from services.external_data.parquet_schema import parquet_root
+    import json
+
+    root = parquet_root()
+    storage_uri = json.dumps({
+        "sources": [{
+            "kind": "parquet",
+            "uri": str(root / "recorded_event_bus" / _TRADER_ACTIVITY_TOPIC),
+        }],
+    })
+    await register_topic(
+        slug=_TRADER_ACTIVITY_TOPIC,
+        title="Trader activity signals (confluence bundle)",
+        description=(
+            "Aggregated signals from the tracked-traders firehose: "
+            "each envelope is one batch of correlated trader actions "
+            "(wallets converging on the same market in the same "
+            "direction).  Subscribed by traders_confluence strategy.  "
+            "Different from wallet.trade — that's raw per-trade events; "
+            "this is the post-aggregation signal bundle."
+        ),
+        storage_kind="parquet",
+        storage_uri=storage_uri,
+        retention_days=30,
+        publishers=["tracked_traders_worker"],
+        subscribers=["traders_confluence"],
+    )
+    _trader_topic_registered = True
+
+
+async def _publish_trader_activity_to_bus(event, firehose_rows: list[dict]) -> None:
+    await _ensure_trader_topic_registered()
+    from services.recorded_event_bus import RecordedEvent, bus as _bus
+    import services.recorded_event_bus.storage  # noqa: F401
+
+    observed_at_us = int(event.timestamp.timestamp() * 1_000_000)
+    envelope = RecordedEvent(
+        topic=_TRADER_ACTIVITY_TOPIC,
+        entity_id="confluence_batch",
+        observed_at_us=observed_at_us,
+        payload={
+            "signals": firehose_rows,
+            "confluence_count": len(firehose_rows),
+        },
+        source="tracked_traders_worker",
+    )
+    await _bus.publish(envelope)
 

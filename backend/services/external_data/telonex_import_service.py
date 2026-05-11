@@ -87,30 +87,77 @@ def _infer_coin_from_slug(slug: Optional[str]) -> str:
     return "pred"
 
 
-def _convert_book_snapshot_5_to_canonical(
+def _to_float_or_none(x: Any) -> Optional[float]:
+    """Telonex stores prices/sizes as decimal strings — tolerate empties
+    and non-numeric junk uniformly across every channel converter."""
+    if x is None or x == "":
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_canonical_snapshot_file(
+    converted_table: Any,
+    *,
+    coin: str,
+    real_asset_id: str,
+    span_start: datetime,
+    span_end: datetime,
+) -> tuple[Path, str, int, datetime, datetime]:
+    """Common write step — every converter ends with the same pa.Table →
+    canonical-path write.  Centralised so the path layout and span-
+    truncation rules stay in one place."""
+    import pyarrow.parquet as pq
+    from services.external_data.parquet_schema import parquet_path_for
+
+    # Truncate span to second precision for a clean window-dir slug.
+    span_start = span_start.replace(microsecond=0)
+    span_end = span_end.replace(microsecond=0)
+    if span_end <= span_start:
+        span_end = span_start + timedelta(seconds=1)
+
+    dest = parquet_path_for(
+        provider=PROVIDER_TELONEX,
+        coin=coin,
+        token_id=real_asset_id,
+        start=span_start,
+        end=span_end,
+        kind="snapshots",
+    )
+    dest.window_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(converted_table, str(dest.file_path), compression="snappy")
+    n = converted_table.num_rows
+    return dest.file_path, real_asset_id, n, span_start, span_end
+
+
+def _convert_book_snapshot_to_canonical(
     src_file: Path,
     *,
     coin: str,
+    expected_levels: int,
 ) -> Optional[tuple[Path, str, int, datetime, datetime]]:
-    """Read a Telonex ``book_snapshot_5`` parquet (one day, one asset)
+    """Read a Telonex ``book_snapshot_{N}`` parquet (one day, one asset)
     and write the equivalent in Homerun's ``SNAPSHOT_SCHEMA`` at the
     canonical layout.
 
+    ``expected_levels`` is informational only — the converter walks
+    columns ``bid_price_0``, ``bid_price_1``, ... until the first
+    missing prefix.  This means book_snapshot_5, book_snapshot_25 and
+    book_snapshot_full (variable depth) all share one code path.
+
     Returns ``(dest_path, real_asset_id, n_rows, span_start, span_end)``
-    or ``None`` if the file is empty / unreadable.  ``span_start`` and
+    or ``None`` if the file is empty / unreadable.  ``span_start`` /
     ``span_end`` are the actual first/last timestamps in the file —
     used by the caller to compute the dataset row's window so that
     ``find_parquet_coverage()`` only matches backtests whose window
-    overlaps the real data span (5-minute binaries only have ~12 min
-    of data, NOT the full calendar day).
+    overlaps the real data span.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from services.external_data.parquet_schema import (
-        SNAPSHOT_SCHEMA,
-        parquet_path_for,
-    )
+    from services.external_data.parquet_schema import SNAPSHOT_SCHEMA
 
     try:
         table = pq.read_table(str(src_file))
@@ -123,14 +170,13 @@ def _convert_book_snapshot_5_to_canonical(
         return None
 
     cols = table.to_pydict()
-    # Defensive: skip if the file isn't actually a book_snapshot_5
-    # (caller is supposed to gate on spec.channel, but make this fn
-    # idempotent against accidental mis-routing).
+    # Defensive — every book_snapshot_N file has timestamp_us, asset_id,
+    # and at least one bid/ask level.
     required = ("timestamp_us", "asset_id", "bid_price_0", "ask_price_0")
     for c in required:
         if c not in cols:
             logger.warning(
-                "telonex_import: %s missing %s — not book_snapshot_5?",
+                "telonex_import: %s missing %s — not a book_snapshot file?",
                 src_file, c,
             )
             return None
@@ -138,25 +184,30 @@ def _convert_book_snapshot_5_to_canonical(
     real_asset_id = cols["asset_id"][0]
     n = len(cols["timestamp_us"])
 
-    def _to_f(x: Any) -> Optional[float]:
-        """Telonex stores L2 prices/sizes as decimal strings.
-        Tolerate empties + non-numeric junk."""
-        if x is None or x == "":
-            return None
-        try:
-            return float(x)
-        except (TypeError, ValueError):
-            return None
+    # Detect actual level depth by walking until the first missing
+    # column.  book_snapshot_full can vary per file, and book_snapshot_5
+    # / _25 should match their expected depth — we accept whatever the
+    # file actually contains.
+    actual_levels = 0
+    while f"bid_price_{actual_levels}" in cols and f"ask_price_{actual_levels}" in cols:
+        actual_levels += 1
+    if actual_levels == 0:
+        return None
+    if expected_levels and actual_levels < expected_levels:
+        logger.info(
+            "telonex_import: %s declared book_snapshot_%d but file only has %d levels",
+            src_file, expected_levels, actual_levels,
+        )
 
-    # Per-row L2 ladders.  Telonex emits exactly 5 levels per side; drop
-    # Nones so the float list isn't sparse (the backtester expects
-    # parallel-indexed price/size lists with no padding).
+    # Per-row L2 ladders.  Drop Nones so the float list isn't sparse
+    # (the backtester expects parallel-indexed price/size lists with no
+    # padding — the first None terminates the ladder for that row).
     def _ladder(prefix: str) -> list[list[float]]:
         out: list[list[float]] = []
         for r in range(n):
             row: list[float] = []
-            for i in range(5):
-                v = _to_f(cols[f"{prefix}{i}"][r])
+            for i in range(actual_levels):
+                v = _to_float_or_none(cols[f"{prefix}{i}"][r])
                 if v is not None:
                     row.append(v)
                 else:
@@ -191,29 +242,258 @@ def _convert_book_snapshot_5_to_canonical(
         schema=SNAPSHOT_SCHEMA,
     )
 
-    # The actual data span — for 5-min binaries this is ~12 min, not
-    # the whole calendar day.  Truncate to second precision for a
-    # clean window-dir slug.
     first_us = int(cols["timestamp_us"][0])
     last_us = int(cols["timestamp_us"][-1])
-    span_start = datetime.fromtimestamp(first_us / 1e6, tz=timezone.utc).replace(microsecond=0)
-    span_end = datetime.fromtimestamp(last_us / 1e6, tz=timezone.utc).replace(microsecond=0)
-    if span_end <= span_start:
-        # Single-tick file → give it a 1s window so the path slug
-        # has distinct start/end timestamps.
-        span_end = span_start + timedelta(seconds=1)
+    span_start = datetime.fromtimestamp(first_us / 1e6, tz=timezone.utc)
+    span_end = datetime.fromtimestamp(last_us / 1e6, tz=timezone.utc)
 
-    dest = parquet_path_for(
-        provider=PROVIDER_TELONEX,
+    return _write_canonical_snapshot_file(
+        converted,
         coin=coin,
-        token_id=real_asset_id,
-        start=span_start,
-        end=span_end,
-        kind="snapshots",
+        real_asset_id=real_asset_id,
+        span_start=span_start,
+        span_end=span_end,
     )
-    dest.window_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_table(converted, str(dest.file_path), compression="snappy")
-    return dest.file_path, real_asset_id, n, span_start, span_end
+
+
+def _convert_quotes_to_canonical(
+    src_file: Path,
+    *,
+    coin: str,
+) -> Optional[tuple[Path, str, int, datetime, datetime]]:
+    """Read a Telonex ``quotes`` parquet (best-bid / best-ask only) and
+    write the equivalent in Homerun's ``SNAPSHOT_SCHEMA``.
+
+    Quotes are effectively book_snapshot_1: one level per side per row.
+    We populate ``best_bid``/``best_ask`` directly and emit a
+    single-element ``bids_price``/``asks_price`` list per row so
+    book-driven strategies that read the ladder still see something.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from services.external_data.parquet_schema import SNAPSHOT_SCHEMA
+
+    try:
+        table = pq.read_table(str(src_file))
+    except Exception as exc:
+        logger.warning("telonex_import: unreadable parquet %s: %s", src_file, exc)
+        return None
+    if table.num_rows == 0:
+        return None
+
+    cols = table.to_pydict()
+    # Telonex quotes columns (per Tardis spec): timestamp_us, asset_id,
+    # bid_price, bid_amount (or bid_size), ask_price, ask_amount.
+    # Tolerate both _amount and _size naming conventions.
+    required = ("timestamp_us", "asset_id")
+    for c in required:
+        if c not in cols:
+            logger.warning("telonex_import: %s missing %s — not quotes?", src_file, c)
+            return None
+
+    def _pick(*names: str) -> Optional[list]:
+        for nm in names:
+            if nm in cols:
+                return cols[nm]
+        return None
+
+    bid_p_col = _pick("bid_price")
+    ask_p_col = _pick("ask_price")
+    bid_s_col = _pick("bid_amount", "bid_size")
+    ask_s_col = _pick("ask_amount", "ask_size")
+    if bid_p_col is None or ask_p_col is None:
+        logger.warning("telonex_import: %s missing bid_price/ask_price", src_file)
+        return None
+
+    real_asset_id = cols["asset_id"][0]
+    n = len(cols["timestamp_us"])
+
+    bid_p = [_to_float_or_none(x) for x in bid_p_col]
+    ask_p = [_to_float_or_none(x) for x in ask_p_col]
+    bid_s = [_to_float_or_none(x) for x in (bid_s_col or [None] * n)]
+    ask_s = [_to_float_or_none(x) for x in (ask_s_col or [None] * n)]
+
+    bids_price_list = [[bp] if bp is not None else [] for bp in bid_p]
+    bids_size_list = [
+        [bs] if (bid_p[i] is not None and bs is not None) else []
+        for i, bs in enumerate(bid_s)
+    ]
+    asks_price_list = [[ap] if ap is not None else [] for ap in ask_p]
+    asks_size_list = [
+        [s] if (ask_p[i] is not None and s is not None) else []
+        for i, s in enumerate(ask_s)
+    ]
+
+    converted = pa.table(
+        {
+            "token_id":       pa.array([real_asset_id] * n, pa.string()),
+            "observed_at_us": pa.array(cols["timestamp_us"], pa.int64()),
+            "sequence":       pa.array([None] * n, pa.int64()),
+            "best_bid":       pa.array(bid_p, pa.float64()),
+            "best_ask":       pa.array(ask_p, pa.float64()),
+            "spread_bps":     pa.array([None] * n, pa.float64()),
+            "bids_price":     pa.array(bids_price_list, pa.list_(pa.float64())),
+            "bids_size":      pa.array(bids_size_list, pa.list_(pa.float64())),
+            "asks_price":     pa.array(asks_price_list, pa.list_(pa.float64())),
+            "asks_size":      pa.array(asks_size_list, pa.list_(pa.float64())),
+            "trade_price":    pa.array([None] * n, pa.float64()),
+            "trade_size":     pa.array([None] * n, pa.float64()),
+            "trade_side":     pa.array([None] * n, pa.string()),
+        },
+        schema=SNAPSHOT_SCHEMA,
+    )
+
+    first_us = int(cols["timestamp_us"][0])
+    last_us = int(cols["timestamp_us"][-1])
+    span_start = datetime.fromtimestamp(first_us / 1e6, tz=timezone.utc)
+    span_end = datetime.fromtimestamp(last_us / 1e6, tz=timezone.utc)
+
+    return _write_canonical_snapshot_file(
+        converted,
+        coin=coin,
+        real_asset_id=real_asset_id,
+        span_start=span_start,
+        span_end=span_end,
+    )
+
+
+def _convert_trades_to_canonical(
+    src_file: Path,
+    *,
+    coin: str,
+) -> Optional[tuple[Path, str, int, datetime, datetime]]:
+    """Read a Telonex ``trades`` parquet and write per-trade rows into
+    Homerun's ``SNAPSHOT_SCHEMA``.
+
+    Trades have no book state — we populate the ``trade_price``,
+    ``trade_size``, ``trade_side`` columns and leave book fields null.
+    The backtester's hybrid replay still consumes these rows correctly
+    (it routes per-snapshot based on which columns are non-null), and
+    trade-flow strategies (VPIN, toxicity) read directly off them.
+
+    Also writes ``onchain_fills`` since the schema is effectively the
+    same (timestamp + asset_id + price + size + side, with the
+    side semantics differing only by maker/taker convention which we
+    normalise to BUY/SELL).
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from services.external_data.parquet_schema import SNAPSHOT_SCHEMA
+
+    try:
+        table = pq.read_table(str(src_file))
+    except Exception as exc:
+        logger.warning("telonex_import: unreadable parquet %s: %s", src_file, exc)
+        return None
+    if table.num_rows == 0:
+        return None
+
+    cols = table.to_pydict()
+    if "timestamp_us" not in cols or "asset_id" not in cols:
+        logger.warning(
+            "telonex_import: %s missing timestamp_us/asset_id — not trades?", src_file,
+        )
+        return None
+
+    def _pick(*names: str) -> Optional[list]:
+        for nm in names:
+            if nm in cols:
+                return cols[nm]
+        return None
+
+    price_col = _pick("price", "trade_price", "fill_price")
+    size_col = _pick("amount", "size", "trade_amount", "trade_size", "fill_amount")
+    side_col = _pick("side", "taker_side", "aggressor_side", "trade_side")
+    if price_col is None or size_col is None:
+        logger.warning(
+            "telonex_import: %s missing price/size — not trades?", src_file,
+        )
+        return None
+
+    real_asset_id = cols["asset_id"][0]
+    n = len(cols["timestamp_us"])
+
+    trade_p = [_to_float_or_none(x) for x in price_col]
+    trade_s = [_to_float_or_none(x) for x in size_col]
+    # Normalise side to BUY/SELL strings (some channels use buy/sell,
+    # b/s, maker/taker; we just lowercase + first-letter map).
+    def _norm_side(x: Any) -> Optional[str]:
+        if x is None:
+            return None
+        s = str(x).strip().lower()
+        if not s:
+            return None
+        if s.startswith("b"):
+            return "BUY"
+        if s.startswith("s"):
+            return "SELL"
+        # maker/taker fills don't carry direction — leave null
+        return None
+
+    if side_col is not None:
+        trade_side = [_norm_side(x) for x in side_col]
+    else:
+        trade_side = [None] * n
+
+    converted = pa.table(
+        {
+            "token_id":       pa.array([real_asset_id] * n, pa.string()),
+            "observed_at_us": pa.array(cols["timestamp_us"], pa.int64()),
+            "sequence":       pa.array([None] * n, pa.int64()),
+            "best_bid":       pa.array([None] * n, pa.float64()),
+            "best_ask":       pa.array([None] * n, pa.float64()),
+            "spread_bps":     pa.array([None] * n, pa.float64()),
+            "bids_price":     pa.array([[] for _ in range(n)], pa.list_(pa.float64())),
+            "bids_size":      pa.array([[] for _ in range(n)], pa.list_(pa.float64())),
+            "asks_price":     pa.array([[] for _ in range(n)], pa.list_(pa.float64())),
+            "asks_size":      pa.array([[] for _ in range(n)], pa.list_(pa.float64())),
+            "trade_price":    pa.array(trade_p, pa.float64()),
+            "trade_size":     pa.array(trade_s, pa.float64()),
+            "trade_side":     pa.array(trade_side, pa.string()),
+        },
+        schema=SNAPSHOT_SCHEMA,
+    )
+
+    first_us = int(cols["timestamp_us"][0])
+    last_us = int(cols["timestamp_us"][-1])
+    span_start = datetime.fromtimestamp(first_us / 1e6, tz=timezone.utc)
+    span_end = datetime.fromtimestamp(last_us / 1e6, tz=timezone.utc)
+
+    return _write_canonical_snapshot_file(
+        converted,
+        coin=coin,
+        real_asset_id=real_asset_id,
+        span_start=span_start,
+        span_end=span_end,
+    )
+
+
+# Channel → converter dispatch.  Lets ``import_range`` stay agnostic
+# about which channel the operator picked — every channel runs the same
+# download-then-convert-then-register pipeline.
+_CHANNEL_CONVERTERS: dict[str, Any] = {
+    "book_snapshot_5":    lambda p, *, coin: _convert_book_snapshot_to_canonical(p, coin=coin, expected_levels=5),
+    "book_snapshot_25":   lambda p, *, coin: _convert_book_snapshot_to_canonical(p, coin=coin, expected_levels=25),
+    "book_snapshot_full": lambda p, *, coin: _convert_book_snapshot_to_canonical(p, coin=coin, expected_levels=0),
+    "quotes":             lambda p, *, coin: _convert_quotes_to_canonical(p, coin=coin),
+    "trades":             lambda p, *, coin: _convert_trades_to_canonical(p, coin=coin),
+    "onchain_fills":      lambda p, *, coin: _convert_trades_to_canonical(p, coin=coin),
+}
+
+
+def _convert_book_snapshot_5_to_canonical(
+    src_file: Path,
+    *,
+    coin: str,
+) -> Optional[tuple[Path, str, int, datetime, datetime]]:
+    """Back-compat thin wrapper.  Kept so any external callers /
+    tests importing the old name keep working — all new code should
+    call ``_convert_book_snapshot_to_canonical`` directly."""
+    return _convert_book_snapshot_to_canonical(
+        src_file, coin=coin, expected_levels=5,
+    )
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -355,6 +635,24 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
     # Used after the download loop to register the canonical
     # provider_datasets row pointing at the converted files.
     canonical_outputs: list[tuple[str, Path, str, int, datetime, datetime]] = []
+    # Telonex enforces "exactly one of asset_id | market_id+outcome |
+    # slug+outcome".  When asset_id is set, suppress the others on the
+    # wire even if our spec carries them (we still keep ``spec.slug``
+    # locally for coin inference / labeling — the API just doesn't want
+    # to see both).  Same when market_id is set (slug becomes wire-only
+    # noise).
+    if spec.asset_id:
+        wire_market_id, wire_slug = None, None
+        wire_outcome, wire_outcome_id = None, None
+    elif spec.market_id:
+        wire_market_id = spec.market_id
+        wire_slug = None
+        wire_outcome, wire_outcome_id = spec.outcome, spec.outcome_id
+    else:
+        wire_market_id = None
+        wire_slug = spec.slug
+        wire_outcome, wire_outcome_id = spec.outcome, spec.outcome_id
+
     try:
         for d in days:
             target_path = target_dir / f"{d}.parquet"
@@ -365,10 +663,10 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
                     date=d,
                     target_path=target_path,
                     asset_id=spec.asset_id,
-                    market_id=spec.market_id,
-                    slug=spec.slug,
-                    outcome=spec.outcome,
-                    outcome_id=spec.outcome_id,
+                    market_id=wire_market_id,
+                    slug=wire_slug,
+                    outcome=wire_outcome,
+                    outcome_id=wire_outcome_id,
                 )
             except TelonexNotFoundError as exc:
                 # No data for this day — log + continue with the rest
@@ -403,13 +701,14 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
             ))
             # Convert the Telonex-native parquet → Homerun's
             # SNAPSHOT_SCHEMA at the canonical layout so the
-            # backtester can read it directly.  Only book_snapshot_5
-            # is supported for now — other channels (trades / quotes)
-            # don't yet have a converter; they remain registered as
-            # ``telonex_parquet`` for audit-only access.
-            if spec.channel == "book_snapshot_5":
+            # backtester can read it directly.  Every documented
+            # Telonex channel has a converter registered in
+            # ``_CHANNEL_CONVERTERS``; unknown channels fall through to
+            # the legacy ``telonex_parquet`` audit-only registration.
+            converter = _CHANNEL_CONVERTERS.get(spec.channel)
+            if converter is not None:
                 try:
-                    converted = _convert_book_snapshot_5_to_canonical(
+                    converted = converter(
                         target_path,
                         coin=_infer_coin_from_slug(spec.slug),
                     )
@@ -417,8 +716,9 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
                         canonical_outputs.append((d, *converted))
                 except Exception:
                     logger.exception(
-                        "telonex_import: schema conversion failed for %s",
-                        target_path,
+                        "telonex_import: schema conversion failed for %s "
+                        "(channel=%s)",
+                        target_path, spec.channel,
                     )
     finally:
         # Always update the cached quota counter when we observed one,
@@ -629,6 +929,17 @@ async def _register_canonical_dataset(
             row.last_imported_at = datetime.now(timezone.utc)
             row.payload_json = payload
         await session.commit()
+
+    # Bus catalog: the federated ``polymarket.book.snapshot`` topic
+    # already includes ``data/parquet/telonex/`` as one of its members
+    # (see SEED_TOPICS in services.recorded_event_bus.catalog), and
+    # the external_parquet adapter walks recursively to find every
+    # coin / window directory under that root.  So a Telonex import
+    # is automatically visible through the bus the moment its files
+    # land on disk — no per-channel topic registration required.
+    #
+    # The legacy ``provider_datasets`` row we write above keeps the
+    # operator-facing "what windows have I imported" audit log intact.
 
     return dataset_id, storage_uri
 

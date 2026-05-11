@@ -351,7 +351,21 @@ class LiveMarketDataIngestor:
           5. Update running state (bids, asks, last_observed_at).
           6. If snapshot throttle window has elapsed for this token,
              enqueue a full ``MarketMicrostructureSnapshot`` row.
-        """
+
+        Recorded-event bus contract: this hot path deliberately does
+        NOT call ``bus.publish`` for ``polymarket.book.snapshot`` or
+        ``polymarket.book.delta``.  Any await here would compete with
+        the orchestrator's sub-second decision loop.  The bus exposes
+        both topics as sql_table adapters reading the same
+        ``market_microstructure_snapshots`` / ``book_delta_events``
+        rows this ingestor writes — subscribers consuming via
+        ``bus.replay`` see identical data, ~500ms behind live (the
+        flush cadence) for the snapshot stream and within the delta
+        flush window for the delta stream.  Strategies that need
+        microsecond-fresh book state continue to use the existing
+        feed-manager callback path; the bus is the unified API for
+        everything that can tolerate the flush latency, which
+        includes every backtest replay path."""
         normalized_token = str(token_id or "").strip().lower()
         if not normalized_token:
             return

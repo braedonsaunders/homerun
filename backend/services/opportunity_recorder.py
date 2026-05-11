@@ -79,6 +79,18 @@ class OpportunityRecorder:
         if not opportunities:
             return
 
+        # Tee to the recorded-event bus for live subscribers + future
+        # cross-topic replay.  Best-effort: bus failures are logged
+        # and swallowed so the primary SQL write below is never blocked.
+        # The bus's ``opportunity.detected`` topic is sql_table-backed
+        # (storage adapter wraps the OpportunityHistory table we
+        # write below) so we don't double-persist — the bus only
+        # fans out to live subscribers.
+        try:
+            await _publish_opportunities_to_bus(opportunities)
+        except Exception:  # noqa: BLE001
+            logger.warning("recorded_event_bus opportunity fan-out failed", exc_info=True)
+
         new_count = 0
         for attempt in range(DB_RETRY_ATTEMPTS):
             try:
@@ -753,6 +765,49 @@ class OpportunityRecorder:
                 # Take the maximum final price (the winning outcome)
                 total_payout += max(prices)
         return total_payout
+
+
+async def _publish_opportunities_to_bus(opportunities: list[Opportunity]) -> None:
+    """Fan-out helper: publish each Opportunity as a ``opportunity.detected``
+    envelope on the recorded-event bus.
+
+    This is a fan-out tap, NOT a persistence path — the
+    ``opportunity.detected`` topic is sql_table-backed by
+    ``opportunity_history`` (which this same recorder writes to a few
+    lines below), so writing through the bus would double-persist.
+    The point of this tap is live subscribers: any new strategy /
+    monitoring component can ``bus.subscribe('opportunity.detected', ...)``
+    instead of having to be wired into ``scanner.add_callback`` by hand.
+    """
+    from datetime import datetime, timezone
+    from services.recorded_event_bus import RecordedEvent, bus
+    envelopes: list[RecordedEvent] = []
+    now_us = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+    for opp in opportunities:
+        detected_at = getattr(opp, "detected_at", None)
+        if detected_at is not None:
+            if detected_at.tzinfo is None:
+                detected_at = detected_at.replace(tzinfo=timezone.utc)
+            obs_us = int(detected_at.timestamp() * 1_000_000)
+        else:
+            obs_us = now_us
+        envelopes.append(RecordedEvent(
+            topic="opportunity.detected",
+            entity_id=str(opp.id),
+            observed_at_us=obs_us,
+            ingested_at_us=now_us,
+            source="scanner",
+            payload={
+                "strategy": getattr(opp, "strategy", None),
+                "title": getattr(opp, "title", None),
+                "total_cost": getattr(opp, "total_cost", None),
+                "expected_roi": getattr(opp, "roi_percent", None),
+                "risk_score": getattr(opp, "risk_score", None),
+                "event_id": getattr(opp, "event_id", None),
+            },
+        ))
+    if envelopes:
+        await bus.publish_many(envelopes)
 
 
 # Singleton

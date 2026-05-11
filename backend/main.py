@@ -54,6 +54,7 @@ from api.routes_anomaly import anomaly_router
 from api.routes_backtest import router as backtest_router
 from api.routes_dataset import router as dataset_router
 from api.routes_providers import router as providers_router
+from api.routes_topic_catalog import router as topic_catalog_router
 from api.routes_strategy_reverse_engineer import router as strategy_re_router
 from api.routes_fill_model import router as fill_model_router
 from api.routes_orchestrator_live import router as orchestrator_live_router
@@ -317,6 +318,21 @@ async def lifespan(app: FastAPI):
         # Initialize database
         await init_database()
         logger.info("Database initialized")
+
+        # Initialise the recorded-event bus: seed the well-known
+        # topics that wrap pre-existing SQL tables, attach the
+        # parquet writer/replayer, start the rotation pruner.  All of
+        # this is fast and idempotent — does not block startup on
+        # failure.
+        try:
+            from services.recorded_event_bus.catalog import ensure_seed_topics
+            import services.recorded_event_bus.storage  # noqa: F401 — attach storage hooks
+            from services.recorded_event_bus.pruner import start_pruner
+            await ensure_seed_topics()
+            await start_pruner()
+            logger.info("Recorded-event bus initialized (catalog seeded, storage attached, pruner started)")
+        except Exception:  # noqa: BLE001
+            logger.exception("Recorded-event bus init failed; bus topics will be unavailable")
 
         # Bring up the Redis client pool.  Soft dependency: failures are
         # logged but do not abort startup — every consumer falls back to
@@ -944,6 +960,17 @@ async def lifespan(app: FastAPI):
             except Exception:
                 pass
 
+        # Drain any pending recorded-event-bus parquet writes so we
+        # don't lose the ring on a clean shutdown.  Idempotent — no
+        # harm if the bus was never imported / never published anything.
+        try:
+            from services.recorded_event_bus.storage import shutdown_parquet_backend
+            from services.recorded_event_bus.pruner import stop_pruner
+            await stop_pruner()
+            await shutdown_parquet_backend()
+        except Exception:
+            pass
+
         await snapshot_broadcaster.stop()
         wallet_tracker.stop()
         wallet_discovery.stop()
@@ -1109,6 +1136,7 @@ app.include_router(anomaly_router, prefix="/api/anomaly", tags=["Anomaly Detecti
 app.include_router(backtest_router, prefix="/api", tags=["Backtest"])
 app.include_router(dataset_router, prefix="/api", tags=["Dataset"])
 app.include_router(providers_router, prefix="/api", tags=["Providers"])
+app.include_router(topic_catalog_router, prefix="/api", tags=["Topic Catalog"])
 app.include_router(strategy_re_router, prefix="/api", tags=["Strategy Reverse-Engineer"])
 app.include_router(fill_model_router, prefix="/api", tags=["Fill Model"])
 app.include_router(orchestrator_live_router, prefix="/api", tags=["Trader Orchestrator"])

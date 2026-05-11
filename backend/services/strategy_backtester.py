@@ -15,7 +15,7 @@ import time
 import traceback
 from copy import deepcopy
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from models.database import AsyncSessionLocal
@@ -2009,7 +2009,8 @@ class _SyntheticOpp:
     downstream code can downweight if needed.
     """
 
-    __slots__ = ("strategy_type", "detected_at", "positions_data",
+    __slots__ = ("id", "stable_id", "strategy", "strategy_type",
+                 "detected_at", "positions_data",
                  "title", "event_id", "_synthetic")
 
     def __init__(
@@ -2022,11 +2023,28 @@ class _SyntheticOpp:
         event_id: str | None = None,
     ) -> None:
         self.strategy_type = strategy_type
+        # ``strategy`` mirrors ``strategy_type`` — the matcher reads
+        # ``opp.strategy`` when building ``TradeIntent.strategy_slug``
+        # (see ``strategy_backtester:4730``); without it the slug
+        # falls back to the run slug and downstream attribution
+        # silently loses the strategy origin.
+        self.strategy = strategy_type
         self.detected_at = detected_at
         self.positions_data = positions_data
         self.title = title
         self.event_id = event_id
         self._synthetic = True
+        # The matcher builds intents via ``f"opp_{opp.id}_{idx}"`` and
+        # ``str(opp.id)`` so synthetic opps need a stable id even
+        # though they were never persisted.  Derive a deterministic id
+        # from (strategy_type, detected_at, title) so repeated detect()
+        # calls at the same tick reuse the same id rather than minting
+        # a fresh uuid every loop.
+        import hashlib as _hashlib
+        seed = f"{strategy_type}|{detected_at.isoformat() if detected_at else ''}|{title}|{event_id or ''}"
+        digest = _hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+        self.id = f"syn_{digest}"
+        self.stable_id = self.id
 
 
 # ── Replay event sourcing ─────────────────────────────────────────────────
@@ -2587,6 +2605,131 @@ def _build_token_to_market_lookup(catalog_markets: list[Any]) -> dict[str, dict[
     return out
 
 
+async def _replay_bus_events_into_tick_grid(
+    *,
+    strategy: Any,
+    start_dt: datetime,
+    ticks: list[datetime],
+    actual_interval: float,
+    n_ticks: int,
+    events_by_tick: list[list[Any]],
+    candidate_token_ids: list[str] | None,
+    catalog_markets: list[Any],
+) -> int:
+    """Stream events for ``strategy.subscriptions`` through the
+    recorded-event bus and bin them into ``events_by_tick`` for the
+    discovery loop.
+
+    For ``crypto.update.dispatch`` envelopes we synthesise the same
+    ``DataEvent(event_type=CRYPTO_UPDATE, ...)`` shape the live
+    market_runtime emits, so the strategy's detect_async iterates a
+    drop-in replacement for the live event stream.
+
+    For other topics (future news.gdelt.* / external.telonex.*) the
+    bridge can grow per-topic projectors here as strategies start
+    subscribing to them.  The bridge is the one place that knows how
+    to translate "bus envelope" → "strategy-shaped event payload."
+
+    Returns the number of bus envelopes binned.  Best-effort: any
+    failure is logged and swallowed (the existing wallet_trade /
+    book-driven paths keep working).
+    """
+    try:
+        from services.recorded_event_bus.backtest_bridge import (
+            replay_events_for_strategy, resolve_subscriptions_to_topics,
+        )
+        import services.recorded_event_bus.storage  # noqa: F401 -- attach
+        from services.data_events import DataEvent, EventType
+    except Exception:
+        return 0
+
+    subs = getattr(strategy, "subscriptions", None) or []
+    topics = resolve_subscriptions_to_topics(subs)
+    if not topics:
+        return 0
+
+    # Topic-specific projector: bus envelope → the shape strategy
+    # detect() expects in ``events`` list.  Each entry reconstructs
+    # the exact DataEvent shape the live event_dispatcher would have
+    # delivered, so detect() can't tell live from replay.
+    def _project(envelope: Any) -> Any | None:
+        t = envelope.topic
+        ts = datetime.fromtimestamp(envelope.observed_at_us / 1_000_000, tz=timezone.utc)
+        if t == "crypto.update.dispatch":
+            return DataEvent(
+                event_type=EventType.CRYPTO_UPDATE,
+                source=envelope.source or "market_runtime",
+                timestamp=ts,
+                payload=dict(envelope.payload or {}),
+            )
+        if t == "news.update":
+            return DataEvent(
+                event_type=EventType.NEWS_UPDATE,
+                source=envelope.source or "news_worker",
+                timestamp=ts,
+                payload=dict(envelope.payload or {}),
+            )
+        if t == "weather.update":
+            return DataEvent(
+                event_type=EventType.WEATHER_UPDATE,
+                source=envelope.source or "weather_worker",
+                timestamp=ts,
+                payload=dict(envelope.payload or {}),
+            )
+        if t == "trader.activity":
+            return DataEvent(
+                event_type=EventType.TRADER_ACTIVITY,
+                source=envelope.source or "tracked_traders_worker",
+                timestamp=ts,
+                payload=dict(envelope.payload or {}),
+            )
+        if t == "polymarket.trade.execution":
+            ev = DataEvent(
+                event_type=EventType.TRADE_EXECUTION,
+                source=envelope.source or "polymarket_ws",
+                timestamp=ts,
+                payload=dict(envelope.payload or {}),
+            )
+            # TRADE_EXECUTION on live carries token_id as an attribute,
+            # not in payload — match that shape so vpin_toxicity's
+            # ``event.token_id`` access works in backtest too.
+            try:
+                ev.token_id = envelope.entity_id
+            except Exception:
+                pass
+            return ev
+        # ``wallet.trade`` is also routed through this bridge for new
+        # code, but the existing wallet_trade special case in
+        # ``_replay_discover_opportunities`` covers it.  Skip here so
+        # we don't double-bin.
+        if t == "wallet.trade":
+            return None
+        # Default: return the envelope as-is.  Strategies subscribing
+        # to new topics declare what shape they want; until they exist
+        # we just pass the envelope through.
+        return envelope
+
+    n_binned = 0
+    async for envelope in replay_events_for_strategy(
+        strategy=strategy,
+        start_dt=start_dt,
+        end_dt=ticks[-1] + (ticks[-1] - ticks[-2] if len(ticks) >= 2 else timedelta(seconds=actual_interval)),
+        entity_filter=None,
+    ):
+        shaped = _project(envelope)
+        if shaped is None:
+            continue
+        # Bin into the tick whose right edge is closest >= envelope time.
+        ev_ts = datetime.fromtimestamp(envelope.observed_at_us / 1_000_000, tz=timezone.utc)
+        offset = (ev_ts - start_dt).total_seconds()
+        if offset < 0:
+            continue
+        idx = min(n_ticks - 1, int(offset // max(actual_interval, 1)))
+        events_by_tick[idx].append(shaped)
+        n_binned += 1
+    return n_binned
+
+
 def _wallet_event_to_strategy_input(
     event: Any, *, market_payload: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -2739,6 +2882,7 @@ async def _build_per_tick_prices_grid(
     ticks: list[datetime],
     end_dt: datetime,
     use_deltas: bool,
+    parquet_coverage: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any] | None]]:
     """For each token, return per-tick price state lists (length =
     len(ticks)).  Each entry is ``{best_bid, best_ask, mid, price,
@@ -2748,26 +2892,70 @@ async def _build_per_tick_prices_grid(
     Streams the chosen source ONCE; bins into ticks at boundary
     crossings.  Truncations on the underlying replay are ignored — the
     grid simply reflects whatever state the replay was able to produce.
+
+    When ``parquet_coverage`` is supplied (mapping token_id → parquet
+    file path), the function routes those tokens through
+    ``ParquetBookReplay`` and only the remaining tokens through the
+    SQL backend — mirroring the per-token routing the matcher uses.
+    Without this, operator-imported Telonex parquet data would be
+    invisible to discovery (matcher matches against it, but detect()
+    never sees the book → 0 opps discovered → 0 trades).
     """
     if not token_ids or not ticks:
         return {}
-    from services.backtest.book_replay import BookDeltaReplay, BookReplay
+    from services.backtest.book_replay import (
+        BookDeltaReplay, BookReplay, HybridBookSource,
+    )
+    from services.backtest.parquet_replay import ParquetBookReplay
 
-    if use_deltas:
-        replay: Any = BookDeltaReplay(
-            session=session,
-            token_ids=token_ids,
+    parquet_coverage = parquet_coverage or {}
+    sql_tokens = [t for t in token_ids if t not in parquet_coverage]
+    parquet_tokens = [t for t in token_ids if t in parquet_coverage]
+
+    backends: dict[str, Any] = {}
+    routing: dict[str, str] = {}
+    if parquet_tokens:
+        backends["parquet"] = ParquetBookReplay(
+            per_token_files={t: parquet_coverage[t] for t in parquet_tokens},
             start=ticks[0],
             end=end_dt,
         )
+        for t in parquet_tokens:
+            routing[t] = "parquet"
+
+    if sql_tokens:
+        if use_deltas:
+            backends["deltas"] = BookDeltaReplay(
+                session=session,
+                token_ids=sql_tokens,
+                start=ticks[0],
+                end=end_dt,
+            )
+            for t in sql_tokens:
+                routing[t] = "deltas"
+        else:
+            backends["snapshots"] = BookReplay(
+                session=session,
+                token_ids=sql_tokens,
+                start=ticks[0],
+                end=end_dt,
+                snapshot_type="book",
+            )
+            for t in sql_tokens:
+                routing[t] = "snapshots"
+
+    if not backends:
+        return {}
+
+    # When the only backend is the SQL one, use it directly — avoid
+    # the HybridBookSource heap-merge overhead for the trivial case.
+    # When parquet is involved, MUST use the hybrid because the parquet
+    # backend yields its own snapshots that need to be interleaved
+    # chronologically with any SQL stream.
+    if len(backends) == 1:
+        replay: Any = next(iter(backends.values()))
     else:
-        replay = BookReplay(
-            session=session,
-            token_ids=token_ids,
-            start=ticks[0],
-            end=end_dt,
-            snapshot_type="book",
-        )
+        replay = HybridBookSource(backends=backends, routing=routing)
 
     cur_state: dict[str, dict[str, Any]] = {}
     grid: dict[str, list[dict[str, Any] | None]] = {}
@@ -2959,6 +3147,26 @@ async def _replay_discover_opportunities(
                     start_dt=start_dt,
                     end_dt=end_dt,
                 )
+            # Resolve parquet coverage so tokens with operator-imported
+            # Telonex / canonical parquet data flow through
+            # ParquetBookReplay in the grid build — matching the per-
+            # token routing the matcher does later in the pipeline.
+            # Without this, parquet-only tokens would have empty grid
+            # entries and detect() never sees them.
+            parquet_cov_for_grid: dict[str, str] = {}
+            try:
+                from services.external_data import parquet_scanner as _pq_scan
+                await _pq_scan.ensure_recent_scan(max_age_seconds=60.0)
+                parquet_cov_for_grid = await _pq_scan.find_parquet_coverage(
+                    token_ids=all_token_ids,
+                    start=start_dt,
+                    end=end_dt,
+                )
+            except Exception as _pq_exc:
+                logger.warning(
+                    "replay_discover: parquet coverage lookup failed: %s",
+                    _pq_exc,
+                )
             try:
                 grid = await _build_per_tick_prices_grid(
                     session=price_session,
@@ -2966,6 +3174,7 @@ async def _replay_discover_opportunities(
                     ticks=ticks,
                     end_dt=end_dt,
                     use_deltas=chosen_use_deltas,
+                    parquet_coverage=parquet_cov_for_grid,
                 )
             except Exception as exc:
                 logger.warning("replay_discover: price grid build failed: %s", exc)
@@ -2976,6 +3185,36 @@ async def _replay_discover_opportunities(
     # delivery cadence the live scanner sees.
     events_by_tick: list[list[Any]] = [[] for _ in range(n_ticks)]
     wallet_event_truncated = False
+
+    # ── Recorded-event bus replay path ─────────────────────────────
+    #
+    # For strategies whose subscriptions resolve to bus topics
+    # (crypto.update.dispatch, future news.gdelt.* / external.telonex.*,
+    # etc.) the bus is the unified replay surface.  Closes the
+    # un-backtestable-strategy gap that previously left the entire
+    # btc_eth_* / crypto_* family with events=[].
+    #
+    # Falls back to a no-op on errors so the existing wallet_trade
+    # special case + book-driven path keep working unchanged.
+    try:
+        bus_event_count = await _replay_bus_events_into_tick_grid(
+            strategy=strategy,
+            start_dt=start_dt,
+            ticks=ticks,
+            actual_interval=actual_interval,
+            n_ticks=n_ticks,
+            events_by_tick=events_by_tick,
+            candidate_token_ids=candidate_token_ids,
+            catalog_markets=catalog_markets,
+        )
+        if bus_event_count:
+            logger.info(
+                "replay_discover: bus replay binned %d events across %d ticks",
+                bus_event_count, n_ticks,
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("replay_discover: bus event replay failed", exc_info=True)
+
     if event_kind == "wallet_trade":
         market_lookup = _build_token_to_market_lookup(catalog_markets)
         scope_wallets = _extract_scope_wallets(strategy)
@@ -3317,6 +3556,15 @@ async def _measure_data_coverage(
     coverage["tokens_with_deltas"] = len(deltas_per_token)
     coverage["snapshots_total"] = sum(snaps_per_token.values())
     coverage["deltas_total"] = sum(deltas_per_token.values())
+    # Per-token counts — surfaced so the matcher's source router can
+    # pick the best backend PER TOKEN instead of globally.  Without
+    # these, a window where some tokens have dense deltas and others
+    # have dense snapshots gets routed by the dominant source for the
+    # WHOLE run, losing data from every token whose backing isn't
+    # the global winner.
+    coverage["snaps_per_token"] = dict(snaps_per_token)
+    coverage["deltas_per_token"] = dict(deltas_per_token)
+    coverage["window_hours"] = float(window_hours)
 
     # Per-token-per-hour rates.  Tokens with 0 snapshots are included as
     # zeros so the median reflects the WHOLE opp universe, not just the
@@ -4025,14 +4273,23 @@ async def run_execution_backtest(
                         # tokens HAVE any data; this tells them whether that
                         # data is dense enough to trust the fill simulation.
                         if fidelity in ("low", "none"):
+                            # The matcher's per-token router (in the
+                            # source-selection block further down) WILL
+                            # route any token whose deltas materially
+                            # outweigh its snapshots to BookDeltaReplay.
+                            # So the headline rate above understates
+                            # actual fidelity when deltas dominate for
+                            # some tokens — but tokens with sparse data
+                            # in BOTH sources are still genuinely low
+                            # fidelity.  Word the warning accordingly.
                             result.validation_warnings.append(
-                                f"⚠ DATA FIDELITY: {fidelity.upper()} — median "
+                                f"⚠ DATA FIDELITY: {fidelity.upper()} (snapshot-based) — median "
                                 f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}). "
-                                f"Backtest fills are NOT representative of live.  "
                                 f"book_delta_events has {deltas_total:,} rows across "
-                                f"{n_with_deltas} of {len(candidate_tokens)} tokens "
-                                f"(live system's data — not yet used by the matcher). "
-                                f"{rec}"
+                                f"{n_with_deltas} of {len(candidate_tokens)} tokens — the matcher's "
+                                f"per-token router will use deltas where they dominate; tokens "
+                                f"with sparse data in BOTH sources will still backtest off "
+                                f"thin observations.  {rec}"
                             )
                         elif fidelity == "medium":
                             result.validation_warnings.append(
@@ -4913,27 +5170,49 @@ async def run_execution_backtest(
     )
     engine = BacktestEngine(config=engine_config, strategy=strategy)
 
-    # ── Source selection: snapshots vs deltas ────────────────────────────
+    # ── Source selection: per-token snapshots vs deltas ──────────────────
     #
-    # The matching engine takes a ``_BookSource`` protocol — either
-    # ``BookReplay`` (snapshots) or ``BookDeltaReplay`` (deltas + mms
-    # anchor).  Both produce ``BookSnapshot`` instances; the engine
-    # doesn't care which.  We pick the source with materially richer
-    # coverage for THIS window:
+    # The matching engine takes a ``_BookSource`` protocol that produces
+    # ``BookSnapshot`` instances.  We have three backends for them:
     #
-    #   * deltas_total > 5x snapshots_total AND ≥ 10 deltas/token/hr
-    #     median across the universe → use BookDeltaReplay
-    #     (live-parity path: same data the live system writes)
-    #   * else fall back to BookReplay over snapshots
+    #   * ``ParquetBookReplay`` — operator-imported parquet files
+    #   * ``BookDeltaReplay`` — the live ingestor's authoritative
+    #     7M+-row delta stream, anchored to mms snapshots
+    #   * ``BookReplay`` — throttled mms snapshots (2/sec/token cap)
     #
-    # The threshold is tuned so a fully-populated mms (high-fidelity
-    # snapshot path) wins, but a sparse-mms-but-dense-bde state
-    # (typical when the unified ingestor is recent) flips to deltas.
+    # Routing is PER-TOKEN, not global.  In a window where some tokens
+    # have dense snapshots and others have dense deltas, the global
+    # vote loses data from the minority — so we let each token pick
+    # whichever local source is denser, scoring source quality as the
+    # row count over the window.
+    #
+    # Fallback when per-token coverage isn't available (legacy probe
+    # path): use the global rule, deltas only if 5x snapshots AND
+    # median ≥ 10/hr.
     cov = result.data_coverage or {}
     deltas_total = int(cov.get("deltas_total") or 0)
     snapshots_total = int(cov.get("snapshots_total") or 0)
+    per_token_snaps: dict[str, int] = cov.get("snaps_per_token") or {}
+    per_token_deltas: dict[str, int] = cov.get("deltas_per_token") or {}
+    window_hours_cov = float(cov.get("window_hours") or 1.0)
+
+    def _pick_sql_source_for(token: str) -> str:
+        """Return 'deltas' or 'snapshots' for one token.  Prefers
+        deltas when they're materially denser (≥ 5×) and meaningful
+        (≥ 10 events in window).  Falls back to snapshots otherwise.
+        The 5× ratio matches the old global threshold; the absolute
+        floor of 10 events filters out tokens with a handful of
+        spurious deltas that wouldn't reconstruct a real book."""
+        n_snaps = int(per_token_snaps.get(token, 0))
+        n_deltas = int(per_token_deltas.get(token, 0))
+        if n_deltas >= max(10, 5 * max(n_snaps, 1)):
+            return "deltas"
+        return "snapshots"
+
+    # Legacy single-decision flag — kept only for the fallback path
+    # below when per-token coverage is missing.
     median_deltas_per_hr = float(cov.get("median_deltas_per_token_per_hour") or 0.0)
-    use_delta_replay = (
+    use_delta_replay_global = (
         deltas_total > 5 * max(snapshots_total, 1)
         and median_deltas_per_hr >= 10.0
     )
@@ -4996,34 +5275,59 @@ async def run_execution_backtest(
 
             sql_replay_label = None
             if sql_tokens:
-                if use_delta_replay:
+                # Per-token routing.  Each SQL token gets assigned to
+                # 'deltas' or 'snapshots' based on its own row counts.
+                # When per-token data is missing (legacy coverage
+                # report), fall back to the global decision.
+                tokens_to_deltas: list[str] = []
+                tokens_to_snaps: list[str] = []
+                if per_token_snaps or per_token_deltas:
+                    for tok in sql_tokens:
+                        if _pick_sql_source_for(tok) == "deltas":
+                            tokens_to_deltas.append(tok)
+                        else:
+                            tokens_to_snaps.append(tok)
+                else:
+                    # Legacy fallback — single-decision routing.
+                    if use_delta_replay_global:
+                        tokens_to_deltas = sql_tokens
+                    else:
+                        tokens_to_snaps = sql_tokens
+
+                if tokens_to_deltas:
                     backends["deltas"] = _BookDeltaReplay(
-                        session=None, token_ids=sql_tokens,
+                        session=None, token_ids=tokens_to_deltas,
                         start=start_dt, end=end_dt,
                     )
-                    for tok in sql_tokens:
+                    for tok in tokens_to_deltas:
                         routing[tok] = "deltas"
+                    n_deltas_rows = sum(int(per_token_deltas.get(t, 0)) for t in tokens_to_deltas)
+                    source_label_parts.append(
+                        f"DELTAS={len(tokens_to_deltas)} tokens ({n_deltas_rows:,} events)"
+                    )
+                if tokens_to_snaps:
+                    backends["snapshots"] = BookReplay(
+                        session=None, token_ids=tokens_to_snaps,
+                        start=start_dt, end=end_dt, snapshot_type="book",
+                    )
+                    for tok in tokens_to_snaps:
+                        routing[tok] = "snapshots"
+                    n_snap_rows = sum(int(per_token_snaps.get(t, 0)) for t in tokens_to_snaps)
+                    source_label_parts.append(
+                        f"SNAPSHOTS={len(tokens_to_snaps)} tokens ({n_snap_rows:,} rows)"
+                    )
+
+                # Surface a composite label for ``replay_source``.
+                if tokens_to_deltas and tokens_to_snaps:
+                    sql_replay_label = "deltas+snapshots"
+                elif tokens_to_deltas:
                     sql_replay_label = (
                         "deltas+anchor"
                         if int(cov.get("tokens_with_snapshots") or 0) > 0
                         else "deltas"
                     )
-                    source_label_parts.append(
-                        f"DELTAS={len(sql_tokens)} tokens "
-                        f"({deltas_total:,} events)"
-                    )
                 else:
-                    backends["snapshots"] = BookReplay(
-                        session=None, token_ids=sql_tokens,
-                        start=start_dt, end=end_dt, snapshot_type="book",
-                    )
-                    for tok in sql_tokens:
-                        routing[tok] = "snapshots"
                     sql_replay_label = "snapshots"
-                    source_label_parts.append(
-                        f"SNAPSHOTS={len(sql_tokens)} tokens "
-                        f"({snapshots_total:,} rows)"
-                    )
 
             if not backends:
                 # Defensive: shouldn't happen because the universe is

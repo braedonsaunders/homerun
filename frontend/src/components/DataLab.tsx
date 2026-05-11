@@ -50,6 +50,7 @@ import { ScrollArea } from './ui/scroll-area'
 import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import DataLabProviders from './DataLabProviders'
+import DataLabTopics from './DataLabTopics'
 import {
   type CreateRecordingSessionPayload,
   type DatasetColumn,
@@ -1908,7 +1909,7 @@ function StorageView() {
 }
 
 
-type DataLabMode = 'browse' | 'record' | 'storage' | 'providers'
+type DataLabMode = 'browse' | 'record' | 'storage' | 'providers' | 'topics'
 
 export default function DataLab() {
   const { t } = useTranslation()
@@ -2120,6 +2121,19 @@ export default function DataLab() {
               <Download className="h-3 w-3" />
               {t('dataLab.modeProviders')}
             </button>
+            <button
+              onClick={() => setMode('topics')}
+              className={cn(
+                'flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors',
+                mode === 'topics'
+                  ? 'bg-violet-500/15 text-violet-700 dark:text-violet-200'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+              title="Recorded-event-bus topic catalog"
+            >
+              <Layers3 className="h-3 w-3" />
+              Topics
+            </button>
           </div>
           <Button
             size="sm"
@@ -2152,6 +2166,13 @@ export default function DataLab() {
       {mode === 'providers' ? (
         <ScrollArea className="flex-1 min-h-0">
           <DataLabProviders />
+        </ScrollArea>
+      ) : null}
+
+      {/* TOPICS MODE — recorded-event-bus topic catalog */}
+      {mode === 'topics' ? (
+        <ScrollArea className="flex-1 min-h-0">
+          <DataLabTopics />
         </ScrollArea>
       ) : null}
 

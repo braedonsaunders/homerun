@@ -509,6 +509,16 @@ async def _run_loop() -> None:
                 timestamp=datetime.now(timezone.utc),
                 payload={"intents": intent_dicts, "findings": finding_dicts},
             )
+            # Tee to the recorded-event bus for replay.  Mirrors the
+            # crypto_update tap pattern: register topic on first use
+            # (idempotent), publish + best-effort log if the bus is
+            # unhealthy.  Backtests of news-driven strategies replay
+            # from this topic; live continues unchanged through
+            # event_dispatcher below.
+            try:
+                await _publish_news_update_to_bus(news_event, intent_dicts, finding_dicts)
+            except Exception:
+                logger.warning("recorded_event_bus tee failed for news_update", exc_info=True)
             opportunities = await event_dispatcher.dispatch(news_event)
             async with AsyncSessionLocal() as session:
                 emitted = await emit_news_intent_signals(session, opportunities)
@@ -600,3 +610,86 @@ async def start_loop() -> None:
         await _run_loop()
     except asyncio.CancelledError:
         logger.info("News worker shutting down")
+
+
+# ── Recorded-event bus tap ──────────────────────────────────────────
+
+
+_NEWS_UPDATE_TOPIC = "news.update"
+_news_topic_registered = False
+
+
+async def _ensure_news_topic_registered() -> None:
+    """Idempotent topic registration for the news_update tap.
+
+    Topic name follows the shape rule: ``news.update`` describes the
+    payload shape (a bundle of news intents + findings).  Provider /
+    source identity is in the envelope's ``source`` field
+    (``news_worker``) and could federate from multiple workers later.
+    """
+    global _news_topic_registered
+    if _news_topic_registered:
+        return
+    from services.recorded_event_bus.catalog import register_topic
+    from services.external_data.parquet_schema import parquet_root
+    import json
+
+    root = parquet_root()
+    storage_uri = json.dumps({
+        "sources": [{
+            "kind": "parquet",
+            "uri": str(root / "recorded_event_bus" / _NEWS_UPDATE_TOPIC),
+        }],
+    })
+    await register_topic(
+        slug=_NEWS_UPDATE_TOPIC,
+        title="News update events (intents + findings)",
+        description=(
+            "Bundles of news intents + findings emitted by the news "
+            "workflow.  Each envelope carries one workflow cycle's "
+            "complete payload — intents (actionable signals on "
+            "specific markets) + findings (raw analytical output).  "
+            "Strategies subscribed to the legacy event_type "
+            "'news_update' read from this topic via the backtest bridge."
+        ),
+        storage_kind="parquet",
+        storage_uri=storage_uri,
+        retention_days=30,
+        publishers=["news_worker"],
+        subscribers=["news_edge"],
+    )
+    _news_topic_registered = True
+
+
+async def _publish_news_update_to_bus(
+    event,  # DataEvent
+    intent_dicts: list[dict],
+    finding_dicts: list[dict],
+) -> None:
+    """Tee one news_update event to the recorded-event bus.
+
+    Entity ID = ``"workflow_cycle"`` (one envelope per cycle).
+    Future enhancement: split into per-intent envelopes so a strategy
+    could entity-filter by signal_key — but cycle-grain matches the
+    live event_dispatcher's delivery semantics today, which keeps
+    behaviour identical.
+    """
+    await _ensure_news_topic_registered()
+    from services.recorded_event_bus import RecordedEvent
+    from services.recorded_event_bus import bus as _bus
+    import services.recorded_event_bus.storage  # noqa: F401  attach storage
+
+    observed_at_us = int(event.timestamp.timestamp() * 1_000_000)
+    envelope = RecordedEvent(
+        topic=_NEWS_UPDATE_TOPIC,
+        entity_id="workflow_cycle",
+        observed_at_us=observed_at_us,
+        payload={
+            "intents": intent_dicts,
+            "findings": finding_dicts,
+            "n_intents": len(intent_dicts),
+            "n_findings": len(finding_dicts),
+        },
+        source="news_worker",
+    )
+    await _bus.publish(envelope)

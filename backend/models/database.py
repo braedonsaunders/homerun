@@ -1375,6 +1375,22 @@ class AppSettings(Base):
     # See services/external_data/parquet_schema.parquet_roots().
     parquet_root_overrides = Column(JSONB, nullable=True)
 
+    # Recorded-event-bus rotation controls.  Both apply across every
+    # parquet topic in topic_catalog (sql_table topics aren't pruned —
+    # they're owned by their underlying tables' retention policies).
+    #   * ``recorded_event_bus_global_max_bytes``: hard cap on total
+    #     parquet bytes across all topics.  When exceeded, the pruner
+    #     deletes oldest partition files (whole files, not row-level)
+    #     starting from the largest topics until under the cap.
+    #     Null = unlimited.  Default 50 GB is enough for ~6 months of
+    #     crypto.update at ~20 MB / 5 min if you're not collecting
+    #     other high-volume topics; raise for production.
+    #   * ``recorded_event_bus_pruner_enabled``: master kill switch
+    #     for the periodic pruner task.  Default True; flip off if
+    #     operator wants to manage retention manually for an audit.
+    recorded_event_bus_global_max_bytes = Column(BigInteger, nullable=True)
+    recorded_event_bus_pruner_enabled = Column(Boolean, nullable=False, default=True)
+
     # Strategy reverse-engineer agent — UI-tunable defaults.  Null
     # values fall back to service-level constants.  The default *model*
     # for this purpose lives in ``llm_model_assignments['strategy_reverse_engineer']``
@@ -3660,6 +3676,112 @@ class ProviderDataset(Base):
             "storage_type",
             "provider",
         ),
+    )
+
+
+class TopicCatalog(Base):
+    """The single source of truth for "what data topics exist in this
+    system" — the centerpiece of the recorded-event-bus architecture.
+
+    Every recorded observation in the platform flows through the bus
+    as a :class:`services.recorded_event_bus.RecordedEvent`, and every
+    topic the bus knows about MUST appear here.  Recorders fail-closed
+    when publishing to an unregistered topic; the backtest engine
+    refuses to replay an unknown topic; the UI surfaces the catalog
+    as the canonical "what can I subscribe to" list.
+
+    Why this lives in Postgres rather than a YAML / TOML file:
+      * Operators register / disable topics from the UI without a
+        deploy.  YAML would force a process restart per change.
+      * The catalog is queried on every bus.publish() — pulling it
+        from local Postgres with the existing pool is faster and
+        more fault-tolerant than parsing a file from disk.
+      * Schema-version, retention, and storage-uri can evolve per
+        topic over time; a row history (audit log) drops in trivially.
+
+    Storage backings supported by the bus:
+
+      * ``parquet`` — topic-major partitioned parquet on disk under
+        ``storage_uri``.  The default for new topics.  Cheap to keep
+        years; fast to scan (window, topic) ranges.
+
+      * ``sql_table`` — adapter wraps an existing SQLAlchemy table.
+        Used for the topics whose data already lives in well-indexed
+        Postgres tables we don't want to migrate yet
+        (``market_microstructure_snapshots``, ``book_delta_events``,
+        ``wallet_monitor_events``, ``opportunity_history``).  The
+        adapter knows how to translate ``(window, entity_filter)``
+        into a SELECT and how to project a row → RecordedEvent.
+
+      * ``memory`` — ephemeral; only live publish / subscribe works.
+        Used for high-volume internal events that aren't worth
+        archiving (e.g. orchestrator heartbeats).  Backtest replay
+        on a memory topic returns an empty stream by design — no
+        silent leakage where "live worked but backtest didn't."
+
+    Why ``slug`` is the primary key (string):
+      Topic names are dotted, lowercase, ASCII (validated by
+      :func:`services.recorded_event_bus.envelope.parse_topic`).
+      Using the slug as the PK means every JOIN and FK from the rest
+      of the system reads naturally — ``WHERE topic = 'crypto.update.btc_eth'``
+      instead of ``WHERE topic_id = 17``.
+    """
+
+    __tablename__ = "topic_catalog"
+
+    slug = Column(String, primary_key=True)  # dotted topic name, e.g. 'polymarket.book.snapshot'
+    title = Column(String, nullable=False)  # human-readable
+    description = Column(Text, nullable=True)
+    # Storage backing — see class docstring.
+    storage_kind = Column(String, nullable=False)  # 'parquet' | 'sql_table' | 'memory'
+    # For 'parquet': base path under which envelopes are partitioned
+    # ``{storage_uri}/{entity_id}/{date}/events.parquet``.
+    # For 'sql_table': the table name + adapter class identifier in JSON
+    # ``{"table": "market_microstructure_snapshots", "adapter": "MarketMicrostructureSnapshot"}``.
+    # For 'memory': null.
+    storage_uri = Column(String, nullable=True)
+    # Optional JSON Schema draft-7 validating the payload shape.  When
+    # set, ``bus.publish`` runs the payload through the validator.  When
+    # null, only the envelope's structural fields are checked.
+    payload_schema_json = Column(JSON, nullable=True)
+    # Current schema version emitted by the producer.  Bumped when the
+    # payload shape changes.  Replay-time upgrades live in
+    # ``services.recorded_event_bus.payload_upgrades``.
+    schema_version = Column(Integer, nullable=False, default=1)
+    # Days of history to retain for parquet topics; the pruner drops
+    # whole partition files older than this age.  Null = no age cap.
+    retention_days = Column(Integer, nullable=True)
+    # Hard size cap for this topic's on-disk footprint.  When the
+    # topic exceeds this, the pruner deletes oldest partition files
+    # until under cap.  Applied AFTER the age cap so a topic that's
+    # both old AND big gets pruned by both rules.  Null = no size cap.
+    # Whichever cap (per-topic ``max_bytes`` or global
+    # ``recorded_event_bus_global_max_bytes`` in AppSettings) bites
+    # first wins.
+    max_bytes = Column(BigInteger, nullable=True)
+    # Producer / consumer registry — informational only, populated by
+    # the recorders/strategies on startup so the UI can show "what
+    # publishes to this topic and what reads from it".
+    publishers_json = Column(JSON, nullable=False, default=list)
+    subscribers_json = Column(JSON, nullable=False, default=list)
+    # Lifecycle.
+    enabled = Column(Boolean, nullable=False, default=True)
+    is_replayable = Column(Boolean, nullable=False, default=True)
+    # Timestamps for "is this topic actively being written" / "is it
+    # actively being read" — populated by the bus on publish / replay
+    # so operators can spot stale topics in the catalog UI.
+    last_published_at = Column(DateTime, nullable=True)
+    last_replayed_at = Column(DateTime, nullable=True)
+    # Cumulative envelope count + size for quick capacity reasoning.
+    # Updated lazily by the parquet writer at flush time.
+    event_count = Column(BigInteger, nullable=False, default=0)
+    bytes_on_disk = Column(BigInteger, nullable=False, default=0)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_topic_catalog_storage_kind", "storage_kind"),
+        Index("ix_topic_catalog_enabled_replayable", "enabled", "is_replayable"),
     )
 
 

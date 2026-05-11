@@ -207,6 +207,14 @@ async def _run_loop() -> None:
                 timestamp=datetime.now(timezone.utc),
                 payload={"intents": intent_dicts},
             )
+            # Tee to the recorded-event bus for replay — see news_worker
+            # for the design pattern.  Backtests of weather_distribution
+            # subscribe via the legacy "weather_update" event type,
+            # which the bridge resolves to this topic.
+            try:
+                await _publish_weather_update_to_bus(weather_event, intent_dicts)
+            except Exception:
+                logger.warning("recorded_event_bus tee failed for weather_update", exc_info=True)
             dispatched_opportunities = await event_dispatcher.dispatch(weather_event)
             deduped_dispatched_opportunities: list = []
             seen_bridge_keys: set[str] = set()
@@ -336,3 +344,64 @@ async def start_loop() -> None:
         await _run_loop()
     except asyncio.CancelledError:
         logger.info("Weather worker shutting down")
+
+
+# ── Recorded-event bus tap ──────────────────────────────────────────
+
+
+_WEATHER_UPDATE_TOPIC = "weather.update"
+_weather_topic_registered = False
+
+
+async def _ensure_weather_topic_registered() -> None:
+    """Idempotent topic registration — see news_worker for the pattern."""
+    global _weather_topic_registered
+    if _weather_topic_registered:
+        return
+    from services.recorded_event_bus.catalog import register_topic
+    from services.external_data.parquet_schema import parquet_root
+    import json
+
+    root = parquet_root()
+    storage_uri = json.dumps({
+        "sources": [{
+            "kind": "parquet",
+            "uri": str(root / "recorded_event_bus" / _WEATHER_UPDATE_TOPIC),
+        }],
+    })
+    await register_topic(
+        slug=_WEATHER_UPDATE_TOPIC,
+        title="Weather update events (forecast intents)",
+        description=(
+            "Weather forecast-derived signal bundles emitted by the "
+            "weather workflow.  Each envelope carries one cycle's "
+            "intents — actionable signals on weather-resolving markets "
+            "(temperature thresholds, hurricane paths, precipitation "
+            "ranges).  Subscribed by weather_distribution strategy."
+        ),
+        storage_kind="parquet",
+        storage_uri=storage_uri,
+        retention_days=30,
+        publishers=["weather_worker"],
+        subscribers=["weather_distribution"],
+    )
+    _weather_topic_registered = True
+
+
+async def _publish_weather_update_to_bus(event, intent_dicts: list[dict]) -> None:
+    await _ensure_weather_topic_registered()
+    from services.recorded_event_bus import RecordedEvent, bus as _bus
+    import services.recorded_event_bus.storage  # noqa: F401
+
+    observed_at_us = int(event.timestamp.timestamp() * 1_000_000)
+    envelope = RecordedEvent(
+        topic=_WEATHER_UPDATE_TOPIC,
+        entity_id="workflow_cycle",
+        observed_at_us=observed_at_us,
+        payload={
+            "intents": intent_dicts,
+            "n_intents": len(intent_dicts),
+        },
+        source="weather_worker",
+    )
+    await _bus.publish(envelope)

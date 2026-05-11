@@ -1921,11 +1921,28 @@ class FeedManager:
         task.add_done_callback(self._dispatch_tasks.discard)
 
     def _schedule_event_dispatch(self, event) -> None:
-        """Schedule event dispatcher from the event loop thread."""
+        """Schedule event dispatcher from the event loop thread.
+
+        Also tees the event to the recorded-event bus for replay.
+        Both are background tasks so a slow consumer doesn't backpressure
+        the WS callback that scheduled this.
+        """
         from services.event_dispatcher import event_dispatcher
         task = self._loop.create_task(event_dispatcher.dispatch(event))
         self._dispatch_tasks.add(task)
         task.add_done_callback(self._dispatch_tasks.discard)
+        # Recorded-event bus tap — TRADE_EXECUTION events get archived
+        # so vpin_toxicity and any future trade-driven strategy is
+        # backtest-replayable.  Strictly best-effort: a bus failure
+        # must not impact the live dispatch above.
+        try:
+            from services.data_events import EventType
+            if event.event_type == EventType.TRADE_EXECUTION:
+                bus_task = self._loop.create_task(_publish_trade_execution_to_bus(event))
+                self._dispatch_tasks.add(bus_task)
+                bus_task.add_done_callback(self._dispatch_tasks.discard)
+        except Exception:
+            pass
 
     # -- WS price push registration -----------------------------------------
 
@@ -2192,3 +2209,72 @@ class FeedManager:
 def get_feed_manager() -> FeedManager:
     """Shorthand for ``FeedManager.get_instance()``."""
     return FeedManager.get_instance()
+
+
+# ── Recorded-event bus tap ──────────────────────────────────────────
+
+
+_TRADE_EXECUTION_TOPIC = "polymarket.trade.execution"
+_trade_execution_topic_registered = False
+
+
+async def _ensure_trade_execution_topic_registered() -> None:
+    """Idempotent topic registration — see news_worker pattern.
+
+    Topic name: ``polymarket.trade.execution`` — the data IS Polymarket
+    trade-execution events.  If another venue ever ships trade-
+    execution events with a different shape, that's a new topic; if
+    another source publishes the SAME shape for Polymarket trades,
+    it federates into this one via a new sources[] entry.
+    """
+    global _trade_execution_topic_registered
+    if _trade_execution_topic_registered:
+        return
+    from services.recorded_event_bus.catalog import register_topic
+    from services.external_data.parquet_schema import parquet_root
+    import json as _json
+
+    root = parquet_root()
+    storage_uri = _json.dumps({
+        "sources": [{
+            "kind": "parquet",
+            "uri": str(root / "recorded_event_bus" / _TRADE_EXECUTION_TOPIC),
+        }],
+    })
+    await register_topic(
+        slug=_TRADE_EXECUTION_TOPIC,
+        title="Polymarket trade-execution prints (live ws tape)",
+        description=(
+            "Every print on the Polymarket CLOB as it crosses the live "
+            "WebSocket tape.  One envelope per trade: (price, size, "
+            "side, exchange_timestamp).  Entity_id = token_id.  Powers "
+            "VPIN / toxicity analysis, post-trade attribution, and "
+            "trade-volume aggregates that strategies subscribe to."
+        ),
+        storage_kind="parquet",
+        storage_uri=storage_uri,
+        retention_days=14,  # tighter than book.snapshot — trade tape is voluminous
+        publishers=["polymarket_ws"],
+        subscribers=["vpin_toxicity"],
+    )
+    _trade_execution_topic_registered = True
+
+
+async def _publish_trade_execution_to_bus(event) -> None:
+    """One bus envelope per CLOB trade.  Called from the event-loop
+    thread (scheduled by ``_schedule_event_dispatch``) — safe to await."""
+    await _ensure_trade_execution_topic_registered()
+    from services.recorded_event_bus import RecordedEvent, bus as _bus
+    import services.recorded_event_bus.storage  # noqa: F401
+
+    payload = dict(event.payload or {})
+    token_id = getattr(event, "token_id", None) or payload.get("token_id") or "unknown"
+    observed_at_us = int(event.timestamp.timestamp() * 1_000_000)
+    envelope = RecordedEvent(
+        topic=_TRADE_EXECUTION_TOPIC,
+        entity_id=str(token_id),
+        observed_at_us=observed_at_us,
+        payload=payload,
+        source="polymarket_ws",
+    )
+    await _bus.publish(envelope)

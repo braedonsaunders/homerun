@@ -594,6 +594,18 @@ class MarketRuntime:
             if self._started:
                 return
             self._stop_event.clear()
+            # Register the bus topic for the live CRYPTO_UPDATE tap.
+            # Done before the dispatch loop ever fires so the first
+            # publish doesn't fail-closed on an unregistered topic.
+            # Idempotent — operator-controlled retention/enabled fields
+            # survive recorder restarts.
+            try:
+                await _ensure_crypto_update_topic_registered()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to register crypto.update bus topic; tap will be no-op",
+                    exc_info=True,
+                )
             await self._reference_runtime.start()
             self._reference_runtime.on_update(self._on_reference_update)
             self._feed_manager = get_feed_manager()
@@ -1687,6 +1699,25 @@ class MarketRuntime:
                     timestamp=utcnow(),
                     payload={"markets": copied_for_event, "trigger": str(trigger)},
                 )
+                # Tee to the recorded-event bus so the same CRYPTO_UPDATE
+                # event is captured for backtest replay.  Before this
+                # tap, all 5 crypto strategies (btc_eth_*, crypto_*)
+                # were un-backtestable — the events that drive their
+                # detect() existed only in-memory, fire-and-forget.
+                # Bus subscribers get the live fan-out; the parquet
+                # writer captures one envelope per dispatch so a
+                # historical window can be replayed later.
+                #
+                # Errors here are deliberately swallowed: the recorded-
+                # event bus is the secondary delivery path and must not
+                # break the primary event_dispatcher.dispatch() call.
+                try:
+                    await _publish_crypto_update_to_bus(event, copied_for_event, trigger)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "recorded_event_bus tee failed for crypto_update",
+                        exc_info=True,
+                    )
                 handler_count = len(event_dispatcher._handlers.get(EventType.CRYPTO_UPDATE, []))
                 opportunities = await event_dispatcher.dispatch(event)
                 signals_published = await get_intent_runtime().publish_opportunities(
@@ -1947,3 +1978,87 @@ def get_market_runtime() -> MarketRuntime:
     if _market_runtime is None:
         _market_runtime = MarketRuntime()
     return _market_runtime
+
+
+# ── Recorded-event bus tap (Batch C) ────────────────────────────────
+#
+# Single source of truth for the crypto.update topic on the bus.
+# Registered at MarketRuntime.start(); written by the dispatch loop
+# right next to the event_dispatcher.dispatch call so live behavior
+# is unchanged but backtest gets a faithful replay stream.
+
+
+_CRYPTO_UPDATE_TOPIC = "crypto.update.dispatch"
+
+
+async def _ensure_crypto_update_topic_registered() -> None:
+    """Idempotent topic registration for the CRYPTO_UPDATE tap.
+
+    Stored as a parquet topic under the first configured parquet root
+    so the operator's existing storage settings control where it lives.
+    Without this registration the first publish fails-closed (by
+    design — see ``catalog.require_topic``); with it the bus silently
+    starts archiving."""
+    from services.recorded_event_bus.catalog import register_topic
+    from services.external_data.parquet_schema import parquet_root
+
+    root = parquet_root()
+    storage_uri = str(root / "recorded_event_bus" / _CRYPTO_UPDATE_TOPIC)
+    await register_topic(
+        slug=_CRYPTO_UPDATE_TOPIC,
+        title="Crypto opportunity-dispatch events (live + replay)",
+        description=(
+            "Every CRYPTO_UPDATE event the market_runtime fires through "
+            "the in-memory event_dispatcher is teed here so the same "
+            "stream is replayable.  Closes the un-backtestable gap for "
+            "btc_eth_*/crypto_* strategies — they subscribe to this "
+            "topic in backtest and see the same envelope they would "
+            "have seen live."
+        ),
+        storage_kind="parquet",
+        storage_uri=storage_uri,
+        retention_days=30,
+        publishers=["market_runtime"],
+        subscribers=[
+            "btc_eth_convergence",
+            "btc_eth_directional_edge",
+            "btc_eth_maker_quote",
+            "crypto_5m_midcycle",
+            "crypto_entropy_maker",
+        ],
+    )
+
+
+async def _publish_crypto_update_to_bus(
+    event: "DataEvent",
+    copied_for_event: list[dict[str, Any]],
+    trigger: Any,
+) -> None:
+    """Tee a single CRYPTO_UPDATE event into the recorded-event bus.
+
+    The envelope's ``entity_id`` is the dispatch trigger string so
+    operators can filter "what fired this batch" without parsing the
+    payload.  The ``observed_at_us`` matches the live event's
+    timestamp so live and replay see identical truth-times.  The full
+    markets payload + trigger live in the bus payload; consumers
+    re-shape it exactly as the live ``event_dispatcher`` handlers do.
+    """
+    from services.recorded_event_bus import RecordedEvent
+    from services.recorded_event_bus import bus as _bus
+    # Lazy import the storage attach (otherwise pyarrow loads on every
+    # market_runtime cold start regardless of whether the topic is used).
+    import services.recorded_event_bus.storage  # noqa: F401
+
+    observed_at_us = int(event.timestamp.timestamp() * 1_000_000)
+    envelope = RecordedEvent(
+        topic=_CRYPTO_UPDATE_TOPIC,
+        entity_id=str(trigger) or "unknown",
+        observed_at_us=observed_at_us,
+        payload={
+            "markets": copied_for_event,
+            "trigger": str(trigger),
+            "event_source": event.source,
+        },
+        source="market_runtime",
+    )
+    await _bus.publish(envelope)
