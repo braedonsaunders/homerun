@@ -1797,7 +1797,7 @@ class MarketRuntime:
                 #
                 # Errors here are deliberately swallowed: the recorded-
                 # event bus is the secondary delivery path and must not
-                # break the primary event_dispatcher.dispatch() call.
+                # break the primary _dispatch_with_per_trader_fanout() call.
                 try:
                     await _publish_crypto_update_to_bus(event, copied_for_event, trigger)
                 except Exception:  # noqa: BLE001
@@ -2071,8 +2071,8 @@ def get_market_runtime() -> MarketRuntime:
 #
 # Single source of truth for the crypto.update topic on the bus.
 # Registered at MarketRuntime.start(); written by the dispatch loop
-# right next to the event_dispatcher.dispatch call so live behavior
-# is unchanged but backtest gets a faithful replay stream.
+# right next to the _dispatch_with_per_trader_fanout call so live
+# behavior is unchanged but backtest gets a faithful replay stream.
 
 
 _CRYPTO_UPDATE_TOPIC = "crypto.update.dispatch"
