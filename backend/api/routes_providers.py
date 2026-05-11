@@ -30,6 +30,12 @@ from services.external_data.polybacktest_client import (
     build_client_from_settings,
     supported_coins,
 )
+from services.external_data.telonex_client import (
+    TelonexNotConfiguredError,
+    build_client_from_settings as build_telonex_client,
+    default_base_url as telonex_default_base_url,
+    supported_exchanges as telonex_supported_exchanges,
+)
 from utils.secrets import decrypt_secret, encrypt_secret
 from services.external_data.provider_import_service import (
     PROVIDER_POLYBACKTEST,
@@ -62,6 +68,7 @@ async def list_providers() -> dict[str, Any]:
       * surface a link to the docs / pricing page
     """
     polybacktest_status = await _polybacktest_status()
+    telonex_status = await _telonex_status()
     return {
         "providers": [
             {
@@ -78,7 +85,24 @@ async def list_providers() -> dict[str, Any]:
                 "supported_coins": list(supported_coins()),
                 "configured": polybacktest_status["configured"],
                 "health": polybacktest_status,
-            }
+            },
+            {
+                "key": "telonex",
+                "label": "Telonex",
+                "description": (
+                    "Historical Polymarket prediction-market data (trades, "
+                    "quotes, L2 book snapshots, on-chain fills) plus Binance "
+                    "reference prices, delivered as daily Parquet files.  "
+                    "Free trial = 5 total downloads; Plus tier = unlimited."
+                ),
+                "homepage": "https://telonex.io",
+                "docs_url": "https://telonex.io/docs/api/overview",
+                "asset_classes": ["prediction", "crypto"],
+                "supported_exchanges": list(telonex_supported_exchanges()),
+                "supported_coins": [],
+                "configured": telonex_status["configured"],
+                "health": telonex_status,
+            },
         ]
     }
 
@@ -97,6 +121,35 @@ async def _polybacktest_status() -> dict[str, Any]:
         return result
     finally:
         await client.close()
+
+
+async def _telonex_status() -> dict[str, Any]:
+    """Status probe — hits the public ``/datasets/polymarket/markets``
+    endpoint (no auth, no quota cost) so the operator can verify the API
+    is reachable even before they enter their key.  ``configured`` still
+    reflects whether the key has been saved.
+    """
+    # First: do we have a key saved?  This drives the "configured" pill.
+    try:
+        configured_client = await build_telonex_client(require_api_key=True)
+        configured = True
+        await configured_client.close()
+    except TelonexNotConfiguredError:
+        configured = False
+    except Exception:
+        configured = False
+
+    # Reachability probe — always runs, uses no quota.
+    try:
+        probe = await build_telonex_client(require_api_key=False)
+    except Exception as exc:
+        return {"configured": configured, "ok": False, "error": str(exc)}
+    try:
+        result = await probe.health()
+        result["configured"] = configured
+        return result
+    finally:
+        await probe.close()
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +391,8 @@ _API_KEY_PRESENT_MASK = "********"
 class ProviderSettings(BaseModel):
     polybacktest_api_key_set: bool = False
     polybacktest_base_url: Optional[str] = None
+    telonex_api_key_set: bool = False
+    telonex_base_url: Optional[str] = None
     # Reverse-engineer model lives in app_settings.llm_model_assignments
     # under the 'strategy_reverse_engineer' key — managed in AI → Models.
     reverse_engineer_max_iterations: Optional[int] = None
@@ -353,6 +408,8 @@ class ProviderSettingsUpdate(BaseModel):
     # When the field is null we ignore it; explicit empty string clears.
     polybacktest_api_key: Optional[str] = None
     polybacktest_base_url: Optional[str] = None
+    telonex_api_key: Optional[str] = None
+    telonex_base_url: Optional[str] = None
     reverse_engineer_max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     reverse_engineer_target_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reverse_engineer_max_cost_usd: Optional[float] = Field(default=None, ge=0.0)
@@ -370,6 +427,8 @@ async def get_provider_settings() -> ProviderSettings:
     return ProviderSettings(
         polybacktest_api_key_set=bool(decrypt_secret(getattr(row, "polybacktest_api_key", None))),
         polybacktest_base_url=getattr(row, "polybacktest_base_url", None),
+        telonex_api_key_set=bool(decrypt_secret(getattr(row, "telonex_api_key", None))),
+        telonex_base_url=getattr(row, "telonex_base_url", None),
         reverse_engineer_max_iterations=getattr(row, "reverse_engineer_max_iterations", None),
         reverse_engineer_target_score=getattr(row, "reverse_engineer_target_score", None),
         reverse_engineer_max_cost_usd=getattr(row, "reverse_engineer_max_cost_usd", None),
@@ -397,6 +456,16 @@ async def update_provider_settings(req: ProviderSettingsUpdate) -> dict[str, Any
                 row.polybacktest_api_key = encrypt_secret(cleaned)
         if req.polybacktest_base_url is not None:
             row.polybacktest_base_url = req.polybacktest_base_url.strip() or None
+        if req.telonex_api_key is not None:
+            cleaned = req.telonex_api_key.strip()
+            if cleaned == "":
+                row.telonex_api_key = None
+            elif cleaned == _API_KEY_PRESENT_MASK:
+                pass
+            else:
+                row.telonex_api_key = encrypt_secret(cleaned)
+        if req.telonex_base_url is not None:
+            row.telonex_base_url = req.telonex_base_url.strip() or None
         if req.reverse_engineer_max_iterations is not None:
             row.reverse_engineer_max_iterations = int(req.reverse_engineer_max_iterations)
         if req.reverse_engineer_target_score is not None:

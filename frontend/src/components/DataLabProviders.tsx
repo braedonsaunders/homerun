@@ -189,12 +189,193 @@ export default function DataLabProviders() {
         <ParquetSection />
       ) : selected?.key === 'polybacktest' ? (
         <PolybacktestSection provider={selected} />
+      ) : selected?.key === 'telonex' ? (
+        <TelonexSection provider={selected} />
       ) : selected ? (
         <div className="rounded-md border border-border/40 bg-card/40 p-4 text-[11px] text-muted-foreground">
           {t('dataLabProviders.notImplemented', { label: selected.label })}
         </div>
       ) : null}
     </div>
+  )
+}
+
+
+// ─── Telonex section ─────────────────────────────────────────────────
+// First-pass scaffold: surfaces the API key form + a health pill so
+// the operator can plug their credential in and confirm the upstream
+// is reachable.  Market browser + import panels land once the API
+// surface is wired up in telonex_client.py.
+
+function TelonexSection({ provider }: { provider: ProviderInfo }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="rounded-md border border-border/40 bg-card/40 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold">{provider.label}</span>
+              <ProviderHealthBadge provider={provider} />
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">{provider.description}</p>
+            <div className="mt-1 flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+              <a
+                href={provider.homepage}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 hover:text-foreground"
+              >
+                Homepage <ExternalLink className="h-3 w-3" />
+              </a>
+              <a
+                href={provider.docs_url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 hover:text-foreground"
+              >
+                API docs <ExternalLink className="h-3 w-3" />
+              </a>
+              <span>Exchanges: polymarket, binance</span>
+            </div>
+          </div>
+        </div>
+        {!provider.configured ? (
+          <div className="mt-2 rounded-sm border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-200">
+            Add your Telonex API key below to unlock downloads. The free trial allows 5 total downloads.
+          </div>
+        ) : null}
+        {provider.configured && provider.health.ok === false ? (
+          <div className="mt-2 rounded-sm border border-rose-500/30 bg-rose-500/5 p-2 text-[11px] text-rose-700 dark:text-rose-300">
+            Telonex API unreachable
+            {provider.health.error ? <>: <span className="font-mono">{provider.health.error}</span></> : null}
+            . The probe runs against the public datasets endpoint and uses no quota.
+          </div>
+        ) : null}
+        {provider.configured && provider.health.ok ? (
+          <div className="mt-2 rounded-sm border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-700 dark:text-emerald-200">
+            Telonex API reachable
+            {typeof provider.health.elapsed_ms === 'number' ? (
+              <span className="ml-1 font-mono text-[10px]">({provider.health.elapsed_ms} ms)</span>
+            ) : null}
+            . API key is saved — the first download will verify it end-to-end.
+          </div>
+        ) : null}
+      </div>
+
+      <TelonexSettingsCard />
+
+      <div className="rounded-md border border-dashed border-border/40 bg-card/20 p-4 text-[11px] text-muted-foreground">
+        <div className="font-semibold mb-1 text-foreground">Coming soon</div>
+        <p>
+          Market browser + historical import for Polymarket (trades, quotes,
+          L2 book snapshots, on-chain fills) and Binance (trades, quotes,
+          book snapshots) land here next. Free-trial downloads are capped at
+          5 total — we'll surface remaining quota inline once a download has
+          run.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+
+function TelonexSettingsCard() {
+  const queryClient = useQueryClient()
+  const settingsQuery = useQuery({
+    queryKey: ['providers', 'settings'],
+    queryFn: getProviderSettings,
+    staleTime: 60_000,
+  })
+  const settings: ProviderSettings | null = settingsQuery.data ?? null
+
+  const [apiKey, setApiKey] = useState<string>('')
+  const [showKey, setShowKey] = useState<boolean>(false)
+  const [baseUrl, setBaseUrl] = useState<string>('')
+
+  useEffect(() => {
+    if (!settings) return
+    setApiKey(settings.telonex_api_key_set ? '********' : '')
+    setBaseUrl(settings.telonex_base_url ?? '')
+  }, [settings])
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      updateProviderSettings({
+        telonex_api_key: apiKey === '********' ? null : apiKey,
+        telonex_base_url: baseUrl,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+    },
+  })
+
+  return (
+    <details className="rounded-md border border-border/40 bg-card/40 p-3" open>
+      <summary className="cursor-pointer text-xs font-semibold flex items-center gap-1.5">
+        <Server className="h-3.5 w-3.5 text-violet-400" />
+        Telonex settings
+        <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+          {settings?.telonex_api_key_set ? 'configured' : 'not configured'}
+        </span>
+      </summary>
+      <div className="mt-3 space-y-3">
+        <div>
+          <Label className="text-[10px] uppercase text-muted-foreground">
+            Telonex API key
+          </Label>
+          <div className="flex items-center gap-1">
+            <Input
+              type={showKey ? 'text' : 'password'}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={settings?.telonex_api_key_set ? '(set — leave to keep)' : 'Paste API key'}
+              className="h-8 font-mono text-xs"
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 w-8 p-0"
+              onClick={() => setShowKey((v) => !v)}
+              title={showKey ? 'Hide' : 'Show'}
+            >
+              {showKey ? '🙈' : '👁'}
+            </Button>
+          </div>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            Empty value clears the key.
+          </p>
+        </div>
+
+        <div>
+          <Label className="text-[10px] uppercase text-muted-foreground">Base URL (optional)</Label>
+          <Input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://api.telonex.com"
+            className="h-8 font-mono text-xs"
+          />
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          {saveMutation.isError ? (
+            <span className="text-[10px] text-rose-700 dark:text-rose-300">
+              {(saveMutation.error as Error)?.message || 'Save failed'}
+            </span>
+          ) : null}
+          {saveMutation.isSuccess ? (
+            <span className="text-[10px] text-emerald-700 dark:text-emerald-300">Saved</span>
+          ) : null}
+          <Button
+            size="sm"
+            className="h-7 text-[11px]"
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending}
+          >
+            {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Save'}
+          </Button>
+        </div>
+      </div>
+    </details>
   )
 }
 
