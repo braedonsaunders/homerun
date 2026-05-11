@@ -34,9 +34,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-import urllib.parse
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,9 +44,7 @@ from sqlalchemy import select
 from models.database import AppSettings, AsyncSessionLocal, ProviderDataset
 from services.external_data.telonex_client import (
     TelonexAuthError,
-    TelonexClient,
     TelonexError,
-    TelonexNotConfiguredError,
     TelonexNotFoundError,
     TelonexValidationError,
     build_client_from_settings,
