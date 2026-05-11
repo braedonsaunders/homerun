@@ -241,18 +241,24 @@ export async function updateProviderSettings(
 
 // ─── Parquet datasets (operator-supplied vendor data) ────────────────
 
-export interface ParquetRoot {
-  root: string
+/** Per-root status — the scanner walks every entry; UI shows
+ *  a badge per row indicating whether the directory exists. */
+export interface ParquetRootEntry {
+  path: string
   exists: boolean
-  env_var: string
-  /** Which layer is providing the active path:
-   *  - 'override' = UI-set in app_settings (highest priority)
-   *  - 'env'      = HOMERUN_PARQUET_ROOT env var
-   *  - 'default'  = <repo>/data/parquet fallback
+  writable: boolean
+}
+
+export interface ParquetRoot {
+  /** All configured (or default) parquet ingest roots. */
+  roots: ParquetRootEntry[]
+  /** Which layer is providing the active list:
+   *  - 'configured' = UI-set in app_settings (one or more roots)
+   *  - 'default'    = <repo>/data/parquet fallback (no UI overrides set)
    */
-  source: 'override' | 'env' | 'default'
-  /** Current persisted UI override, or null if none. */
-  override: string | null
+  source: 'configured' | 'default'
+  /** Persisted override list (empty when falling back to default). */
+  overrides: string[]
 }
 
 export interface ParquetDataset {
@@ -285,8 +291,21 @@ export interface ParquetRescanResult {
   error?: string
 }
 
-export interface ParquetRescanReport {
+/** Per-root sub-report when a multi-root rescan runs. */
+export interface ParquetRescanRootReport {
   root: string
+  groups_seen: number
+  elapsed_ms: number
+  exists: boolean
+}
+
+export interface ParquetRescanReport {
+  /** First scanned root — kept for back-compat with older clients. */
+  root: string
+  /** Every scanned root in the order they were walked. */
+  roots: string[]
+  /** Per-root summary. */
+  per_root: ParquetRescanRootReport[]
   groups_seen: number
   results: ParquetRescanResult[]
   elapsed_ms: number
@@ -310,12 +329,13 @@ export async function rescanParquetRoot(): Promise<ParquetRescanReport> {
   return data
 }
 
-/** Persist a new parquet ingest root (or pass empty string to clear
- *  and fall back to env / default).  Backend validates the path is
- *  absolute and exists; throws 400 otherwise.
+/** Replace the configured parquet ingest roots with this list (full
+ *  replacement, not append).  Pass [] to clear all overrides and
+ *  fall back to the built-in default.  Backend validates each entry
+ *  is an absolute existing directory; throws 400 otherwise.
  */
-export async function setParquetRoot(root: string): Promise<ParquetRoot> {
-  const { data } = await api.put<ParquetRoot>('/providers/parquet/root', { root })
+export async function setParquetRoots(roots: string[]): Promise<ParquetRoot> {
+  const { data } = await api.put<ParquetRoot>('/providers/parquet/root', { roots })
   return data
 }
 

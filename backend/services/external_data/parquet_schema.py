@@ -1,12 +1,16 @@
 """Parquet schema + path helpers for the bring-your-own-data backtest path.
 
-Operators drop parquet files under ``HOMERUN_PARQUET_ROOT`` (default
-``<repo>/data/parquet``).  The auto-discovery scanner
-(``parquet_scanner.py``) walks the root, validates schema, and inserts
-matching rows into ``provider_datasets`` with ``storage_type='parquet'``.
-The backtester's ``ParquetBookReplay`` then reads the file directly —
-no Postgres round-trip — when a backtest's opp tokens fall inside a
-covered window.
+Operators drop parquet files under one of the directories configured in
+Data Lab → Providers → Parquet.  Multiple roots can be configured (e.g.
+one per vendor, one for shared data, etc.); the scanner walks all of
+them in order.  When no roots are configured the built-in default
+``<repo>/data/parquet`` is used.
+
+The auto-discovery scanner (``parquet_scanner.py``) walks each root,
+validates schema, and inserts matching rows into ``provider_datasets``
+with ``storage_type='parquet'``.  The backtester's
+``ParquetBookReplay`` then reads the file directly — no Postgres
+round-trip — when a backtest's opp tokens fall inside a covered window.
 
 Two schema variants are supported:
 
@@ -35,7 +39,6 @@ then ``os.rename``).
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,59 +100,89 @@ SCHEMA_VERSION = "1"
 # ── Path helpers ─────────────────────────────────────────────────────
 
 
-# Process-level cache of the UI-set override.  Populated by API
-# handlers (GET/PUT /providers/settings) and the parquet_root endpoint
-# so callers of ``parquet_root()`` (which is sync, called from many
-# places including the backtester hot path) don't have to await a DB
-# round-trip.  Setting to ``None`` means "fall through to env/default".
-_PARQUET_ROOT_OVERRIDE: str | None = None
+# Process-level cache of the UI-set roots.  Populated by API handlers
+# (GET/PUT /providers/parquet/root) so callers of ``parquet_roots()``
+# (sync, called from every parquet path-builder + the backtester hot
+# path) don't have to await a DB round-trip.  Empty list means "no
+# UI overrides set — use the built-in default location".
+_PARQUET_ROOT_OVERRIDES: list[str] = []
 
 
-def set_parquet_root_override(value: str | None) -> None:
-    """Update the in-memory override.  Called by the settings PUT
-    handler immediately after persisting to ``app_settings`` so the
-    new path is live before the operator clicks Rescan.
-
-    Pass ``None`` (or empty string) to clear the override and fall
-    back to env / default resolution.
+def _builtin_default_root() -> Path:
+    """The fall-back root used when the operator hasn't configured any.
+    Lives at ``<repo>/data/parquet`` so a fresh install just works.
     """
-    global _PARQUET_ROOT_OVERRIDE
-    if value is None or not str(value).strip():
-        _PARQUET_ROOT_OVERRIDE = None
-    else:
-        _PARQUET_ROOT_OVERRIDE = str(value).strip()
-
-
-def parquet_root_source() -> str:
-    """Which layer of the resolution chain is currently winning.
-    Returned by the ``GET /providers/parquet/root`` endpoint so the
-    UI can show ``"override"`` / ``"env"`` / ``"default"`` next to
-    the path."""
-    if _PARQUET_ROOT_OVERRIDE:
-        return "override"
-    if os.environ.get("HOMERUN_PARQUET_ROOT"):
-        return "env"
-    return "default"
-
-
-def parquet_root() -> Path:
-    """Storage root.  Resolution order:
-      1. UI-set override (``app_settings.parquet_root_override``,
-         cached in-process via ``set_parquet_root_override``)
-      2. ``HOMERUN_PARQUET_ROOT`` env var
-      3. ``<repo>/data/parquet`` default for fresh installs
-
-    Sync function — called from every parquet path-builder.  The
-    in-process cache means no DB round-trip on the hot path.
-    """
-    if _PARQUET_ROOT_OVERRIDE:
-        return Path(_PARQUET_ROOT_OVERRIDE).expanduser().resolve()
-    raw = os.environ.get("HOMERUN_PARQUET_ROOT")
-    if raw:
-        return Path(raw).expanduser().resolve()
     # backend/services/external_data/parquet_schema.py → ../../../../data/parquet
     here = Path(__file__).resolve()
     return (here.parents[3] / "data" / "parquet").resolve()
+
+
+def set_parquet_root_overrides(values: list[str] | None) -> None:
+    """Update the in-memory list of UI-configured roots.  Called by
+    the API handlers (PUT /providers/parquet/root + GET hydrate path)
+    after persisting to ``app_settings.parquet_root_overrides`` so
+    subsequent ``parquet_roots()`` calls see the new state without a
+    DB round-trip.
+
+    Pass ``None`` or ``[]`` to clear all overrides — the resolver
+    will fall back to the built-in default location.
+
+    Empty/whitespace-only entries are dropped.  Duplicates are
+    de-duped while preserving insertion order.
+    """
+    global _PARQUET_ROOT_OVERRIDES
+    if not values:
+        _PARQUET_ROOT_OVERRIDES = []
+        return
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s or s in seen:
+            continue
+        cleaned.append(s)
+        seen.add(s)
+    _PARQUET_ROOT_OVERRIDES = cleaned
+
+
+def parquet_roots() -> list[Path]:
+    """All configured parquet ingest roots.  Returns the UI-set list
+    when populated; otherwise a single-element list containing the
+    built-in default ``<repo>/data/parquet``.
+
+    The scanner walks every entry in order; the backtester's
+    per-token coverage lookup queries against ``provider_datasets``
+    rows whose paths fall under any of these roots.  Sync function
+    — no DB I/O, reads from the in-process cache.
+    """
+    if _PARQUET_ROOT_OVERRIDES:
+        return [Path(p).expanduser().resolve() for p in _PARQUET_ROOT_OVERRIDES]
+    return [_builtin_default_root()]
+
+
+def parquet_root() -> Path:
+    """Primary write root — the destination ``parquet_path_for`` uses
+    when a caller doesn't explicitly pick one.  Returns the FIRST
+    configured root, or the built-in default when none configured.
+
+    Reads happen against ALL configured roots via ``parquet_roots()``;
+    this helper exists only because path-construction needs a single
+    canonical destination.  Tests + the synthetic-import writer use it.
+    """
+    return parquet_roots()[0]
+
+
+def parquet_root_source() -> str:
+    """Which layer of the resolution chain is currently providing
+    roots.  Returned by ``GET /providers/parquet/root`` so the UI
+    can show provenance.  No env-var path anymore — operators
+    configure roots exclusively from Data Lab → Providers → Parquet.
+    """
+    if _PARQUET_ROOT_OVERRIDES:
+        return "configured"
+    return "default"
 
 
 def _iso_slug(dt: datetime) -> str:
@@ -244,8 +277,9 @@ __all__ = [
     "SCHEMA_VERSION",
     "ParquetPath",
     "parquet_root",
+    "parquet_roots",
     "parquet_root_source",
-    "set_parquet_root_override",
+    "set_parquet_root_overrides",
     "parquet_path_for",
     "schema_for",
 ]

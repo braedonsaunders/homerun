@@ -1,7 +1,8 @@
 """Filesystem auto-discovery for parquet datasets.
 
-Walks ``HOMERUN_PARQUET_ROOT`` looking for parquet files matching the
-canonical layout (see ``parquet_schema.parquet_path_for``):
+Walks every directory configured in Data Lab → Providers → Parquet
+(``app_settings.parquet_root_overrides``) looking for parquet files
+matching the canonical layout (see ``parquet_schema.parquet_path_for``):
 
     {root}/{provider}/{coin}/{window_slug}/{kind}__{token_id}.parquet
 
@@ -40,6 +41,7 @@ from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
     SNAPSHOT_SCHEMA,
     parquet_root,
+    parquet_roots,
 )
 
 logger = logging.getLogger(__name__)
@@ -301,35 +303,68 @@ _RESCAN_LOCK = asyncio.Lock()
 
 
 async def rescan_parquet_root(*, root: Path | None = None) -> dict[str, Any]:
-    """Walk the parquet root, validate, and UPSERT one row per group.
+    """Walk every configured parquet root (or the single ``root`` arg
+    when caller wants a one-off), validate, and UPSERT one row per
+    group.  Idempotent.  Safe to invoke concurrently — guarded by a
+    process-local lock.  Returns a structured report the API + CLI
+    surface to the operator.
 
-    Idempotent.  Safe to invoke concurrently — guarded by a process-
-    local lock.  Returns a structured report the API + CLI surface to
-    the operator.
+    When the operator has configured multiple roots in Data Lab →
+    Providers → Parquet, all of them are walked in order; results
+    are aggregated under per-root sub-reports so the UI can show
+    "root A: 3 groups, root B: 12 groups" cleanly.  When ``root``
+    is supplied explicitly, ONLY that root is scanned (back-compat
+    for tests + one-off CLI invocations).
     """
     global _LAST_SCAN_AT
     async with _RESCAN_LOCK:
-        scan_root = (root or parquet_root()).resolve()
+        scan_roots: list[Path]
+        if root is not None:
+            scan_roots = [root.resolve()]
+        else:
+            scan_roots = parquet_roots()
         started = time.monotonic()
-        groups = _walk_parquet_root(scan_root)
         results: list[dict[str, Any]] = []
-        for g in groups:
-            try:
-                res = await _upsert_group(g)
-            except Exception as exc:
-                logger.exception("parquet_scanner: group upsert raised")
-                res = {
-                    "provider": g.provider,
-                    "coin": g.coin,
-                    "window": g.window_dir.name,
-                    "error": str(exc)[:300],
-                }
-            results.append(res)
+        per_root_reports: list[dict[str, Any]] = []
+        total_groups = 0
+        for scan_root in scan_roots:
+            root_started = time.monotonic()
+            groups = _walk_parquet_root(scan_root)
+            root_results: list[dict[str, Any]] = []
+            for g in groups:
+                try:
+                    res = await _upsert_group(g)
+                except Exception as exc:
+                    logger.exception("parquet_scanner: group upsert raised")
+                    res = {
+                        "provider": g.provider,
+                        "coin": g.coin,
+                        "window": g.window_dir.name,
+                        "error": str(exc)[:300],
+                    }
+                # Tag every result with which root it came from so a
+                # multi-root scan's per-row report stays unambiguous.
+                res["root"] = str(scan_root)
+                root_results.append(res)
+                results.append(res)
+            total_groups += len(groups)
+            per_root_reports.append({
+                "root": str(scan_root),
+                "groups_seen": len(groups),
+                "elapsed_ms": (time.monotonic() - root_started) * 1000.0,
+                "exists": scan_root.exists(),
+            })
         _LAST_SCAN_AT = time.time()
         elapsed_ms = (time.monotonic() - started) * 1000.0
+        # Keep the legacy top-level ``root`` key (= first scan root)
+        # for back-compat with any frontend / CLI parsing the report
+        # before this multi-root upgrade.  ``roots`` is the new
+        # source of truth.
         return {
-            "root": str(scan_root),
-            "groups_seen": len(groups),
+            "root": str(scan_roots[0]) if scan_roots else "",
+            "roots": [str(p) for p in scan_roots],
+            "per_root": per_root_reports,
+            "groups_seen": total_groups,
             "results": results,
             "elapsed_ms": elapsed_ms,
             "scanned_at_epoch": _LAST_SCAN_AT,

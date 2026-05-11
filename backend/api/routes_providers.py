@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -589,9 +590,11 @@ class ProviderSettings(BaseModel):
     reverse_engineer_target_score: Optional[float] = None
     reverse_engineer_max_cost_usd: Optional[float] = None
     reverse_engineer_max_wallet_trades: Optional[int] = None
-    # Parquet ingest root — UI-editable.  Empty/null means fall through
-    # to HOMERUN_PARQUET_ROOT env then default <repo>/data/parquet.
-    parquet_root_override: Optional[str] = None
+    # Parquet ingest roots — UI-editable list.  Empty list / null
+    # falls back to the built-in default <repo>/data/parquet.  The
+    # scanner walks every root in order; backtests resolve coverage
+    # against the union.
+    parquet_root_overrides: Optional[list[str]] = None
 
 
 class ProviderSettingsUpdate(BaseModel):
@@ -604,8 +607,10 @@ class ProviderSettingsUpdate(BaseModel):
     reverse_engineer_target_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reverse_engineer_max_cost_usd: Optional[float] = Field(default=None, ge=0.0)
     reverse_engineer_max_wallet_trades: Optional[int] = Field(default=None, ge=10, le=250_000)
-    # Pass empty string to clear the override; null leaves unchanged.
-    parquet_root_override: Optional[str] = None
+    # Pass an explicit empty list [] to clear all roots; null leaves
+    # the stored list unchanged.  Each entry must be an absolute
+    # directory path that exists on the host.
+    parquet_root_overrides: Optional[list[str]] = None
 
 
 @router.get("/settings", response_model=ProviderSettings)
@@ -623,7 +628,7 @@ async def get_provider_settings() -> ProviderSettings:
         reverse_engineer_target_score=getattr(row, "reverse_engineer_target_score", None),
         reverse_engineer_max_cost_usd=getattr(row, "reverse_engineer_max_cost_usd", None),
         reverse_engineer_max_wallet_trades=getattr(row, "reverse_engineer_max_wallet_trades", None),
-        parquet_root_override=getattr(row, "parquet_root_override", None),
+        parquet_root_overrides=list(getattr(row, "parquet_root_overrides", None) or []) or None,
     )
 
 
@@ -664,14 +669,24 @@ async def update_provider_settings(req: ProviderSettingsUpdate) -> dict[str, Any
             row.reverse_engineer_max_cost_usd = float(req.reverse_engineer_max_cost_usd)
         if req.reverse_engineer_max_wallet_trades is not None:
             row.reverse_engineer_max_wallet_trades = int(req.reverse_engineer_max_wallet_trades)
-        if req.parquet_root_override is not None:
-            cleaned = req.parquet_root_override.strip()
-            row.parquet_root_override = cleaned or None
-            # Push the new value into the in-process cache so the next
-            # ``parquet_root()`` call (e.g. from the Rescan button the
-            # operator is about to click) sees it without restarting.
-            from services.external_data.parquet_schema import set_parquet_root_override
-            set_parquet_root_override(cleaned or None)
+        if req.parquet_root_overrides is not None:
+            # Normalise: drop empties + de-dupe + persist as JSON list.
+            cleaned_list: list[str] = []
+            seen: set[str] = set()
+            for v in req.parquet_root_overrides:
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if not s or s in seen:
+                    continue
+                cleaned_list.append(s)
+                seen.add(s)
+            row.parquet_root_overrides = cleaned_list or None
+            # Push the new list into the in-process cache so the next
+            # ``parquet_roots()`` call (e.g. the Rescan button the
+            # operator is about to click) sees it without restart.
+            from services.external_data.parquet_schema import set_parquet_root_overrides
+            set_parquet_root_overrides(cleaned_list)
 
         await session.commit()
     return {"ok": True}
@@ -711,99 +726,127 @@ def _serialize_dataset(row: Any, include_payload: bool = False) -> dict[str, Any
 
 
 # ---------------------------------------------------------------------------
-# Parquet datasets (operator drops files into HOMERUN_PARQUET_ROOT;
-# auto-discovery scanner upserts provider_datasets rows so the
-# backtester's source resolver can find them).
+# Parquet datasets — operators configure ingest roots in Data Lab →
+# Providers → Parquet (multiple roots supported).  The HOMERUN_PARQUET_ROOT
+# env var is no longer consulted; the DB-backed list is the single source
+# of truth.  Auto-discovery scanner walks every root and upserts
+# provider_datasets rows so the backtester's source resolver picks them up.
 # ---------------------------------------------------------------------------
+
+
+def _validate_parquet_root_path(raw: str) -> Path:
+    """Reject non-absolute / non-existent / non-directory paths early
+    so the operator gets a clear 400 instead of a silent no-op when
+    the scanner later finds no files."""
+    try:
+        p = Path(raw).expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"invalid path: {exc}") from exc
+    if not p.is_absolute():
+        raise HTTPException(status_code=400, detail=f"path must be absolute: {raw}")
+    if not p.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"path does not exist: {p}.  Create the directory first, then save.",
+        )
+    if not p.is_dir():
+        raise HTTPException(status_code=400, detail=f"path is not a directory: {p}")
+    return p
+
+
+def _resolved_root_dict(p: Path) -> dict[str, Any]:
+    """Per-root status payload returned by GET / PUT.  ``exists`` and
+    ``writable`` are quick filesystem checks the UI uses to decorate
+    the row (red dot if missing, etc.)."""
+    return {
+        "path": str(p),
+        "exists": p.exists(),
+        "writable": p.exists() and p.is_dir(),
+    }
 
 
 @router.get("/parquet/root")
 async def get_parquet_root() -> dict[str, Any]:
-    """Surface the storage root the operator should drop parquet files
-    into.  UI shows this so users know where to copy vendor data.
+    """Surface the configured parquet ingest roots.  UI shows these so
+    operators see where backtests will read parquet data from + where
+    new files should be dropped.
 
-    Also lazy-loads the persisted override from ``app_settings`` into
-    the in-process cache on first call (survives restarts without a
-    dedicated startup hook).
+    Also lazy-loads the persisted overrides from ``app_settings`` into
+    the in-process cache on every call — survives backend restarts
+    without a dedicated startup hook, and lets a value set by another
+    process / migration become visible immediately.
     """
     from services.external_data.parquet_schema import (
-        parquet_root,
+        parquet_roots,
         parquet_root_source,
-        set_parquet_root_override,
+        set_parquet_root_overrides,
     )
 
-    # Lazy-hydrate the in-process override from DB on every GET — cheap
-    # (one indexed row read), survives backend restarts, and lets the
-    # UI immediately reflect a value set by another process / migration.
     async with AsyncSessionLocal() as session:
         row = (await session.execute(select(AppSettings))).scalar_one_or_none()
-    persisted = getattr(row, "parquet_root_override", None) if row is not None else None
-    set_parquet_root_override(persisted or None)
+    persisted = list(getattr(row, "parquet_root_overrides", None) or []) if row is not None else []
+    set_parquet_root_overrides(persisted)
 
-    root = parquet_root()
+    roots = parquet_roots()
     return {
-        "root": str(root),
-        "exists": root.exists(),
-        "env_var": "HOMERUN_PARQUET_ROOT",
-        # 'override' = UI-set in app_settings, 'env' = HOMERUN_PARQUET_ROOT,
-        # 'default' = <repo>/data/parquet
+        "roots": [_resolved_root_dict(p) for p in roots],
+        # 'configured' = UI-set in app_settings; 'default' = <repo>/data/parquet
         "source": parquet_root_source(),
-        "override": persisted or None,
+        # The configured override list (empty when falling back to default).
+        "overrides": persisted,
     }
 
 
 class ParquetRootUpdate(BaseModel):
-    # Pass empty string to clear the override and fall back to env/default.
-    root: Optional[str] = None
+    # Full replacement of the configured roots list.  Pass [] to clear
+    # all overrides and fall back to the built-in default.  Each entry
+    # must be an absolute existing directory.
+    roots: list[str] = Field(default_factory=list, max_length=32)
 
 
 @router.put("/parquet/root")
 async def set_parquet_root(req: ParquetRootUpdate) -> dict[str, Any]:
-    """Set / clear the UI-editable parquet ingest root.  Persists to
-    ``app_settings.parquet_root_override`` and primes the in-process
-    cache so the next Rescan picks up the new path immediately."""
+    """Replace the UI-configured parquet ingest roots.  Persists the
+    full list to ``app_settings.parquet_root_overrides`` and primes
+    the in-process cache so the next Rescan picks up the new state
+    immediately."""
     from services.external_data.parquet_schema import (
-        parquet_root,
+        parquet_roots,
         parquet_root_source,
-        set_parquet_root_override,
+        set_parquet_root_overrides,
     )
 
-    cleaned = (req.root or "").strip()
-    # Best-effort path validation: must be absolute, must exist OR be
-    # creatable.  We don't auto-create here — the operator should be
-    # explicit about where vendor data lives.
-    if cleaned:
-        from pathlib import Path as _P
-        try:
-            p = _P(cleaned).expanduser().resolve()
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"invalid path: {exc}") from exc
-        if not p.is_absolute():
-            raise HTTPException(status_code=400, detail="path must be absolute")
-        if not p.exists():
-            raise HTTPException(
-                status_code=400,
-                detail=f"path does not exist: {p}.  Create the directory first, then save.",
-            )
-        if not p.is_dir():
-            raise HTTPException(status_code=400, detail=f"path is not a directory: {p}")
+    # Normalise: drop empties + de-dupe + validate every entry.
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in req.roots:
+        if raw is None:
+            continue
+        s = str(raw).strip()
+        if not s:
+            continue
+        validated = _validate_parquet_root_path(s)
+        canonical = str(validated)
+        if canonical in seen:
+            continue
+        cleaned.append(canonical)
+        seen.add(canonical)
 
     async with AsyncSessionLocal() as session:
         row = (await session.execute(select(AppSettings))).scalar_one_or_none()
         if row is None:
             row = AppSettings(id="default")
             session.add(row)
-        row.parquet_root_override = cleaned or None
+        row.parquet_root_overrides = cleaned or None
         await session.commit()
 
-    set_parquet_root_override(cleaned or None)
-    root = parquet_root()
+    set_parquet_root_overrides(cleaned)
+    roots = parquet_roots()
     return {
         "ok": True,
-        "root": str(root),
-        "exists": root.exists(),
+        "roots": [_resolved_root_dict(p) for p in roots],
         "source": parquet_root_source(),
-        "override": cleaned or None,
+        "overrides": cleaned,
     }
 
 

@@ -1366,13 +1366,13 @@ class AppSettings(Base):
     telonex_downloads_remaining = Column(Integer, nullable=True)
     telonex_downloads_remaining_at = Column(DateTime, nullable=True)
 
-    # Parquet ingest storage root — UI-editable so operators don't have
-    # to set HOMERUN_PARQUET_ROOT and restart.  Resolution order:
-    #   1. this column (UI-set, persists)
-    #   2. HOMERUN_PARQUET_ROOT env var (legacy / fallback)
-    #   3. <repo>/data/parquet default
-    # See services/external_data/parquet_schema.parquet_root().
-    parquet_root_override = Column(String, nullable=True)
+    # Parquet ingest storage roots — UI-editable list.  The scanner
+    # walks every directory in this list (in order); when empty, falls
+    # back to the built-in default ``<repo>/data/parquet``.  The
+    # HOMERUN_PARQUET_ROOT env var is no longer consulted — operators
+    # configure roots exclusively from Data Lab → Providers → Parquet.
+    # See services/external_data/parquet_schema.parquet_roots().
+    parquet_root_overrides = Column(JSON, nullable=True)
 
     # Strategy reverse-engineer agent — UI-tunable defaults.  Null
     # values fall back to service-level constants.  The default *model*

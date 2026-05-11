@@ -92,49 +92,96 @@ def test_parquet_path_for_normalises_long_token_ids(tmp_path):
     assert p1.window_dir == p2.window_dir
 
 
-def test_parquet_root_env_override(monkeypatch, tmp_path):
-    """HOMERUN_PARQUET_ROOT must override the default location."""
-    # Clear any in-process UI override the previous test may have left.
-    from services.external_data.parquet_schema import set_parquet_root_override
-    set_parquet_root_override(None)
-    monkeypatch.setenv("HOMERUN_PARQUET_ROOT", str(tmp_path))
-    assert parquet_root() == tmp_path.resolve()
-
-
-def test_parquet_root_ui_override_beats_env(monkeypatch, tmp_path):
-    """UI-set override wins over env var (operator's most-recent
-    intent should always be authoritative).  The override value is
-    stored in-process so callers don't have to do an async DB read on
-    the hot path; the API handler is responsible for hydrating it from
-    ``app_settings`` on each GET."""
+def test_parquet_root_default_when_no_overrides(monkeypatch):
+    """With no UI overrides configured, ``parquet_root()`` returns the
+    built-in ``<repo>/data/parquet`` default.  HOMERUN_PARQUET_ROOT
+    env var is no longer consulted — operators configure roots
+    exclusively from Data Lab → Providers → Parquet."""
     from services.external_data.parquet_schema import (
         parquet_root,
+        parquet_roots,
         parquet_root_source,
-        set_parquet_root_override,
+        set_parquet_root_overrides,
     )
-    env_dir = tmp_path / "env"
-    ui_dir = tmp_path / "ui"
-    env_dir.mkdir()
-    ui_dir.mkdir()
+    set_parquet_root_overrides([])
+    # An env var shouldn't matter anymore — we drop it for safety.
+    monkeypatch.delenv("HOMERUN_PARQUET_ROOT", raising=False)
+    assert parquet_root_source() == "default"
+    assert parquet_root().parts[-2:] == ("data", "parquet")
+    # parquet_roots() returns a single-element list with the default
+    assert len(parquet_roots()) == 1
+    assert parquet_roots()[0].parts[-2:] == ("data", "parquet")
 
-    monkeypatch.setenv("HOMERUN_PARQUET_ROOT", str(env_dir))
-    set_parquet_root_override(str(ui_dir))
+
+def test_parquet_root_ui_overrides_single_root(tmp_path):
+    """A single UI-configured root replaces the default.  The
+    ``parquet_root()`` helper (singular — used by ``parquet_path_for``
+    as the write destination) returns that root."""
+    from services.external_data.parquet_schema import (
+        parquet_root,
+        parquet_roots,
+        parquet_root_source,
+        set_parquet_root_overrides,
+    )
+    set_parquet_root_overrides([str(tmp_path)])
     try:
-        assert parquet_root() == ui_dir.resolve()
-        assert parquet_root_source() == "override"
-
-        # Clearing the override falls back to env.
-        set_parquet_root_override(None)
-        assert parquet_root() == env_dir.resolve()
-        assert parquet_root_source() == "env"
-
-        # Clearing env too falls back to default.
-        monkeypatch.delenv("HOMERUN_PARQUET_ROOT", raising=False)
-        assert parquet_root_source() == "default"
-        # default path must end with data/parquet
-        assert parquet_root().parts[-2:] == ("data", "parquet")
+        assert parquet_root_source() == "configured"
+        assert parquet_root() == tmp_path.resolve()
+        assert parquet_roots() == [tmp_path.resolve()]
     finally:
-        set_parquet_root_override(None)
+        set_parquet_root_overrides([])
+
+
+def test_parquet_root_ui_overrides_multiple_roots(tmp_path):
+    """The new multi-root API: ``set_parquet_root_overrides`` accepts a
+    list and ``parquet_roots()`` returns them all in order.  Useful
+    when the operator splits parquet data across multiple drives /
+    vendor directories."""
+    from services.external_data.parquet_schema import (
+        parquet_root,
+        parquet_roots,
+        set_parquet_root_overrides,
+    )
+    a = tmp_path / "vendor_a"
+    b = tmp_path / "vendor_b"
+    c = tmp_path / "vendor_c"
+    for d in (a, b, c):
+        d.mkdir()
+    set_parquet_root_overrides([str(a), str(b), str(c)])
+    try:
+        roots = parquet_roots()
+        assert roots == [a.resolve(), b.resolve(), c.resolve()]
+        # Primary write root = first entry (back-compat).
+        assert parquet_root() == a.resolve()
+    finally:
+        set_parquet_root_overrides([])
+
+
+def test_parquet_root_overrides_dedupe_and_strip(tmp_path):
+    """Empty / whitespace-only / duplicate entries are dropped; order
+    is preserved for legitimate ones.  Matches the validation the
+    PUT /providers/parquet/root handler performs server-side."""
+    from services.external_data.parquet_schema import (
+        parquet_roots,
+        set_parquet_root_overrides,
+    )
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    set_parquet_root_overrides([
+        str(a),
+        "   ",       # whitespace — dropped
+        str(b),
+        str(a),      # duplicate — dropped
+        "",          # empty — dropped
+        str(b),      # duplicate — dropped
+    ])
+    try:
+        roots = parquet_roots()
+        assert roots == [a.resolve(), b.resolve()]
+    finally:
+        set_parquet_root_overrides([])
 
 
 # ── Writer round-trip ────────────────────────────────────────────────

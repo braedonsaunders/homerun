@@ -17,7 +17,7 @@
  * No hardcoded settings — the API key + base URL come from
  * Settings → Providers (per the no-hidden-defaults policy).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -45,7 +45,7 @@ import {
   cancelImportJob,
   deleteProviderDataset,
   getParquetRoot,
-  setParquetRoot,
+  setParquetRoots,
   getProviderSettings,
   getTelonexAvailability,
   getTelonexCatalogStatus,
@@ -2128,31 +2128,34 @@ function ParquetSection() {
       queryClient.invalidateQueries({ queryKey: ['providers', 'parquet', 'datasets'] })
     },
   })
-  // Edit-in-place state for the storage root.  ``draft`` is the value
-  // the operator is typing; we sync from server on first load and any
-  // time the server-side value changes.  Save / Reset buttons act on
-  // the draft.
-  const [draft, setDraft] = useState<string>('')
+
+  // Multi-root edit state.  ``drafts`` is the working list the
+  // operator is editing; we sync from the server's ``overrides`` on
+  // first load and whenever the persisted list changes (e.g. another
+  // tab edited).  Save persists the entire list as a full
+  // replacement.  Add/Remove mutate the draft locally.
+  const [drafts, setDrafts] = useState<string[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
-  const serverRoot = rootQuery.data?.root ?? ''
-  const serverOverride = rootQuery.data?.override ?? ''
+  const serverOverrides: string[] = useMemo(
+    () => rootQuery.data?.overrides ?? [],
+    [rootQuery.data],
+  )
+  const serverRoots = rootQuery.data?.roots ?? []
   const serverSource = rootQuery.data?.source ?? 'default'
   useEffect(() => {
-    // Initialize the draft once the server value loads, and re-sync
-    // whenever the persisted value changes (e.g. another tab edited).
-    setDraft(serverRoot)
-  }, [serverRoot])
+    setDrafts(serverOverrides.length > 0 ? [...serverOverrides] : [])
+  }, [serverOverrides])
 
   const saveMutation = useMutation({
-    mutationFn: async (root: string) => {
-      // Empty draft = clear override (fall back to env / default).
-      const cleared = root.trim() === '' || root.trim() === serverRoot
-      return setParquetRoot(cleared ? '' : root.trim())
+    mutationFn: async (next: string[]) => {
+      // Drop empty / whitespace-only entries before sending — backend
+      // does the same de-dupe but UX feels cleaner if obvious junk
+      // never reaches the wire.
+      const cleaned = next.map((s) => s.trim()).filter((s) => s.length > 0)
+      return setParquetRoots(cleaned)
     },
     onSuccess: (data) => {
       setSaveError(null)
-      // Refresh root + datasets — the catalog table is keyed off the
-      // root path, so the displayed list might change immediately.
       queryClient.setQueryData(['providers', 'parquet', 'root'], data)
       queryClient.invalidateQueries({ queryKey: ['providers', 'parquet', 'datasets'] })
     },
@@ -2166,85 +2169,151 @@ function ParquetSection() {
 
   const datasets = datasetsQuery.data ?? []
   const lastReport: ParquetRescanReport | undefined = rescanMutation.data
-  const isDirty = draft.trim() !== serverRoot
-  const sourceLabel = (
-    serverSource === 'override' ? 'set in UI' :
-    serverSource === 'env' ? 'from HOMERUN_PARQUET_ROOT env' :
-    'default location'
-  )
+
+  // Dirty-check: any draft entry differs from the corresponding
+  // server entry, OR the lengths differ.
+  const cleanedDrafts = drafts.map((s) => s.trim()).filter((s) => s.length > 0)
+  const isDirty =
+    cleanedDrafts.length !== serverOverrides.length
+    || cleanedDrafts.some((d, i) => d !== serverOverrides[i])
+
+  const sourceLabel =
+    serverSource === 'configured'
+      ? `${serverRoots.length} configured`
+      : 'default location (no overrides set)'
+
+  const updateDraft = (idx: number, value: string) => {
+    setDrafts((prev) => prev.map((p, i) => (i === idx ? value : p)))
+    setSaveError(null)
+  }
+  const removeDraft = (idx: number) => {
+    setDrafts((prev) => prev.filter((_, i) => i !== idx))
+    setSaveError(null)
+  }
+  const addDraft = () => {
+    setDrafts((prev) => [...prev, ''])
+    setSaveError(null)
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      {/* Storage root — operator copies files into this directory. */}
+      {/* Storage roots — operator drops parquet files into any of these directories. */}
       <div className="rounded-md border border-border/40 bg-card/40 p-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <Database className="h-3.5 w-3.5 text-violet-400" />
               <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Parquet storage root
+                Parquet storage roots
               </span>
               <span className="text-[10px] text-muted-foreground">· {sourceLabel}</span>
             </div>
-            <div className="mt-1.5 flex items-center gap-2">
-              <Input
-                value={draft}
-                onChange={(e) => { setDraft(e.target.value); setSaveError(null) }}
-                placeholder={rootQuery.isLoading ? 'loading…' : 'C:\\homerun\\data\\parquet'}
-                disabled={rootQuery.isLoading || saveMutation.isPending}
-                className="h-7 flex-1 font-mono text-[11px]"
-                spellCheck={false}
-              />
-              <Button
-                size="sm"
-                variant="default"
-                className="h-7 gap-1 text-[10px]"
-                disabled={!isDirty || saveMutation.isPending}
-                onClick={() => saveMutation.mutate(draft)}
-              >
-                {saveMutation.isPending ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
+
+            {/* When falling back to default and no drafts are being
+                edited yet, surface the active default path so the
+                operator knows where to drop files.  Server-effective
+                roots take precedence over the (empty) drafts list. */}
+            {drafts.length === 0 && serverRoots.length > 0 && serverSource === 'default' ? (
+              <div className="mt-1.5 rounded-sm border border-border/30 bg-background/40 px-2 py-1.5 text-[10px] text-muted-foreground">
+                <span className="uppercase tracking-wide text-[9px] mr-1">Active default</span>
+                <code className="font-mono text-[10.5px] text-foreground">{serverRoots[0].path}</code>
+                {!serverRoots[0].exists ? (
+                  <span className="ml-2 text-amber-500">(does not exist)</span>
                 ) : null}
-                Save
-              </Button>
-              {isDirty && (
+              </div>
+            ) : null}
+
+            {/* One row per draft entry.  Existence dot reflects the
+                SERVER's view (we don't probe the filesystem from the
+                browser) — only updates after Save. */}
+            <div className="mt-1.5 space-y-1.5">
+              {drafts.map((d, i) => {
+                const serverEntry = serverRoots.find((r) => r.path === d.trim())
+                const exists = serverEntry?.exists ?? null
+                return (
+                  <div key={i} className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        'h-2 w-2 shrink-0 rounded-full',
+                        exists === true && 'bg-emerald-500',
+                        exists === false && 'bg-red-500',
+                        exists === null && 'bg-muted-foreground/40',
+                      )}
+                      title={
+                        exists === true
+                          ? 'Directory exists on the server'
+                          : exists === false
+                            ? 'Directory does NOT exist on the server'
+                            : 'Status will appear after Save'
+                      }
+                    />
+                    <Input
+                      value={d}
+                      onChange={(e) => updateDraft(i, e.target.value)}
+                      placeholder={i === 0 ? 'C:\\path\\to\\parquet' : 'Additional root...'}
+                      disabled={saveMutation.isPending}
+                      className="h-7 flex-1 font-mono text-[11px]"
+                      spellCheck={false}
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-muted-foreground hover:bg-red-500/15 hover:text-red-600 dark:hover:text-red-400"
+                      onClick={() => removeDraft(i)}
+                      disabled={saveMutation.isPending}
+                      title="Remove this root"
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                )
+              })}
+              <div className="flex items-center gap-2">
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-7 text-[10px]"
-                  onClick={() => { setDraft(serverRoot); setSaveError(null) }}
+                  className="h-7 gap-1 text-[10px]"
+                  onClick={addDraft}
                   disabled={saveMutation.isPending}
                 >
-                  Reset
+                  + Add root
                 </Button>
-              )}
-              {serverOverride && !isDirty && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-[10px]"
-                  title="Clear UI override and fall back to env / default"
-                  onClick={() => { setDraft(''); saveMutation.mutate('') }}
-                  disabled={saveMutation.isPending}
-                >
-                  Clear
-                </Button>
-              )}
+                {isDirty ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-7 gap-1 text-[10px]"
+                      disabled={saveMutation.isPending}
+                      onClick={() => saveMutation.mutate(drafts)}
+                    >
+                      {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                      Save changes
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-[10px]"
+                      onClick={() => { setDrafts([...serverOverrides]); setSaveError(null) }}
+                      disabled={saveMutation.isPending}
+                    >
+                      Reset
+                    </Button>
+                  </>
+                ) : null}
+              </div>
             </div>
-            <p className="mt-1.5 text-[10px] text-muted-foreground">
-              Drop parquet files here following the layout{' '}
+
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Configure one or more directories.  The scanner walks each
+              one and discovers parquet files following the layout{' '}
               <code className="text-[10px]">
                 {'{provider}/{coin}/{startISO}__{endISO}/{kind}__{token_id}.parquet'}
               </code>
               .
-              {rootQuery.data && !rootQuery.data.exists && (
-                <span className="ml-1 text-amber-400">
-                  Directory does not exist yet — create it then save.
-                </span>
-              )}
             </p>
             {saveError && (
-              <p className="mt-1 text-[10px] text-red-400">{saveError}</p>
+              <p className="mt-1 text-[10px] text-red-500">{saveError}</p>
             )}
           </div>
           <Button
@@ -2264,10 +2333,24 @@ function ParquetSection() {
         </div>
         {lastReport && (
           <div className="mt-2 rounded border border-border/30 bg-muted/20 p-2 text-[10px] text-muted-foreground">
-            Last rescan: {lastReport.groups_seen} group(s) found in{' '}
+            Last rescan: <span className="font-medium">{lastReport.groups_seen}</span> group(s) across{' '}
+            <span className="font-medium">{lastReport.roots?.length ?? 1}</span> root(s) in{' '}
             {lastReport.elapsed_ms.toFixed(0)} ms.
+            {lastReport.per_root && lastReport.per_root.length > 1 ? (
+              <div className="mt-1 space-y-0.5">
+                {lastReport.per_root.map((pr, i) => (
+                  <div key={i} className="font-mono text-[9.5px]">
+                    <span className={cn(
+                      'mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle',
+                      pr.exists ? 'bg-emerald-500' : 'bg-red-500',
+                    )} />
+                    {pr.root} → {pr.groups_seen} group(s)
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {lastReport.results.some((r) => r.error) && (
-              <span className="ml-1 text-amber-400">
+              <span className="ml-1 text-amber-500">
                 {lastReport.results.filter((r) => r.error).length} group(s) errored.
               </span>
             )}
