@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 import asyncio
 
-from sqlalchemy import case, func, select, text as _sa_text
+from sqlalchemy import func, select, text as _sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import AsyncSessionLocal, BookDeltaEvent
