@@ -208,6 +208,7 @@ async def list_telonex_markets(
     search: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     channel: Optional[str] = Query(default=None),
+    event_id: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
@@ -234,6 +235,7 @@ async def list_telonex_markets(
         search=search,
         status=status,
         channel=channel,
+        event_id=event_id,
         limit=int(limit),
         offset=int(offset),
     )

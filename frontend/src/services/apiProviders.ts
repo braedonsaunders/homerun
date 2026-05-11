@@ -463,6 +463,7 @@ export async function listTelonexMarkets(params: {
   search?: string
   status?: string
   channel?: string
+  event_id?: string
   limit?: number
   offset?: number
 }): Promise<TelonexMarketsPage> {

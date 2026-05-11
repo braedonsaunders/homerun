@@ -244,6 +244,7 @@ async def list_markets(
     search: Optional[str] = None,
     status: Optional[str] = None,
     channel: Optional[str] = None,
+    event_id: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -254,6 +255,8 @@ async def list_markets(
 
     ``channel`` restricts results to markets that have data for the
     given channel (i.e. the ``<channel>_from`` column is non-empty).
+    ``event_id`` returns every binary sub-market in the named event —
+    used by the UI for "import full event" flows.
     """
     p = markets_catalog_path(exchange)
     if not p.exists():
@@ -272,7 +275,8 @@ async def list_markets(
         None,
         lambda: _list_markets_sync(
             p, exchange=exchange, search=search, status=status,
-            channel=channel, limit=int(limit), offset=int(offset),
+            channel=channel, event_id=event_id,
+            limit=int(limit), offset=int(offset),
         ),
     )
 
@@ -284,6 +288,7 @@ def _list_markets_sync(
     search: Optional[str],
     status: Optional[str],
     channel: Optional[str],
+    event_id: Optional[str],
     limit: int,
     offset: int,
 ) -> dict[str, Any]:
@@ -300,6 +305,8 @@ def _list_markets_sync(
         nonlocal mask
         mask = m if mask is None else pc.and_(mask, m)
 
+    if event_id:
+        _and(pc.equal(table["event_id"], event_id))
     if status:
         _and(pc.equal(table["status"], status))
     if channel:

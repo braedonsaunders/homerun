@@ -374,22 +374,26 @@ function TelonexImportPanel() {
   const [channelFilter, setChannelFilter] = useState<string>('all')
 
   // Selected asset state.  Two paths:
-  //   - polymarket: pick a market row + outcome
-  //   - binance: type a symbol directly
+  //   - polymarket: pick a market row → both outcomes are imported
+  //     by default (operator almost always wants both books for any
+  //     analysis; the cost preview makes the doubling visible).
+  //   - binance: type a symbol directly (single-sided).
   const [selectedMarket, setSelectedMarket] = useState<TelonexMarket | null>(null)
-  const [selectedOutcomeIdx, setSelectedOutcomeIdx] = useState<number>(0)
   const [binanceSymbol, setBinanceSymbol] = useState<string>('')
 
   // Import params
   const [channel, setChannel] = useState<string>('trades')
   const [startDate, setStartDate] = useState<string>('')
   const [endDate, setEndDate] = useState<string>('')
+  // When true (polymarket only): import every binary sub-market in
+  // the selected market's event_id, not just the picked row.
+  const [importFullEvent, setImportFullEvent] = useState<boolean>(false)
 
   // Reset asset selection when switching exchange.
   useEffect(() => {
     setSelectedMarket(null)
-    setSelectedOutcomeIdx(0)
     setBinanceSymbol('')
+    setImportFullEvent(false)
     setStartDate(''); setEndDate('')
     setChannel(TELONEX_CHANNELS_BY_EXCHANGE[exchange][0] || 'trades')
   }, [exchange])
@@ -423,6 +427,33 @@ function TelonexImportPanel() {
     staleTime: 60_000,
   })
   const marketsPage: TelonexMarketsPage | undefined = marketsQuery.data
+
+  // Reuse the same quota query as TelonexQuotaPill (React Query
+  // dedupes on the shared key) so the over-quota guard below stays
+  // in sync with the pill at the top of the panel.
+  const quotaQuery = useQuery({
+    queryKey: ['providers', 'telonex', 'quota'],
+    queryFn: getTelonexQuota,
+    staleTime: 10_000,
+  })
+  const quota: TelonexQuota | undefined = quotaQuery.data
+
+  // When the operator opts into "Import full event", fetch every
+  // binary sub-market sharing the selected market's event_id.  Each
+  // row is its own (asset_id_0, asset_id_1) pair — total outcomes =
+  // 2 × siblings.  We pull up to 500 (Polymarket events with more are
+  // vanishingly rare; the UI warns if we hit the cap).
+  const eventSiblingsQuery = useQuery({
+    queryKey: ['providers', 'telonex', 'event-siblings', selectedMarket?.event_id],
+    queryFn: () =>
+      listTelonexMarkets({
+        exchange: 'polymarket',
+        event_id: selectedMarket?.event_id || undefined,
+        limit: 500,
+      }),
+    enabled: !!(exchange === 'polymarket' && importFullEvent && selectedMarket?.event_id),
+    staleTime: 60_000,
+  })
 
   // For binance we fetch availability on-demand because there's no
   // markets catalog to consult.
@@ -461,8 +492,18 @@ function TelonexImportPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel, channelStart, channelEnd])
 
+  // Sequential mutation: imports each outcome's parquet for the
+  // chosen date range.  Polymarket fires twice (Yes + No); binance
+  // fires once.  Sequential rather than parallel so the operator sees
+  // a quota counter that decrements in lockstep with each side.
   const importMutation = useMutation({
-    mutationFn: (req: TelonexImportRequest) => importTelonex(req),
+    mutationFn: async (reqs: TelonexImportRequest[]): Promise<TelonexImportResponse[]> => {
+      const out: TelonexImportResponse[] = []
+      for (const req of reqs) {
+        out.push(await importTelonex(req))
+      }
+      return out
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['providers', 'telonex', 'quota'] })
       queryClient.invalidateQueries({ queryKey: ['providers', 'telonex', 'datasets'] })
@@ -472,43 +513,72 @@ function TelonexImportPanel() {
 
   const daysSelected = _daysBetween(startDate, endDate)
 
+  // Flatten all (market, outcome) pairs we'll import.  When
+  // ``importFullEvent`` is on for polymarket, this expands across
+  // every binary sub-market in the event_id; otherwise it's just the
+  // selected market's pair.  Outcomes with no asset_id and no
+  // slug+label fallback are skipped — they're resolved/blanked rows
+  // with no actual data behind them.
+  type ImportableOutcome = {
+    asset_id?: string
+    slug?: string
+    outcome?: string
+    label: string  // human label for the result panel ("Yes", "Lakers", etc.)
+  }
+  const importableOutcomes: ImportableOutcome[] = (() => {
+    if (exchange === 'polymarket') {
+      const sourceMarkets: TelonexMarket[] = importFullEvent
+        ? (eventSiblingsQuery.data?.markets ?? [])
+        : (selectedMarket ? [selectedMarket] : [])
+      const out: ImportableOutcome[] = []
+      for (const m of sourceMarkets) {
+        for (const o of m.outcomes) {
+          const label = o.label || ''
+          // Tag with the market question when importing an event so
+          // the result panel disambiguates "Yes (Lakers)" vs
+          // "Yes (Celtics)" etc.
+          const displayLabel = importFullEvent
+            ? `${label || '(unnamed)'} — ${(m.question || m.slug || m.market_id || '?').slice(0, 40)}`
+            : (label || '(unnamed)')
+          if (o.asset_id) {
+            out.push({ asset_id: o.asset_id, label: displayLabel })
+          } else if (m.slug && label) {
+            out.push({ slug: m.slug, outcome: label, label: displayLabel })
+          }
+        }
+      }
+      return out
+    }
+    if (exchange === 'binance' && binanceSymbol.trim()) {
+      return [{ slug: binanceSymbol.trim().toLowerCase(), label: binanceSymbol.trim().toLowerCase() }]
+    }
+    return []
+  })()
+
+  const totalDownloads = daysSelected * importableOutcomes.length
+
   const canImport = (() => {
     if (!channel || !startDate || !endDate) return false
     if (daysSelected <= 0) return false
-    if (exchange === 'polymarket') {
-      if (!selectedMarket) return false
-      const outcome = selectedMarket.outcomes[selectedOutcomeIdx]
-      if (!outcome) return false
-      return !!(outcome.asset_id || selectedMarket.slug)
-    }
-    return binanceSymbol.trim().length > 0
+    return importableOutcomes.length > 0
   })()
 
-  const buildImportRequest = (): TelonexImportRequest | null => {
-    if (!canImport) return null
-    if (exchange === 'polymarket' && selectedMarket) {
-      const o = selectedMarket.outcomes[selectedOutcomeIdx]
-      const req: TelonexImportRequest = {
-        exchange: 'polymarket',
+  const buildImportRequests = (): TelonexImportRequest[] => {
+    if (!canImport) return []
+    return importableOutcomes.map((o) => {
+      const base: TelonexImportRequest = {
+        exchange,
         channel,
         start_date: startDate,
         end_date: endDate,
       }
-      // Asset ID is most precise — use it when present.
-      if (o?.asset_id) req.asset_id = o.asset_id
-      else if (selectedMarket.slug) {
-        req.slug = selectedMarket.slug
-        req.outcome = o?.label ?? undefined
+      if (o.asset_id) base.asset_id = o.asset_id
+      else if (o.slug) {
+        base.slug = o.slug
+        if (o.outcome) base.outcome = o.outcome
       }
-      return req
-    }
-    return {
-      exchange: 'binance',
-      channel,
-      start_date: startDate,
-      end_date: endDate,
-      slug: binanceSymbol.trim().toLowerCase(),
-    }
+      return base
+    })
   }
 
   return (
@@ -691,20 +761,57 @@ function TelonexImportPanel() {
             </div>
           ) : null}
 
-          {/* Outcome picker (polymarket only) */}
+          {/* Outcome summary — both sides import by default.
+              If the market is part of a multi-market event, offer the
+              "Import full event" toggle so the operator can fan out
+              across every sub-market with one click. */}
           {selectedMarket ? (
-            <div>
-              <Label className="text-[10px] uppercase text-muted-foreground">Outcome</Label>
-              <Select value={String(selectedOutcomeIdx)} onValueChange={(v) => setSelectedOutcomeIdx(parseInt(v, 10))}>
-                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {selectedMarket.outcomes.map((o, i) => (
-                    <SelectItem key={i} value={String(i)} className="text-xs">
-                      {o.label || `outcome_${i}`}{o.asset_id ? ` · ${o.asset_id.slice(0, 10)}…` : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="space-y-2">
+              <div className="rounded-sm border border-border/30 bg-background/40 p-2 text-[10px] text-muted-foreground">
+                <span className="font-semibold text-foreground">
+                  {importFullEvent ? 'Importing full event' : 'Importing both outcomes'}:
+                </span>{' '}
+                {importFullEvent ? (
+                  eventSiblingsQuery.isLoading ? (
+                    <><Loader2 className="inline h-3 w-3 mr-1 animate-spin" /> Loading sibling markets…</>
+                  ) : eventSiblingsQuery.isError ? (
+                    <span className="text-rose-700 dark:text-rose-300">
+                      Failed to load event markets: {String((eventSiblingsQuery.error as Error)?.message || '')}
+                    </span>
+                  ) : (
+                    <>
+                      <span className="font-mono">
+                        {eventSiblingsQuery.data?.markets.length ?? 0}
+                      </span>{' '}
+                      sub-market{(eventSiblingsQuery.data?.markets.length ?? 0) === 1 ? '' : 's'} ×{' '}
+                      2 outcomes each
+                      {selectedMarket.event_title ? <> · <span className="italic">{selectedMarket.event_title}</span></> : null}
+                    </>
+                  )
+                ) : (
+                  <>
+                    {selectedMarket.outcomes
+                      .map((o) => o.label || '(unnamed)')
+                      .filter(Boolean)
+                      .join(' + ')}
+                    {' '}— each side counts as its own download per day.
+                  </>
+                )}
+              </div>
+              {selectedMarket.event_id ? (
+                <label className="flex items-center gap-2 cursor-pointer text-[11px] text-foreground select-none">
+                  <input
+                    type="checkbox"
+                    checked={importFullEvent}
+                    onChange={(e) => setImportFullEvent(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-violet-500"
+                  />
+                  <span>
+                    Import <strong>all binary markets</strong> in this event
+                    {selectedMarket.event_title ? <> (<span className="italic">{selectedMarket.event_title}</span>)</> : null}
+                  </span>
+                </label>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -777,21 +884,47 @@ function TelonexImportPanel() {
         </div>
       ) : null}
 
-      {/* Import action */}
+      {/* Import action + quota guard */}
+      {canImport && quota?.remaining != null && totalDownloads > quota.remaining ? (
+        <div className="mt-3 rounded-sm border border-rose-500/30 bg-rose-500/5 p-2 text-[11px] text-rose-700 dark:text-rose-300">
+          <strong>Over quota:</strong> this import wants{' '}
+          <span className="font-mono">{totalDownloads}</span> downloads but only{' '}
+          <span className="font-mono">{quota.remaining}</span> remain. Shrink the date range or
+          unselect "Import all binary markets" to fit your quota.
+        </div>
+      ) : null}
       <div className="mt-3 flex items-center justify-between gap-2">
         <span className="text-[10px] text-muted-foreground">
           {canImport ? (
-            <>This will cost <span className="font-mono">{daysSelected}</span> download{daysSelected === 1 ? '' : 's'}.</>
+            <>
+              This will cost <span className="font-mono">{totalDownloads}</span> download{totalDownloads === 1 ? '' : 's'}
+              {importableOutcomes.length > 1 ? (
+                <> (<span className="font-mono">{daysSelected}</span>{' '}
+                day{daysSelected === 1 ? '' : 's'} × <span className="font-mono">{importableOutcomes.length}</span> outcomes)</>
+              ) : null}
+              {quota?.remaining != null ? (
+                <> · <span className="font-mono">{quota.remaining}</span> remaining after</>
+              ) : null}
+              .
+            </>
           ) : (
             <>Pick an asset, channel, and date range to import.</>
           )}
         </span>
         <Button
           size="sm" className="h-8 gap-1.5 text-[11px]"
-          disabled={!canImport || importMutation.isPending}
+          disabled={!canImport || importMutation.isPending || (quota?.remaining != null && totalDownloads > quota.remaining)}
           onClick={() => {
-            const req = buildImportRequest()
-            if (req) importMutation.mutate(req)
+            const reqs = buildImportRequests()
+            if (reqs.length === 0) return
+            // Belt-and-braces confirm when spending non-trivial quota.
+            if (totalDownloads >= 5) {
+              const ok = window.confirm(
+                `This import will spend ${totalDownloads} downloads. Continue?`
+              )
+              if (!ok) return
+            }
+            importMutation.mutate(reqs)
           }}
         >
           {importMutation.isPending ? (
@@ -799,13 +932,17 @@ function TelonexImportPanel() {
           ) : (
             <Download className="h-3 w-3" />
           )}
-          Import {daysSelected > 0 ? `(${daysSelected}d)` : ''}
+          Import {totalDownloads > 0 ? `(${totalDownloads}dl)` : ''}
         </Button>
       </div>
 
-      {/* Import result panel */}
+      {/* Import result panel — one entry per outcome */}
       {importMutation.data ? (
-        <TelonexImportResultPanel result={importMutation.data} />
+        <div className="mt-2 space-y-2">
+          {importMutation.data.map((r, i) => (
+            <TelonexImportResultPanel key={i} result={r} label={importableOutcomes[i]?.label} />
+          ))}
+        </div>
       ) : null}
       {importMutation.isError ? (
         <div className="mt-2 rounded-sm border border-rose-500/30 bg-rose-500/5 p-2 text-[10px] text-rose-700 dark:text-rose-300">
@@ -817,13 +954,16 @@ function TelonexImportPanel() {
 }
 
 
-function TelonexImportResultPanel({ result }: { result: TelonexImportResponse }) {
+function TelonexImportResultPanel({ result, label }: { result: TelonexImportResponse; label?: string }) {
   const failed = result.day_results.filter((d) => !d.ok)
   const hasFailures = failed.length > 0
   return (
-    <div className="mt-2 rounded-sm border border-border/30 bg-background/40 p-2 text-[10px]">
+    <div className="rounded-sm border border-border/30 bg-background/40 p-2 text-[10px]">
       <div className="flex items-center justify-between gap-2">
-        <div className="font-semibold text-foreground text-[11px]">Import complete</div>
+        <div className="font-semibold text-foreground text-[11px]">
+          {label ? <>Outcome <span className="font-mono">{label}</span> — </> : null}
+          Import complete
+        </div>
         {result.quota_remaining != null ? (
           <Badge variant="outline" className="text-[10px]">{result.quota_remaining} downloads left</Badge>
         ) : null}
