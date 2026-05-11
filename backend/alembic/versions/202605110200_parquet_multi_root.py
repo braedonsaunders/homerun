@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column
 from sqlalchemy.dialects import postgresql
 
 
@@ -35,8 +36,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. Add the new JSON column.
-    op.add_column(
+    # 1. Add the new JSON column.  Use safe_add_column because the two
+    # dynamic-sync migrations (202602130009, 202603190004) may have
+    # already added this column when running from a fresh DB against the
+    # current ORM model, which only carries parquet_root_overrides.
+    safe_add_column(
         "app_settings",
         sa.Column(
             "parquet_root_overrides",
