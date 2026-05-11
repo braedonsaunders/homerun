@@ -315,18 +315,23 @@ export default function SettingsPanel({
   const [providerForm, setProviderForm] = useState({
     polybacktest_api_key: '',
     polybacktest_base_url: '',
+    telonex_api_key: '',
+    telonex_base_url: '',
     reverse_engineer_max_iterations: '',
     reverse_engineer_target_score: '',
     reverse_engineer_max_cost_usd: '',
     reverse_engineer_max_wallet_trades: '',
   })
   const [showProviderKey, setShowProviderKey] = useState(false)
+  const [showTelonexKey, setShowTelonexKey] = useState(false)
   useEffect(() => {
     const s: ProviderSettings | undefined = providerSettingsQuery.data
     if (!s) return
     setProviderForm({
       polybacktest_api_key: s.polybacktest_api_key_set ? '********' : '',
       polybacktest_base_url: s.polybacktest_base_url ?? '',
+      telonex_api_key: s.telonex_api_key_set ? '********' : '',
+      telonex_base_url: s.telonex_base_url ?? '',
       reverse_engineer_max_iterations: s.reverse_engineer_max_iterations?.toString() ?? '',
       reverse_engineer_target_score: s.reverse_engineer_target_score?.toString() ?? '',
       reverse_engineer_max_cost_usd: s.reverse_engineer_max_cost_usd?.toString() ?? '',
@@ -341,6 +346,11 @@ export default function SettingsPanel({
             ? null
             : providerForm.polybacktest_api_key,
         polybacktest_base_url: providerForm.polybacktest_base_url,
+        telonex_api_key:
+          providerForm.telonex_api_key === '********'
+            ? null
+            : providerForm.telonex_api_key,
+        telonex_base_url: providerForm.telonex_base_url,
         reverse_engineer_max_iterations: providerForm.reverse_engineer_max_iterations
           ? parseInt(providerForm.reverse_engineer_max_iterations, 10)
           : null,
@@ -918,9 +928,15 @@ export default function SettingsPanel({
       case 'providers': {
         const s = providerSettingsQuery.data
         if (!s) return '—'
-        return s.polybacktest_api_key_set
+        const configured = [
+          s.polybacktest_api_key_set ? 'polybacktest' : null,
+          s.telonex_api_key_set ? 'telonex' : null,
+        ].filter(Boolean)
+        if (configured.length === 0) return t('settings.status.polybacktestNotConfigured')
+        if (configured.length === 2) return `${configured.length} configured`
+        return configured[0] === 'polybacktest'
           ? t('settings.status.polybacktestConfigured')
-          : t('settings.status.polybacktestNotConfigured')
+          : 'telonex configured'
       }
       case 'maintenance':
         return maintenanceForm.auto_cleanup_enabled ? t('settings.status.autoCleanOn') : t('settings.status.manual')
@@ -955,7 +971,7 @@ export default function SettingsPanel({
       case 'network':
         return networkForm.allow_network_access ? 'text-sky-400 bg-sky-500/10' : 'text-muted-foreground bg-muted'
       case 'providers':
-        return providerSettingsQuery.data?.polybacktest_api_key_set
+        return (providerSettingsQuery.data?.polybacktest_api_key_set || providerSettingsQuery.data?.telonex_api_key_set)
           ? 'text-violet-400 bg-violet-500/10'
           : 'text-muted-foreground bg-muted'
       case 'maintenance':
@@ -2135,6 +2151,58 @@ export default function SettingsPanel({
                               value={providerForm.polybacktest_base_url}
                               onChange={(e) => setProviderForm((p) => ({ ...p, polybacktest_base_url: e.target.value }))}
                               placeholder="https://api.polybacktest.com"
+                              className="h-9 font-mono text-xs"
+                            />
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="bg-muted">
+                        <CardContent className="p-3 space-y-3">
+                          <div>
+                            <p className="font-medium text-sm">Telonex</p>
+                            <p className="text-xs text-muted-foreground">
+                              Daily Parquet files for Polymarket (trades, quotes, L2 book snapshots,
+                              on-chain fills) + Binance reference prices. Get a key at{' '}
+                              <a href="https://telonex.io" target="_blank" rel="noreferrer" className="underline">telonex.io</a>.
+                              Free tier = 5 total downloads.
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">API key</Label>
+                            <div className="flex items-center gap-1">
+                              <Input
+                                type={showTelonexKey ? 'text' : 'password'}
+                                value={providerForm.telonex_api_key}
+                                onChange={(e) => setProviderForm((p) => ({ ...p, telonex_api_key: e.target.value }))}
+                                placeholder={
+                                  providerSettingsQuery.data?.telonex_api_key_set
+                                    ? '(set — leave to keep)'
+                                    : 'Paste API key'
+                                }
+                                className="h-9 font-mono text-xs"
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-9 w-9 p-0"
+                                onClick={() => setShowTelonexKey((v) => !v)}
+                                title={showTelonexKey ? 'Hide' : 'Show'}
+                              >
+                                {showTelonexKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                              </Button>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground">
+                              Empty value clears the key. Mask is shown when a key is stored — leave it untouched to keep.
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Base URL (optional)</Label>
+                            <Input
+                              value={providerForm.telonex_base_url}
+                              onChange={(e) => setProviderForm((p) => ({ ...p, telonex_base_url: e.target.value }))}
+                              placeholder="https://api.telonex.io/v1"
                               className="h-9 font-mono text-xs"
                             />
                           </div>
