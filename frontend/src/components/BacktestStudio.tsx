@@ -2597,35 +2597,24 @@ export default function BacktestStudio({
         .filter((g) => g.anchors.length > 0)
     : []
 
-  // Active section tracking — IntersectionObserver highlights the
-  // section currently in the operator's viewport so the TOC stays
-  // synced as they scroll.  Only attaches when on Inspect with a run.
-  const [activeSection, setActiveSection] = useState<string>('')
+  // Active section GROUP for the horizontal subtab strip.  Each tab
+  // ('performance' | 'robustness' | 'execution' | 'crossstrategy')
+  // maps to one of the inspectGroups buckets and gates which
+  // <section> blocks render in the main report (via a `hidden`
+  // class — keeps DOM ids stable so anchors still work).  Defaults
+  // to the first group present and re-syncs if that group
+  // disappears (e.g. switching to a run with no regime data).
+  const [activeGroup, setActiveGroup] = useState<string>('performance')
   useEffect(() => {
-    if (stage !== 'inspect' || !activeRun) return
-    const ids = inspectGroups.flatMap((g) => g.anchors.map((a) => a.id))
-    const elements = ids
-      .map((id) => document.getElementById(`bts-section-${id}`))
-      .filter((el): el is HTMLElement => el !== null)
-    if (elements.length === 0) return
-    const observer = new IntersectionObserver(
-      (entries) => {
-        // Pick the topmost intersecting entry (smallest top boundingClientRect.top
-        // that's still > 0 OR the largest negative one if all are above viewport).
-        const visible = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
-        if (visible[0]) {
-          const id = visible[0].target.id.replace('bts-section-', '')
-          setActiveSection(id)
-        }
-      },
-      { rootMargin: '-80px 0px -60% 0px', threshold: 0 },
-    )
-    elements.forEach((el) => observer.observe(el))
-    return () => observer.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, activeRun?.run_id, inspectGroups.length])
+    if (inspectGroups.length === 0) return
+    if (!inspectGroups.some((g) => g.key === activeGroup)) {
+      setActiveGroup(inspectGroups[0].key)
+    }
+  }, [inspectGroups, activeGroup])
+  // (IntersectionObserver removed — the old TOC tracked which section
+  // was in the operator's viewport so the sidebar entry could light
+  // up.  The new horizontal subtab strip explicitly gates which
+  // sections are mounted, so there's nothing to observe.)
 
   const scrollToAnchor = (id: string) => {
     const el = document.getElementById(`bts-section-${id}`)
@@ -3068,113 +3057,99 @@ export default function BacktestStudio({
         {/* ─────────── ③ INSPECT — TOC + scrolling report ─────────── */}
         {stage === 'inspect' ? (
           <div className="flex h-full">
-            {/* Sidebar — Sections at top (always visible, grouped),
-                Runs as a bounded panel at the bottom.  Old layout
-                buried Sections inside the same scroll as RunHistory,
-                so a long run list pushed Sections off-screen.  Now
-                Sections own the prime real estate and Runs cap at
-                ~33% of sidebar height. */}
-            <div className="flex w-52 shrink-0 flex-col border-r border-border/50 bg-background/40">
-              {/* §1 SECTIONS — top, prominent, grouped, scrollable */}
-              <div className="flex-1 min-h-0 flex flex-col">
-                <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/50">
-                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t('backtestStudio.tocLabel', { defaultValue: 'Sections' })}
-                  </span>
+            {/* Sidebar — Runs ONLY, full height.  Sections moved to a
+                horizontal subtab strip at the top of the main pane
+                so the operator can see the run list at a glance
+                without it competing with the TOC for vertical space. */}
+            <div className="flex w-56 shrink-0 flex-col border-r border-border/50 bg-background/40">
+              <div className="flex items-center justify-between gap-1 px-2 py-1.5 border-b border-border/50">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {t('backtestStudio.tabRuns')}
+                </span>
+                <div className="flex items-center gap-1">
+                  {runsQuery.data && runsQuery.data.length > 0 ? (
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {runsQuery.data.length}
+                    </span>
+                  ) : null}
+                  {runsQuery.data && runsQuery.data.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleBulkDeleteAll}
+                      disabled={bulkDeleteMutation.isPending}
+                      title={t('backtestStudio.deleteAllTip', { defaultValue: 'Delete all terminal runs (active runs are skipped — cancel those first)' })}
+                      className="flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-red-500/15 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+                    >
+                      {bulkDeleteMutation.isPending ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3 w-3" />
+                      )}
+                    </button>
+                  ) : null}
                 </div>
-                <ScrollArea className="flex-1 min-h-0">
-                  <div className="px-2 py-1.5 space-y-2">
-                    {inspectGroups.map((g) => {
-                      const GroupIcon = g.icon
-                      return (
-                        <div key={g.key}>
-                          <div className="flex items-center gap-1.5 px-1 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80">
-                            <GroupIcon className="h-2.5 w-2.5" />
-                            <span>{g.label}</span>
-                          </div>
-                          <div className="space-y-px">
-                            {g.anchors.map((a) => {
-                              const isActive = activeSection === a.id
-                              return (
-                                <button
-                                  key={a.id}
-                                  type="button"
-                                  onClick={() => scrollToAnchor(a.id)}
-                                  className={cn(
-                                    'flex w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-[10.5px] transition-colors',
-                                    isActive
-                                      ? 'bg-amber-500/15 text-amber-900 ring-1 ring-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100'
-                                      : 'text-muted-foreground hover:bg-muted/30 hover:text-foreground',
-                                  )}
-                                >
-                                  <span
-                                    className={cn(
-                                      'h-1 w-1 shrink-0 rounded-full',
-                                      isActive ? 'bg-amber-500 dark:bg-amber-400' : 'bg-border/50',
-                                    )}
-                                  />
-                                  <span className="truncate">{a.label}</span>
-                                </button>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </ScrollArea>
               </div>
-
-              {/* §2 RUNS — bottom, bounded height, compact list */}
-              <div className="border-t border-border/50 flex flex-col max-h-[40%]">
-                <div className="flex items-center justify-between gap-1 px-2 py-1.5 border-b border-border/30">
-                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t('backtestStudio.tabRuns')}
-                  </span>
-                  <div className="flex items-center gap-1">
-                    {runsQuery.data && runsQuery.data.length > 0 ? (
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {runsQuery.data.length}
-                      </span>
-                    ) : null}
-                    {runsQuery.data && runsQuery.data.length > 0 ? (
-                      <button
-                        type="button"
-                        onClick={handleBulkDeleteAll}
-                        disabled={bulkDeleteMutation.isPending}
-                        title={t('backtestStudio.deleteAllTip', { defaultValue: 'Delete all terminal runs (active runs are skipped — cancel those first)' })}
-                        className="flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-red-500/15 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
-                      >
-                        {bulkDeleteMutation.isPending ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-3 w-3" />
-                        )}
-                      </button>
-                    ) : null}
-                  </div>
+              {deleteError ? (
+                <div className="border-b border-border/30 bg-red-50 px-2 py-1 text-[10px] text-red-700 dark:bg-red-500/10 dark:text-red-300">
+                  {deleteError}
                 </div>
-                {deleteError ? (
-                  <div className="border-b border-border/30 bg-red-50 px-2 py-1 text-[10px] text-red-700 dark:bg-red-500/10 dark:text-red-300">
-                    {deleteError}
-                  </div>
-                ) : null}
-                <ScrollArea className="min-h-0 flex-1">
-                  <RunHistory
-                    runs={(runsQuery.data ?? []).slice(0, 30)}
-                    activeId={activeRun?.run_id ?? null}
-                    onSelect={(run) => loadRunMutation.mutate(run.run_id)}
-                    onDelete={handleDeleteRun}
-                    deletingId={deletingRunId}
-                  />
-                </ScrollArea>
-              </div>
+              ) : null}
+              <ScrollArea className="min-h-0 flex-1">
+                <RunHistory
+                  runs={(runsQuery.data ?? []).slice(0, 100)}
+                  activeId={activeRun?.run_id ?? null}
+                  onSelect={(run) => loadRunMutation.mutate(run.run_id)}
+                  onDelete={handleDeleteRun}
+                  deletingId={deletingRunId}
+                />
+              </ScrollArea>
             </div>
 
-            {/* Main scrolling report — full width, no max-w cap so
-                wide screens use all available space.  Tightened
-                spacing (space-y-3, p-3) for higher data density;
-                section cards use p-2.5 internally. */}
+            {/* Main pane — horizontal subtab strip across the top
+                (Performance / Robustness / Execution / Cross-strategy)
+                + scrollable section content below.  Section bodies
+                are gated by ``activeGroup`` so only the relevant
+                subset renders at any time, removing the "scroll
+                forever to find one chart" problem of the old
+                single-page layout. */}
+            <div className="flex flex-1 min-h-0 flex-col">
+              {/* Subtab strip */}
+              {activeRun && inspectGroups.length > 0 ? (
+                <div className="flex items-center gap-1 border-b border-border/50 bg-background/40 px-3">
+                  {inspectGroups.map((g) => {
+                    const GroupIcon = g.icon
+                    const isActive = activeGroup === g.key
+                    return (
+                      <button
+                        key={g.key}
+                        type="button"
+                        onClick={() => {
+                          setActiveGroup(g.key)
+                          // Auto-scroll the report to the top of the
+                          // first section in the picked group so the
+                          // tab change feels like navigation.
+                          if (g.anchors[0]) {
+                            requestAnimationFrame(() => scrollToAnchor(g.anchors[0].id))
+                          }
+                        }}
+                        className={cn(
+                          '-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[11px] font-medium transition-colors',
+                          isActive
+                            ? 'border-amber-500 text-amber-900 dark:text-amber-100'
+                            : 'border-transparent text-muted-foreground hover:text-foreground',
+                        )}
+                      >
+                        <GroupIcon className="h-3.5 w-3.5" />
+                        {g.label}
+                        <span className="text-[9px] font-normal text-muted-foreground">
+                          {g.anchors.length}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
+
             <ScrollArea className="flex-1 min-h-0">
               <div className="space-y-3 p-3">
                 {!activeRun && !pendingRunId ? (
@@ -3225,7 +3200,7 @@ export default function BacktestStudio({
                     ) : null}
 
                     {/* §1 HEADLINE */}
-                    <section id="bts-section-headline" className="scroll-mt-4">
+                    <section id="bts-section-headline" className={cn('scroll-mt-4', activeGroup !== 'performance' && 'hidden')}>
                       <div className="grid grid-cols-4 gap-2">
                         <StatTile
                           label={t('backtestStudio.kpiReturn')}
@@ -3262,7 +3237,7 @@ export default function BacktestStudio({
                     </section>
 
                     {/* §2 EQUITY CURVE */}
-                    <section id="bts-section-equity" className="scroll-mt-4">
+                    <section id="bts-section-equity" className={cn('scroll-mt-4', activeGroup !== 'performance' && 'hidden')}>
                       <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                           <LineChartIcon className="h-3.5 w-3.5 text-emerald-300" />
@@ -3288,7 +3263,7 @@ export default function BacktestStudio({
                         Side-by-side keeps them on one screen.  Anchors
                         sit on the section wrappers so the TOC still
                         navigates to each individually. */}
-                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <div className={cn('grid grid-cols-1 gap-3 lg:grid-cols-2', activeGroup !== 'performance' && 'hidden')}>
                       <section id="bts-section-risk" className="scroll-mt-4">
                         <div className="h-full rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
@@ -3330,7 +3305,7 @@ export default function BacktestStudio({
 
                     {/* §5 DEFLATED SHARPE */}
                     {activeRun.deflated_sharpe ? (
-                      <section id="bts-section-deflated" className="scroll-mt-4">
+                      <section id="bts-section-deflated" className={cn('scroll-mt-4', activeGroup !== 'performance' && 'hidden')}>
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-1 flex items-center justify-between text-xs font-medium">
                             <span>{t('backtestStudio.deflatedSharpeTitle')}</span>
@@ -3376,7 +3351,7 @@ export default function BacktestStudio({
                     ) : null}
 
                     {/* §6 WALK-FORWARD (PROMOTED above regime) */}
-                    <section id="bts-section-walkforward" className="scroll-mt-4">
+                    <section id="bts-section-walkforward" className={cn('scroll-mt-4', activeGroup !== 'robustness' && 'hidden')}>
                       <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                           <Activity className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
@@ -3437,7 +3412,7 @@ export default function BacktestStudio({
 
                     {/* §7 TRADE-ORDER MONTE CARLO */}
                     {activeRun.trade_order_monte_carlo ? (
-                      <section id="bts-section-tom" className="scroll-mt-4">
+                      <section id="bts-section-tom" className={cn('scroll-mt-4', activeGroup !== 'robustness' && 'hidden')}>
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Activity className="h-3.5 w-3.5 text-amber-300" />
@@ -3462,7 +3437,7 @@ export default function BacktestStudio({
                     ) : null}
 
                     {/* §8 CPCV */}
-                    <section id="bts-section-cpcv" className="scroll-mt-4">
+                    <section id="bts-section-cpcv" className={cn('scroll-mt-4', activeGroup !== 'robustness' && 'hidden')}>
                       <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                           <Activity className="h-3.5 w-3.5 text-emerald-300" />
@@ -3525,7 +3500,7 @@ export default function BacktestStudio({
                     </section>
 
                     {/* §9 LATENCY MONTE CARLO */}
-                    <section id="bts-section-latencymc" className="scroll-mt-4">
+                    <section id="bts-section-latencymc" className={cn('scroll-mt-4', activeGroup !== 'robustness' && 'hidden')}>
                       <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                         <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                           <Clock className="h-3.5 w-3.5 text-sky-300" />
@@ -3583,7 +3558,7 @@ export default function BacktestStudio({
 
                     {/* §10 REGIME DECOMPOSITION (now AFTER walk-forward) */}
                     {activeRun.regime_breakdown ? (
-                      <section id="bts-section-regime" className="scroll-mt-4">
+                      <section id="bts-section-regime" className={cn('scroll-mt-4', activeGroup !== 'robustness' && 'hidden')}>
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Layers3 className="h-3.5 w-3.5 text-amber-300" />
@@ -3603,7 +3578,7 @@ export default function BacktestStudio({
 
                     {/* §11 TRIANGULATION */}
                     {triangulationQuery.data ? (
-                      <section id="bts-section-triangulation" className="scroll-mt-4">
+                      <section id="bts-section-triangulation" className={cn('scroll-mt-4', activeGroup !== 'robustness' && 'hidden')}>
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Activity className="h-3.5 w-3.5 text-amber-300" />
@@ -3636,7 +3611,7 @@ export default function BacktestStudio({
                     ) : null}
 
                     {/* §12 FILL QUALITY (ensemble + counterfactuals + partial fills + DQ + INLINE diagnostics) */}
-                    <section id="bts-section-fillquality" className="scroll-mt-4 space-y-1.5">
+                    <section id="bts-section-fillquality" className={cn('scroll-mt-4 space-y-1.5', activeGroup !== 'execution' && 'hidden')}>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
@@ -3789,7 +3764,7 @@ export default function BacktestStudio({
                     </section>
 
                     {/* §13 PORTFOLIO */}
-                    <section id="bts-section-portfolio" className="scroll-mt-4">
+                    <section id="bts-section-portfolio" className={cn('scroll-mt-4', activeGroup !== 'crossstrategy' && 'hidden')}>
                       {portfolioCorrelationQuery.data && portfolioCorrelationQuery.data.strategies.length > 0 ? (
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
@@ -3810,7 +3785,7 @@ export default function BacktestStudio({
 
                     {/* §14 OUTCOME NETTING */}
                     {activeRun.outcome_netting ? (
-                      <section id="bts-section-outcome" className="scroll-mt-4">
+                      <section id="bts-section-outcome" className={cn('scroll-mt-4', activeGroup !== 'crossstrategy' && 'hidden')}>
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Layers3 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
@@ -3829,7 +3804,7 @@ export default function BacktestStudio({
 
                     {/* §15 DRIFT MONITOR */}
                     {driftQuery.data && driftQuery.data.strategies.length > 0 ? (
-                      <section id="bts-section-drift" className="scroll-mt-4">
+                      <section id="bts-section-drift" className={cn('scroll-mt-4', activeGroup !== 'crossstrategy' && 'hidden')}>
                         <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
                           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                             <Activity className="h-3.5 w-3.5 text-rose-300" />
@@ -3850,7 +3825,7 @@ export default function BacktestStudio({
 
                     {/* §16 DIAGNOSTICS — decomposition + empirical constants */}
                     {(decomp || constants) ? (
-                      <section id="bts-section-diagnostics" className="scroll-mt-4">
+                      <section id="bts-section-diagnostics" className={cn('scroll-mt-4', activeGroup !== 'execution' && 'hidden')}>
                         <div className="grid grid-cols-2 gap-2">
                           {decomp ? (
                             <div className="rounded-md border border-border/50 bg-card/40 p-2.5">
@@ -3910,6 +3885,7 @@ export default function BacktestStudio({
                 )}
               </div>
             </ScrollArea>
+            </div>
           </div>
         ) : null}
 

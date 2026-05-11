@@ -957,10 +957,16 @@
   </thead>
   <tbody>
     {% for row_strat in portfolio.strategies %}
+    {# Capture the OUTER loop's row index BEFORE entering the inner #}
+    {# loop — Jinja's loop.index0 is shadowed by inner loops, so a    #}
+    {# raw ``portfolio.matrix[loop.index0][j]`` inside the inner loop #}
+    {# would index the wrong dimension and only return the diagonal.  #}
+    {% set _row_i = loop.index0 %}
+    {% set _row_data = portfolio.matrix[_row_i] if (portfolio.matrix | length) > _row_i else [] %}
     <tr>
       <th style="text-align: right; padding-right: 4pt;" title="{{ row_strat }}">{{ row_strat[:10] }}</th>
       {% for j in range(portfolio.strategies | length) %}
-        {% set _r = portfolio.matrix[loop.index0][j] if (portfolio.matrix | length) > loop.index0 else 0 %}
+        {% set _r = _row_data[j] if (_row_data | length) > j else 0 %}
         {% if _r is none %}{% set _r = 0 %}{% endif %}
         {% set _bg =
           'rgba(239, 68, 68, 0.7)' if _r >= 0.7 else
