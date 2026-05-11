@@ -276,8 +276,6 @@ function TelonexSection({ provider }: { provider: ProviderInfo }) {
         ) : null}
       </div>
 
-      <TelonexSettingsCard />
-
       {provider.configured ? (
         <>
           <TelonexImportPanel />
@@ -285,7 +283,7 @@ function TelonexSection({ provider }: { provider: ProviderInfo }) {
         </>
       ) : (
         <div className="rounded-md border border-dashed border-border/40 bg-card/20 p-4 text-[11px] text-muted-foreground">
-          Save your API key above to unlock the market browser + import panel below.
+          Add your API key in <strong>Settings → Data Providers</strong> to unlock the market browser + import panel.
         </div>
       )}
     </div>
@@ -925,107 +923,6 @@ function TelonexDatasetsPanel() {
         </div>
       )}
     </div>
-  )
-}
-
-
-function TelonexSettingsCard() {
-  const queryClient = useQueryClient()
-  const settingsQuery = useQuery({
-    queryKey: ['providers', 'settings'],
-    queryFn: getProviderSettings,
-    staleTime: 60_000,
-  })
-  const settings: ProviderSettings | null = settingsQuery.data ?? null
-
-  const [apiKey, setApiKey] = useState<string>('')
-  const [showKey, setShowKey] = useState<boolean>(false)
-  const [baseUrl, setBaseUrl] = useState<string>('')
-
-  useEffect(() => {
-    if (!settings) return
-    setApiKey(settings.telonex_api_key_set ? '********' : '')
-    setBaseUrl(settings.telonex_base_url ?? '')
-  }, [settings])
-
-  const saveMutation = useMutation({
-    mutationFn: () =>
-      updateProviderSettings({
-        telonex_api_key: apiKey === '********' ? null : apiKey,
-        telonex_base_url: baseUrl,
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['providers'] })
-    },
-  })
-
-  return (
-    <details className="rounded-md border border-border/40 bg-card/40 p-3" open>
-      <summary className="cursor-pointer text-xs font-semibold flex items-center gap-1.5">
-        <Server className="h-3.5 w-3.5 text-violet-400" />
-        Telonex settings
-        <span className="ml-auto text-[10px] font-normal text-muted-foreground">
-          {settings?.telonex_api_key_set ? 'configured' : 'not configured'}
-        </span>
-      </summary>
-      <div className="mt-3 space-y-3">
-        <div>
-          <Label className="text-[10px] uppercase text-muted-foreground">
-            Telonex API key
-          </Label>
-          <div className="flex items-center gap-1">
-            <Input
-              type={showKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={settings?.telonex_api_key_set ? '(set — leave to keep)' : 'Paste API key'}
-              className="h-8 font-mono text-xs"
-            />
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-8 w-8 p-0"
-              onClick={() => setShowKey((v) => !v)}
-              title={showKey ? 'Hide' : 'Show'}
-            >
-              {showKey ? '🙈' : '👁'}
-            </Button>
-          </div>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
-            Empty value clears the key.
-          </p>
-        </div>
-
-        <div>
-          <Label className="text-[10px] uppercase text-muted-foreground">Base URL (optional)</Label>
-          <Input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.telonex.com"
-            className="h-8 font-mono text-xs"
-          />
-        </div>
-
-        <div className="flex items-center justify-end gap-2">
-          {saveMutation.isError ? (
-            <span className="text-[10px] text-rose-700 dark:text-rose-300">
-              {(saveMutation.error as Error)?.message || 'Save failed'}
-            </span>
-          ) : null}
-          {saveMutation.isSuccess ? (
-            <span className="text-[10px] text-emerald-700 dark:text-emerald-300">Saved</span>
-          ) : null}
-          <Button
-            size="sm"
-            className="h-7 text-[11px]"
-            onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending}
-          >
-            {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Save'}
-          </Button>
-        </div>
-      </div>
-    </details>
   )
 }
 
