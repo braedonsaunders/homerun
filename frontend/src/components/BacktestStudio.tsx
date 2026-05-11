@@ -29,6 +29,7 @@ import {
   Loader2,
   Play,
   RotateCcw,
+  Search,
   Trash2,
   Sliders,
   Sparkles,
@@ -37,6 +38,7 @@ import {
   TrendingDown,
   TrendingUp,
   Wand2,
+  X,
   Zap,
 } from 'lucide-react'
 import { Badge } from './ui/badge'
@@ -4260,6 +4262,46 @@ function DataSourceSelector({
   })
   const datasets: ProviderDataset[] = datasetsQuery.data ?? []
 
+  // ── Search filters per mode ──
+  // Sessions list and datasets list can both grow long (50+ entries
+  // is common after a few weeks of recording / vendor imports).
+  // Search inputs appear above each list when there are >5 entries
+  // — small lists don't need the chrome.  Match is case-insensitive
+  // substring against the user-visible fields (name/title/coin/etc.)
+  // PLUS internal id so the operator can paste a known id from a
+  // log line and find the row immediately.
+  const [sessionSearch, setSessionSearch] = useState<string>('')
+  const [datasetSearch, setDatasetSearch] = useState<string>('')
+  const filteredSessions = useMemo(() => {
+    const q = sessionSearch.trim().toLowerCase()
+    if (!q) return sessions
+    return sessions.filter((s) => {
+      const hay = [
+        s.name,
+        s.id,
+        s.status,
+        ...(s.target_values || []),
+      ].join(' ').toLowerCase()
+      return hay.includes(q)
+    })
+  }, [sessions, sessionSearch])
+  const filteredDatasets = useMemo(() => {
+    const q = datasetSearch.trim().toLowerCase()
+    if (!q) return datasets
+    return datasets.filter((d) => {
+      const hay = [
+        d.title || '',
+        d.external_slug || '',
+        d.external_id || '',
+        d.id,
+        d.coin || '',
+        d.provider || '',
+        d.storage_type || '',
+      ].join(' ').toLowerCase()
+      return hay.includes(q)
+    })
+  }, [datasets, datasetSearch])
+
   // ── Resolve active scope for the summary strip ──
   const activeScope = useMemo(() => {
     if (mode === 'auto') {
@@ -4465,7 +4507,9 @@ function DataSourceSelector({
                   <span className="text-[10px] text-muted-foreground">
                     {sessionId
                       ? t('backtestStudio.dsSessionPicked', { defaultValue: '1 session picked' })
-                      : t('backtestStudio.dsSessionPickHint', { n: sessions.length, defaultValue: `${sessions.length} session${sessions.length === 1 ? '' : 's'} available` })}
+                      : sessionSearch.trim()
+                        ? t('backtestStudio.dsSessionFilteredCount', { n: filteredSessions.length, total: sessions.length, defaultValue: `${filteredSessions.length} of ${sessions.length} matching` })
+                        : t('backtestStudio.dsSessionPickHint', { n: sessions.length, defaultValue: `${sessions.length} session${sessions.length === 1 ? '' : 's'} available` })}
                   </span>
                   {sessionId ? (
                     <button
@@ -4477,8 +4521,36 @@ function DataSourceSelector({
                     </button>
                   ) : null}
                 </div>
+                {/* Search — only when the list has enough entries to
+                    benefit from filtering. */}
+                {sessions.length > 5 ? (
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/60" />
+                    <Input
+                      value={sessionSearch}
+                      onChange={(e) => setSessionSearch(e.target.value)}
+                      placeholder={t('backtestStudio.dsSessionSearchPlaceholder', { defaultValue: 'Search sessions by name, id, status...' })}
+                      className="h-7 pl-7 pr-7 text-[11px]"
+                    />
+                    {sessionSearch ? (
+                      <button
+                        type="button"
+                        onClick={() => setSessionSearch('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        title={t('backtestStudio.dsSearchClear', { defaultValue: 'Clear search' })}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="max-h-44 space-y-0.5 overflow-y-auto">
-                {sessions.map((s) => {
+                {filteredSessions.length === 0 && sessionSearch.trim() ? (
+                  <div className="px-2 py-3 text-center text-[10.5px] text-muted-foreground italic">
+                    {t('backtestStudio.dsSessionNoMatch', { q: sessionSearch.trim(), defaultValue: `No sessions match "${sessionSearch.trim()}"` })}
+                  </div>
+                ) : null}
+                {filteredSessions.map((s) => {
                   const active = sessionId === s.id
                   const tokens = s.target_token_ids.length || s.target_values.length
                   const dur =
@@ -4560,18 +4632,38 @@ function DataSourceSelector({
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[10px] text-muted-foreground">
                     {providerDatasetIds.length === 0
-                      ? t('backtestStudio.dsDatasetsPickHint', { defaultValue: 'Pick one or more — windows union' })
-                      : t('backtestStudio.dsDatasetsSelectedCount', { n: providerDatasetIds.length, total: datasets.length, defaultValue: `${providerDatasetIds.length} of ${datasets.length} selected` })}
+                      ? (datasetSearch.trim()
+                          ? t('backtestStudio.dsDatasetsFilteredCount', { n: filteredDatasets.length, total: datasets.length, defaultValue: `${filteredDatasets.length} of ${datasets.length} matching` })
+                          : t('backtestStudio.dsDatasetsPickHint', { defaultValue: 'Pick one or more — windows union' }))
+                      : (datasetSearch.trim()
+                          ? t('backtestStudio.dsDatasetsSelectedFilteredCount', { selected: providerDatasetIds.length, n: filteredDatasets.length, total: datasets.length, defaultValue: `${providerDatasetIds.length} selected · ${filteredDatasets.length} of ${datasets.length} matching` })
+                          : t('backtestStudio.dsDatasetsSelectedCount', { n: providerDatasetIds.length, total: datasets.length, defaultValue: `${providerDatasetIds.length} of ${datasets.length} selected` }))}
                   </span>
                   <div className="flex items-center gap-2 text-[10px]">
-                    {providerDatasetIds.length < datasets.length ? (
+                    {/* When a search filter is active, Select all /
+                        Invert operate on the FILTERED subset — that's
+                        the operator's mental model ("select all that
+                        match") rather than "select every dataset
+                        regardless of what's visible". */}
+                    {filteredDatasets.length > 0 && filteredDatasets.some((d) => !providerDatasetIds.includes(d.id)) ? (
                       <button
                         type="button"
                         className="text-violet-700 underline-offset-2 hover:underline dark:text-violet-300"
-                        onClick={() => setProviderDatasetIds(datasets.map((d) => d.id))}
-                        title={t('backtestStudio.dsSelectAllTip', { defaultValue: 'Select every dataset' })}
+                        onClick={() => {
+                          const target = filteredDatasets.map((d) => d.id)
+                          const next = new Set(providerDatasetIds)
+                          target.forEach((id) => next.add(id))
+                          setProviderDatasetIds(Array.from(next))
+                        }}
+                        title={
+                          datasetSearch.trim()
+                            ? t('backtestStudio.dsSelectAllFilteredTip', { defaultValue: 'Add all currently-matching datasets to the selection' })
+                            : t('backtestStudio.dsSelectAllTip', { defaultValue: 'Select every dataset' })
+                        }
                       >
-                        {t('backtestStudio.dsSelectAll', { defaultValue: 'Select all' })}
+                        {datasetSearch.trim()
+                          ? t('backtestStudio.dsSelectAllMatching', { defaultValue: 'Select matching' })
+                          : t('backtestStudio.dsSelectAll', { defaultValue: 'Select all' })}
                       </button>
                     ) : null}
                     {providerDatasetIds.length > 0 ? (
@@ -4600,8 +4692,39 @@ function DataSourceSelector({
                     ) : null}
                   </div>
                 </div>
+                {/* Search — only when the catalog has enough rows to
+                    benefit.  Searches across title, slug, external
+                    id, internal id, coin, provider, and storage type
+                    so the operator can find rows by any visible
+                    field. */}
+                {datasets.length > 5 ? (
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/60" />
+                    <Input
+                      value={datasetSearch}
+                      onChange={(e) => setDatasetSearch(e.target.value)}
+                      placeholder={t('backtestStudio.dsDatasetSearchPlaceholder', { defaultValue: 'Search by title, coin, provider, id...' })}
+                      className="h-7 pl-7 pr-7 text-[11px]"
+                    />
+                    {datasetSearch ? (
+                      <button
+                        type="button"
+                        onClick={() => setDatasetSearch('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        title={t('backtestStudio.dsSearchClear', { defaultValue: 'Clear search' })}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="max-h-44 space-y-0.5 overflow-y-auto">
-                  {datasets.map((d) => {
+                  {filteredDatasets.length === 0 && datasetSearch.trim() ? (
+                    <div className="px-2 py-3 text-center text-[10.5px] text-muted-foreground italic">
+                      {t('backtestStudio.dsDatasetNoMatch', { q: datasetSearch.trim(), defaultValue: `No datasets match "${datasetSearch.trim()}"` })}
+                    </div>
+                  ) : null}
+                  {filteredDatasets.map((d) => {
                     const checked = providerDatasetIds.includes(d.id)
                     return (
                       <label
