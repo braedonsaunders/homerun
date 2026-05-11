@@ -1566,22 +1566,18 @@ class WalletTagger:
                 tags = list(result.scalars().all())
 
         async with AsyncSessionLocal() as session:
-            # Count wallets per tag via SQL (json_each) instead of loading all wallets
             tag_counts: dict[str, int] = {}
-            try:
-                count_result = await session.execute(
-                    text(
-                        "SELECT value AS tag_name, COUNT(DISTINCT address) AS cnt "
-                        "FROM discovered_wallets, json_each(discovered_wallets.tags) "
-                        "WHERE discovered_wallets.tags IS NOT NULL "
-                        "GROUP BY value"
-                    )
+            count_result = await session.execute(
+                text(
+                    "SELECT tag_name, COUNT(DISTINCT discovered_wallets.address) AS cnt "
+                    "FROM discovered_wallets, "
+                    "json_array_elements_text(discovered_wallets.tags) AS tag_name "
+                    "WHERE discovered_wallets.tags IS NOT NULL "
+                    "GROUP BY tag_name"
                 )
-                for row in count_result:
-                    tag_counts[str(row.tag_name)] = row.cnt
-            except Exception:
-                # Fallback if json_each not supported or column type differs
-                pass
+            )
+            for row in count_result:
+                tag_counts[str(row.tag_name)] = row.cnt
 
         return [
             {
