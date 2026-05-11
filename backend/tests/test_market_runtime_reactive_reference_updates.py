@@ -440,7 +440,7 @@ async def test_refresh_crypto_markets_publishes_snapshot_without_waiting_for_opp
         ],
     )
     monkeypatch.setattr(market_runtime, "get_crypto_service", lambda: _FakeCryptoService())
-    monkeypatch.setattr(market_runtime.event_dispatcher, "dispatch", _slow_dispatch)
+    monkeypatch.setattr(market_runtime, "_dispatch_with_per_trader_fanout", _slow_dispatch)
     monkeypatch.setattr(market_runtime, "get_intent_runtime", lambda: _FakeIntentRuntime())
 
     started_at = time.perf_counter()
@@ -484,7 +484,7 @@ async def test_opportunity_dispatch_coalesces_to_latest_pending_payload(monkeypa
         async def publish_opportunities(self, opportunities, **kwargs):
             return 0
 
-    monkeypatch.setattr(market_runtime.event_dispatcher, "dispatch", _slow_dispatch)
+    monkeypatch.setattr(market_runtime, "_dispatch_with_per_trader_fanout", _slow_dispatch)
     monkeypatch.setattr(market_runtime, "get_intent_runtime", lambda: _FakeIntentRuntime())
 
     await runtime._queue_opportunity_dispatch(

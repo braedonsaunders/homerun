@@ -176,6 +176,32 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _opportunity_dedupe_key(opportunity: Opportunity, contract_market_id: Any) -> str:
+    """Compute the ``trade_signals.dedupe_key`` for an opportunity.
+
+    Plan 0041 added per-trader scope to the dedupe key so two clones
+    of the same strategy emitting on the same market produce distinct
+    rows. The scope is appended ONLY when ``intended_trader_id`` is
+    truthy — passing ``None`` as the 4th arg to ``make_dedupe_key``
+    would silently shift every legacy (singleton-emitted) hash because
+    ``"|".join(... or "")`` adds a trailing pipe. Keeping the 3-arg
+    form for unscoped opportunities preserves backward compatibility
+    with pre-Plan-0041 ``trade_signals`` rows across deploys.
+    """
+    intended = (
+        str(getattr(opportunity, "intended_trader_id", None) or "").strip()
+        or None
+    )
+    parts: list[Any] = [
+        getattr(opportunity, "stable_id", None),
+        getattr(opportunity, "strategy", None),
+        contract_market_id,
+    ]
+    if intended:
+        parts.append(intended)
+    return make_dedupe_key(*parts)
+
+
 def _opportunity_signal_expires_at(now: datetime, opportunity: Opportunity, default_ttl_minutes: int) -> datetime:
     strategy_key = str(getattr(opportunity, "strategy", "") or "").strip().lower()
     try:
@@ -490,12 +516,19 @@ def _should_reactivate_unchanged_terminal_signal(
 
 
 def _coerce_runtime_signal(snapshot: dict[str, Any]) -> Any:
+    intended_trader_id_raw = snapshot.get("intended_trader_id")
+    intended_trader_id = (
+        str(intended_trader_id_raw).strip()
+        if intended_trader_id_raw is not None
+        else ""
+    ) or None
     return SimpleNamespace(
         id=str(snapshot.get("id") or "").strip(),
         source=str(snapshot.get("source") or "").strip(),
         source_item_id=str(snapshot.get("source_item_id") or "").strip(),
         signal_type=str(snapshot.get("signal_type") or "").strip(),
         strategy_type=str(snapshot.get("strategy_type") or "").strip(),
+        intended_trader_id=intended_trader_id,
         market_id=str(snapshot.get("market_id") or "").strip(),
         market_question=str(snapshot.get("market_question") or "").strip(),
         direction=str(snapshot.get("direction") or "").strip(),
@@ -1852,12 +1885,28 @@ class IntentRuntime:
             self._next_runtime_sequence = 1
             bootstrap_snapshots: dict[str, dict[str, Any]] = {}
             for row in rows:
+                # Plan 0041: recover intended_trader_id from the persisted
+                # payload_json so the trader-scope filter survives worker
+                # restart. Empty / missing -> None (legacy multi-trader
+                # visibility).
+                payload_dict_for_intent = row.get("payload_json") or {}
+                intent_trader_raw = (
+                    payload_dict_for_intent.get("intended_trader_id")
+                    if isinstance(payload_dict_for_intent, dict)
+                    else None
+                )
+                hydrated_intended_trader_id = (
+                    str(intent_trader_raw).strip()
+                    if intent_trader_raw is not None
+                    else ""
+                ) or None
                 snapshot = {
                     "id": str(row.get("id") or "").strip(),
                     "source": str(row.get("source") or "").strip(),
                     "source_item_id": str(row.get("source_item_id") or "").strip(),
                     "signal_type": str(row.get("signal_type") or "").strip(),
                     "strategy_type": str(row.get("strategy_type") or "").strip(),
+                    "intended_trader_id": hydrated_intended_trader_id,
                     "market_id": str(row.get("market_id") or "").strip(),
                     "market_question": str(row.get("market_question") or "").strip(),
                     "direction": str(row.get("direction") or "").strip(),
@@ -2088,11 +2137,12 @@ class IntentRuntime:
                 continue
             if not contract_market_id:
                 continue
-            candidate_dedupe_key = make_dedupe_key(
-                getattr(opportunity, "stable_id", None),
-                getattr(opportunity, "strategy", None),
-                contract_market_id,
-            )
+            # Plan 0041: see `_opportunity_dedupe_key` for the scope
+            # logic — per-trader clones get a distinct row, but
+            # unscoped (singleton) emissions keep their pre-Plan-0041
+            # hash so existing in-flight ``trade_signals`` survive
+            # deploys.
+            candidate_dedupe_key = _opportunity_dedupe_key(opportunity, contract_market_id)
             if (
                 candidate_dedupe_key
                 and candidate_dedupe_key not in self._signal_ids_by_dedupe_key
@@ -2215,11 +2265,11 @@ class IntentRuntime:
                 )
                 if not market_id:
                     continue
-                dedupe_key = make_dedupe_key(
-                    getattr(opportunity, "stable_id", None),
-                    getattr(opportunity, "strategy", None),
-                    market_id,
-                )
+                # Plan 0041: see `_opportunity_dedupe_key` for the
+                # scope logic; both call sites use the same helper so
+                # the prefetch-vs-emit paths can never disagree on a
+                # key.
+                dedupe_key = _opportunity_dedupe_key(opportunity, market_id)
                 expires_at = _opportunity_signal_expires_at(now, opportunity, default_ttl_minutes)
                 payload = copy.deepcopy(payload_json or {})
                 strategy_context = copy.deepcopy(strategy_context_json or {})
@@ -2230,6 +2280,19 @@ class IntentRuntime:
                 strategy_context["ingested_at"] = _to_iso(now)
                 strategy_context["bridge_source"] = str(source)
                 strategy_context["bridge_run_at"] = _to_iso(now)
+                # Plan 0041: persist the per-trader scope into the JSON blob
+                # so it survives worker restarts (the in-memory snapshot is
+                # rehydrated from ``trade_signals.payload_json`` on boot).
+                opp_intended_trader_id_value = getattr(opportunity, "intended_trader_id", None)
+                opp_intended_trader_id = (
+                    str(opp_intended_trader_id_value).strip()
+                    if opp_intended_trader_id_value is not None
+                    else ""
+                ) or None
+                if opp_intended_trader_id:
+                    payload["intended_trader_id"] = opp_intended_trader_id
+                else:
+                    payload.pop("intended_trader_id", None)
                 opp_quality_passed: bool | None = None
                 opp_quality_rejection_reasons: list[str] = []
                 if quality_filter_pipeline is not None:
@@ -2243,12 +2306,25 @@ class IntentRuntime:
                         opp_quality_rejection_reasons = list(getattr(report, "rejection_reasons", []) or [])
                 desired_status = "filtered" if opp_quality_passed is False else "pending"
 
+                # Plan 0041: when the strategy was invoked from a per-trader
+                # clone, ``Opportunity.intended_trader_id`` carries the id of
+                # the trader the signal is scoped to. Other traders bound to
+                # the same source filter the row out in
+                # ``list_unconsumed_signals`` so they never act on signals
+                # generated from a peer's per-trader gates.
+                intended_trader_id_value = getattr(opportunity, "intended_trader_id", None)
+                normalized_intended_trader_id = (
+                    str(intended_trader_id_value).strip()
+                    if intended_trader_id_value is not None
+                    else ""
+                ) or None
                 incoming_snapshot = {
                     "id": "",
                     "source": str(source),
                     "source_item_id": str(getattr(opportunity, "stable_id", None) or "").strip(),
                     "signal_type": signal_type,
                     "strategy_type": str(getattr(opportunity, "strategy", None) or "").strip(),
+                    "intended_trader_id": normalized_intended_trader_id,
                     "market_id": str(market_id),
                     "market_question": str(market_question or "").strip(),
                     "direction": str(direction or "").strip(),
@@ -2617,9 +2693,14 @@ class IntentRuntime:
         cursor_signal_id: str | None = None,
         limit: int = 200,
     ) -> list[Any]:
-        del trader_id
         del cursor_created_at
         del cursor_signal_id
+        # Plan 0041: ``intended_trader_id`` on the runtime snapshot scopes
+        # the signal to a single trader. ``None`` keeps the legacy
+        # multi-trader-visible routing for un-tagged emissions (sources
+        # without per-trader strategy_params overrides). When set, only
+        # the consuming trader whose id matches sees the row.
+        normalized_consumer_trader_id = str(trader_id or "").strip() or None
         normalized_sources = {str(source or "").strip().lower() for source in (sources or []) if str(source or "").strip()}
         normalized_statuses = {str(status or "").strip().lower() for status in (statuses or []) if str(status or "").strip()}
         normalized_strategy_types: dict[str, set[str]] = {}
@@ -2650,6 +2731,15 @@ class IntentRuntime:
                 strategy_type = str(snapshot.get("strategy_type") or "").strip().lower()
                 if allowed_strategy_types and strategy_type not in allowed_strategy_types:
                     continue
+                # Per-trader signal scope (plan 0041).
+                snapshot_intended_trader_id = snapshot.get("intended_trader_id")
+                if snapshot_intended_trader_id:
+                    if (
+                        normalized_consumer_trader_id is None
+                        or str(snapshot_intended_trader_id).strip()
+                        != normalized_consumer_trader_id
+                    ):
+                        continue
                 row_sequence = _normalize_runtime_sequence(snapshot.get("runtime_sequence"))
                 if row_sequence is None:
                     continue
