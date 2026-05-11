@@ -3173,6 +3173,21 @@ class LiveExecutionService:
             async with AsyncSessionLocal() as session:
                 _prs_record("session_checkout", _stage_started)
                 try:
+                    # 2026-05-10: force-eager the pool checkout into its
+                    # own ``pool_wait`` bucket — same pattern as
+                    # ``_persist_orders``.  Without this split, the
+                    # ``derive_pnl`` cache (30s TTL) hides the pool wait:
+                    # on cache hit, the lazy checkout fires on the
+                    # ``session.execute(stmt)`` line below and pool wait
+                    # gets misattributed to ``upsert``.  Soak 2026-05-11
+                    # 01:34-01:41 captured ``upsert: 2000-2469ms,
+                    # commit: 78-110ms`` even with the bot trader OFF —
+                    # operators need to see whether that's pool
+                    # starvation from background workers or a genuinely
+                    # slow LiveTradingRuntimeState UPSERT.
+                    _stage_started = _time.monotonic()
+                    await session.connection()
+                    _prs_record("pool_wait", _stage_started)
                     # Derive realized P&L counters from the verified
                     # ground truth (TraderOrder.actual_profit).  The legacy
                     # in-memory accumulators on ``self._stats``/``self._total_pnl``
