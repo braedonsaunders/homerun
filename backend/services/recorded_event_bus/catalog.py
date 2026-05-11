@@ -19,10 +19,11 @@ This module owns:
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
+import threading as _threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional
 
@@ -127,7 +128,6 @@ _cache: dict[str, _CacheEntry] = {}
 # is closed`` on the second test that hits the lock).  threading.Lock
 # is loop-agnostic, fast enough for this workload, and contention-free
 # in practice (the cache is process-local with single-digit µs holds).
-import threading as _threading
 _cache_lock = _threading.Lock()
 
 
@@ -391,9 +391,6 @@ async def touch_replayed(slug: str) -> None:
 # the SQL adapter reads ``{"adapter": "...", "table": "..."}`` from
 # storage_uri to know which table to query and which adapter class to
 # instantiate.
-
-import json
-
 
 def _sources(*entries: dict[str, Any]) -> str:
     """Helper: serialise a sources list to JSON for ``storage_uri``.

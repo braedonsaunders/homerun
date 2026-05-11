@@ -40,12 +40,10 @@ from __future__ import annotations
 import asyncio
 import heapq
 import logging
-import time
 from dataclasses import dataclass
-from datetime import datetime
 from typing import (
     Any, AsyncIterator, Awaitable, Callable, Optional,
-    Iterable, Sequence,
+    Iterable,
 )
 
 from services.recorded_event_bus.envelope import (

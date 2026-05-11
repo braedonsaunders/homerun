@@ -59,7 +59,10 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Iterable, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
+
+if TYPE_CHECKING:
+    from services.recorded_event_bus.bus import ReplayWindow
 
 import pyarrow as pa
 import pyarrow.parquet as pq

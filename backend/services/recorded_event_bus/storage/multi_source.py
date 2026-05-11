@@ -46,7 +46,6 @@ the bus delivers the union of every source registered for it.
 """
 from __future__ import annotations
 
-import asyncio
 import heapq
 import json
 import logging

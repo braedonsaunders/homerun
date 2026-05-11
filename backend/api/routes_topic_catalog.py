@@ -11,7 +11,7 @@ Routes mounted at ``/api/topics``.  Powers:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query

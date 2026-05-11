@@ -79,11 +79,14 @@ OUT_PATH = Path(__file__).resolve().parent / "_targeted_backtests_results.json"
 
 
 def _f(v, d=0.0):
-    if v is None: return d
+    if v is None:
+        return d
     if isinstance(v, dict):
         return float(v.get("value", v.get("mean", d)) or d)
-    try: return float(v)
-    except (TypeError, ValueError): return d
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return d
 
 
 async def run_one(slug, src, start, end):

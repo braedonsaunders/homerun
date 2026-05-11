@@ -33,7 +33,6 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     AsyncSessionLocal,

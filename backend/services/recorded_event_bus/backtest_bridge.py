@@ -36,7 +36,7 @@ from typing import Any, AsyncIterator, Iterable, Mapping, Optional
 
 from services.recorded_event_bus.bus import bus, ReplayWindow
 from services.recorded_event_bus.envelope import RecordedEvent
-from services.recorded_event_bus.catalog import get_topic, TopicSpec
+from services.recorded_event_bus.catalog import get_topic
 
 logger = logging.getLogger(__name__)
 

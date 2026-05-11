@@ -5194,8 +5194,6 @@ async def run_execution_backtest(
     snapshots_total = int(cov.get("snapshots_total") or 0)
     per_token_snaps: dict[str, int] = cov.get("snaps_per_token") or {}
     per_token_deltas: dict[str, int] = cov.get("deltas_per_token") or {}
-    window_hours_cov = float(cov.get("window_hours") or 1.0)
-
     def _pick_sql_source_for(token: str) -> str:
         """Return 'deltas' or 'snapshots' for one token.  Prefers
         deltas when they're materially denser (≥ 5×) and meaningful

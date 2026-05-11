@@ -274,7 +274,6 @@ class TestBridge:
         from services.market_runtime import (
             _ensure_crypto_update_topic_registered,
             _publish_crypto_update_to_bus,
-            _CRYPTO_UPDATE_TOPIC,
         )
         from services.data_events import DataEvent, EventType
         from services.recorded_event_bus.backtest_bridge import replay_events_for_strategy
