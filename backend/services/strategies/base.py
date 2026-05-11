@@ -986,15 +986,64 @@ class BaseStrategy(ABC):
     def configure(self, config: dict) -> None:
         """Apply merged config. Called by the loader after instantiation.
 
-        Config cascade: default_config (class attribute) -> DB config (user overrides).
-        The loader merges both levels before calling configure(), so ``config``
-        here is already the fully-resolved dict. Access config values via
-        ``self.config["key"]`` or ``self.config.get("key", default)``.
+        Config cascade has up to three levels, merged left-to-right by the
+        loader **before** ``configure`` is called (so the ``config`` arg here
+        is already fully resolved):
+
+        1. ``default_config`` — class attribute, source-code defaults.
+        2. ``strategies.config`` JSON — global DB row maintained from
+           ``Strategy Editor → Settings``.
+        3. ``traders.source_configs_json[].strategy_params`` — per-trader
+           override maintained from ``Trading Panel → Tune → Parameters``.
+           Only applied to **per-trader strategy instances** produced by
+           ``BaseStrategy.clone_for_trader`` and cached by the loader under
+           ``(slug, trader_id)``. The global ``(slug)`` singleton sees only
+           levels 1 + 2.
+
+        Access values via ``self.config["key"]`` or
+        ``self.config.get("key", default)`` — never reach back into
+        ``default_config`` at runtime.
         """
         merged = dict(self.default_config)
         if config:
             merged.update(config)
         self.config = merged
+
+    def clone_for_trader(self, trader_config: dict | None) -> "BaseStrategy":
+        """Produce a per-trader copy of this strategy with overridden config.
+
+        Plan 0041 contract. The loader calls this whenever a trader's
+        ``source_configs_json[].strategy_params`` is non-empty for the
+        strategy's slug. Two consequences flow from the per-trader copy:
+
+        1. **Independent runtime state.** Each clone owns its own
+           ``_state``, ``_cycle_trackers``, ``_filter_diagnostics``,
+           and any other instance attribute set in ``__init__``. There
+           is no cross-trader state leakage by construction — no
+           ``(market_id, trader_id)`` re-keying is required of strategy
+           authors.
+        2. **Independent gate values.** ``self.config`` on the clone is
+           the union ``self.config (global) ∪ trader_config``. Existing
+           ``on_event`` / ``detect`` code that reads
+           ``self.config.get("min_distance_bps", ...)`` automatically sees
+           the per-trader override.
+
+        Default implementation assumes a zero-argument ``__init__`` — true
+        for every in-tree platform strategy as of plan 0041. Strategies
+        with a non-trivial ``__init__`` must override this method to
+        forward the right constructor arguments.
+
+        Returns the configured clone. Caller (typically
+        ``strategy_loader``) is responsible for caching it; this method
+        does not mutate the global instance.
+        """
+        clone = type(self)()
+        clone.key = getattr(self, "key", None)
+        merged = dict(self.config)
+        if trader_config:
+            merged.update(trader_config)
+        clone.configure(merged)
+        return clone
 
     @property
     def state(self) -> dict:

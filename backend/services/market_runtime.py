@@ -9,7 +9,7 @@ from typing import Any
 
 from config import settings
 from models.database import AsyncSessionLocal
-from services import shared_state
+from services import shared_state, trader_binding_cache
 from services.crypto_service import get_crypto_service
 from services.data_events import DataEvent, EventType
 from services.event_bus import event_bus
@@ -19,6 +19,7 @@ from services.machine_learning_sdk import get_machine_learning_sdk
 from services.reference_runtime import get_reference_runtime
 from services.runtime_status import runtime_status
 from services.strategy_helpers.crypto_strategy_utils import enrich_crypto_market_row
+from services.strategy_loader import strategy_loader
 from services.worker_state import read_worker_control, summarize_worker_stats, write_worker_snapshot
 from services.ws_feeds import get_feed_manager
 from utils.converters import normalize_identifier as _normalize_market_id
@@ -267,11 +268,6 @@ def _crypto_lane_is_active(control: dict[str, Any]) -> bool:
 
 
 def _loaded_crypto_strategy_instances() -> list[tuple[str, Any]]:
-    try:
-        from services.strategy_loader import strategy_loader
-    except Exception:
-        return []
-
     seen: set[str] = set()
     out: list[tuple[str, Any]] = []
     for slug, _handler in list(event_dispatcher._handlers.get(EventType.CRYPTO_UPDATE, [])):
@@ -286,6 +282,97 @@ def _loaded_crypto_strategy_instances() -> list[tuple[str, Any]]:
             continue
         out.append((normalized_slug, instance))
     return out
+
+
+_PER_TRADER_ON_EVENT_TIMEOUT_SECONDS = 15.0
+
+
+async def _dispatch_with_per_trader_fanout(event: DataEvent) -> list[Any]:
+    """Dispatch a crypto ``DataEvent`` honoring per-trader strategy params.
+
+    Plan 0041. For each strategy slug subscribed to the event's type:
+
+    - If at least one enabled trader has a per-trader binding for that slug
+      (via ``traders.source_configs_json``), invoke the per-trader instance
+      (built lazily by ``strategy_loader.get_or_clone_for_trader``) once per
+      bound trader. Tag every emitted opportunity with ``intended_trader_id``
+      so ``intent_runtime`` can route the resulting ``trade_signals`` row
+      only to that trader.
+    - Otherwise (no enabled trader bound to the slug), dispatch through the
+      shared singleton via ``event_dispatcher.dispatch`` — preserves the
+      existing 60 s handler timeout + force-kill machinery and emits
+      un-tagged opportunities that any trader bound to the source can pick
+      up (legacy behaviour).
+
+    Returns the flattened opportunity list. Per-trader invocations are
+    bounded by ``_PER_TRADER_ON_EVENT_TIMEOUT_SECONDS`` so a single hung
+    trader instance cannot stall the dispatch loop.
+    """
+    subscribed = event_dispatcher.subscribed_slugs(event.event_type)
+    if not subscribed:
+        return []
+
+    bindings = await trader_binding_cache.get_bindings_for_source("crypto")
+    per_trader_slugs = {slug for slug in subscribed if bindings.get(slug)}
+    singleton_slugs = subscribed - per_trader_slugs
+
+    opportunities: list[Any] = []
+
+    if singleton_slugs:
+        opportunities.extend(
+            await event_dispatcher.dispatch(event, include_strategies=singleton_slugs)
+        )
+
+    for slug in sorted(per_trader_slugs):
+        for trader_id, trader_params in bindings[slug]:
+            loaded = strategy_loader.get_or_clone_for_trader(slug, trader_id, trader_params)
+            if loaded is None:
+                continue
+            try:
+                result = await asyncio.wait_for(
+                    loaded.instance.on_event(event),
+                    timeout=_PER_TRADER_ON_EVENT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "per-trader on_event timed out",
+                    slug=slug,
+                    trader_id=trader_id,
+                    timeout_seconds=_PER_TRADER_ON_EVENT_TIMEOUT_SECONDS,
+                )
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "per-trader on_event failed",
+                    slug=slug,
+                    trader_id=trader_id,
+                    exc_info=exc,
+                )
+                continue
+            if not result:
+                continue
+            for opp in result:
+                try:
+                    opp.intended_trader_id = trader_id
+                except Exception as tag_exc:
+                    # Plan 0041: if Opportunity ever turns Pydantic-strict
+                    # (`extra="forbid"` / `frozen=True`), the attribute
+                    # write fails and the per-trader fan-out would drop
+                    # the opp silently. Log it loudly so the regression
+                    # surfaces — Bug 2 from the Plan 0041 audit.
+                    logger.warning(
+                        "per-trader opportunity tag failed; dropping opp",
+                        slug=slug,
+                        trader_id=trader_id,
+                        opp_type=type(opp).__name__,
+                        exc_info=tag_exc,
+                    )
+                    continue
+                opportunities.append(opp)
+
+    return opportunities
 
 
 def _diagnostic_rejection_counts(diag: dict[str, Any]) -> dict[str, int]:
@@ -1688,7 +1775,7 @@ class MarketRuntime:
                     payload={"markets": copied_for_event, "trigger": str(trigger)},
                 )
                 handler_count = len(event_dispatcher._handlers.get(EventType.CRYPTO_UPDATE, []))
-                opportunities = await event_dispatcher.dispatch(event)
+                opportunities = await _dispatch_with_per_trader_fanout(event)
                 signals_published = await get_intent_runtime().publish_opportunities(
                     opportunities,
                     source="crypto",

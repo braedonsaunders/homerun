@@ -174,6 +174,15 @@ class Opportunity(BaseModel):
     strategy_context: dict = {}
     revision: Optional[int] = None
 
+    # Per-trader signal scoping (plan 0041). When set, this opportunity (and
+    # the resulting ``trade_signals`` row) is visible only to the trader with
+    # this id; all other traders bound to the same source skip it. Strategies
+    # do NOT set this directly — the opportunity dispatcher in
+    # ``market_runtime`` tags it during per-trader fan-out when the trader's
+    # ``source_configs_json[].strategy_params`` is non-empty. ``None`` keeps
+    # the legacy multi-trader-visible routing.
+    intended_trader_id: Optional[str] = None
+
     def __init__(self, **data):
         super().__init__(**data)
         all_market_ids = sorted(str(m.get("id", "")).strip() for m in self.markets if str(m.get("id", "")).strip())

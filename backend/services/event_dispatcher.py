@@ -363,5 +363,20 @@ class EventDispatcher:
     def get_subscriptions(self, strategy_slug: str) -> set[str]:
         return set(self._subscriptions.get(strategy_slug, set()))
 
+    def subscribed_slugs(self, event_type: str) -> set[str]:
+        """Return strategy slugs subscribed to ``event_type``.
+
+        Wildcard subscribers (registered under ``"*"``) are folded in
+        unconditionally. Used by the opportunity dispatcher's per-trader
+        fan-out (plan 0041) to know which slugs to enumerate against the
+        trader-binding cache before invoking ``instance.on_event``.
+        """
+        slugs: set[str] = set()
+        for slug, _handler in self._handlers.get(event_type, []):
+            slugs.add(slug)
+        for slug, _handler in self._handlers.get("*", []):
+            slugs.add(slug)
+        return slugs
+
 
 event_dispatcher = EventDispatcher()

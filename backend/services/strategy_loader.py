@@ -682,6 +682,11 @@ class StrategyLoader:
         self._errors: dict[str, str] = {}
         self._module_counter: int = 0
         self._refresh_lock: Optional[asyncio.Lock] = None
+        # Plan 0041: per-trader strategy instances, keyed by (slug, trader_id).
+        # Populated lazily by ``get_or_clone_for_trader``; invalidated whenever
+        # the global slug reloads (via ``load`` / ``unload``) or the trader's
+        # ``source_configs_json`` mutates (via ``invalidate_per_trader``).
+        self._per_trader: dict[tuple[str, str], LoadedStrategy] = {}
 
     @property
     def refresh_lock(self) -> asyncio.Lock:
@@ -831,6 +836,7 @@ class StrategyLoader:
             if loaded.module_name and loaded.module_name in sys.modules:
                 del sys.modules[loaded.module_name]
             logger.info("Strategy unloaded: %s", slug)
+        self.invalidate_per_trader(slug=slug)
 
     def reconfigure_loaded(
         self,
@@ -850,12 +856,113 @@ class StrategyLoader:
             merged_config = {**(loaded.instance.default_config or {}), **(config or {})}
             loaded.instance.configure(merged_config)
             loaded.source_hash = _strategy_runtime_hash(source_code, merged_config)
+            # Plan 0041: global config rebuilt -> every per-trader clone is
+            # stale (its merged config was layered on the OLD self.config).
+            # Drop the cached clones; next dispatch tick will rebuild them
+            # from the fresh global instance + the trader's strategy_params.
+            self.invalidate_per_trader(slug=slug)
             return True
         except Exception as exc:
             tb = traceback.format_exc()
             raise StrategyValidationError(
                 f"Failed to reconfigure strategy '{slug}': {exc}\n\n{tb}"
             ) from exc
+
+    # ── Per-trader instances (plan 0041) ─────────────────────
+
+    def get_or_clone_for_trader(
+        self,
+        slug: str,
+        trader_id: str,
+        trader_config: Optional[dict] = None,
+    ) -> Optional[LoadedStrategy]:
+        """Return the per-trader clone for ``(slug, trader_id)``.
+
+        The clone is built on first access by calling
+        ``BaseStrategy.clone_for_trader(trader_config)`` on the global
+        singleton. Cached under ``(slug, trader_id)`` until either:
+
+        - The global strategy reloads — ``invalidate_per_trader(slug=...)``
+          fires from ``load`` / ``unload`` / ``reconfigure_loaded``.
+        - The trader's ``source_configs_json`` mutates — caller invokes
+          ``invalidate_per_trader(trader_id=...)`` from the trader-update
+          route.
+        - The trader-binding cache TTL elapses and a stale clone is detected
+          via ``source_hash`` mismatch on the next access.
+
+        Returns ``None`` if the global slug isn't loaded.
+        """
+        global_loaded = self._loaded.get(slug)
+        if global_loaded is None:
+            return None
+
+        key = (slug, str(trader_id or "").strip())
+        if not key[1]:
+            return None
+        cached = self._per_trader.get(key)
+        if cached is not None and cached.source_hash == global_loaded.source_hash:
+            return cached
+
+        try:
+            clone = global_loaded.instance.clone_for_trader(trader_config or {})
+        except Exception as exc:
+            tb = traceback.format_exc()
+            raise StrategyValidationError(
+                f"Failed to clone strategy '{slug}' for trader '{key[1]}': {exc}\n\n{tb}"
+            ) from exc
+
+        clone.key = slug
+        entry = LoadedStrategy(
+            slug=slug,
+            instance=clone,
+            class_name=global_loaded.class_name,
+            source_hash=global_loaded.source_hash,
+            loaded_at=datetime.now(timezone.utc),
+            module_name=global_loaded.module_name,
+        )
+        self._per_trader[key] = entry
+        return entry
+
+    def invalidate_per_trader(
+        self,
+        *,
+        slug: Optional[str] = None,
+        trader_id: Optional[str] = None,
+    ) -> int:
+        """Drop cached per-trader clones; force the next access to rebuild.
+
+        Call shapes:
+
+        - ``invalidate_per_trader()`` — drop everything.
+        - ``invalidate_per_trader(slug='crypto_5m_midcycle')`` — drop every
+          trader's clone of one slug (use when the global strategy reloads).
+        - ``invalidate_per_trader(trader_id='abc…')`` — drop every slug's
+          clone for one trader (use when that trader's strategy_params
+          changed).
+        - Both args — drop the single specific ``(slug, trader_id)`` entry.
+
+        Returns the number of entries removed.
+        """
+        normalized_slug = str(slug or "").strip().lower() if slug is not None else None
+        normalized_trader = str(trader_id or "").strip() if trader_id is not None else None
+        if normalized_slug is None and normalized_trader is None:
+            removed = len(self._per_trader)
+            self._per_trader.clear()
+            return removed
+        removed = 0
+        for key in list(self._per_trader.keys()):
+            slug_key, trader_key = key
+            if normalized_slug is not None and slug_key != normalized_slug:
+                continue
+            if normalized_trader is not None and trader_key != normalized_trader:
+                continue
+            del self._per_trader[key]
+            removed += 1
+        return removed
+
+    def loaded_per_trader_count(self) -> int:
+        """Diagnostic accessor — returns the per-trader cache size."""
+        return len(self._per_trader)
 
     # ── DB reload ────────────────────────────────────────────
 

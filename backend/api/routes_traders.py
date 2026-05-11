@@ -21,6 +21,8 @@ from services.pause_state import global_pause_state
 from services import shared_state as scanner_shared_state
 from services.traders_copy_trade_signal_service import traders_copy_trade_signal_service
 from services.strategy_tune_agent import run_strategy_tune_agent
+from services import trader_binding_cache
+from services.strategy_loader import strategy_loader
 from services.trader_orchestrator.position_lifecycle import (
     reconcile_live_positions,
     reconcile_shadow_positions,
@@ -76,6 +78,25 @@ _background_tasks: set[Any] = set()
 def _track_background_task(task: Any) -> None:
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+def _invalidate_trader_strategy_caches() -> None:
+    # Plan 0041: after any mutation that may touch
+    # ``traders.source_configs_json[].strategy_params`` (create / update /
+    # delete) we drop the trader-binding cache and every per-trader
+    # strategy clone so the dispatcher rebuilds them on the next event.
+    # Both caches are extremely cheap to repopulate (one SQL roundtrip
+    # for the binding cache, one ``clone_for_trader`` call per
+    # ``(slug, trader)`` for the strategy clones), so eagerly clearing
+    # them is preferable to waiting out the 3 s soft-TTL.
+    try:
+        trader_binding_cache.invalidate()
+    except Exception:
+        logger.exception("trader_binding_cache.invalidate failed")
+    try:
+        strategy_loader.invalidate_per_trader()
+    except Exception:
+        logger.exception("strategy_loader.invalidate_per_trader failed")
 
 
 def _copy_bootstrap_requested(trader_payload: dict[str, Any], override: bool | None) -> bool:
@@ -517,6 +538,8 @@ async def create_from_template(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    _invalidate_trader_strategy_caches()
+
     await create_trader_event(
         session,
         trader_id=trader["id"],
@@ -539,6 +562,8 @@ async def create_trader_route(
         trader = await create_trader(session, payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    _invalidate_trader_strategy_caches()
 
     await create_config_revision(
         session,
@@ -1234,6 +1259,8 @@ async def update_trader_route(
     if after is None:
         raise HTTPException(status_code=404, detail="Trader not found")
 
+    _invalidate_trader_strategy_caches()
+
     await create_config_revision(
         session,
         trader_id=trader_id,
@@ -1293,6 +1320,7 @@ async def delete_trader_route(
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Trader not found")
+        _invalidate_trader_strategy_caches()
         await create_trader_event(
             session,
             trader_id=trader_id,
@@ -1350,6 +1378,7 @@ async def delete_trader_route(
             raise HTTPException(status_code=500, detail=f"Failed to delete trader after transfer: {exc}")
         if not ok:
             raise HTTPException(status_code=404, detail="Trader not found after transfer")
+        _invalidate_trader_strategy_caches()
         await create_trader_event(
             session,
             trader_id=None,
@@ -1419,6 +1448,7 @@ async def delete_trader_route(
         raise HTTPException(status_code=500, detail=f"Failed to delete trader: {exc}")
     if not ok:
         raise HTTPException(status_code=404, detail="Trader not found")
+    _invalidate_trader_strategy_caches()
     await create_trader_event(
         session,
         trader_id=None,
@@ -1486,6 +1516,7 @@ async def start_trader(
     )
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+    _invalidate_trader_strategy_caches()
     await request_trader_run(session, trader_id)
 
     control = await read_orchestrator_control(session)
@@ -1585,6 +1616,7 @@ async def stop_trader(
     trader = await set_trader_paused(session, trader_id, True)
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+    _invalidate_trader_strategy_caches()
 
     lifecycle_summary: dict[str, Any] = {
         "mode": stop_lifecycle.value,
@@ -1681,6 +1713,7 @@ async def activate_trader(
     )
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+    _invalidate_trader_strategy_caches()
 
     payload: dict[str, Any] = {}
     if request.reason:
@@ -1713,6 +1746,7 @@ async def deactivate_trader(
     )
     if trader is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+    _invalidate_trader_strategy_caches()
 
     payload: dict[str, Any] = {}
     if request.reason:
@@ -1758,6 +1792,7 @@ async def set_trader_block_new_orders(
     )
     if after is None:
         raise HTTPException(status_code=404, detail="Trader not found")
+    _invalidate_trader_strategy_caches()
     payload: dict[str, Any] = {"enabled": bool(request.enabled)}
     if request.reason:
         payload["reason"] = request.reason
