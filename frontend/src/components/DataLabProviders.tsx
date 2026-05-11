@@ -730,7 +730,7 @@ function TelonexImportPanel() {
                     <button
                       key={`${m.market_id}_${m.slug}`}
                       type="button"
-                      onClick={() => { setSelectedMarket(m); setSelectedOutcomeIdx(0) }}
+                      onClick={() => { setSelectedMarket(m) }}
                       className={cn(
                         'block w-full px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-card/40',
                         isSel && 'bg-violet-500/10',
