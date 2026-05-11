@@ -102,7 +102,7 @@ import {
 // bandwidth that a slow venue moment might need.  An institutional
 // rule of "no backtests during live trading" is the right operational
 // posture, and this banner enforces it visibly.
-import { getTraders } from '../services/apiTraders'
+import { getTraders, getOrchestratorStatus } from '../services/apiTraders'
 
 interface BacktestStudioProps {
   initialSourceCode?: string
@@ -2367,18 +2367,36 @@ export default function BacktestStudio({
     return err.response?.data?.detail || err.message || t('autoresearch.unknownError')
   }, [runMutation.error, t])
 
-  // Live-trader watch.  Refreshes every 30s — fresh enough to catch
-  // an operator toggling live-on a few seconds before clicking Run,
-  // not so frequent that it pollutes the network panel.  Failures
-  // (no traders configured, network blip) collapse to "no live
-  // traders detected" so the warning fails OPEN — i.e. we let the
-  // backtest proceed rather than blocking on transient query
-  // failure.
+  // Live-trading guard — true ONLY when the trader-orchestrator
+  // worker process is actually running AND it's currently ticking
+  // ≥ 1 live trader.  Previous implementation read the Trader rows
+  // and flagged ``mode=live + is_enabled + !is_paused`` as "live
+  // trading active", but a trader configured to live in the DB is
+  // NOT the same as the orchestrator process being up — operators
+  // routinely have live traders configured without the worker
+  // running and were getting false-positive warnings.
+  //
+  // The two-condition check below mirrors what the operator means
+  // by "live trading is happening": worker process alive
+  // (``snapshot.running``) AND it has loaded at least one trader
+  // into its current tick (``snapshot.traders_running > 0``).
+  // Refreshes every 30s.  Failures collapse to "no live trading
+  // detected" so the warning fails OPEN — never blocks the backtest
+  // on a transient query error.
+  const orchestratorStatusQuery = useQuery({
+    queryKey: ['trader-orchestrator', 'status', 'for-backtest-warning'],
+    queryFn: getOrchestratorStatus,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  })
+  // Trader rows still useful for the confirm-dialog body (so we can
+  // name the affected traders), but they no longer GATE the warning.
   const liveTradersQuery = useQuery({
     queryKey: ['traders', 'live-active-for-backtest-warning'],
     queryFn: () => getTraders({ mode: 'live' }),
     refetchInterval: 30_000,
     staleTime: 15_000,
+    enabled: orchestratorStatusQuery.data?.snapshot?.running === true,
   })
   const activeLiveTraders = useMemo(() => {
     const rows = liveTradersQuery.data
@@ -2387,7 +2405,9 @@ export default function BacktestStudio({
       (t) => t.mode === 'live' && t.is_enabled && !t.is_paused,
     )
   }, [liveTradersQuery.data])
-  const liveTradingActive = activeLiveTraders.length > 0
+  const liveTradingActive =
+    orchestratorStatusQuery.data?.snapshot?.running === true
+    && (orchestratorStatusQuery.data.snapshot.traders_running ?? 0) > 0
 
   const handleRun = () => {
     if (!sourceCode.trim() || sourceCode.trim().length < 10) return
@@ -2687,7 +2707,13 @@ export default function BacktestStudio({
         <StudioStepper
           stage={stage}
           setStage={setStage}
-          canInspect={!!activeRun || !!pendingRunId}
+          // Always allow navigation to Inspect — the stage has a
+          // graceful empty-state ("Pick a run from the sidebar") so
+          // there's no value in greying out the tab.  Operators
+          // routinely need to bounce between Setup and Inspect to
+          // pick a previously-cached run, and the previous gate
+          // (only enabled with activeRun) blocked that.
+          canInspect={true}
           canIterate={iterAvailable}
           inspectLabel={
             activeRun

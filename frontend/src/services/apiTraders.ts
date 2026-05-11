@@ -314,6 +314,51 @@ export const getTradingStatus = async (): Promise<TradingStatus> => {
   return unwrapApiData(data)
 }
 
+/** Snapshot of the trader-orchestrator process — the worker that
+ *  actually ticks live traders.  ``running=true`` means the
+ *  orchestrator loop is alive and ``traders_running`` reflects how
+ *  many traders it's actively processing this tick.  Distinguishes
+ *  "trader configured live in DB but orchestrator process down" from
+ *  "trader is actually tickling Polymarket right now". */
+export interface OrchestratorSnapshot {
+  id?: string
+  updated_at?: string | null
+  last_run_at?: string | null
+  running: boolean
+  enabled: boolean
+  current_activity?: string | null
+  interval_seconds?: number
+  traders_total: number
+  traders_running: number
+  decisions_count: number
+  orders_count: number
+  open_orders: number
+  gross_exposure_usd: number
+  daily_pnl: number
+  last_error?: string | null
+  stats?: Record<string, unknown>
+}
+
+export interface OrchestratorStatusResponse {
+  control: {
+    is_enabled: boolean
+    is_paused: boolean
+    kill_switch: boolean
+    mode?: string | null
+    [k: string]: unknown
+  }
+  snapshot: OrchestratorSnapshot
+  config?: Record<string, unknown>
+}
+
+/** Pulls /trader-orchestrator/status — ``snapshot.running`` tells
+ *  callers whether the worker process is actually alive (vs. just
+ *  having traders configured in the DB). */
+export const getOrchestratorStatus = async (): Promise<OrchestratorStatusResponse> => {
+  const { data } = await api.get<OrchestratorStatusResponse>('/trader-orchestrator/status')
+  return data
+}
+
 export const getTradingVpnStatus = async (): Promise<TradingVpnStatus> => {
   const { data } = await api.get('/trader-orchestrator/live/vpn-status')
   return unwrapApiData(data)
