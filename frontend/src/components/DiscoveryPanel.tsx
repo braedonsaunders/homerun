@@ -1725,7 +1725,9 @@ export default function DiscoveryPanel({ onAnalyzeWallet, view = 'discovery' }: 
                           ? t('discoveryPanel.filter.loading')
                           : filteredTags.length === 0
                             ? t('discoveryPanel.filter.noMatchingTags')
-                            : t('discoveryPanel.filter.selectTag')}
+                            : selectedTags.length > 0
+                              ? `${t('discoveryPanel.filter.selectTag')} (${selectedTags.length})`
+                              : t('discoveryPanel.filter.selectTag')}
                       </option>
                       {filteredTags.map((tag) => (
                         <option key={tag.name} value={tag.name}>
