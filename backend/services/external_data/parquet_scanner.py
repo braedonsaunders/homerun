@@ -40,7 +40,6 @@ from typing import Any, Iterable
 from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
     SNAPSHOT_SCHEMA,
-    parquet_root,
     parquet_roots,
 )
 
