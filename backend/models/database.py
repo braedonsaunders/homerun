@@ -1357,6 +1357,9 @@ class AppSettings(Base):
     polybacktest_api_key = Column(String, nullable=True)
     polybacktest_base_url = Column(String, nullable=True)
 
+    telonex_api_key = Column(String, nullable=True)
+    telonex_base_url = Column(String, nullable=True)
+
     # Parquet ingest storage root — UI-editable so operators don't have
     # to set HOMERUN_PARQUET_ROOT and restart.  Resolution order:
     #   1. this column (UI-set, persists)

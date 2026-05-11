@@ -198,6 +198,8 @@ export async function resolveProviderDatasetScope(
 export interface ProviderSettings {
   polybacktest_api_key_set: boolean
   polybacktest_base_url: string | null
+  telonex_api_key_set: boolean
+  telonex_base_url: string | null
   // Default LLM model for the reverse-engineer agent lives in the
   // canonical AI → Models view (llm_model_assignments['strategy_reverse_engineer']).
   reverse_engineer_max_iterations: number | null
@@ -209,6 +211,8 @@ export interface ProviderSettings {
 export interface ProviderSettingsUpdate {
   polybacktest_api_key?: string | null
   polybacktest_base_url?: string | null
+  telonex_api_key?: string | null
+  telonex_base_url?: string | null
   reverse_engineer_max_iterations?: number | null
   reverse_engineer_target_score?: number | null
   reverse_engineer_max_cost_usd?: number | null
