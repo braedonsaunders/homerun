@@ -975,6 +975,41 @@ async def run_unified_backtest(
     started_at = datetime.now(timezone.utc).isoformat()
     started_perf = time.perf_counter()
 
+    # Resolve provider_dataset_ids → (token_ids, start, end) when the
+    # caller passed datasets but no explicit token universe.  The sync
+    # /backtest/run route already does this resolution before calling
+    # us, but the worker-queue path (/runs/enqueue → enqueue_run →
+    # worker → run_unified_backtest) does NOT — it just passes the
+    # raw provider_dataset_ids through.  Without this block, runs
+    # scoped to a dataset would silently fall back to the live-opp
+    # universe and the dataset's whole point (scope down to specific
+    # tokens for parquet replay) is lost.  Empirically caught when a
+    # Telonex-imported BTC dataset's 2 tokens got ignored and the
+    # backtest ran against 1156 live-cache tokens with LOW fidelity.
+    if provider_dataset_ids and not token_ids:
+        try:
+            from services.external_data.provider_import_service import resolve_dataset_scope
+            scope = await resolve_dataset_scope(list(provider_dataset_ids))
+            if scope is not None and scope.get("token_ids"):
+                token_ids = scope["token_ids"]
+                # Dataset window wins when caller didn't pin one — for
+                # parquet replay we MUST scope to the file's covered
+                # window or the engine reads off the end.
+                if start is None and scope.get("start") is not None:
+                    start = scope["start"]
+                if end is None and scope.get("end") is not None:
+                    end = scope["end"]
+                logger.info(
+                    "unified_runner: resolved %d provider_dataset_ids → %d tokens, window %s → %s",
+                    len(provider_dataset_ids), len(token_ids), start, end,
+                )
+        except Exception:
+            logger.exception(
+                "unified_runner: failed to resolve provider_dataset_ids=%s — "
+                "run will fall through to live-opp scope",
+                provider_dataset_ids,
+            )
+
     # Core engine.
     exec_kwargs: dict[str, Any] = {
         "source_code": source_code,
