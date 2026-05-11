@@ -355,6 +355,11 @@ class ExecutionEstimator:
                 latency_ms=config.latency_ms,
             )
 
+        # Queue-ahead computation: delegated to the shared utility so
+        # backtest matcher + live forecasting can't drift apart.  The
+        # diagnostic ``better_queue`` / ``same_level_size`` values are
+        # still computed locally for the diagnostics dict consumers
+        # below.
         own_levels = self._levels(order_book, "bids" if side == "BUY" else "asks")
         better_queue = 0.0
         same_level_size = 0.0
@@ -370,7 +375,15 @@ class ExecutionEstimator:
                 elif abs(price - limit_price) <= 1e-9:
                     same_level_size += size
         depth_factor = self._book_depth_factor(book_age_ms, config)
-        queue_ahead = (better_queue + same_level_size * config.maker_queue_ahead_fraction) * depth_factor
+        from services.optimization.queue_ahead import compute_queue_ahead_shares
+        queue_ahead = compute_queue_ahead_shares(
+            bids=order_book.get("bids") if isinstance(order_book, dict) else getattr(order_book, "bids", None),
+            asks=order_book.get("asks") if isinstance(order_book, dict) else getattr(order_book, "asks", None),
+            side=side,
+            limit_price=limit_price,
+            maker_queue_ahead_fraction=config.maker_queue_ahead_fraction,
+            depth_factor=depth_factor,
+        )
         stats = self._trade_stats(recent_trades, config.recent_trade_lookback_seconds)
         opposing_shares = stats["sell_shares"] if side == "BUY" else stats["buy_shares"]
         lookback = max(1.0, stats["lookback_seconds"])

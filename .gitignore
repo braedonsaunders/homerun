@@ -66,6 +66,9 @@ logs/
 output/
 .playwright-cli/
 .oneshot/
+# Backtest-runner JSON dumps from scripts/ — operator regenerates
+# at will; never read by live runtime.
+backend/scripts/_*_results*.json
 
 # Claude Code local settings
 .claude/settings.local.json

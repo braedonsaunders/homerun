@@ -99,6 +99,17 @@ class BacktestOrder:
     reject_reason: Optional[str] = None
     fills: list["Fill"] = field(default_factory=list)
 
+    # ── Queue-position tracking (FIFO maker model) ─────────────────────
+    # Recorded at admit time for orders that REST on the book.  The
+    # ``queue_ahead_shares`` value is computed by
+    # ``services.optimization.queue_ahead.compute_queue_ahead_shares``
+    # — the same formula ``ExecutionEstimator`` uses for live shadow
+    # trading and post-run ensemble analytics — so backtest realism
+    # matches the live forecasting code.  As external flow consumes
+    # the level the matcher decrements this; only when it reaches
+    # zero is the order eligible to fill.
+    queue_ahead_shares: Optional[float] = None
+
     @property
     def remaining_size(self) -> float:
         return max(0.0, float(self.size) - float(self.filled_size))
@@ -371,6 +382,22 @@ class _ResidualBook:
         elif side == "BUY":
             self.consumed_asks[price] = self.consumed_asks.get(price, 0.0) + size
 
+    def depth_at(self, *, side: str, price: float) -> float:
+        """Visible depth (size) at ``price`` on the requested ``side``.
+        Returns 0.0 if no level exists at exactly that price.
+
+        Used by the FIFO queue-position tracker: a resting BUY rests on
+        the BID side, a resting SELL on the ASK side.  At admit, the
+        order's queue_depth_at_admit is the depth on the SAME side as
+        the order — orders sitting in front of it in the FIFO queue.
+        """
+        side_norm = (side or "").upper()
+        levels = self.snapshot.bids if side_norm == "BUY" else self.snapshot.asks
+        for lvl in levels:
+            if abs(lvl.price - price) < 1e-12:
+                return float(lvl.size or 0.0)
+        return 0.0
+
 
 class MatchingEngine:
     """Backtest matching engine with latency and full lifecycle.
@@ -533,8 +560,50 @@ class MatchingEngine:
                 self._apply_cancel(order_id, effective_at)
                 self._pending_cancels.pop(order_id, None)
 
-        # 2. Reset residual book for this token to the new snapshot
+        # 2. Reset residual book for this token to the new snapshot.
+        #    Before we drop the old book, peek at it to advance the
+        #    queue-position of every working order — depth that
+        #    disappeared between snapshots is volume that traded ahead
+        #    of us in the FIFO queue.  Same accounting principle as
+        #    ``ExecutionEstimator``: external flow consumes the queue
+        #    in price-time priority; once ``queue_ahead_shares`` hits
+        #    zero we are at the front.
+        old_book = self._books.get(snapshot.token_id)
         self._books[snapshot.token_id] = _ResidualBook(snapshot=snapshot)
+        new_book = self._books[snapshot.token_id]
+        if old_book is not None:
+            for order_id in list(self._working_by_token.get(snapshot.token_id, [])):
+                ord_ = self._orders.get(order_id)
+                if (
+                    ord_ is None
+                    or ord_.is_terminal
+                    or ord_.queue_ahead_shares is None
+                    or ord_.queue_ahead_shares <= 0.0
+                ):
+                    continue
+                # Depth on the order's OWN side at its limit price.
+                old_depth = old_book.depth_at(side=ord_.side, price=ord_.price)
+                new_depth = new_book.depth_at(side=ord_.side, price=ord_.price)
+                # External consumption since the last snapshot.  Own-
+                # taker fills at this price (rare but possible if a
+                # cross-book intent ate our own queue) are subtracted
+                # so we don't double-count.
+                own_consumed_prev = (
+                    old_book.consumed_bids.get(ord_.price, 0.0)
+                    if ord_.side.upper() == "BUY"
+                    else old_book.consumed_asks.get(ord_.price, 0.0)
+                )
+                external_consumed = max(
+                    0.0,
+                    (old_depth - new_depth) - float(own_consumed_prev),
+                )
+                # Queue position can only advance (toward zero), never
+                # rewind — even if the level grew between snapshots
+                # (new makers joined behind us), we don't move back.
+                ord_.queue_ahead_shares = max(
+                    0.0,
+                    float(ord_.queue_ahead_shares) - external_consumed,
+                )
 
         # 3. Process orders newly admitted to the venue
         for order in list(self._orders.values()):
@@ -656,6 +725,9 @@ class MatchingEngine:
                 else:
                     # PARTIAL is non-terminal; no decrement.
                     order.state = OrderState.PARTIAL
+                    # Order will rest at its limit — snapshot queue
+                    # depth ahead at our own-side level.
+                    self._snapshot_queue_position(order, book)
                     self._add_to_working(order)
             else:
                 self._terminate(order, OrderState.FILLED)
@@ -668,7 +740,40 @@ class MatchingEngine:
         else:
             # WORKING is non-terminal; no decrement.
             order.state = OrderState.WORKING
+            self._snapshot_queue_position(order, book)
             self._add_to_working(order)
+
+    def _snapshot_queue_position(
+        self, order: "BacktestOrder", book: "_ResidualBook"
+    ) -> None:
+        """Snapshot the FIFO queue position at admit time using the
+        canonical formula from ``ExecutionEstimator``.
+
+        Polymarket's CLOB is strict price-time priority.  Orders ahead
+        of us in the FIFO queue at our limit price get filled first.
+        The shared utility from
+        ``services.optimization.queue_ahead`` computes that count the
+        same way the live shadow trader does — better-priced same-side
+        orders contribute fully, same-price-level orders contribute
+        their ``maker_queue_ahead_fraction`` (default 0.65, recognising
+        we can't perfectly observe time priority within a level).
+
+        Best-effort: failures degrade to 0 (front of queue), matching
+        what the matcher did pre-FIFO.  Logged so operators can spot
+        misconfigurations.
+        """
+        try:
+            from services.optimization.queue_ahead import (
+                compute_queue_ahead_shares,
+            )
+            order.queue_ahead_shares = compute_queue_ahead_shares(
+                bids=book.snapshot.bids,
+                asks=book.snapshot.asks,
+                side=order.side,
+                limit_price=order.price,
+            )
+        except Exception:  # noqa: BLE001
+            order.queue_ahead_shares = 0.0
 
     def _add_to_working(self, order: BacktestOrder) -> None:
         ids = self._working_by_token.setdefault(order.token_id, [])
@@ -774,16 +879,39 @@ class MatchingEngine:
     def _try_match_resting(self, order: BacktestOrder, produced: list[Fill]) -> None:
         """Re-evaluate a working/partial order against the latest snapshot.
 
-        Resting orders can fill when the book moves into them (e.g., a
-        SELL limit at 0.51 becomes marketable when the bid rises to 0.51+).
-        We treat them as makers — a market order that consumed bid 0.51
-        will have already updated the snapshot's best_bid; we simulate
-        their match by checking the *current* snapshot's opposing side
-        against the resting price.
+        Resting orders fill in two stages:
+
+          1. **Queue position gate.**  At admit, we snapshot the visible
+             depth at the order's own-side level — that's the FIFO
+             queue ahead of us.  Each subsequent snapshot's external
+             consumption decays that count (see ``advance_to``).  Until
+             ``queue_depth_ahead == 0`` we are NOT eligible to fill,
+             even if the book "crosses" our price — the cross consumes
+             the queue ahead of us, not our own size.
+
+          2. **Cross check.**  Once we're at the front of the queue,
+             a cross of the spread (opposing side reaching our price)
+             fills us at our limit price.  We fill at most the
+             remaining external depth the cross brought (capped by
+             our remaining size).
+
+        Without (1), dense delta replay credits every cross-event as
+        a full fill against the visible level — multiplying intents
+        into 2-3× as many fills as reality would produce.  With (1)
+        the math is correct: a resting order at the back of a deep
+        queue takes time and consistent flow to fill, just like live.
         """
         book = self._books.get(order.token_id)
         if book is None:
             return
+        # FIFO queue gate.  ``None`` means the order was admitted
+        # before this tracker existed (in-flight at upgrade); fall back
+        # to the legacy depth-clear behaviour by treating as front-of-
+        # queue.  Once the upgrade is rolled out everywhere this branch
+        # disappears.
+        if order.queue_ahead_shares is not None and order.queue_ahead_shares > 1e-9:
+            return  # still queued — wait for more external consumption
+
         snap = book.snapshot
         side_norm = (order.side or "").upper()
         remaining = order.remaining_size

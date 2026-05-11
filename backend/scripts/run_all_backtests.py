@@ -1,9 +1,8 @@
 """Run every enabled strategy against the bus-aware backtest path
-over a wide window, write progressive results to JSON.
+over a wide window.  Results are streamed to stdout per strategy.
 
-Each strategy result is flushed to disk immediately so the operator
-can monitor progress and so an interrupt loses at most the in-flight
-strategy.  Output: ``scripts/_all_backtests_results.json``.
+Pass ``--json <path>`` to also dump progressive results to a file
+(disabled by default — debug surface, never read by live runtime).
 """
 from __future__ import annotations
 
@@ -28,7 +27,14 @@ sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 # up to today.  No dataset pinning → universe = full opp_history.
 WIN_START = datetime(2026, 5, 4, 0, 0, tzinfo=timezone.utc)
 WIN_END = datetime(2026, 5, 11, 0, 0, tzinfo=timezone.utc)
-OUT_PATH = Path(__file__).resolve().parent / "_all_backtests_results.json"
+
+# Opt-in JSON dump via ``--json <path>``.  Defaults to no file write
+# so the script doesn't leave debris in scripts/ on every run.
+_json_path: Path | None = None
+if "--json" in sys.argv:
+    _i = sys.argv.index("--json")
+    if _i + 1 < len(sys.argv):
+        _json_path = Path(sys.argv[_i + 1]).expanduser().resolve()
 
 
 def _f(v: object, d: float = 0.0) -> float:
@@ -105,7 +111,8 @@ async def main() -> None:
     print("=" * 100, flush=True)
 
     results: list[dict] = []
-    OUT_PATH.write_text("[]", encoding="utf-8")
+    if _json_path is not None:
+        _json_path.write_text("[]", encoding="utf-8")
 
     for r in rows:
         res = await run_one(r.slug, r.source_code)
@@ -136,22 +143,22 @@ async def main() -> None:
                 f'({res["wall_s"]:>5.1f}s)',
                 flush=True,
             )
-        # Flush results to disk after each strategy.  Operator can read
-        # this file from another shell to see live progress.
-        OUT_PATH.write_text(
-            json.dumps(
-                {
-                    "window_start": WIN_START.isoformat(),
-                    "window_end": WIN_END.isoformat(),
-                    "completed": len(results),
-                    "remaining": len(rows) - len(results),
-                    "results": results,
-                },
-                indent=2,
-                default=str,
-            ),
-            encoding="utf-8",
-        )
+        # Optional JSON dump after each strategy (opt-in via --json).
+        if _json_path is not None:
+            _json_path.write_text(
+                json.dumps(
+                    {
+                        "window_start": WIN_START.isoformat(),
+                        "window_end": WIN_END.isoformat(),
+                        "completed": len(results),
+                        "remaining": len(rows) - len(results),
+                        "results": results,
+                    },
+                    indent=2,
+                    default=str,
+                ),
+                encoding="utf-8",
+            )
 
     # Final summary
     print(flush=True)

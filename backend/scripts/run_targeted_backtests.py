@@ -75,7 +75,12 @@ TARGETS: list[tuple[str, tuple[datetime, datetime], str]] = [
     # No second pass needed.
 ]
 
-OUT_PATH = Path(__file__).resolve().parent / "_targeted_backtests_results.json"
+# Opt-in JSON dump via ``--json <path>``.
+_json_path: Path | None = None
+if "--json" in sys.argv:
+    _i = sys.argv.index("--json")
+    if _i + 1 < len(sys.argv):
+        _json_path = Path(sys.argv[_i + 1]).expanduser().resolve()
 
 
 def _f(v, d=0.0):
@@ -137,7 +142,8 @@ async def main():
     print(f"Targeted second pass — {len(TARGETS)} strategies\n", flush=True)
     print("=" * 110, flush=True)
     results = []
-    OUT_PATH.write_text("[]", encoding="utf-8")
+    if _json_path is not None:
+        _json_path.write_text("[]", encoding="utf-8")
     for slug, (start, end), why in TARGETS:
         src = src_by_slug.get(slug)
         if src is None:
@@ -147,7 +153,8 @@ async def main():
         print(f"     reason: {why}", flush=True)
         res = await run_one(slug, src, start, end)
         results.append(res)
-        OUT_PATH.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+        if _json_path is not None:
+            _json_path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
         if res.get("fatal"):
             print(f'     FATAL: {res["fatal"][:120]}  ({res["wall_s"]:.1f}s)\n', flush=True)
             continue
