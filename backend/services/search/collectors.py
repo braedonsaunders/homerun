@@ -679,12 +679,27 @@ async def reindex_one(
         for row in rows
     ]
 
-    UPSERT_CHUNK = 500
+    # IMPORTANT: production soaks (2026-05) surfaced 5–11s long
+    # transactions on ``trading-search_index_worker::start_loop`` with
+    # ``uow_dirty=0`` (the executemany goes through raw SQL so the ORM
+    # uow doesn't see it, but the transaction is OPEN the whole time).
+    # The root cause: the previous code held ONE transaction across
+    # all chunks + the sweep-delete, so a 2k-row reindex pinned a
+    # connection in ``idle in transaction`` for the full run, blocking
+    # readers and starving the pool.  Fix: smaller chunks (250 vs 500
+    # — the prior 500 produced a 5.4s slow-execute on its own) and a
+    # per-chunk commit so locks released and other workers see fresh
+    # rows immediately.  Partial-failure tolerance is unchanged: the
+    # sweep-delete only removes rows older than ``cutoff`` and the
+    # upserts re-stamp ``updated_at = cutoff_naive``, so a partial
+    # reindex just leaves the unrefreshed rows for the next run.
+    UPSERT_CHUNK = 250
     upserted = 0
     for i in range(0, len(params_list), UPSERT_CHUNK):
         chunk = params_list[i : i + UPSERT_CHUNK]
         try:
             await session.execute(_UPSERT_SQL, chunk)
+            await session.commit()
             upserted += len(chunk)
         except Exception as exc:
             # Lock-timeout on the chunk → roll back and retry row-by-
@@ -702,6 +717,7 @@ async def reindex_one(
             for params in chunk:
                 try:
                     await session.execute(_UPSERT_SQL, params)
+                    await session.commit()
                     upserted += 1
                 except Exception as row_exc:
                     logger.warning(
@@ -710,9 +726,15 @@ async def reindex_one(
                         params.get("entity_id"),
                         row_exc,
                     )
+                    try:
+                        await session.rollback()
+                    except Exception:
+                        pass
 
     # Sweep-delete: anything for this type whose updated_at is older
     # than this run's cutoff has clearly disappeared from the source.
+    # Run as its own transaction so it doesn't piggyback on a stale
+    # one if the upsert loop above had a partial failure.
     deleted = 0
     try:
         result = await session.execute(
@@ -720,10 +742,13 @@ async def reindex_one(
             {"entity_type": entity_type, "cutoff": cutoff_naive},
         )
         deleted = int(result.rowcount or 0)
+        await session.commit()
     except Exception as exc:
         logger.warning("search sweep-delete failed: entity_type=%s err=%s", entity_type, exc)
-
-    await session.commit()
+        try:
+            await session.rollback()
+        except Exception:
+            pass
 
     duration_ms = (utcnow() - started).total_seconds() * 1000.0
     return {

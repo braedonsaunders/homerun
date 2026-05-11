@@ -22,7 +22,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+import asyncio
+
+from sqlalchemy import case, func, select, text as _sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import AsyncSessionLocal, BookDeltaEvent
@@ -135,18 +137,42 @@ async def refresh_async(*, session: AsyncSession | None = None) -> EmpiricalCons
     try:
         # Trade-vs-cancel ratio from the last 24h.
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        trade_q = await session.execute(
-            select(func.count(BookDeltaEvent.id))
-            .where(BookDeltaEvent.event_type == "trade")
-            .where(BookDeltaEvent.observed_at >= cutoff)
-        )
-        n_trade = int(trade_q.scalar_one() or 0)
-        cancel_q = await session.execute(
-            select(func.count(BookDeltaEvent.id))
-            .where(BookDeltaEvent.event_type == "cancel")
-            .where(BookDeltaEvent.observed_at >= cutoff)
-        )
-        n_cancel = int(cancel_q.scalar_one() or 0)
+        # IMPORTANT: 3 separate counts/sums over a 24h window of
+        # book_delta_events scan the same range 3× — production soaks
+        # surfaced this as a 6-7s slow-execute per call.  Consolidate
+        # into ONE conditional aggregate (single index scan) and clamp
+        # with SET LOCAL statement_timeout so a hot ingestion period
+        # can't pin a worker session for tens of seconds.  If the
+        # query times out we keep the cached / default constants and
+        # try again next refresh tick.
+        try:
+            await session.execute(_sa_text("SET LOCAL statement_timeout = '10000'"))
+        except Exception:
+            pass
+        agg_stmt = select(
+            func.count(BookDeltaEvent.id)
+            .filter(BookDeltaEvent.event_type == "trade")
+            .label("n_trade"),
+            func.count(BookDeltaEvent.id)
+            .filter(BookDeltaEvent.event_type == "cancel")
+            .label("n_cancel"),
+            func.coalesce(func.sum(BookDeltaEvent.trade_size), 0).label("trade_sz"),
+            func.coalesce(func.sum(BookDeltaEvent.cancel_size), 0).label("cancel_sz"),
+        ).where(BookDeltaEvent.observed_at >= cutoff)
+        try:
+            agg_q = await asyncio.wait_for(session.execute(agg_stmt), timeout=12.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning(
+                "Empirical-constants aggregate timed out / failed; keeping cached values: %s",
+                exc,
+            )
+            # Mark refreshed so we don't immediately retry — back off
+            # to the next periodic tick.
+            _state.last_refresh_epoch = time.monotonic()
+            return _state.constants
+        row = agg_q.first()
+        n_trade = int(getattr(row, "n_trade", 0) or 0)
+        n_cancel = int(getattr(row, "n_cancel", 0) or 0)
         total = n_trade + n_cancel
         if total < 50:
             # Not enough decomposed events yet; keep defaults.
@@ -159,17 +185,9 @@ async def refresh_async(*, session: AsyncSession | None = None) -> EmpiricalCons
         # tight, real liquidity; high cancel fraction = spoofy book.
         trade_fraction = n_trade / total
 
-        # Sum-of-sizes weighted versions are more accurate than count,
-        # since one large cancel shouldn't outweigh many small trades.
-        size_q = await session.execute(
-            select(
-                func.sum(BookDeltaEvent.trade_size).label("trade_sz"),
-                func.sum(BookDeltaEvent.cancel_size).label("cancel_sz"),
-            ).where(BookDeltaEvent.observed_at >= cutoff)
-        )
-        size_row = size_q.first()
-        trade_sz = float(getattr(size_row, "trade_sz", 0) or 0)
-        cancel_sz = float(getattr(size_row, "cancel_sz", 0) or 0)
+        # Sum-of-sizes weighted versions came from the same scan.
+        trade_sz = float(getattr(row, "trade_sz", 0) or 0)
+        cancel_sz = float(getattr(row, "cancel_sz", 0) or 0)
         total_sz = trade_sz + cancel_sz
         size_trade_fraction = trade_sz / total_sz if total_sz > 0 else trade_fraction
 

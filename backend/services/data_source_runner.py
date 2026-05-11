@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import delete, desc, func, select, tuple_
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -285,19 +285,51 @@ async def _apply_retention_policy(
 
     max_records = retention_policy.get("max_records")
     if max_records is not None:
-        overflow_ids = (
-            select(DataSourceRecord.id)
+        # IMPORTANT: the prior implementation used
+        #     DELETE WHERE id IN (SELECT id ... ORDER BY ... OFFSET N)
+        # which forced Postgres to materialize and walk EVERY row past
+        # the keep-window before it could compute the id list — a 5.4s
+        # slow-execute in production soaks because the RETURNING also
+        # serializes all deleted ids back over the wire.  Switch to a
+        # keyset DELETE: find the boundary row's sort tuple at offset
+        # max_records, then DELETE anything older than that tuple in
+        # one indexed range scan.  The boundary lookup is a single
+        # index-only seek (no offset scan because it's LIMIT 1 after
+        # OFFSET, but on a 1-column return the planner can use the
+        # index directly).  No materialization, no RETURNING.
+        max_records_int = int(max_records)
+        boundary_stmt = (
+            select(
+                DataSourceRecord.observed_at,
+                DataSourceRecord.ingested_at,
+                DataSourceRecord.id,
+            )
             .where(DataSourceRecord.data_source_id == source_id)
             .order_by(
                 desc(DataSourceRecord.observed_at),
                 desc(DataSourceRecord.ingested_at),
                 desc(DataSourceRecord.id),
             )
-            .offset(int(max_records))
-            .scalar_subquery()
+            .offset(max_records_int)
+            .limit(1)
         )
-        delete_result = await session.execute(delete(DataSourceRecord).where(DataSourceRecord.id.in_(overflow_ids)))
-        max_records_deleted = int(delete_result.rowcount or 0)
+        boundary_row = (await session.execute(boundary_stmt)).first()
+        if boundary_row is not None:
+            b_observed, b_ingested, b_id = boundary_row
+            # Delete rows whose sort tuple is STRICTLY LESS than the
+            # boundary (i.e. older than the Nth row by our ordering).
+            # The boundary row itself stays.
+            delete_stmt = delete(DataSourceRecord).where(
+                DataSourceRecord.data_source_id == source_id,
+                tuple_(
+                    DataSourceRecord.observed_at,
+                    DataSourceRecord.ingested_at,
+                    DataSourceRecord.id,
+                )
+                < tuple_(b_observed, b_ingested, b_id),
+            )
+            delete_result = await session.execute(delete_stmt)
+            max_records_deleted = int(delete_result.rowcount or 0)
 
     return {
         "max_age_deleted": int(max_age_deleted),
