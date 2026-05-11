@@ -473,17 +473,23 @@ class TelonexClient:
         target_path: "os.PathLike[str] | str",
         *,
         chunk_size: int = 1 << 20,
+        follow_redirects: bool = True,
     ) -> int:
-        """Stream the bytes from a presigned URL (or any HTTP URL) to disk.
+        """Stream the bytes from a URL to disk.
 
         Writes to a sibling ``.tmp`` file and atomically renames on
         success — same pattern the parquet scanner expects, so the
         scanner never sees a half-written file.
 
-        Returns the number of bytes written.  Note that this method
-        bypasses the rate-limiter / retry loop in :meth:`_request` —
-        we trust the presigned URL (it's a one-shot S3 GET) and rely on
-        httpx's stream contextmanager for backpressure.
+        ``follow_redirects=True`` is the default because the public
+        ``/datasets/...`` endpoints return a 302 → R2/S3 presigned URL
+        and we want one call to do both hops.  Pass ``False`` only when
+        the caller has already resolved the redirect (e.g. via
+        :meth:`download_url`) and the presigned URL is the input.
+
+        Returns the number of bytes written.  Raises
+        :class:`TelonexUpstreamError` on a 4xx/5xx response after
+        redirect resolution.
         """
         import os
         from pathlib import Path
@@ -492,15 +498,27 @@ class TelonexClient:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(target.suffix + ".tmp")
 
-        # Use a dedicated httpx client for S3 fetch — the base-URL'd
+        # Use a dedicated httpx client for the fetch — the base-URL'd
         # one points at telonex.io and the auth header isn't valid for
-        # S3 (would actually break presigned URL signature validation).
+        # S3 / R2 (would actually break presigned URL signature
+        # validation).
         total = 0
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, read=300.0)) as raw:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, read=300.0),
+            follow_redirects=follow_redirects,
+        ) as raw:
             async with raw.stream("GET", url) as response:
                 if response.status_code >= 400:
                     raise TelonexUpstreamError(
-                        f"telonex presigned URL fetch failed {response.status_code} on {url[:120]}"
+                        f"telonex fetch failed {response.status_code} on {url[:120]}"
+                    )
+                # Guard against 3xx leaking through (when follow_redirects
+                # is False but the URL still redirects).  Without this
+                # the 302 body — which is empty — silently produces a
+                # 0-byte file with status 200 from the caller's view.
+                if 300 <= response.status_code < 400:
+                    raise TelonexUpstreamError(
+                        f"telonex fetch returned {response.status_code} with redirect not followed on {url[:120]}"
                     )
                 with tmp.open("wb") as f:
                     async for chunk in response.aiter_bytes(chunk_size):
