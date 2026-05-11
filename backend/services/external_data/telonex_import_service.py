@@ -7,18 +7,18 @@ downloads on the free trial).  This service:
   1. Resolves the presigned URL via :class:`TelonexClient.download_url`
   2. Streams the parquet bytes onto disk under
      ``{parquet_root}/_telonex/data/{exchange}/{channel}/{asset_key}/{date}.parquet``
-  3. Upserts a single :class:`ProviderDataset` row per (asset, channel)
-     so the existing Data Lab "Imported datasets" panel and the
-     Backtest Studio dataset picker can find it.
-  4. Persists the latest ``X-Downloads-Remaining`` count back to
+     (kept as the raw audit copy)
+  3. CONVERTS the Telonex-native schema into Homerun's ``SNAPSHOT_SCHEMA``
+     and writes the canonical file at
+     ``{parquet_root}/telonex/{coin}/{startISO}__{endISO}/snapshots__{asset_id}.parquet``
+     so the backtester's ``ParquetBookReplay`` can read it directly.
+  4. Upserts a :class:`ProviderDataset` row pointing at the CANONICAL
+     window dir with ``storage_type='parquet'`` and the REAL Polymarket
+     asset_id in ``token_ids_json`` — drives the Data Lab "Imported
+     datasets" panel + Backtest Studio dataset picker, AND is what the
+     backtester's ``find_parquet_coverage()`` filters on.
+  5. Persists the latest ``X-Downloads-Remaining`` count back to
      ``AppSettings`` so the UI quota pill stays accurate.
-
-We do *not* parse the parquet rows — Telonex's schemas differ per
-channel (trades vs quotes vs book_snapshot_5) and the existing
-parquet scanner expects Homerun's own snapshot/delta layout.  Treating
-Telonex files as opaque blobs at known storage_uris keeps this service
-shippable today; conversion to the unified microstructure schema is a
-follow-up for whoever wires the backtester reader.
 
 Concurrency notes:
   * Synchronous-from-the-caller-perspective today — downloads happen
@@ -55,7 +55,165 @@ logger = logging.getLogger(__name__)
 
 
 PROVIDER_TELONEX = "telonex"
-_STORAGE_TYPE = "telonex_parquet"
+# Legacy storage_type — kept for the audit-copy registration only.
+# The CANONICAL dataset row uses 'parquet' so the backtester's
+# ``find_parquet_coverage()`` (which exact-matches storage_type='parquet')
+# picks it up automatically.
+_STORAGE_TYPE_LEGACY = "telonex_parquet"
+_STORAGE_TYPE_CANONICAL = "parquet"
+
+
+def _infer_coin_from_slug(slug: Optional[str]) -> str:
+    """Best-effort coin extraction from a Polymarket slug.
+
+    Used to build the canonical path ``{root}/telonex/{coin}/...``.
+    The coin column on ``provider_datasets`` is also surfaced in the
+    Backtest Studio dataset picker for quick visual scanning.
+
+    Returns one of {'btc', 'eth', 'sol', 'pred'} — 'pred' is the
+    catch-all for prediction markets that aren't crypto-priced (sports,
+    politics, weather, etc.) so the dataset still ends up under a
+    stable known segment.
+    """
+    if not slug:
+        return "pred"
+    s = slug.lower()
+    if s.startswith("btc") or "bitcoin" in s or "btc-" in s:
+        return "btc"
+    if s.startswith("eth") or "ethereum" in s or "eth-" in s:
+        return "eth"
+    if s.startswith("sol") or "solana" in s or "sol-" in s:
+        return "sol"
+    return "pred"
+
+
+def _convert_book_snapshot_5_to_canonical(
+    src_file: Path,
+    *,
+    coin: str,
+) -> Optional[tuple[Path, str, int, datetime, datetime]]:
+    """Read a Telonex ``book_snapshot_5`` parquet (one day, one asset)
+    and write the equivalent in Homerun's ``SNAPSHOT_SCHEMA`` at the
+    canonical layout.
+
+    Returns ``(dest_path, real_asset_id, n_rows, span_start, span_end)``
+    or ``None`` if the file is empty / unreadable.  ``span_start`` and
+    ``span_end`` are the actual first/last timestamps in the file —
+    used by the caller to compute the dataset row's window so that
+    ``find_parquet_coverage()`` only matches backtests whose window
+    overlaps the real data span (5-minute binaries only have ~12 min
+    of data, NOT the full calendar day).
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from services.external_data.parquet_schema import (
+        SNAPSHOT_SCHEMA,
+        parquet_path_for,
+    )
+
+    try:
+        table = pq.read_table(str(src_file))
+    except Exception as exc:
+        logger.warning(
+            "telonex_import: unreadable parquet %s: %s", src_file, exc,
+        )
+        return None
+    if table.num_rows == 0:
+        return None
+
+    cols = table.to_pydict()
+    # Defensive: skip if the file isn't actually a book_snapshot_5
+    # (caller is supposed to gate on spec.channel, but make this fn
+    # idempotent against accidental mis-routing).
+    required = ("timestamp_us", "asset_id", "bid_price_0", "ask_price_0")
+    for c in required:
+        if c not in cols:
+            logger.warning(
+                "telonex_import: %s missing %s — not book_snapshot_5?",
+                src_file, c,
+            )
+            return None
+
+    real_asset_id = cols["asset_id"][0]
+    n = len(cols["timestamp_us"])
+
+    def _to_f(x: Any) -> Optional[float]:
+        """Telonex stores L2 prices/sizes as decimal strings.
+        Tolerate empties + non-numeric junk."""
+        if x is None or x == "":
+            return None
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    # Per-row L2 ladders.  Telonex emits exactly 5 levels per side; drop
+    # Nones so the float list isn't sparse (the backtester expects
+    # parallel-indexed price/size lists with no padding).
+    def _ladder(prefix: str) -> list[list[float]]:
+        out: list[list[float]] = []
+        for r in range(n):
+            row: list[float] = []
+            for i in range(5):
+                v = _to_f(cols[f"{prefix}{i}"][r])
+                if v is not None:
+                    row.append(v)
+                else:
+                    break
+            out.append(row)
+        return out
+
+    bid_p = _ladder("bid_price_")
+    bid_s = _ladder("bid_size_")
+    ask_p = _ladder("ask_price_")
+    ask_s = _ladder("ask_size_")
+
+    best_bid = [bp[0] if bp else None for bp in bid_p]
+    best_ask = [ap[0] if ap else None for ap in ask_p]
+
+    converted = pa.table(
+        {
+            "token_id":       pa.array([real_asset_id] * n, pa.string()),
+            "observed_at_us": pa.array(cols["timestamp_us"], pa.int64()),
+            "sequence":       pa.array([None] * n, pa.int64()),
+            "best_bid":       pa.array(best_bid, pa.float64()),
+            "best_ask":       pa.array(best_ask, pa.float64()),
+            "spread_bps":     pa.array([None] * n, pa.float64()),
+            "bids_price":     pa.array(bid_p, pa.list_(pa.float64())),
+            "bids_size":      pa.array(bid_s, pa.list_(pa.float64())),
+            "asks_price":     pa.array(ask_p, pa.list_(pa.float64())),
+            "asks_size":      pa.array(ask_s, pa.list_(pa.float64())),
+            "trade_price":    pa.array([None] * n, pa.float64()),
+            "trade_size":     pa.array([None] * n, pa.float64()),
+            "trade_side":     pa.array([None] * n, pa.string()),
+        },
+        schema=SNAPSHOT_SCHEMA,
+    )
+
+    # The actual data span — for 5-min binaries this is ~12 min, not
+    # the whole calendar day.  Truncate to second precision for a
+    # clean window-dir slug.
+    first_us = int(cols["timestamp_us"][0])
+    last_us = int(cols["timestamp_us"][-1])
+    span_start = datetime.fromtimestamp(first_us / 1e6, tz=timezone.utc).replace(microsecond=0)
+    span_end = datetime.fromtimestamp(last_us / 1e6, tz=timezone.utc).replace(microsecond=0)
+    if span_end <= span_start:
+        # Single-tick file → give it a 1s window so the path slug
+        # has distinct start/end timestamps.
+        span_end = span_start + timedelta(seconds=1)
+
+    dest = parquet_path_for(
+        provider=PROVIDER_TELONEX,
+        coin=coin,
+        token_id=real_asset_id,
+        start=span_start,
+        end=span_end,
+        kind="snapshots",
+    )
+    dest.window_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(converted, str(dest.file_path), compression="snappy")
+    return dest.file_path, real_asset_id, n, span_start, span_end
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -192,6 +350,11 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
     succeeded: list[str] = []
     last_remaining: Optional[int] = None
     aborted = False
+    # Filled by the conversion step.  Each entry:
+    #   (date_str, canonical_file_path, real_asset_id, n_rows, span_start, span_end)
+    # Used after the download loop to register the canonical
+    # provider_datasets row pointing at the converted files.
+    canonical_outputs: list[tuple[str, Path, str, int, datetime, datetime]] = []
     try:
         for d in days:
             target_path = target_dir / f"{d}.parquet"
@@ -238,6 +401,25 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
                 date=d, ok=True, bytes=int(result.get("bytes") or 0),
                 path=str(target_path), error=None,
             ))
+            # Convert the Telonex-native parquet → Homerun's
+            # SNAPSHOT_SCHEMA at the canonical layout so the
+            # backtester can read it directly.  Only book_snapshot_5
+            # is supported for now — other channels (trades / quotes)
+            # don't yet have a converter; they remain registered as
+            # ``telonex_parquet`` for audit-only access.
+            if spec.channel == "book_snapshot_5":
+                try:
+                    converted = _convert_book_snapshot_5_to_canonical(
+                        target_path,
+                        coin=_infer_coin_from_slug(spec.slug),
+                    )
+                    if converted is not None:
+                        canonical_outputs.append((d, *converted))
+                except Exception:
+                    logger.exception(
+                        "telonex_import: schema conversion failed for %s",
+                        target_path,
+                    )
     finally:
         # Always update the cached quota counter when we observed one,
         # even on partial failure.
@@ -251,7 +433,20 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
     dataset_id: Optional[str] = None
     storage_uri: Optional[str] = None
     if succeeded:
-        dataset_id, storage_uri = await _upsert_dataset(spec, target_dir, succeeded, total_bytes)
+        # When the converter produced canonical SNAPSHOT_SCHEMA files,
+        # register the CANONICAL dataset (storage_type='parquet') —
+        # that's what the backtester's find_parquet_coverage() picks
+        # up.  Otherwise (unsupported channel, or every conversion
+        # raised) fall back to the legacy ``telonex_parquet`` row so
+        # the audit copy still appears in the Data Lab.
+        if canonical_outputs:
+            dataset_id, storage_uri = await _register_canonical_dataset(
+                spec, canonical_outputs, total_bytes,
+            )
+        else:
+            dataset_id, storage_uri = await _upsert_dataset(
+                spec, target_dir, succeeded, total_bytes,
+            )
 
     return TelonexImportResult(
         spec=spec,
@@ -322,6 +517,122 @@ def _file_uri(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+async def _register_canonical_dataset(
+    spec: TelonexImportSpec,
+    canonical_outputs: list[tuple[str, Path, str, int, datetime, datetime]],
+    total_bytes: int,
+) -> tuple[str, str]:
+    """Register a ``ProviderDataset`` row pointing at the canonical
+    SNAPSHOT_SCHEMA parquet files the converter produced.
+
+    Key differences from the legacy ``_upsert_dataset``:
+      • ``storage_type='parquet'`` (canonical) so the backtester's
+        ``find_parquet_coverage()`` exact-match filter picks it up.
+      • ``token_ids_json`` holds the REAL Polymarket asset_id (78-char
+        decimal), NOT the synthetic ``telonex:polymarket:...`` token
+        the legacy code wrote — so the backtester's per-token routing
+        actually matches what live opportunities reference.
+      • ``storage_uri`` points at the canonical window directory
+        (which may contain Up + Down outcome files side-by-side).
+      • ``start_ts/end_ts`` reflect the actual data span (~12 min for
+        a 5-min binary), not the requested calendar-day range.
+    """
+    # All converted files for one import call land in the same
+    # window_dir (per the canonical layout).  Pull it from the first
+    # entry and trust the rest match (the converter computes the same
+    # path from the same span).
+    first_path = canonical_outputs[0][1]
+    window_dir = first_path.parent
+    storage_uri = _file_uri(window_dir)
+
+    # Real asset_ids — deduped while preserving insertion order so the
+    # Up outcome comes before Down in the typical 2-outcome import.
+    real_asset_ids: list[str] = []
+    seen: set[str] = set()
+    for _date, _path, asset_id, _n, _s, _e in canonical_outputs:
+        if asset_id not in seen:
+            real_asset_ids.append(asset_id)
+            seen.add(asset_id)
+
+    # Window: the UNION of every converted file's actual span.  For a
+    # multi-day import of an ongoing market this might span hours;
+    # for a single 5-min binary it's ~12 min.
+    span_start = min(s for _d, _p, _a, _n, s, _e in canonical_outputs)
+    span_end = max(e for _d, _p, _a, _n, _s, e in canonical_outputs)
+
+    total_rows = sum(n for _d, _p, _a, n, _s, _e in canonical_outputs)
+    dates_in_import = sorted({d for d, _p, _a, _n, _s, _e in canonical_outputs})
+
+    external_id = spec.external_id()
+    dataset_id = "telonex:" + hashlib.sha1(external_id.encode("utf-8")).hexdigest()[:16]
+
+    payload: dict[str, Any] = {
+        "exchange": spec.exchange,
+        "channel": spec.channel,
+        "asset_id": spec.asset_id,
+        "market_id": spec.market_id,
+        "slug": spec.slug,
+        "outcome": spec.outcome,
+        "outcome_id": spec.outcome_id,
+        "dates_imported": dates_in_import,
+        "last_run_bytes": int(total_bytes),
+        "canonical": True,
+        "schema_version": "snapshots_v1",
+    }
+
+    asset_class = "prediction" if spec.exchange.lower() == "polymarket" else "spot"
+    coin = _infer_coin_from_slug(spec.slug)
+
+    async with AsyncSessionLocal() as session:
+        row = (
+            await session.execute(
+                select(ProviderDataset).where(
+                    ProviderDataset.provider == PROVIDER_TELONEX,
+                    ProviderDataset.external_id == external_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = ProviderDataset(
+                id=dataset_id,
+                provider=PROVIDER_TELONEX,
+                external_id=external_id,
+                external_slug=spec.slug,
+                coin=coin,
+                title=spec.label(),
+                asset_class=asset_class,
+                token_ids_json=real_asset_ids,
+                storage_type=_STORAGE_TYPE_CANONICAL,
+                storage_uri=storage_uri,
+                start_ts=span_start,
+                end_ts=span_end,
+                snapshot_count=total_rows,
+                trade_count=0,
+                last_imported_at=datetime.now(timezone.utc),
+                payload_json=payload,
+            )
+            session.add(row)
+        else:
+            # Re-import for the same (provider, external_id): merge.
+            # Token ids replace (Up + Down are stable per market);
+            # window widens (start = min, end = max); snapshot count
+            # = sum of converted rows; payload updated.
+            row.coin = coin
+            row.title = spec.label()
+            row.asset_class = asset_class
+            row.token_ids_json = real_asset_ids
+            row.storage_type = _STORAGE_TYPE_CANONICAL
+            row.storage_uri = storage_uri
+            row.start_ts = min(row.start_ts or span_start, span_start)
+            row.end_ts = max(row.end_ts or span_end, span_end)
+            row.snapshot_count = total_rows
+            row.last_imported_at = datetime.now(timezone.utc)
+            row.payload_json = payload
+        await session.commit()
+
+    return dataset_id, storage_uri
+
+
 async def _upsert_dataset(
     spec: TelonexImportSpec,
     target_dir: Path,
@@ -387,7 +698,7 @@ async def _upsert_dataset(
                 title=spec.label(),
                 asset_class=asset_class,
                 token_ids_json=[token_id],
-                storage_type=_STORAGE_TYPE,
+                storage_type=_STORAGE_TYPE_LEGACY,
                 storage_uri=storage_uri,
                 start_ts=start_ts,
                 end_ts=end_ts,
@@ -401,7 +712,7 @@ async def _upsert_dataset(
             row.title = spec.label()
             row.asset_class = asset_class
             row.token_ids_json = [token_id]
-            row.storage_type = _STORAGE_TYPE
+            row.storage_type = _STORAGE_TYPE_LEGACY
             row.storage_uri = storage_uri
             row.start_ts = start_ts
             row.end_ts = end_ts
