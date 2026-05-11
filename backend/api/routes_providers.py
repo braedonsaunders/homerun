@@ -31,11 +31,17 @@ from services.external_data.polybacktest_client import (
     supported_coins,
 )
 from services.external_data.telonex_client import (
+    TelonexAuthError,
+    TelonexError,
     TelonexNotConfiguredError,
+    TelonexNotFoundError,
+    TelonexValidationError,
     build_client_from_settings as build_telonex_client,
+    channels_for as telonex_channels_for,
     default_base_url as telonex_default_base_url,
     supported_exchanges as telonex_supported_exchanges,
 )
+from services.external_data import telonex_import_service, telonex_markets_cache
 from utils.secrets import decrypt_secret, encrypt_secret
 from services.external_data.provider_import_service import (
     PROVIDER_POLYBACKTEST,
@@ -150,6 +156,190 @@ async def _telonex_status() -> dict[str, Any]:
         return result
     finally:
         await probe.close()
+
+
+# ---------------------------------------------------------------------------
+# Telonex — markets catalog, availability, import, quota
+# ---------------------------------------------------------------------------
+
+
+@router.get("/telonex/catalog")
+async def get_telonex_catalog_status(
+    exchange: str = Query(default="polymarket"),
+) -> dict[str, Any]:
+    """Return cache info for the local markets catalog.
+
+    The UI shows ``Last refreshed: ...`` and a "Refresh now" button
+    based on this.  The catalog is the public Telonex markets dataset
+    cached locally — does NOT count against the download quota.
+    """
+    status = telonex_markets_cache.catalog_status(exchange)
+    return {
+        "exchange": status.exchange,
+        "exists": status.exists,
+        "size_bytes": status.size_bytes,
+        "rows": status.rows,
+        "downloaded_at_epoch": status.downloaded_at_epoch,
+        "path": status.path,
+    }
+
+
+@router.post("/telonex/catalog/refresh")
+async def refresh_telonex_catalog(
+    exchange: str = Query(default="polymarket"),
+) -> dict[str, Any]:
+    """Re-download the public markets dataset.  ~660 MB for polymarket,
+    no API key required, no quota cost.  Synchronous (the FE shows a
+    loading spinner while it streams)."""
+    if exchange.lower() == "binance":
+        raise HTTPException(
+            status_code=400,
+            detail="binance has no markets dataset — type a symbol directly (e.g. btcusdt)",
+        )
+    try:
+        return await telonex_markets_cache.refresh_markets_catalog(exchange)
+    except Exception as exc:
+        logger.exception("telonex catalog refresh failed")
+        raise HTTPException(status_code=502, detail=f"refresh failed: {exc}") from exc
+
+
+@router.get("/telonex/markets")
+async def list_telonex_markets(
+    exchange: str = Query(default="polymarket"),
+    search: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    channel: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """Paginated, filtered query against the cached markets catalog.
+
+    Returns ``catalog_missing: true`` when the operator hasn't pulled
+    the catalog yet — the UI surfaces this with a "Refresh catalog"
+    call-to-action.
+    """
+    if exchange.lower() == "binance":
+        # Binance has no markets dataset.  Return an empty page so the
+        # UI shows the "type a symbol directly" fallback.
+        return {
+            "exchange": exchange,
+            "total": 0,
+            "limit": int(limit),
+            "offset": int(offset),
+            "markets": [],
+            "catalog_missing": False,
+            "no_catalog_support": True,
+        }
+    return await telonex_markets_cache.list_markets(
+        exchange=exchange,
+        search=search,
+        status=status,
+        channel=channel,
+        limit=int(limit),
+        offset=int(offset),
+    )
+
+
+@router.get("/telonex/availability/{exchange}")
+async def get_telonex_availability(
+    exchange: str,
+    asset_id: Optional[str] = Query(default=None),
+    market_id: Optional[str] = Query(default=None),
+    slug: Optional[str] = Query(default=None),
+    outcome: Optional[str] = Query(default=None),
+    outcome_id: Optional[int] = Query(default=None),
+) -> dict[str, Any]:
+    """Pass-through to ``GET /v1/availability/{exchange}`` — no auth,
+    no quota cost.  Useful for Binance (no markets catalog) and as a
+    second opinion for Polymarket assets that aren't in the operator's
+    cached catalog yet.
+    """
+    client = await build_telonex_client(require_api_key=False)
+    try:
+        return await client.availability(
+            exchange=exchange,
+            asset_id=asset_id,
+            market_id=market_id,
+            slug=slug,
+            outcome=outcome,
+            outcome_id=outcome_id,
+        )
+    except TelonexValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TelonexNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TelonexError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        await client.close()
+
+
+@router.get("/telonex/quota")
+async def get_telonex_quota() -> dict[str, Any]:
+    snap = await telonex_import_service.get_quota_snapshot()
+    return snap
+
+
+@router.get("/telonex/channels")
+async def get_telonex_channels(exchange: str = Query(default="polymarket")) -> dict[str, Any]:
+    return {"exchange": exchange, "channels": list(telonex_channels_for(exchange))}
+
+
+class TelonexImportRequest(BaseModel):
+    exchange: str = Field(default="polymarket")
+    channel: str
+    start_date: str  # YYYY-MM-DD inclusive
+    end_date: str    # YYYY-MM-DD inclusive
+    asset_id: Optional[str] = None
+    market_id: Optional[str] = None
+    slug: Optional[str] = None
+    outcome: Optional[str] = None
+    outcome_id: Optional[int] = None
+
+
+@router.post("/telonex/import")
+async def import_telonex(req: TelonexImportRequest) -> dict[str, Any]:
+    """Download every day in the range to disk + register as a
+    :class:`ProviderDataset` row.  Synchronous (one HTTP call per day,
+    sequential — keeps quota usage atomic).  Aborts on the first 403
+    but reports the partial slice that landed.
+    """
+    spec = telonex_import_service.TelonexImportSpec(
+        exchange=req.exchange,
+        channel=req.channel,
+        start_date=req.start_date,
+        end_date=req.end_date,
+        asset_id=req.asset_id,
+        market_id=req.market_id,
+        slug=req.slug,
+        outcome=req.outcome,
+        outcome_id=req.outcome_id,
+    )
+    try:
+        result = await telonex_import_service.import_range(spec)
+    except TelonexNotConfiguredError as exc:
+        raise HTTPException(status_code=412, detail=str(exc)) from exc
+    except TelonexValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TelonexError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "dataset_id": result.dataset_id,
+        "storage_uri": result.storage_uri,
+        "days_requested": result.days_requested,
+        "days_succeeded": result.days_succeeded,
+        "days_failed": result.days_failed,
+        "bytes_downloaded": result.bytes_downloaded,
+        "quota_remaining": result.quota_remaining,
+        "day_results": [
+            {
+                "date": d.date, "ok": d.ok, "bytes": d.bytes,
+                "path": d.path, "error": d.error,
+            }
+            for d in result.day_results
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

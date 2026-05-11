@@ -466,6 +466,84 @@ class TelonexClient:
             raise TelonexValidationError("exchange and dataset are required")
         return f"{self._base_url}/datasets/{ex}/{ds}"
 
+    async def stream_to_path(
+        self,
+        url: str,
+        target_path: "os.PathLike[str] | str",
+        *,
+        chunk_size: int = 1 << 20,
+    ) -> int:
+        """Stream the bytes from a presigned URL (or any HTTP URL) to disk.
+
+        Writes to a sibling ``.tmp`` file and atomically renames on
+        success — same pattern the parquet scanner expects, so the
+        scanner never sees a half-written file.
+
+        Returns the number of bytes written.  Note that this method
+        bypasses the rate-limiter / retry loop in :meth:`_request` —
+        we trust the presigned URL (it's a one-shot S3 GET) and rely on
+        httpx's stream contextmanager for backpressure.
+        """
+        import os
+        from pathlib import Path
+
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+
+        # Use a dedicated httpx client for S3 fetch — the base-URL'd
+        # one points at telonex.io and the auth header isn't valid for
+        # S3 (would actually break presigned URL signature validation).
+        total = 0
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, read=300.0)) as raw:
+            async with raw.stream("GET", url) as response:
+                if response.status_code >= 400:
+                    raise TelonexUpstreamError(
+                        f"telonex presigned URL fetch failed {response.status_code} on {url[:120]}"
+                    )
+                with tmp.open("wb") as f:
+                    async for chunk in response.aiter_bytes(chunk_size):
+                        f.write(chunk)
+                        total += len(chunk)
+        os.replace(tmp, target)
+        return total
+
+    async def download_to_path(
+        self,
+        exchange: str,
+        channel: str,
+        date: str,
+        target_path: "os.PathLike[str] | str",
+        *,
+        asset_id: Optional[str] = None,
+        market_id: Optional[str] = None,
+        slug: Optional[str] = None,
+        outcome: Optional[str] = None,
+        outcome_id: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Resolve the presigned URL then stream the parquet to disk.
+
+        Returns a dict with the bytes written + last quota header value
+        so callers can update operator-visible counters.  This is the
+        only method on the client that spends one (1) download.
+        """
+        url = await self.download_url(
+            exchange=exchange,
+            channel=channel,
+            date=date,
+            asset_id=asset_id,
+            market_id=market_id,
+            slug=slug,
+            outcome=outcome,
+            outcome_id=outcome_id,
+        )
+        bytes_written = await self.stream_to_path(url, target_path)
+        return {
+            "url": url,
+            "bytes": bytes_written,
+            "downloads_remaining": self._last_downloads_remaining,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Helpers
