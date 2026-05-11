@@ -430,12 +430,14 @@ class Settings(BaseSettings):
     BTC_ETH_HF_THIN_LIQUIDITY_USD: float = 500.0  # Below this = thin book
     # Polymarket series IDs for crypto up-or-down markets (editable in Settings).
     # 15m, 5m, hourly, and 4-hour market series are independently configurable.
+    # BTC 5m and ETH 5m default to "" (disabled) — operator-only opt-in.
+    # Known IDs: BTC 5m = 10684, ETH 5m = 10683.
     BTC_ETH_HF_SERIES_BTC_15M: str = "10192"
     BTC_ETH_HF_SERIES_ETH_15M: str = "10191"
     BTC_ETH_HF_SERIES_SOL_15M: str = "10423"
     BTC_ETH_HF_SERIES_XRP_15M: str = "10422"
-    BTC_ETH_HF_SERIES_BTC_5M: str = "10684"
-    BTC_ETH_HF_SERIES_ETH_5M: str = "10683"
+    BTC_ETH_HF_SERIES_BTC_5M: str = ""
+    BTC_ETH_HF_SERIES_ETH_5M: str = ""
     BTC_ETH_HF_SERIES_SOL_5M: str = "10686"
     BTC_ETH_HF_SERIES_XRP_5M: str = "10685"
     BTC_ETH_HF_SERIES_BTC_1H: str = "10114"

@@ -125,6 +125,64 @@ def _event(slug: str, end_date: str) -> dict:
     }
 
 
+def test_get_series_configs_skips_empty_btc_eth_5m_defaults(monkeypatch):
+    """Plan 0038: BTC 5m and ETH 5m must default to "" so the
+    crypto lane never fetches them unless the operator explicitly
+    opts in via Settings. SOL 5m and XRP 5m remain enabled (the
+    crypto_5m_midcycle trader's active assets), and the other 12
+    series across 15m/1h/4h keep their hard-coded defaults."""
+    from config import settings as _settings
+
+    # Mimic a fresh install: no DB row, so the Settings class
+    # attributes are the live runtime values.
+    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_BTC_5M", "")
+    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_ETH_5M", "")
+    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_SOL_5M", "10686")
+    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_XRP_5M", "10685")
+
+    series = crypto_service._get_series_configs()
+    five_min = [(sid, asset) for sid, asset, tf in series if tf == "5min"]
+
+    assert ("10686", "SOL") in five_min
+    assert ("10685", "XRP") in five_min
+    # Empty BTC and ETH entries are present in the raw config but
+    # filtered out at the fetch boundary — see _fetch_all() below.
+    btc_eth_5m = [(sid, asset) for sid, asset in five_min if asset in {"BTC", "ETH"}]
+    assert all(not sid.strip() for sid, _ in btc_eth_5m), (
+        f"BTC 5m and ETH 5m must default to blank; got {btc_eth_5m}"
+    )
+
+    # 15m / 1h / 4h series are unchanged.
+    fifteen = [(sid, asset) for sid, asset, tf in series if tf == "15min"]
+    assert ("10192", "BTC") in fifteen
+    assert ("10191", "ETH") in fifteen
+
+
+def test_fetch_all_drops_blank_series_ids(monkeypatch):
+    """Even when _get_series_configs returns blank BTC/ETH 5m rows
+    (because the operator cleared them in Settings), _fetch_all
+    must not call Gamma /events for them. The crypto_service filter
+    at line 608 enforces this."""
+    fake_events = [_event("sol-updown-5m-test", "2099-01-01T00:05:00Z")]
+    fake_client = _FakeClient(fake_events)
+    monkeypatch.setattr(crypto_service, "_get_shared_sync_client", lambda: fake_client)
+    monkeypatch.setattr(crypto_service, "_get_series_configs", lambda: [
+        ("", "BTC", "5min"),
+        ("", "ETH", "5min"),
+        ("10686", "SOL", "5min"),
+        ("10685", "XRP", "5min"),
+    ])
+
+    svc = crypto_service.CryptoService(gamma_url="https://gamma-api.polymarket.com")
+    svc._fetch_all()
+
+    series_params = [params.get("series_id") for url, params in fake_client.calls if url.endswith("/events")]
+    assert "10686" in series_params
+    assert "10685" in series_params
+    assert "" not in series_params
+    assert all(sid not in series_params for sid in ("10684", "10683"))
+
+
 def test_fetch_all_requests_events_sorted_by_latest_end_date(monkeypatch):
     fake_events = [_event("btc-updown-5m-test", "2099-01-01T00:05:00Z")]
     fake_client = _FakeClient(fake_events)
