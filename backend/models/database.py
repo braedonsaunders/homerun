@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session as _SyncSessionForEvents
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.types import TypeDecorator, DateTime as SADateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager as _asynccontextmanager
@@ -1372,7 +1373,7 @@ class AppSettings(Base):
     # HOMERUN_PARQUET_ROOT env var is no longer consulted — operators
     # configure roots exclusively from Data Lab → Providers → Parquet.
     # See services/external_data/parquet_schema.parquet_roots().
-    parquet_root_overrides = Column(JSON, nullable=True)
+    parquet_root_overrides = Column(JSONB, nullable=True)
 
     # Strategy reverse-engineer agent — UI-tunable defaults.  Null
     # values fall back to service-level constants.  The default *model*
