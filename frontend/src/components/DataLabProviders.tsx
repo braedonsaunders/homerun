@@ -47,12 +47,19 @@ import {
   getParquetRoot,
   setParquetRoot,
   getProviderSettings,
+  getTelonexAvailability,
+  getTelonexCatalogStatus,
+  getTelonexChannels,
+  getTelonexQuota,
   importPolybacktest,
+  importTelonex,
   listImportJobs,
   listParquetDatasets,
   listPolybacktestMarkets,
   listProviderDatasets,
   listProviders,
+  listTelonexMarkets,
+  refreshTelonexCatalog,
   rescanParquetRoot,
   updateProviderSettings,
   type ImportJob,
@@ -63,6 +70,13 @@ import {
   type ProviderDataset,
   type ProviderInfo,
   type ProviderSettings,
+  type TelonexAvailability,
+  type TelonexCatalogStatus,
+  type TelonexImportRequest,
+  type TelonexImportResponse,
+  type TelonexMarket,
+  type TelonexMarketsPage,
+  type TelonexQuota,
 } from '../services/apiProviders'
 import {
   listRecordingSessions,
@@ -264,16 +278,652 @@ function TelonexSection({ provider }: { provider: ProviderInfo }) {
 
       <TelonexSettingsCard />
 
-      <div className="rounded-md border border-dashed border-border/40 bg-card/20 p-4 text-[11px] text-muted-foreground">
-        <div className="font-semibold mb-1 text-foreground">Coming soon</div>
-        <p>
-          Market browser + historical import for Polymarket (trades, quotes,
-          L2 book snapshots, on-chain fills) and Binance (trades, quotes,
-          book snapshots) land here next. Free-trial downloads are capped at
-          5 total — we'll surface remaining quota inline once a download has
-          run.
-        </p>
+      {provider.configured ? (
+        <>
+          <TelonexImportPanel />
+          <TelonexDatasetsPanel />
+        </>
+      ) : (
+        <div className="rounded-md border border-dashed border-border/40 bg-card/20 p-4 text-[11px] text-muted-foreground">
+          Save your API key above to unlock the market browser + import panel below.
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ─── Telonex quota pill ──────────────────────────────────────────────
+
+function TelonexQuotaPill() {
+  const quotaQuery = useQuery({
+    queryKey: ['providers', 'telonex', 'quota'],
+    queryFn: getTelonexQuota,
+    staleTime: 10_000,
+  })
+  const q: TelonexQuota | undefined = quotaQuery.data
+  const remaining = q?.remaining
+  if (remaining == null) {
+    return (
+      <Badge variant="outline" className="text-[10px]">
+        Quota: unknown — runs once you import
+      </Badge>
+    )
+  }
+  const tone =
+    remaining <= 0 ? 'border-rose-500/40 text-rose-700 dark:text-rose-300'
+      : remaining <= 2 ? 'border-amber-500/40 text-amber-700 dark:text-amber-300'
+      : 'border-emerald-500/40 text-emerald-700 dark:text-emerald-300'
+  return (
+    <Badge variant="outline" className={cn('text-[10px]', tone)}>
+      Downloads remaining: {remaining}
+    </Badge>
+  )
+}
+
+
+// ─── Telonex import panel (market browser + import form) ─────────────
+
+const TELONEX_EXCHANGES = ['polymarket', 'binance'] as const
+type TelonexExchange = (typeof TELONEX_EXCHANGES)[number]
+
+const TELONEX_CHANNELS_BY_EXCHANGE: Record<TelonexExchange, string[]> = {
+  polymarket: [
+    'trades',
+    'quotes',
+    'book_snapshot_5',
+    'book_snapshot_25',
+    'book_snapshot_full',
+    'onchain_fills',
+  ],
+  binance: ['trades', 'quotes', 'book_snapshot_5', 'book_snapshot_25'],
+}
+
+function _fmtRelativeTime(epochSeconds: number | null | undefined): string {
+  if (!epochSeconds) return '—'
+  const ms = Date.now() - epochSeconds * 1000
+  if (ms < 60_000) return 'just now'
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`
+  return `${Math.floor(ms / 86_400_000)}d ago`
+}
+
+function _fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function _daysBetween(start: string, end: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return 0
+  const s = new Date(start + 'T00:00:00Z').getTime()
+  const e = new Date(end + 'T00:00:00Z').getTime()
+  if (Number.isNaN(s) || Number.isNaN(e) || e < s) return 0
+  return Math.floor((e - s) / 86_400_000) + 1
+}
+
+function _clipDate(value: string | null | undefined): string {
+  if (!value) return ''
+  // Telonex returns either YYYY-MM-DD or ISO timestamps; keep just the day.
+  return value.slice(0, 10)
+}
+
+function TelonexImportPanel() {
+  const queryClient = useQueryClient()
+  const [exchange, setExchange] = useState<TelonexExchange>('polymarket')
+  const [search, setSearch] = useState('')
+  const [appliedSearch, setAppliedSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [channelFilter, setChannelFilter] = useState<string>('all')
+
+  // Selected asset state.  Two paths:
+  //   - polymarket: pick a market row + outcome
+  //   - binance: type a symbol directly
+  const [selectedMarket, setSelectedMarket] = useState<TelonexMarket | null>(null)
+  const [selectedOutcomeIdx, setSelectedOutcomeIdx] = useState<number>(0)
+  const [binanceSymbol, setBinanceSymbol] = useState<string>('')
+
+  // Import params
+  const [channel, setChannel] = useState<string>('trades')
+  const [startDate, setStartDate] = useState<string>('')
+  const [endDate, setEndDate] = useState<string>('')
+
+  // Reset asset selection when switching exchange.
+  useEffect(() => {
+    setSelectedMarket(null)
+    setSelectedOutcomeIdx(0)
+    setBinanceSymbol('')
+    setStartDate(''); setEndDate('')
+    setChannel(TELONEX_CHANNELS_BY_EXCHANGE[exchange][0] || 'trades')
+  }, [exchange])
+
+  const catalogQuery = useQuery({
+    queryKey: ['providers', 'telonex', 'catalog', exchange],
+    queryFn: () => getTelonexCatalogStatus(exchange),
+    staleTime: 30_000,
+    enabled: exchange === 'polymarket',
+  })
+
+  const refreshCatalogMutation = useMutation({
+    mutationFn: () => refreshTelonexCatalog(exchange),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers', 'telonex', 'catalog'] })
+      queryClient.invalidateQueries({ queryKey: ['providers', 'telonex', 'markets'] })
+    },
+  })
+
+  const marketsQuery = useQuery({
+    queryKey: ['providers', 'telonex', 'markets', exchange, appliedSearch, statusFilter, channelFilter],
+    queryFn: () =>
+      listTelonexMarkets({
+        exchange,
+        search: appliedSearch || undefined,
+        status: statusFilter === 'all' ? undefined : statusFilter,
+        channel: channelFilter === 'all' ? undefined : channelFilter,
+        limit: 100,
+      }),
+    enabled: exchange === 'polymarket' && (catalogQuery.data?.exists ?? false),
+    staleTime: 60_000,
+  })
+  const marketsPage: TelonexMarketsPage | undefined = marketsQuery.data
+
+  // For binance we fetch availability on-demand because there's no
+  // markets catalog to consult.
+  const binanceAvailabilityQuery = useQuery<TelonexAvailability>({
+    queryKey: ['providers', 'telonex', 'availability', 'binance', binanceSymbol],
+    queryFn: () => getTelonexAvailability({ exchange: 'binance', slug: binanceSymbol.trim().toLowerCase() }),
+    enabled: exchange === 'binance' && binanceSymbol.trim().length > 0,
+    retry: false,
+    staleTime: 60_000,
+  })
+
+  // Derive the channel windows for the active asset.
+  const activeChannels: { [channel: string]: { from_date: string | null; to_date: string | null } } = (() => {
+    if (exchange === 'polymarket') {
+      return selectedMarket?.channels ?? {}
+    }
+    return binanceAvailabilityQuery.data?.channels ?? {}
+  })()
+
+  const channelWindow = activeChannels[channel]
+  const channelStart = _clipDate(channelWindow?.from_date)
+  const channelEnd = _clipDate(channelWindow?.to_date)
+
+  // Auto-fill date range to the channel's full window the first time
+  // the operator picks a (market, channel) combo.
+  useEffect(() => {
+    if (channelStart && !startDate) setStartDate(channelStart)
+    if (channelEnd && !endDate) setEndDate(channelEnd)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelStart, channelEnd, selectedMarket?.market_id, binanceSymbol, channel])
+
+  // Auto-clip when the channel changes and previously-set dates fall outside.
+  useEffect(() => {
+    if (channelStart && startDate && startDate < channelStart) setStartDate(channelStart)
+    if (channelEnd && endDate && endDate > channelEnd) setEndDate(channelEnd)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel, channelStart, channelEnd])
+
+  const importMutation = useMutation({
+    mutationFn: (req: TelonexImportRequest) => importTelonex(req),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers', 'telonex', 'quota'] })
+      queryClient.invalidateQueries({ queryKey: ['providers', 'telonex', 'datasets'] })
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+    },
+  })
+
+  const daysSelected = _daysBetween(startDate, endDate)
+
+  const canImport = (() => {
+    if (!channel || !startDate || !endDate) return false
+    if (daysSelected <= 0) return false
+    if (exchange === 'polymarket') {
+      if (!selectedMarket) return false
+      const outcome = selectedMarket.outcomes[selectedOutcomeIdx]
+      if (!outcome) return false
+      return !!(outcome.asset_id || selectedMarket.slug)
+    }
+    return binanceSymbol.trim().length > 0
+  })()
+
+  const buildImportRequest = (): TelonexImportRequest | null => {
+    if (!canImport) return null
+    if (exchange === 'polymarket' && selectedMarket) {
+      const o = selectedMarket.outcomes[selectedOutcomeIdx]
+      const req: TelonexImportRequest = {
+        exchange: 'polymarket',
+        channel,
+        start_date: startDate,
+        end_date: endDate,
+      }
+      // Asset ID is most precise — use it when present.
+      if (o?.asset_id) req.asset_id = o.asset_id
+      else if (selectedMarket.slug) {
+        req.slug = selectedMarket.slug
+        req.outcome = o?.label ?? undefined
+      }
+      return req
+    }
+    return {
+      exchange: 'binance',
+      channel,
+      start_date: startDate,
+      end_date: endDate,
+      slug: binanceSymbol.trim().toLowerCase(),
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-border/40 bg-card/40 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold flex items-center gap-2">
+          <Download className="h-3.5 w-3.5 text-violet-400" />
+          Import historical data
+        </div>
+        <TelonexQuotaPill />
       </div>
+
+      {/* Exchange + catalog controls */}
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div>
+          <Label className="text-[10px] uppercase text-muted-foreground">Exchange</Label>
+          <Select value={exchange} onValueChange={(v) => setExchange(v as TelonexExchange)}>
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {TELONEX_EXCHANGES.map((ex) => (
+                <SelectItem key={ex} value={ex} className="text-xs">{ex}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-[10px] uppercase text-muted-foreground">Channel</Label>
+          <Select value={channel} onValueChange={setChannel}>
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {TELONEX_CHANNELS_BY_EXCHANGE[exchange].map((ch) => {
+                const hasData = !!activeChannels[ch]
+                return (
+                  <SelectItem key={ch} value={ch} className="text-xs">
+                    {ch}{hasData ? '' : ' (no data)'}
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Polymarket: markets browser */}
+      {exchange === 'polymarket' ? (
+        <div className="mt-3 space-y-2">
+          {catalogQuery.data?.exists ? (
+            <div className="flex items-center justify-between gap-2 rounded-sm border border-border/30 bg-background/40 p-2 text-[10px]">
+              <div>
+                Catalog: <span className="font-mono">{(catalogQuery.data.rows ?? 0).toLocaleString()}</span> markets · refreshed{' '}
+                <span className="font-mono">{_fmtRelativeTime(catalogQuery.data.downloaded_at_epoch)}</span>
+              </div>
+              <Button
+                size="sm" variant="ghost" className="h-6 text-[10px]"
+                disabled={refreshCatalogMutation.isPending}
+                onClick={() => refreshCatalogMutation.mutate()}
+                title="Re-download the public markets dataset (free, no quota cost)"
+              >
+                {refreshCatalogMutation.isPending ? (
+                  <><Loader2 className="h-3 w-3 mr-1 animate-spin" /> Refreshing…</>
+                ) : (
+                  'Refresh'
+                )}
+              </Button>
+            </div>
+          ) : (
+            <div className="rounded-sm border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-200 flex items-center justify-between gap-2">
+              <span>
+                Markets catalog not downloaded yet. ~660 MB one-time fetch from Telonex's public
+                dataset endpoint — no quota cost.
+              </span>
+              <Button
+                size="sm" className="h-7 text-[11px]"
+                disabled={refreshCatalogMutation.isPending}
+                onClick={() => refreshCatalogMutation.mutate()}
+              >
+                {refreshCatalogMutation.isPending ? (
+                  <><Loader2 className="h-3 w-3 mr-1 animate-spin" /> Downloading…</>
+                ) : (
+                  'Download catalog'
+                )}
+              </Button>
+            </div>
+          )}
+
+          {/* Search + filter */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="col-span-2 flex items-center gap-1">
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') setAppliedSearch(search) }}
+                placeholder="Search slug, question, event title…"
+                className="h-8 text-xs"
+              />
+              <Button
+                size="sm" variant="outline" className="h-8 gap-1 text-[10px]"
+                onClick={() => setAppliedSearch(search)}
+                disabled={!catalogQuery.data?.exists}
+              >
+                <Search className="h-3 w-3" /> Search
+              </Button>
+            </div>
+            <div>
+              <Label className="text-[10px] uppercase text-muted-foreground">Status</Label>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">All</SelectItem>
+                  <SelectItem value="resolved" className="text-xs">resolved</SelectItem>
+                  <SelectItem value="active" className="text-xs">active</SelectItem>
+                  <SelectItem value="closed" className="text-xs">closed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-[10px] uppercase text-muted-foreground">Has data for</Label>
+              <Select value={channelFilter} onValueChange={setChannelFilter}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">Any channel</SelectItem>
+                  {TELONEX_CHANNELS_BY_EXCHANGE.polymarket.map((ch) => (
+                    <SelectItem key={ch} value={ch} className="text-xs">{ch}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Markets list */}
+          <ScrollArea className="h-56 rounded-sm border border-border/30 bg-background/40">
+            {marketsQuery.isLoading ? (
+              <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
+                <Loader2 className="mr-2 h-3 w-3 animate-spin" /> Loading…
+              </div>
+            ) : marketsPage?.catalog_missing ? (
+              <div className="p-3 text-[11px] text-muted-foreground">Download the catalog above first.</div>
+            ) : marketsQuery.isError ? (
+              <div className="p-3 text-[11px] text-rose-700 dark:text-rose-300">
+                {String((marketsQuery.error as Error)?.message || 'Failed to load')}
+              </div>
+            ) : (marketsPage?.markets.length ?? 0) === 0 ? (
+              <div className="p-3 text-[11px] text-muted-foreground">No markets found.</div>
+            ) : (
+              <div className="divide-y divide-border/20">
+                {marketsPage!.markets.map((m) => {
+                  const isSel = selectedMarket?.market_id === m.market_id && selectedMarket?.slug === m.slug
+                  return (
+                    <button
+                      key={`${m.market_id}_${m.slug}`}
+                      type="button"
+                      onClick={() => { setSelectedMarket(m); setSelectedOutcomeIdx(0) }}
+                      className={cn(
+                        'block w-full px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-card/40',
+                        isSel && 'bg-violet-500/10',
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input type="radio" checked={isSel} readOnly className="h-3 w-3 accent-violet-500" />
+                        <span className="flex-1 truncate font-medium">{m.question || m.slug || m.market_id}</span>
+                        {m.status ? (
+                          <Badge variant="outline" className="text-[9px]">{m.status}</Badge>
+                        ) : null}
+                      </div>
+                      <div className="ml-5 flex items-center gap-2 text-[10px] text-muted-foreground">
+                        <span className="font-mono truncate max-w-[200px]">{m.slug || m.market_id}</span>
+                        {m.category ? <span>· {m.category}</span> : null}
+                        {m.end_date ? <span>· ends {m.end_date.slice(0, 10)}</span> : null}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </ScrollArea>
+
+          {marketsPage && marketsPage.total > marketsPage.markets.length ? (
+            <div className="text-[10px] text-muted-foreground text-center">
+              Showing {marketsPage.markets.length} of {marketsPage.total.toLocaleString()} — refine search to narrow
+            </div>
+          ) : null}
+
+          {/* Outcome picker (polymarket only) */}
+          {selectedMarket ? (
+            <div>
+              <Label className="text-[10px] uppercase text-muted-foreground">Outcome</Label>
+              <Select value={String(selectedOutcomeIdx)} onValueChange={(v) => setSelectedOutcomeIdx(parseInt(v, 10))}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {selectedMarket.outcomes.map((o, i) => (
+                    <SelectItem key={i} value={String(i)} className="text-xs">
+                      {o.label || `outcome_${i}`}{o.asset_id ? ` · ${o.asset_id.slice(0, 10)}…` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        // Binance: symbol input + on-demand availability lookup
+        <div className="mt-3 space-y-2">
+          <div>
+            <Label className="text-[10px] uppercase text-muted-foreground">Symbol (lowercase, e.g. btcusdt)</Label>
+            <Input
+              value={binanceSymbol}
+              onChange={(e) => setBinanceSymbol(e.target.value.toLowerCase())}
+              placeholder="btcusdt"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+          {binanceSymbol.trim().length > 0 ? (
+            binanceAvailabilityQuery.isLoading ? (
+              <div className="rounded-sm border border-border/30 bg-background/40 p-2 text-[11px] text-muted-foreground">
+                <Loader2 className="inline h-3 w-3 mr-1 animate-spin" /> Looking up availability…
+              </div>
+            ) : binanceAvailabilityQuery.isError ? (
+              <div className="rounded-sm border border-rose-500/30 bg-rose-500/5 p-2 text-[11px] text-rose-700 dark:text-rose-300">
+                {String((binanceAvailabilityQuery.error as Error)?.message || 'No data for this symbol')}
+              </div>
+            ) : binanceAvailabilityQuery.data ? (
+              <div className="rounded-sm border border-border/30 bg-background/40 p-2 text-[10px]">
+                <div className="font-semibold text-foreground mb-1">Channels with data:</div>
+                {Object.entries(binanceAvailabilityQuery.data.channels).map(([ch, w]) => (
+                  <div key={ch} className="flex items-center gap-2 text-muted-foreground">
+                    <span className="font-mono">{ch}</span>
+                    <span>{w.from_date} → {w.to_date}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null
+          ) : null}
+        </div>
+      )}
+
+      {/* Channel window info + date pickers */}
+      {(exchange === 'polymarket' ? selectedMarket : binanceSymbol.trim().length > 0) && channelWindow ? (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="col-span-2 text-[10px] text-muted-foreground">
+            <span className="font-semibold text-foreground">{channel}</span> available from{' '}
+            <span className="font-mono">{channelStart || '?'}</span> to{' '}
+            <span className="font-mono">{channelEnd || '?'}</span>
+          </div>
+          <div>
+            <Label className="text-[10px] uppercase text-muted-foreground">Start date</Label>
+            <Input
+              type="date" value={startDate}
+              min={channelStart || undefined} max={channelEnd || undefined}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+          <div>
+            <Label className="text-[10px] uppercase text-muted-foreground">End date</Label>
+            <Input
+              type="date" value={endDate}
+              min={channelStart || undefined} max={channelEnd || undefined}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+        </div>
+      ) : (exchange === 'polymarket' ? selectedMarket : binanceSymbol.trim().length > 0) ? (
+        <div className="mt-3 rounded-sm border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-200">
+          No <span className="font-mono">{channel}</span> data for this asset. Pick a different channel.
+        </div>
+      ) : null}
+
+      {/* Import action */}
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span className="text-[10px] text-muted-foreground">
+          {canImport ? (
+            <>This will cost <span className="font-mono">{daysSelected}</span> download{daysSelected === 1 ? '' : 's'}.</>
+          ) : (
+            <>Pick an asset, channel, and date range to import.</>
+          )}
+        </span>
+        <Button
+          size="sm" className="h-8 gap-1.5 text-[11px]"
+          disabled={!canImport || importMutation.isPending}
+          onClick={() => {
+            const req = buildImportRequest()
+            if (req) importMutation.mutate(req)
+          }}
+        >
+          {importMutation.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Download className="h-3 w-3" />
+          )}
+          Import {daysSelected > 0 ? `(${daysSelected}d)` : ''}
+        </Button>
+      </div>
+
+      {/* Import result panel */}
+      {importMutation.data ? (
+        <TelonexImportResultPanel result={importMutation.data} />
+      ) : null}
+      {importMutation.isError ? (
+        <div className="mt-2 rounded-sm border border-rose-500/30 bg-rose-500/5 p-2 text-[10px] text-rose-700 dark:text-rose-300">
+          {(importMutation.error as Error)?.message || 'Import failed'}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+
+function TelonexImportResultPanel({ result }: { result: TelonexImportResponse }) {
+  const failed = result.day_results.filter((d) => !d.ok)
+  const hasFailures = failed.length > 0
+  return (
+    <div className="mt-2 rounded-sm border border-border/30 bg-background/40 p-2 text-[10px]">
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-semibold text-foreground text-[11px]">Import complete</div>
+        {result.quota_remaining != null ? (
+          <Badge variant="outline" className="text-[10px]">{result.quota_remaining} downloads left</Badge>
+        ) : null}
+      </div>
+      <div className="mt-1 text-muted-foreground">
+        {result.days_succeeded}/{result.days_requested} days · {_fmtBytes(result.bytes_downloaded)}
+        {result.storage_uri ? (
+          <>
+            {' '}· <span className="font-mono">{result.storage_uri}</span>
+          </>
+        ) : null}
+      </div>
+      {hasFailures ? (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-rose-700 dark:text-rose-300">
+            {failed.length} day{failed.length === 1 ? '' : 's'} failed
+          </summary>
+          <ul className="mt-1 ml-3 list-disc">
+            {failed.slice(0, 8).map((d) => (
+              <li key={d.date}>
+                <span className="font-mono">{d.date}</span>: {d.error || 'unknown error'}
+              </li>
+            ))}
+            {failed.length > 8 ? <li>…and {failed.length - 8} more</li> : null}
+          </ul>
+        </details>
+      ) : null}
+    </div>
+  )
+}
+
+
+// ─── Imported Telonex datasets (catalog rows) ────────────────────────
+
+function TelonexDatasetsPanel() {
+  const queryClient = useQueryClient()
+  const datasetsQuery = useQuery({
+    queryKey: ['providers', 'telonex', 'datasets'],
+    queryFn: () => listProviderDatasets({ provider: 'telonex', limit: 200 }),
+    staleTime: 30_000,
+  })
+  const datasets: ProviderDataset[] = datasetsQuery.data ?? []
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteProviderDataset(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers', 'telonex', 'datasets'] })
+    },
+  })
+  if (datasetsQuery.isLoading) {
+    return (
+      <div className="rounded-md border border-border/40 bg-card/40 p-3 text-[11px] text-muted-foreground">
+        <Loader2 className="inline h-3 w-3 mr-1 animate-spin" /> Loading imported datasets…
+      </div>
+    )
+  }
+  return (
+    <div className="rounded-md border border-border/40 bg-card/40 p-3">
+      <div className="text-xs font-semibold flex items-center gap-2">
+        <Database className="h-3.5 w-3.5 text-violet-400" />
+        Imported Telonex datasets
+        <Badge variant="outline" className="text-[10px]">{datasets.length}</Badge>
+      </div>
+      {datasets.length === 0 ? (
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          No datasets imported yet. Pick an asset above and click <strong>Import</strong>.
+        </p>
+      ) : (
+        <div className="mt-2 divide-y divide-border/20">
+          {datasets.map((d) => (
+            <div key={d.id} className="flex items-center gap-2 py-1.5 text-[11px]">
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium">{d.title || d.external_id}</div>
+                <div className="text-[10px] text-muted-foreground font-mono truncate">
+                  {d.start_ts?.slice(0, 10)} → {d.end_ts?.slice(0, 10)} · {d.snapshot_count} files
+                </div>
+                {d.storage_uri ? (
+                  <div className="text-[9px] text-muted-foreground font-mono truncate" title={d.storage_uri}>
+                    {d.storage_uri}
+                  </div>
+                ) : null}
+              </div>
+              <Button
+                size="sm" variant="ghost" className="h-7 w-7 p-0 text-rose-500 hover:text-rose-600"
+                onClick={() => {
+                  if (window.confirm(`Delete dataset "${d.title || d.external_id}"? Files on disk are kept.`)) {
+                    deleteMutation.mutate(d.id)
+                  }
+                }}
+                title="Delete catalog entry"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

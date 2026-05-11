@@ -311,3 +311,170 @@ export async function setParquetRoot(root: string): Promise<ParquetRoot> {
   const { data } = await api.put<ParquetRoot>('/providers/parquet/root', { root })
   return data
 }
+
+
+// ─── Telonex (markets catalog, availability, import, quota) ──────────
+
+export interface TelonexCatalogStatus {
+  exchange: string
+  exists: boolean
+  size_bytes: number
+  rows: number | null
+  downloaded_at_epoch: number | null
+  path: string
+}
+
+export interface TelonexMarketOutcome {
+  label: string | null
+  asset_id: string | null
+}
+
+export interface TelonexMarketChannels {
+  [channel: string]: {
+    from_date: string | null
+    to_date: string | null
+  }
+}
+
+export interface TelonexMarket {
+  market_id: string | null
+  slug: string | null
+  event_id: string | null
+  event_slug: string | null
+  event_title: string | null
+  question: string | null
+  category: string | null
+  outcomes: TelonexMarketOutcome[]
+  status: string | null
+  start_date: string | null
+  end_date: string | null
+  settled_at: string | null
+  tags: string[]
+  channels: TelonexMarketChannels
+}
+
+export interface TelonexMarketsPage {
+  exchange: string
+  total: number
+  limit: number
+  offset: number
+  markets: TelonexMarket[]
+  catalog_missing?: boolean
+  no_catalog_support?: boolean
+}
+
+export interface TelonexAvailability {
+  exchange: string
+  asset_id: string
+  market_id: string | null
+  slug: string | null
+  outcome: string | null
+  outcome_id: number | null
+  channels: { [channel: string]: { from_date: string; to_date: string } }
+}
+
+export interface TelonexQuota {
+  remaining: number | null
+  checked_at: string | null
+}
+
+export interface TelonexDayResult {
+  date: string
+  ok: boolean
+  bytes: number
+  path: string | null
+  error: string | null
+}
+
+export interface TelonexImportResponse {
+  dataset_id: string | null
+  storage_uri: string | null
+  days_requested: number
+  days_succeeded: number
+  days_failed: number
+  bytes_downloaded: number
+  quota_remaining: number | null
+  day_results: TelonexDayResult[]
+}
+
+export interface TelonexImportRequest {
+  exchange: string
+  channel: string
+  start_date: string
+  end_date: string
+  asset_id?: string | null
+  market_id?: string | null
+  slug?: string | null
+  outcome?: string | null
+  outcome_id?: number | null
+}
+
+export async function getTelonexCatalogStatus(exchange = 'polymarket'): Promise<TelonexCatalogStatus> {
+  const { data } = await api.get<TelonexCatalogStatus>('/providers/telonex/catalog', { params: { exchange } })
+  return data
+}
+
+export async function refreshTelonexCatalog(exchange = 'polymarket'): Promise<{
+  ok: boolean
+  exchange: string
+  path: string
+  bytes: number
+  rows: number | null
+  elapsed_seconds: number
+}> {
+  // The catalog parquet is ~660MB — give the request a long timeout.
+  const { data } = await api.post(
+    '/providers/telonex/catalog/refresh',
+    null,
+    { params: { exchange }, timeout: 600_000 },
+  )
+  return data
+}
+
+export async function listTelonexMarkets(params: {
+  exchange?: string
+  search?: string
+  status?: string
+  channel?: string
+  limit?: number
+  offset?: number
+}): Promise<TelonexMarketsPage> {
+  const { data } = await api.get<TelonexMarketsPage>('/providers/telonex/markets', { params })
+  return data
+}
+
+export async function getTelonexAvailability(params: {
+  exchange: string
+  asset_id?: string
+  market_id?: string
+  slug?: string
+  outcome?: string
+  outcome_id?: number
+}): Promise<TelonexAvailability> {
+  const { exchange, ...rest } = params
+  const { data } = await api.get<TelonexAvailability>(
+    `/providers/telonex/availability/${encodeURIComponent(exchange)}`,
+    { params: rest },
+  )
+  return data
+}
+
+export async function getTelonexChannels(exchange = 'polymarket'): Promise<{ exchange: string; channels: string[] }> {
+  const { data } = await api.get('/providers/telonex/channels', { params: { exchange } })
+  return data
+}
+
+export async function getTelonexQuota(): Promise<TelonexQuota> {
+  const { data } = await api.get<TelonexQuota>('/providers/telonex/quota')
+  return data
+}
+
+export async function importTelonex(req: TelonexImportRequest): Promise<TelonexImportResponse> {
+  // Single-day = single HTTP call inside the backend, but a range can
+  // be N sequential downloads.  Generous timeout — most days are well
+  // under 100MB each so 30s/day is conservative.
+  const { data } = await api.post<TelonexImportResponse>('/providers/telonex/import', req, {
+    timeout: 600_000,
+  })
+  return data
+}

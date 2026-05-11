@@ -1359,6 +1359,12 @@ class AppSettings(Base):
 
     telonex_api_key = Column(String, nullable=True)
     telonex_base_url = Column(String, nullable=True)
+    # Last X-Downloads-Remaining value seen on a Telonex response.  We
+    # cache this so the UI can show free-tier operators their remaining
+    # quota without making a fresh request.  Stale by design — refreshed
+    # opportunistically whenever any Telonex call returns the header.
+    telonex_downloads_remaining = Column(Integer, nullable=True)
+    telonex_downloads_remaining_at = Column(DateTime, nullable=True)
 
     # Parquet ingest storage root — UI-editable so operators don't have
     # to set HOMERUN_PARQUET_ROOT and restart.  Resolution order:
