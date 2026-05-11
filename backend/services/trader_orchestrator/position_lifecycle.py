@@ -864,6 +864,15 @@ async def _prepare_sell_allowance_bounded(token_id: str) -> bool:
     """
     if not token_id:
         return False
+    # 2026-05-10: surface long-but-not-timed-out calls so the next
+    # capture can attribute ``reconcile_live_positions processing=10s``
+    # to specific tokens.  This function is called 5+ places in the
+    # per-candidate loop and goes through ``_client_io_lock`` (the
+    # documented "30+ s offender" in ``live_execution_service``); a
+    # single stuck candidate making 3-4 of these calls under SDK lock
+    # contention can stack into the 7-10s per-iteration slowness
+    # observed for ``dcec142b`` in the 2026-05-10 00:48-00:59 capture.
+    _started_mono = _time_mod.monotonic()
     try:
         return bool(
             await asyncio.wait_for(
@@ -881,6 +890,16 @@ async def _prepare_sell_allowance_bounded(token_id: str) -> bool:
         return False
     except Exception:
         return False
+    finally:
+        _elapsed = _time_mod.monotonic() - _started_mono
+        if _elapsed >= 2.0:
+            logger.warning(
+                "prepare_sell_balance_allowance slow (token_id=%s, elapsed=%.2fs)"
+                " — likely _client_io_lock contention; check ps_submit_order /"
+                " reconcile_live_positions processing slowest-candidate logs",
+                token_id,
+                _elapsed,
+            )
 
 
 def _safe_bool(value: Any, default: bool = False) -> bool:
