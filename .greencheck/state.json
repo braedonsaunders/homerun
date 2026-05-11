@@ -1,59 +1,80 @@
 {
-  "runId": 1778477434893,
-  "workflowRunId": 25651819412,
+  "runId": 1778489167541,
+  "workflowRunId": 25659362275,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25651819412",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25659362275",
   "branch": "main",
-  "headSha": "21090ed246c25d209da42c0ecc376aa781be7e95",
+  "headSha": "19a961c658b232b1d7f3e3f2dd1f5e1383ed492d",
   "prNumber": null,
   "passes": [
     {
       "pass": 1,
       "cluster": {
-        "type": "lint",
+        "type": "test-failure",
         "files": [
-          "backend/services/fill_simulator/empirical_constants.py"
+          "backend/tests/test_alembic_roundtrip.py"
         ],
         "failures": [
           {
-            "type": "lint",
-            "file": "backend/services/fill_simulator/empirical_constants.py",
-            "line": 27,
-            "column": 24,
-            "message": "[*] `sqlalchemy.case` imported but unused",
-            "rule": "F401",
-            "rawLog": "F401 [*] `sqlalchemy.case` imported but unused\n  --> services/fill_simulator/empirical_constants.py:27:24",
-            "confidence": 0.95
+            "type": "test-failure",
+            "file": "backend/tests/test_alembic_roundtrip.py",
+            "line": null,
+            "column": null,
+            "message": "Failed: alembic replay subprocess exited with 1",
+            "rule": null,
+            "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
+            "confidence": 0.7
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "6a25f022253d3e0abb1f52fa81d116ffd1bd1d08",
+      "commitSha": "b8b6f4c45dd91f5e3d9bf31aff60176c0956b04d",
       "filesChanged": [
-        "backend/services/fill_simulator/empirical_constants.py"
+        "backend/alembic/versions/202605110300_topic_catalog.py",
+        "backend/alembic/versions/202605110400_topic_rotation.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 26496
+      "durationMs": 268490
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-11T05:30:34.893Z",
+  "startedAt": "2026-05-11T08:46:07.541Z",
   "result": null,
   "commits": [
-    "6a25f022253d3e0abb1f52fa81d116ffd1bd1d08"
+    "b8b6f4c45dd91f5e3d9bf31aff60176c0956b04d"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_data_source_catalog_and_sdk.py",
+      "file": "backend/tests/test_alembic_roundtrip.py",
       "line": null,
       "column": null,
-      "message": "AssertionError: assert 2 >= 3",
+      "message": "Failed: alembic replay subprocess exited with 1",
       "rule": null,
-      "rawLog": "FAILED tests/test_data_source_catalog_and_sdk.py::test_data_source_sdk_applies_max_records_retention - AssertionError: assert 2 >= 3",
+      "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_backtest_engine.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: assert 'working' == 'filled'",
+      "rule": null,
+      "rawLog": "FAILED tests/test_backtest_engine.py::TestMatchingEngine::test_gtc_rests_then_fills_when_book_moves - AssertionError: assert 'working' == 'filled'",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_recorded_event_bus.py",
+      "line": null,
+      "column": null,
+      "message": "sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedTableError'>: relation \"topic_catalog\" does not exist",
+      "rule": null,
+      "rawLog": "FAILED tests/test_recorded_event_bus.py::TestCatalog::test_seed_topics_are_registered - sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedTableError'>: relation \"topic_catalog\" does not exist",
       "confidence": 0.7
     },
     {
@@ -67,16 +88,16 @@
       "confidence": 0.7
     },
     {
-      "type": "lint",
-      "file": "backend/services/fill_simulator/empirical_constants.py",
-      "line": 27,
-      "column": 24,
-      "message": "[*] `sqlalchemy.case` imported but unused",
-      "rule": "F401",
-      "rawLog": "F401 [*] `sqlalchemy.case` imported but unused\n  --> services/fill_simulator/empirical_constants.py:27:24",
-      "confidence": 0.95
+      "type": "test-failure",
+      "file": "backend/tests/test_strategy_backtester.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: plain-detect() strategy produced 0 opps — regression!",
+      "rule": null,
+      "rawLog": "FAILED tests/test_strategy_backtester.py::test_replay_discover_runs_strategies_that_only_override_detect - AssertionError: plain-detect() strategy produced 0 opps — regression!",
+      "confidence": 0.7
     }
   ],
-  "latestParserUsed": "pytest, ruff",
-  "latestLogPath": ".greencheck/logs/workflow-run-25651819412.log"
+  "latestParserUsed": "pytest",
+  "latestLogPath": ".greencheck/logs/workflow-run-25659362275.log"
 }

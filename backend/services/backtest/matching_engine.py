@@ -572,6 +572,12 @@ class MatchingEngine:
         self._books[snapshot.token_id] = _ResidualBook(snapshot=snapshot)
         new_book = self._books[snapshot.token_id]
         if old_book is not None:
+            try:
+                from services.optimization.queue_ahead import (
+                    compute_queue_ahead_shares as _qa,
+                )
+            except Exception:  # noqa: BLE001
+                _qa = None
             for order_id in list(self._working_by_token.get(snapshot.token_id, [])):
                 ord_ = self._orders.get(order_id)
                 if (
@@ -581,28 +587,26 @@ class MatchingEngine:
                     or ord_.queue_ahead_shares <= 0.0
                 ):
                     continue
-                # Depth on the order's OWN side at its limit price.
-                old_depth = old_book.depth_at(side=ord_.side, price=ord_.price)
-                new_depth = new_book.depth_at(side=ord_.side, price=ord_.price)
-                # External consumption since the last snapshot.  Own-
-                # taker fills at this price (rare but possible if a
-                # cross-book intent ate our own queue) are subtracted
-                # so we don't double-count.
-                own_consumed_prev = (
-                    old_book.consumed_bids.get(ord_.price, 0.0)
-                    if ord_.side.upper() == "BUY"
-                    else old_book.consumed_asks.get(ord_.price, 0.0)
-                )
-                external_consumed = max(
-                    0.0,
-                    (old_depth - new_depth) - float(own_consumed_prev),
-                )
-                # Queue position can only advance (toward zero), never
-                # rewind — even if the level grew between snapshots
-                # (new makers joined behind us), we don't move back.
-                ord_.queue_ahead_shares = max(
-                    0.0,
-                    float(ord_.queue_ahead_shares) - external_consumed,
+                if _qa is None:
+                    continue
+                # Re-compute queue-ahead from the new snapshot so that
+                # better-priced levels that disappeared between snapshots
+                # (filled or cancelled by external participants) correctly
+                # advance our queue position.  Taking min(old, new) keeps
+                # the position monotonically advancing — new entrants at
+                # better prices between snapshots do not push us back.
+                try:
+                    new_queue = _qa(
+                        bids=new_book.snapshot.bids,
+                        asks=new_book.snapshot.asks,
+                        side=ord_.side,
+                        limit_price=ord_.price,
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                ord_.queue_ahead_shares = min(
+                    float(ord_.queue_ahead_shares),
+                    max(0.0, new_queue),
                 )
 
         # 3. Process orders newly admitted to the venue
