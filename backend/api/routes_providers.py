@@ -579,6 +579,72 @@ def _serialize_job(row: ProviderImportJob) -> dict[str, Any]:
 _API_KEY_PRESENT_MASK = "********"
 
 
+def _validate_api_key_paste(raw: str, *, label: str) -> str:
+    """Reject obviously-not-an-API-key paste mistakes.
+
+    The single most common operator error here is pasting Telonex's
+    or polybacktest's documentation example — a full ``curl`` command
+    with a placeholder like ``YOUR_API_KEY`` baked in.  When that
+    happens we used to silently store the curl line as-is; the
+    upstream then 401s on every download because the Bearer token
+    is the docs placeholder.
+
+    These checks are CLIENT-of-curl-paste oriented, not exhaustive
+    secret-format validation — every vendor uses a different shape,
+    so we don't try to enforce length or character set.  We just
+    reject the three things that are always wrong:
+
+      1. Multi-line / contains newline → almost certainly a wrapped
+         curl block, not a key.
+      2. Looks like a CLI command (starts with `curl `, contains
+         `-H ` or `--header`, contains `Authorization:`).
+      3. Contains a known placeholder substring (``YOUR_API_KEY``,
+         ``<API_KEY>``, ``<your_key>``, ``REPLACE_ME``, etc.).
+
+    On hit, raises HTTPException(400) with a precise hint at what
+    the operator pasted instead of the key.
+    """
+    raw = raw.strip()
+    if not raw:
+        return raw  # caller handles "clear" semantics
+    if "\n" in raw or "\r" in raw:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} key contains newlines — looks like you pasted a multi-line curl example.  Paste the bare key only.",
+        )
+    lower = raw.lower()
+    if (
+        lower.startswith("curl ")
+        or " -h " in raw or "--header" in lower
+        or "authorization:" in lower
+        or "bearer " in lower
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{label} key looks like a curl command, not a key.  "
+                f"Vendor docs usually show ``curl -H 'Authorization: Bearer YOUR_KEY'`` — "
+                f"paste only the YOUR_KEY part (no quotes, no curl, no Authorization header)."
+            ),
+        )
+    placeholder_markers = (
+        "YOUR_API_KEY", "YOUR_KEY", "<API_KEY>", "<api_key>",
+        "<YOUR_KEY>", "<your_key>", "REPLACE_ME", "INSERT_KEY_HERE",
+        "PASTE_KEY_HERE", "<TOKEN>",
+    )
+    for marker in placeholder_markers:
+        if marker in raw:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{label} key contains the placeholder ``{marker}`` — "
+                    f"that's the literal example text from the vendor's docs.  "
+                    f"Replace it with the actual key string from your vendor dashboard."
+                ),
+            )
+    return raw
+
+
 class ProviderSettings(BaseModel):
     polybacktest_api_key_set: bool = False
     polybacktest_base_url: Optional[str] = None
@@ -648,6 +714,7 @@ async def update_provider_settings(req: ProviderSettingsUpdate) -> dict[str, Any
                 # UI sent the mask back unchanged — leave the stored secret alone.
                 pass
             else:
+                cleaned = _validate_api_key_paste(cleaned, label="Polybacktest")
                 row.polybacktest_api_key = encrypt_secret(cleaned)
         if req.polybacktest_base_url is not None:
             row.polybacktest_base_url = req.polybacktest_base_url.strip() or None
@@ -658,6 +725,7 @@ async def update_provider_settings(req: ProviderSettingsUpdate) -> dict[str, Any
             elif cleaned == _API_KEY_PRESENT_MASK:
                 pass
             else:
+                cleaned = _validate_api_key_paste(cleaned, label="Telonex")
                 row.telonex_api_key = encrypt_secret(cleaned)
         if req.telonex_base_url is not None:
             row.telonex_base_url = req.telonex_base_url.strip() or None
