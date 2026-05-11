@@ -1,69 +1,59 @@
 {
-  "runId": 1778468304412,
-  "workflowRunId": 25647639479,
+  "runId": 1778477434893,
+  "workflowRunId": 25651819412,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25647639479",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25651819412",
   "branch": "main",
-  "headSha": "019ee74788ba59d8403dc0869ed52af4423d844c",
+  "headSha": "21090ed246c25d209da42c0ecc376aa781be7e95",
   "prNumber": null,
   "passes": [
     {
       "pass": 1,
       "cluster": {
-        "type": "test-failure",
+        "type": "lint",
         "files": [
-          "backend/tests/test_alembic_roundtrip.py"
+          "backend/services/fill_simulator/empirical_constants.py"
         ],
         "failures": [
           {
-            "type": "test-failure",
-            "file": "backend/tests/test_alembic_roundtrip.py",
-            "line": null,
-            "column": null,
-            "message": "sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedFunctionError'>: function jsonb_array_length(json) does not exist",
-            "rule": null,
-            "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_head_migration_downgrade_upgrade_roundtrip - sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedFunctionError'>: function jsonb_array_length(json) does not exist",
-            "confidence": 0.7
+            "type": "lint",
+            "file": "backend/services/fill_simulator/empirical_constants.py",
+            "line": 27,
+            "column": 24,
+            "message": "[*] `sqlalchemy.case` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `sqlalchemy.case` imported but unused\n  --> services/fill_simulator/empirical_constants.py:27:24",
+            "confidence": 0.95
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "814c5784d5bd6127135122652ea0f55cca0a1ae5",
+      "commitSha": "6a25f022253d3e0abb1f52fa81d116ffd1bd1d08",
       "filesChanged": [
-        "backend/models/database.py"
+        "backend/services/fill_simulator/empirical_constants.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 80602
+      "durationMs": 26496
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-11T02:58:24.412Z",
+  "startedAt": "2026-05-11T05:30:34.893Z",
   "result": null,
   "commits": [
-    "814c5784d5bd6127135122652ea0f55cca0a1ae5"
+    "6a25f022253d3e0abb1f52fa81d116ffd1bd1d08"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_alembic_roundtrip.py",
+      "file": "backend/tests/test_data_source_catalog_and_sdk.py",
       "line": null,
       "column": null,
-      "message": "sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedFunctionError'>: function jsonb_array_length(json) does not exist",
+      "message": "AssertionError: assert 2 >= 3",
       "rule": null,
-      "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_head_migration_downgrade_upgrade_roundtrip - sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedFunctionError'>: function jsonb_array_length(json) does not exist",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_alembic_roundtrip.py",
-      "line": null,
-      "column": null,
-      "message": "Failed: alembic replay subprocess exited with 1",
-      "rule": null,
-      "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
+      "rawLog": "FAILED tests/test_data_source_catalog_and_sdk.py::test_data_source_sdk_applies_max_records_retention - AssertionError: assert 2 >= 3",
       "confidence": 0.7
     },
     {
@@ -75,8 +65,18 @@
       "rule": null,
       "rawLog": "FAILED tests/test_scanner_market_filter.py::test_whitelist_zero_match_logs_warning - assert False",
       "confidence": 0.7
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/fill_simulator/empirical_constants.py",
+      "line": 27,
+      "column": 24,
+      "message": "[*] `sqlalchemy.case` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `sqlalchemy.case` imported but unused\n  --> services/fill_simulator/empirical_constants.py:27:24",
+      "confidence": 0.95
     }
   ],
-  "latestParserUsed": "pytest",
-  "latestLogPath": ".greencheck/logs/workflow-run-25647639479.log"
+  "latestParserUsed": "pytest, ruff",
+  "latestLogPath": ".greencheck/logs/workflow-run-25651819412.log"
 }

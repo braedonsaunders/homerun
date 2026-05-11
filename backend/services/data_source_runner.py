@@ -316,9 +316,9 @@ async def _apply_retention_policy(
         boundary_row = (await session.execute(boundary_stmt)).first()
         if boundary_row is not None:
             b_observed, b_ingested, b_id = boundary_row
-            # Delete rows whose sort tuple is STRICTLY LESS than the
-            # boundary (i.e. older than the Nth row by our ordering).
-            # The boundary row itself stays.
+            # Delete all rows whose sort tuple is <= the boundary
+            # (i.e. rows at offset max_records and beyond), keeping
+            # exactly max_records rows.
             delete_stmt = delete(DataSourceRecord).where(
                 DataSourceRecord.data_source_id == source_id,
                 tuple_(
@@ -326,7 +326,7 @@ async def _apply_retention_policy(
                     DataSourceRecord.ingested_at,
                     DataSourceRecord.id,
                 )
-                < tuple_(b_observed, b_ingested, b_id),
+                <= tuple_(b_observed, b_ingested, b_id),
             )
             delete_result = await session.execute(delete_stmt)
             max_records_deleted = int(delete_result.rowcount or 0)
