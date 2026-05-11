@@ -656,6 +656,23 @@ async def reindex_one(
             "deleted": 0,
         }
 
+    try:
+        await session.rollback()
+    except Exception as exc:
+        logger.warning(
+            "search collector read transaction release failed: entity_type=%s err=%s",
+            entity_type,
+            exc,
+            exc_info=exc,
+        )
+        return {
+            "entity_type": entity_type,
+            "ok": False,
+            "error": str(exc),
+            "upserted": 0,
+            "deleted": 0,
+        }
+
     # Batch upserts via SQLAlchemy executemany.  Per-row round-trips
     # were the dominant cost when the opportunity collector returned
     # 2k rows (~70 s of network latency for what should be a sub-

@@ -202,7 +202,7 @@ async def test_worker_retries_cycle_after_db_disconnect(monkeypatch):
     monkeypatch.setattr(
         news_worker.asyncio,
         "sleep",
-        AsyncMock(side_effect=[None, asyncio.CancelledError()]),
+        AsyncMock(side_effect=[None, asyncio.CancelledError(), asyncio.CancelledError()]),
     )
 
     with pytest.raises(asyncio.CancelledError):

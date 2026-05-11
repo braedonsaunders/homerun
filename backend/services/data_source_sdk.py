@@ -382,10 +382,12 @@ class BaseDataSource:
         if value is None:
             return None
         if isinstance(value, datetime):
-            return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is not None:
+                return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value
         if isinstance(value, tuple) and len(value) >= 6:
             try:
-                return datetime.fromtimestamp(mktime(value), tz=timezone.utc)
+                return datetime.fromtimestamp(mktime(value), tz=timezone.utc).replace(tzinfo=None)
             except Exception:
                 return None
         text = str(value).strip()
@@ -396,7 +398,7 @@ class BaseDataSource:
                 ts = int(text)
                 if ts > 10_000_000_000:
                     ts = ts / 1000.0
-                return datetime.fromtimestamp(ts, tz=timezone.utc)
+                return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
             except Exception:
                 return None
         if text.endswith("Z"):
@@ -404,13 +406,13 @@ class BaseDataSource:
         try:
             parsed = datetime.fromisoformat(text)
             if parsed.tzinfo is not None:
-                return parsed.astimezone(timezone.utc)
-            return parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed
         except Exception:
             pass
         for fmt in ("%Y%m%dT%H%M%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
             try:
-                return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+                return datetime.strptime(text, fmt)
             except Exception:
                 continue
         return None
