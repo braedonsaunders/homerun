@@ -31,14 +31,12 @@ from services.external_data.polybacktest_client import (
     supported_coins,
 )
 from services.external_data.telonex_client import (
-    TelonexAuthError,
     TelonexError,
     TelonexNotConfiguredError,
     TelonexNotFoundError,
     TelonexValidationError,
     build_client_from_settings as build_telonex_client,
     channels_for as telonex_channels_for,
-    default_base_url as telonex_default_base_url,
     supported_exchanges as telonex_supported_exchanges,
 )
 from services.external_data import telonex_import_service, telonex_markets_cache

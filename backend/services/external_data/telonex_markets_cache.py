@@ -333,7 +333,6 @@ def _list_markets_sync(
     for i in range(n):
         market_id = _safe_str(rows_dict["market_id"][i])
         slug = _safe_str(rows_dict["slug"][i])
-        question = _safe_str(rows_dict["question"][i])
         if not (market_id or slug):
             continue
         markets.append(_serialize_row(rows_dict, i))
