@@ -272,6 +272,8 @@ export default function SettingsPanel({
     cleanup_wallet_activity_rollup_days: 60,
     cleanup_wallet_activity_dedupe_enabled: true,
     llm_usage_retention_days: 30,
+    trader_events_firehose_retention_days: 7,
+    trader_events_other_retention_days: 90,
     market_cache_hygiene_enabled: true,
     market_cache_hygiene_interval_hours: 6,
     market_cache_retention_days: 120,
@@ -461,6 +463,8 @@ export default function SettingsPanel({
         cleanup_wallet_activity_rollup_days: settings.maintenance?.cleanup_wallet_activity_rollup_days ?? 60,
         cleanup_wallet_activity_dedupe_enabled: settings.maintenance?.cleanup_wallet_activity_dedupe_enabled ?? true,
         llm_usage_retention_days: settings.maintenance?.llm_usage_retention_days ?? 30,
+        trader_events_firehose_retention_days: settings.maintenance?.trader_events_firehose_retention_days ?? 7,
+        trader_events_other_retention_days: settings.maintenance?.trader_events_other_retention_days ?? 90,
         market_cache_hygiene_enabled: settings.maintenance?.market_cache_hygiene_enabled ?? true,
         market_cache_hygiene_interval_hours: settings.maintenance?.market_cache_hygiene_interval_hours ?? 6,
         market_cache_retention_days: settings.maintenance?.market_cache_retention_days ?? 120,
@@ -2510,6 +2514,36 @@ export default function SettingsPanel({
                                 setMaintenanceForm(p => ({ ...p, llm_usage_retention_days: Number.isNaN(value) ? 30 : value }))
                               }}
                               min={0}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Trader Events Firehose Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.trader_events_firehose_retention_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, trader_events_firehose_retention_days: Number.isNaN(value) ? 7 : value }))
+                              }}
+                              min={1}
+                              max={365}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Trader Events Other Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.trader_events_other_retention_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, trader_events_other_retention_days: Number.isNaN(value) ? 90 : value }))
+                              }}
+                              min={1}
                               max={3650}
                               className="mt-1 text-sm"
                             />

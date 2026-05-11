@@ -545,6 +545,123 @@ LIMIT 20
                 "preserve_current_month": bool(preserve_current_month),
             }
 
+    async def cleanup_trader_events(
+        self,
+        firehose_older_than_days: int = 7,
+        other_older_than_days: int = 90,
+    ) -> dict:
+        """Delete old trader_events rows with two-tier retention.
+
+        Firehose events (``event_type = 'firehose_evaluation'``) are the
+        bulk of volume and use a shorter retention. All other event types
+        (decision, order, provider_health, circuit_breaker, etc.) use a
+        longer audit-trail retention.
+
+        Deletes in batched chunks of 50 000 with a short pause between
+        batches to avoid holding locks on the high-churn table.
+        """
+        from models.database import TraderEvent
+
+        if firehose_older_than_days <= 0 and other_older_than_days <= 0:
+            return {
+                "status": "disabled",
+                "firehose_deleted": 0,
+                "other_deleted": 0,
+            }
+
+        batch_size = 50_000
+        firehose_deleted = 0
+        other_deleted = 0
+
+        if firehose_older_than_days > 0:
+            cutoff = utcnow() - timedelta(days=firehose_older_than_days)
+            while True:
+                async with AsyncSessionLocal() as session:
+                    await session.execute(text("SET LOCAL statement_timeout = 0"))
+                    batch_ids = (
+                        await session.execute(
+                            select(TraderEvent.id)
+                            .where(
+                                TraderEvent.event_type == "firehose_evaluation",
+                                TraderEvent.created_at < cutoff,
+                            )
+                            .limit(batch_size)
+                        )
+                    ).scalars().all()
+                    if not batch_ids:
+                        break
+                    result = await session.execute(
+                        delete(TraderEvent).where(TraderEvent.id.in_(batch_ids))
+                    )
+                    await session.commit()
+                    n = int(result.rowcount or 0)
+                    firehose_deleted += n
+                    if n < batch_size:
+                        break
+                await asyncio.sleep(0.1)
+
+        if other_older_than_days > 0:
+            cutoff = utcnow() - timedelta(days=other_older_than_days)
+            while True:
+                async with AsyncSessionLocal() as session:
+                    await session.execute(text("SET LOCAL statement_timeout = 0"))
+                    batch_ids = (
+                        await session.execute(
+                            select(TraderEvent.id)
+                            .where(
+                                TraderEvent.event_type != "firehose_evaluation",
+                                TraderEvent.created_at < cutoff,
+                            )
+                            .limit(batch_size)
+                        )
+                    ).scalars().all()
+                    if not batch_ids:
+                        break
+                    result = await session.execute(
+                        delete(TraderEvent).where(TraderEvent.id.in_(batch_ids))
+                    )
+                    await session.commit()
+                    n = int(result.rowcount or 0)
+                    other_deleted += n
+                    if n < batch_size:
+                        break
+                await asyncio.sleep(0.1)
+
+        logger.info(
+            "Cleaned up trader_events",
+            firehose_deleted=firehose_deleted,
+            other_deleted=other_deleted,
+            firehose_retention_days=firehose_older_than_days,
+            other_retention_days=other_older_than_days,
+        )
+        return {
+            "status": "success",
+            "firehose_deleted": firehose_deleted,
+            "other_deleted": other_deleted,
+            "firehose_retention_days": firehose_older_than_days,
+            "other_retention_days": other_older_than_days,
+        }
+
+    async def _trader_events_retention_settings(self) -> dict:
+        config = {
+            "firehose_days": 7,
+            "other_days": 90,
+        }
+        try:
+            async with AsyncSessionLocal() as session:
+                row = (
+                    await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+                ).scalar_one_or_none()
+                if row is None:
+                    return config
+                if row.trader_events_firehose_retention_days is not None:
+                    config["firehose_days"] = max(1, int(row.trader_events_firehose_retention_days))
+                if row.trader_events_other_retention_days is not None:
+                    config["other_days"] = max(1, int(row.trader_events_other_retention_days))
+        except Exception as e:
+            logger.warning("Failed to read trader_events retention settings", error=str(e))
+        return config
+
     async def cleanup_trade_signal_emissions(
         self,
         older_than_days: int = DEFAULT_TRADE_SIGNAL_EMISSION_AGE,
@@ -1275,6 +1392,8 @@ RETURNING target.id
         trade_signal_days: Optional[int] = None,
         wallet_activity_rollup_days: Optional[int] = None,
         wallet_activity_dedupe_enabled: Optional[bool] = None,
+        trader_events_firehose_days: Optional[int] = None,
+        trader_events_other_days: Optional[int] = None,
     ) -> dict:
         """
         Run full database cleanup with all maintenance tasks.
@@ -1327,6 +1446,23 @@ RETURNING target.id
         except Exception as e:
             logger.warning("LLM usage log cleanup failed during full maintenance run", error=str(e))
             results["llm_usage_logs"] = {"status": "error", "error": str(e)}
+
+        # 5b. Prune trader_events with two-tier retention.
+        try:
+            te_cfg = await self._trader_events_retention_settings()
+            firehose_days = trader_events_firehose_days
+            if firehose_days is None:
+                firehose_days = te_cfg["firehose_days"]
+            other_days = trader_events_other_days
+            if other_days is None:
+                other_days = te_cfg["other_days"]
+            results["trader_events"] = await self.cleanup_trader_events(
+                firehose_older_than_days=int(firehose_days),
+                other_older_than_days=int(other_days),
+            )
+        except Exception as e:
+            logger.warning("Trader events cleanup failed during full maintenance run", error=str(e))
+            results["trader_events"] = {"status": "error", "error": str(e)}
 
         # 6. Prune noisy upsert updates while preserving meaningful transitions.
         try:

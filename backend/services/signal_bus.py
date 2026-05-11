@@ -14,7 +14,7 @@ import copy
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Any, Optional
 
@@ -120,6 +120,8 @@ _SKIPPED_REACTIVATION_EXPIRY_DELTA_SECONDS = 15.0
 _SKIPPED_REACTIVATION_LIQUIDITY_BANDS = (250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0, 32000.0)
 _ACTIVE_REFRESH_SOURCES = {"crypto", "scanner", "traders", "weather"}
 _RUNTIME_SEQUENCE_UNSET = object()
+
+_EXPIRE_SOURCE_GRACE_SECONDS: float = 60.0
 
 
 def _utc_now() -> datetime:
@@ -1846,8 +1848,20 @@ async def expire_source_signals_except(
     signal_types: Optional[list[str]] = None,
     strategy_types: Optional[list[str]] = None,
     commit: bool = True,
+    min_signal_age_seconds: Optional[float] = None,
 ) -> int:
-    """Expire pending source signals not present in the current emission set."""
+    """Expire pending source signals not present in the current emission set.
+
+    Rows younger than ``min_signal_age_seconds`` (default 60 s via
+    ``_EXPIRE_SOURCE_GRACE_SECONDS``) are skipped to protect the
+    writer/projection race for event-driven sources (crypto, traders,
+    weather). Pass ``0.0`` to opt out of the grace window.
+    """
+    grace_seconds = (
+        float(_EXPIRE_SOURCE_GRACE_SECONDS)
+        if min_signal_age_seconds is None
+        else max(0.0, float(min_signal_age_seconds))
+    )
     now = _to_utc_naive(_utc_now())
     keep = {str(key) for key in keep_dedupe_keys if str(key).strip()}
 
@@ -1855,6 +1869,9 @@ async def expire_source_signals_except(
         TradeSignal.source == str(source),
         TradeSignal.status == "pending",
     )
+    if grace_seconds > 0.0:
+        cutoff = now - timedelta(seconds=grace_seconds)
+        query = query.where(TradeSignal.created_at <= cutoff)
     if signal_types:
         normalized_signal_types = [
             str(value or "").strip().lower() for value in signal_types if str(value or "").strip()

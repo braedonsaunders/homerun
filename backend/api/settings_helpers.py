@@ -416,6 +416,8 @@ def maintenance_payload(settings: AppSettings) -> dict[str, Any]:
         "cleanup_wallet_activity_rollup_days": _with_default(settings.cleanup_wallet_activity_rollup_days, 60),
         "cleanup_wallet_activity_dedupe_enabled": _with_default(settings.cleanup_wallet_activity_dedupe_enabled, True),
         "llm_usage_retention_days": _with_default(settings.llm_usage_retention_days, 30),
+        "trader_events_firehose_retention_days": _with_default(settings.trader_events_firehose_retention_days, 7),
+        "trader_events_other_retention_days": _with_default(settings.trader_events_other_retention_days, 90),
         "market_cache_hygiene_enabled": _with_default(settings.market_cache_hygiene_enabled, True),
         "market_cache_hygiene_interval_hours": _with_default(settings.market_cache_hygiene_interval_hours, 6),
         "market_cache_retention_days": _with_default(settings.market_cache_retention_days, 120),
@@ -890,6 +892,8 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
         settings.cleanup_wallet_activity_rollup_days = maint.cleanup_wallet_activity_rollup_days
         settings.cleanup_wallet_activity_dedupe_enabled = maint.cleanup_wallet_activity_dedupe_enabled
         settings.llm_usage_retention_days = maint.llm_usage_retention_days
+        settings.trader_events_firehose_retention_days = maint.trader_events_firehose_retention_days
+        settings.trader_events_other_retention_days = maint.trader_events_other_retention_days
         settings.market_cache_hygiene_enabled = maint.market_cache_hygiene_enabled
         settings.market_cache_hygiene_interval_hours = maint.market_cache_hygiene_interval_hours
         settings.market_cache_retention_days = maint.market_cache_retention_days

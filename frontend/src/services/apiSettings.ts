@@ -150,6 +150,8 @@ export interface MaintenanceSettings {
   cleanup_wallet_activity_rollup_days: number
   cleanup_wallet_activity_dedupe_enabled: boolean
   llm_usage_retention_days: number
+  trader_events_firehose_retention_days: number
+  trader_events_other_retention_days: number
   market_cache_hygiene_enabled: boolean
   market_cache_hygiene_interval_hours: number
   market_cache_retention_days: number

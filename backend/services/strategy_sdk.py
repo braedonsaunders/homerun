@@ -70,6 +70,26 @@ from services.strategy_helpers.price_history import MarketPriceHistory, PriceSna
 
 logger = logging.getLogger(__name__)
 
+_REST_PRIME_COOLDOWN_S: float = 3.0
+_rest_prime_last_ts: dict[str, float] = {}
+
+
+def _prime_book_via_rest(token_id: str) -> None:
+    try:
+        import asyncio
+        from services.ws_feeds import get_feed_manager
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        feed_mgr = get_feed_manager()
+        loop.create_task(feed_mgr.get_order_book(token_id))
+    except Exception as exc:
+        logger.debug(
+            "StrategySDK REST prime failed for token %s: %s",
+            token_id[:18] if token_id else "?", exc,
+        )
+
 
 class StrategySDK:
     """High-level helpers for strategy authors.
@@ -2834,6 +2854,11 @@ class StrategySDK:
                 "(market %s, side %s) — token may not be subscribed",
                 token_id[:18], getattr(market, "id", "?"), side,
             )
+            now_s = time.monotonic()
+            last = _rest_prime_last_ts.get(token_id, 0.0)
+            if now_s - last >= _REST_PRIME_COOLDOWN_S:
+                _rest_prime_last_ts[token_id] = now_s
+                _prime_book_via_rest(token_id)
             return None
 
         try:
@@ -2895,6 +2920,11 @@ class StrategySDK:
                 "(market %s, side %s) — token may not be subscribed",
                 token_id[:18], getattr(market, "id", "?"), side,
             )
+            now_s = time.monotonic()
+            last = _rest_prime_last_ts.get(token_id, 0.0)
+            if now_s - last >= _REST_PRIME_COOLDOWN_S:
+                _rest_prime_last_ts[token_id] = now_s
+                _prime_book_via_rest(token_id)
             return None
 
         levels = order_book.asks[: max(0, int(max_levels))]

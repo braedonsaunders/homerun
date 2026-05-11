@@ -429,25 +429,28 @@ class Settings(BaseSettings):
     BTC_ETH_HF_DUMP_THRESHOLD: float = 0.05  # Min drop for dump-hedge trigger
     BTC_ETH_HF_THIN_LIQUIDITY_USD: float = 500.0  # Below this = thin book
     # Polymarket series IDs for crypto up-or-down markets (editable in Settings).
-    # 15m, 5m, hourly, and 4-hour market series are independently configurable.
-    # BTC 5m and ETH 5m default to "" (disabled) — operator-only opt-in.
-    # Known IDs: BTC 5m = 10684, ETH 5m = 10683.
-    BTC_ETH_HF_SERIES_BTC_15M: str = "10192"
-    BTC_ETH_HF_SERIES_ETH_15M: str = "10191"
-    BTC_ETH_HF_SERIES_SOL_15M: str = "10423"
-    BTC_ETH_HF_SERIES_XRP_15M: str = "10422"
+    # ALL default to "" — operators opt in per timeframe via Crypto Settings.
+    # Known production IDs:
+    #   5m  — BTC=10684, ETH=10683, SOL=10686, XRP=10685
+    #   15m — BTC=10192, ETH=10191, SOL=10423, XRP=10422
+    #   1h  — BTC=10114, ETH=10117, SOL=10122, XRP=10123
+    #   4h  — BTC=10331, ETH=10332, SOL=10333, XRP=10327
+    BTC_ETH_HF_SERIES_BTC_15M: str = ""
+    BTC_ETH_HF_SERIES_ETH_15M: str = ""
+    BTC_ETH_HF_SERIES_SOL_15M: str = ""
+    BTC_ETH_HF_SERIES_XRP_15M: str = ""
     BTC_ETH_HF_SERIES_BTC_5M: str = ""
     BTC_ETH_HF_SERIES_ETH_5M: str = ""
     BTC_ETH_HF_SERIES_SOL_5M: str = ""
     BTC_ETH_HF_SERIES_XRP_5M: str = ""
-    BTC_ETH_HF_SERIES_BTC_1H: str = "10114"
-    BTC_ETH_HF_SERIES_ETH_1H: str = "10117"
-    BTC_ETH_HF_SERIES_SOL_1H: str = "10122"
-    BTC_ETH_HF_SERIES_XRP_1H: str = "10123"
-    BTC_ETH_HF_SERIES_BTC_4H: str = "10331"
-    BTC_ETH_HF_SERIES_ETH_4H: str = "10332"
-    BTC_ETH_HF_SERIES_SOL_4H: str = "10333"
-    BTC_ETH_HF_SERIES_XRP_4H: str = "10327"
+    BTC_ETH_HF_SERIES_BTC_1H: str = ""
+    BTC_ETH_HF_SERIES_ETH_1H: str = ""
+    BTC_ETH_HF_SERIES_SOL_1H: str = ""
+    BTC_ETH_HF_SERIES_XRP_1H: str = ""
+    BTC_ETH_HF_SERIES_BTC_4H: str = ""
+    BTC_ETH_HF_SERIES_ETH_4H: str = ""
+    BTC_ETH_HF_SERIES_SOL_4H: str = ""
+    BTC_ETH_HF_SERIES_XRP_4H: str = ""
     BTC_ETH_HF_MAKER_MODE: bool = True  # Place maker (limit) orders to avoid fees & earn rebates
     BTC_ETH_HF_FEE_ESTIMATE: float = 0.0156  # Midpoint taker fee estimate at 50% probability
 
