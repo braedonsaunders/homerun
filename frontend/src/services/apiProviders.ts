@@ -155,6 +155,13 @@ export interface ProviderDataset {
   created_at: string | null
   updated_at: string | null
   payload?: Record<string, unknown>
+  /** Storage routing — 'postgres' = legacy polybacktest import in
+   *  mms table; 'parquet' = on-disk file at storage_uri.  The
+   *  backtest data-source picker badges parquet rows so the
+   *  operator can see which route a run will take. */
+  storage_type?: 'postgres' | 'parquet'
+  /** file:// URI of the parquet window directory (parquet rows only). */
+  storage_uri?: string | null
 }
 
 export async function listProviderDatasets(params?: {

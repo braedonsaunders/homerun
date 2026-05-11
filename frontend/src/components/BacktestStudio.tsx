@@ -4599,8 +4599,31 @@ function DataSourceSelector({
                           className="h-3 w-3 accent-violet-500"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="truncate font-medium">
-                            {d.title || d.external_slug || d.external_id}
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate font-medium">
+                              {d.title || d.external_slug || d.external_id}
+                            </span>
+                            {/* Storage-routing badge — confirms which
+                                replay backend the backtester will use
+                                for this dataset.  Parquet rows route
+                                through ParquetBookReplay (file I/O,
+                                no Postgres); postgres rows route
+                                through BookReplay over the mms table. */}
+                            {d.storage_type === 'parquet' ? (
+                              <span
+                                className="shrink-0 rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300 dark:ring-emerald-400/30"
+                                title={t('backtestStudio.dsBadgeParquetTip', { defaultValue: 'Backtest reads this dataset directly from a parquet file (no Postgres round-trip)' })}
+                              >
+                                PARQUET
+                              </span>
+                            ) : (
+                              <span
+                                className="shrink-0 rounded-sm bg-muted/40 px-1 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-muted-foreground"
+                                title={t('backtestStudio.dsBadgePostgresTip', { defaultValue: 'Backtest reads this dataset from the market_microstructure_snapshots table' })}
+                              >
+                                PG
+                              </span>
+                            )}
                           </div>
                           <div className="truncate text-[10px] text-muted-foreground">
                             {(d.coin || '?').toUpperCase()} · {d.snapshot_count.toLocaleString()} {t('backtestStudio.dsSnapsWord', { defaultValue: 'snaps' })}

@@ -695,6 +695,15 @@ def _serialize_dataset(row: Any, include_payload: bool = False) -> dict[str, Any
         "last_import_job_id": row.last_import_job_id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        # Storage routing — surfaces whether this dataset is backed
+        # by Postgres (legacy polybacktest imports → mms table) or
+        # by an on-disk parquet file (auto-discovered from
+        # HOMERUN_PARQUET_ROOT).  The studio's data-source picker
+        # uses this to badge the row so the operator sees at a
+        # glance which route the backtest will take.  storage_uri
+        # is the file:// URI for parquet rows; null for postgres.
+        "storage_type": getattr(row, "storage_type", None) or "postgres",
+        "storage_uri": getattr(row, "storage_uri", None),
     }
     if include_payload:
         out["payload"] = row.payload_json
