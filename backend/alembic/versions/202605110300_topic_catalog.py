@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_create_index, safe_create_table
 from sqlalchemy.dialects import postgresql
 
 
@@ -38,7 +39,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    safe_create_table(
         "topic_catalog",
         sa.Column("slug", sa.String(), primary_key=True),
         sa.Column("title", sa.String(), nullable=False),
@@ -93,12 +94,12 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
     )
-    op.create_index(
+    safe_create_index(
         "ix_topic_catalog_storage_kind",
         "topic_catalog",
         ["storage_kind"],
     )
-    op.create_index(
+    safe_create_index(
         "ix_topic_catalog_enabled_replayable",
         "topic_catalog",
         ["enabled", "is_replayable"],

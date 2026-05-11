@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from alembic_helpers import safe_add_column
 
 
 revision = "202605110400"
@@ -29,15 +30,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
+    safe_add_column(
         "topic_catalog",
         sa.Column("max_bytes", sa.BigInteger(), nullable=True),
     )
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column("recorded_event_bus_global_max_bytes", sa.BigInteger(), nullable=True),
     )
-    op.add_column(
+    safe_add_column(
         "app_settings",
         sa.Column(
             "recorded_event_bus_pruner_enabled",
