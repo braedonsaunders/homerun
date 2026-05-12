@@ -36,7 +36,6 @@ inputs (including latency-model seed) it produces identical fills.
 
 from __future__ import annotations
 
-import logging
 import math
 import uuid
 from dataclasses import dataclass, field
@@ -54,7 +53,6 @@ from services.backtest.venue_model import (
     Venue,
 )
 
-logger = logging.getLogger(__name__)
 
 
 # ── Order / Fill data classes ────────────────────────────────────────────
@@ -109,6 +107,8 @@ class BacktestOrder:
     # the level the matcher decrements this; only when it reaches
     # zero is the order eligible to fill.
     queue_ahead_shares: Optional[float] = None
+    survival_covariates: Optional[dict[str, Any]] = None
+    fill_probability_cumulative: float = 0.0
 
     @property
     def remaining_size(self) -> float:
@@ -422,11 +422,13 @@ class MatchingEngine:
         latency: Optional[LatencyModel] = None,
         fees: Optional[FeeModel] = None,
         impact: Optional[ImpactModel] = None,
+        fill_model_snapshot: Optional[Any] = None,
     ):
         self.venue: Venue = venue or PolymarketVenue()
         self.latency: LatencyModel = latency or LatencyModel()
         self.fees: FeeModel = fees or FeeModel()
         self.impact: ImpactModel = impact or ImpactModel()
+        self.fill_model_snapshot = fill_model_snapshot
 
         self._orders: dict[str, BacktestOrder] = {}
         self._working_by_token: dict[str, list[str]] = {}
@@ -775,6 +777,38 @@ class MatchingEngine:
         except Exception:  # noqa: BLE001
             order.queue_ahead_shares = 0.0
 
+        order.fill_probability_cumulative = 0.0
+        if self.fill_model_snapshot is None:
+            order.survival_covariates = None
+            return
+
+        from services.fill_simulator import build_survival_features
+
+        order_book = {
+            "bids": [
+                {"price": float(level.price), "size": float(level.size or 0.0)}
+                for level in book.snapshot.bids[:25]
+            ],
+            "asks": [
+                {"price": float(level.price), "size": float(level.size or 0.0)}
+                for level in book.snapshot.asks[:25]
+            ],
+        }
+        features = build_survival_features(
+            estimate=None,
+            order_book=order_book,
+            recent_trades=None,
+            book_age_ms=0.0,
+            payload=order.meta,
+            side=order.side,
+            limit_price=float(order.price),
+            notional_usd=float(order.price) * float(order.size),
+            latency_p95_ms=self.latency.submit.quantile(0.95),
+            recent_trade_lookback_seconds=30.0,
+        ).to_payload()
+        features["queue_ahead_shares"] = order.queue_ahead_shares
+        order.survival_covariates = features
+
     def _add_to_working(self, order: BacktestOrder) -> None:
         ids = self._working_by_token.setdefault(order.token_id, [])
         if order.order_id not in ids:
@@ -876,6 +910,44 @@ class MatchingEngine:
             book.consume(side_taker=side_norm, price=price, size=take)
             remaining -= take
 
+    def _fill_probability_capped_take(
+        self,
+        order: BacktestOrder,
+        snap: BookSnapshot,
+        candidate_size: float,
+    ) -> tuple[float, dict[str, Any]]:
+        if (
+            self.fill_model_snapshot is None
+            or not order.survival_covariates
+            or candidate_size <= 0.0
+        ):
+            return candidate_size, {}
+
+        from services.fill_simulator import evaluate_fill_probability
+
+        admitted_at = order.venue_received_at or order.submitted_at
+        horizon_seconds = max(0.0, (snap.observed_at - admitted_at).total_seconds())
+        probability = evaluate_fill_probability(
+            snapshot=self.fill_model_snapshot,
+            covariates=order.survival_covariates,
+            horizon_seconds=horizon_seconds,
+            fallback_probability=1.0,
+        )
+        probability = max(float(order.fill_probability_cumulative), float(probability))
+        probability = max(0.0, min(1.0, probability))
+        order.fill_probability_cumulative = probability
+
+        cumulative_fill_cap = float(order.size) * probability
+        fillable_by_model = max(0.0, cumulative_fill_cap - float(order.filled_size))
+        take = min(float(candidate_size), fillable_by_model)
+        notes = {
+            "fill_probability": probability,
+            "fill_probability_horizon_seconds": horizon_seconds,
+            "fill_probability_model_family": getattr(self.fill_model_snapshot, "family", None),
+            "fill_probability_model_strata": getattr(self.fill_model_snapshot, "strata_key", None),
+        }
+        return take, notes
+
     def _try_match_resting(self, order: BacktestOrder, produced: list[Fill]) -> None:
         """Re-evaluate a working/partial order against the latest snapshot.
 
@@ -926,9 +998,20 @@ class MatchingEngine:
                 if price + 1e-12 < order.price:
                     break
                 take = min(qty, remaining)
+                take, fill_probability_notes = self._fill_probability_capped_take(
+                    order, snap, take
+                )
                 if take <= 0:
                     continue
-                self._record_resting_fill(order, book, snap, take, price=order.price, produced=produced)
+                self._record_resting_fill(
+                    order,
+                    book,
+                    snap,
+                    take,
+                    price=order.price,
+                    produced=produced,
+                    notes=fill_probability_notes,
+                )
                 remaining -= take
         elif side_norm == "BUY":
             for price, qty in book.remaining_asks():
@@ -937,9 +1020,20 @@ class MatchingEngine:
                 if price - 1e-12 > order.price:
                     break
                 take = min(qty, remaining)
+                take, fill_probability_notes = self._fill_probability_capped_take(
+                    order, snap, take
+                )
                 if take <= 0:
                     continue
-                self._record_resting_fill(order, book, snap, take, price=order.price, produced=produced)
+                self._record_resting_fill(
+                    order,
+                    book,
+                    snap,
+                    take,
+                    price=order.price,
+                    produced=produced,
+                    notes=fill_probability_notes,
+                )
                 remaining -= take
 
         if order.remaining_size <= 1e-12 and order.state != OrderState.FILLED:
@@ -955,11 +1049,15 @@ class MatchingEngine:
         *,
         price: float,
         produced: list[Fill],
+        notes: Optional[dict[str, Any]] = None,
     ) -> None:
         """Record a fill for a resting order. Resting orders fill at their
         own limit price (they're the maker); the venue model treats them
         as maker so fees use the maker schedule.
         """
+        fill_notes = {"maker": True}
+        if notes:
+            fill_notes.update(notes)
         fill = Fill(
             order_id=order.order_id,
             token_id=order.token_id,
@@ -973,7 +1071,7 @@ class MatchingEngine:
             occurred_at=snap.observed_at,
             fill_index=len(self._fills_by_order[order.order_id]),
             venue_sequence=snap.sequence,
-            notes={"maker": True},
+            notes=fill_notes,
         )
         produced.append(fill)
         order.fills.append(fill)

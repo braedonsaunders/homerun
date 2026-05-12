@@ -67,6 +67,19 @@ def _snap(t: datetime, *, bid: float, ask: float, depth: int = 5, qty: float = 5
     )
 
 
+class _ConstantFillProbabilityModel:
+    family = "cox_ph"
+    strata_key = "test"
+    n_events = 100
+    concordance_index = 0.75
+
+    def __init__(self, probability: float):
+        self.probability = probability
+
+    def evaluate(self, *, covariates, horizon_seconds):
+        return self.probability
+
+
 # ── Venue model ──────────────────────────────────────────────────────────
 
 
@@ -124,11 +137,12 @@ class TestLatencyModel:
 
 
 class TestMatchingEngine:
-    def _engine(self) -> MatchingEngine:
+    def _engine(self, *, fill_model_snapshot=None) -> MatchingEngine:
         return MatchingEngine(
             venue=PolymarketVenue(),
             latency=LatencyModel.deterministic(submit_ms=100, cancel_ms=50),
             fees=FeeModel(),
+            fill_model_snapshot=fill_model_snapshot,
         )
 
     def test_ioc_fills_marketable_size_and_cancels_remainder(self):
@@ -264,6 +278,84 @@ class TestMatchingEngine:
         )
         assert order.state == OrderState.FILLED
         assert order.filled_size == pytest.approx(10.0)
+
+    def test_fill_probability_model_blocks_resting_maker_fill(self):
+        me = self._engine(fill_model_snapshot=_ConstantFillProbabilityModel(0.0))
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0,
+                bids=(PriceLevel(0.50, 20.0),),
+                asks=(PriceLevel(0.53, 20.0),),
+            )
+        )
+        order = BacktestOrder(
+            order_id=make_order_id(), token_id="tok", side="SELL",
+            price=0.52, size=10, tif=TIF_GTC, post_only=False,
+            submitted_at=T0,
+        )
+        me.submit(order)
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(milliseconds=200),
+                bids=(PriceLevel(0.50, 20.0),),
+                asks=(PriceLevel(0.53, 20.0),),
+            )
+        )
+        assert order.survival_covariates is not None
+        assert order.survival_covariates["queue_ahead_shares"] == pytest.approx(0.0)
+
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(seconds=1),
+                bids=(PriceLevel(0.52, 20.0),),
+                asks=(PriceLevel(0.53, 20.0),),
+            )
+        )
+        assert order.state == OrderState.WORKING
+        assert order.filled_size == pytest.approx(0.0)
+        assert me.all_fills() == []
+
+    def test_fill_probability_model_caps_resting_maker_fill_size(self):
+        me = self._engine(fill_model_snapshot=_ConstantFillProbabilityModel(0.5))
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0,
+                bids=(PriceLevel(0.50, 20.0),),
+                asks=(PriceLevel(0.53, 20.0),),
+            )
+        )
+        order = BacktestOrder(
+            order_id=make_order_id(), token_id="tok", side="SELL",
+            price=0.52, size=10, tif=TIF_GTC, post_only=False,
+            submitted_at=T0,
+        )
+        me.submit(order)
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(milliseconds=200),
+                bids=(PriceLevel(0.50, 20.0),),
+                asks=(PriceLevel(0.53, 20.0),),
+            )
+        )
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(seconds=1),
+                bids=(PriceLevel(0.52, 20.0),),
+                asks=(PriceLevel(0.53, 20.0),),
+            )
+        )
+        fills = me.all_fills()
+        assert order.state == OrderState.WORKING
+        assert order.filled_size == pytest.approx(5.0)
+        assert len(fills) == 1
+        assert fills[0].size == pytest.approx(5.0)
+        assert fills[0].notes["fill_probability"] == pytest.approx(0.5)
 
     def test_cancel_with_latency_fills_in_window(self):
         me = self._engine()

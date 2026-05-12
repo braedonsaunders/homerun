@@ -1656,6 +1656,7 @@ class ExecutionBacktestResult:
     # are preferred when their coverage is materially richer than
     # snapshots for the run's window.
     replay_source: str = ""
+    fill_probability_model: dict[str, Any] = field(default_factory=dict)
     # How the strategy discovered the opportunities driving this run.
     # One of:
     #   - "live_opps"            — only OpportunityHistory rows (legacy fast path)
@@ -5121,6 +5122,28 @@ async def run_execution_backtest(
     finally:
         result.data_fetch_time_ms = (time.monotonic() - data_start) * 1000
 
+    fill_model_snapshot = None
+    try:
+        from services.fill_simulator import load_active_fill_model
+
+        fill_model_snapshot = await load_active_fill_model(strata_key="pooled")
+    except Exception as exc:
+        logger.warning("backtest could not load active fill probability model: %s", exc)
+        result.validation_warnings.append(
+            "Active fill probability model could not be loaded; maker fills used queue-only matching."
+        )
+    if fill_model_snapshot is None:
+        result.validation_warnings.append(
+            "No active fill probability model; maker fills used queue-only matching."
+        )
+    else:
+        result.validation_warnings.append(
+            "Active fill probability model applied to maker fills: "
+            f"{getattr(fill_model_snapshot, 'family', None)}:"
+            f"{getattr(fill_model_snapshot, 'strata_key', None)} "
+            f"n={getattr(fill_model_snapshot, 'n_events', 0)}."
+        )
+
     engine_config = BacktestConfig(
         portfolio=PortfolioConfig(
             initial_capital_usd=float(initial_capital_usd),
@@ -5167,6 +5190,7 @@ async def run_execution_backtest(
             capacity_exponent=float(impact_capacity_exponent),
         ),
         seed=seed,
+        fill_model_snapshot=fill_model_snapshot,
     )
     engine = BacktestEngine(config=engine_config, strategy=strategy)
 
@@ -5386,6 +5410,9 @@ async def run_execution_backtest(
     m = bt_result.metrics
     result.success = True
     result.n_snapshots = int(bt_result.notes.get("snapshots_processed", 0) or 0)
+    result.fill_probability_model = dict(
+        bt_result.notes.get("fill_probability_model") or {}
+    )
     result.final_equity_usd = float(bt_result.final_equity_usd)
     result.total_return_pct = float(m.total_return_pct)
     result.annualized_return_pct = float(m.annualized_return_pct)
@@ -5434,6 +5461,10 @@ async def run_execution_backtest(
             "occurred_at": f.occurred_at.isoformat(),
             "fill_index": int(f.fill_index),
             "is_maker": bool((f.notes or {}).get("maker", False)),
+            "fill_probability": (f.notes or {}).get("fill_probability"),
+            "fill_probability_horizon_seconds": (
+                (f.notes or {}).get("fill_probability_horizon_seconds")
+            ),
         }
         for f in fills
     ]

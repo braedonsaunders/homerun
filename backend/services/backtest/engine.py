@@ -97,6 +97,7 @@ class BacktestConfig:
     max_force_exit_attempts: int = 3
     seed: Optional[int] = 42
     log_progress_every: int = 0  # 0 = silent
+    fill_model_snapshot: Optional[Any] = None
 
 
 @dataclass
@@ -154,6 +155,7 @@ class BacktestEngine:
             latency=self.config.latency or LatencyModel(seed=self.config.seed),
             fees=fees,
             impact=self.config.impact or ImpactModel(),
+            fill_model_snapshot=self.config.fill_model_snapshot,
         )
         # Snapshot of the "current best" book per token, used by the
         # exit-decision hook to feed market_state into should_exit().
@@ -773,7 +775,23 @@ class BacktestEngine:
             fees_per_fill_usd=self.portfolio.per_fill_fees_paid_usd(),
             fees_resolution_usd=self.portfolio.resolution_fees_paid_usd,
             positions_summary=positions_summary,
-            notes={"snapshots_processed": self._snapshots_processed},
+            notes={
+                "snapshots_processed": self._snapshots_processed,
+                "fill_probability_model": (
+                    {
+                        "family": getattr(self.config.fill_model_snapshot, "family", None),
+                        "strata_key": getattr(self.config.fill_model_snapshot, "strata_key", None),
+                        "n_events": getattr(self.config.fill_model_snapshot, "n_events", None),
+                        "concordance_index": getattr(
+                            self.config.fill_model_snapshot,
+                            "concordance_index",
+                            None,
+                        ),
+                    }
+                    if self.config.fill_model_snapshot is not None
+                    else None
+                ),
+            },
         )
 
 
