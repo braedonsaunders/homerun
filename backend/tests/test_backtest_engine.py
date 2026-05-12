@@ -189,6 +189,82 @@ class TestMatchingEngine:
         assert order.state == OrderState.FILLED
         assert order.filled_size == pytest.approx(10.0)
 
+    def test_resting_queue_clears_from_same_level_depth_removed(self):
+        me = self._engine()
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0,
+                bids=(PriceLevel(0.50, 20.0),),
+                asks=(PriceLevel(0.51, 20.0), PriceLevel(0.52, 100.0)),
+            )
+        )
+        order = BacktestOrder(
+            order_id=make_order_id(), token_id="tok", side="SELL",
+            price=0.52, size=10, tif=TIF_GTC, post_only=False,
+            submitted_at=T0,
+        )
+        me.submit(order)
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(milliseconds=200),
+                bids=(PriceLevel(0.50, 20.0),),
+                asks=(PriceLevel(0.51, 20.0), PriceLevel(0.52, 100.0)),
+            )
+        )
+        assert order.state == OrderState.WORKING
+        assert order.queue_ahead_shares == pytest.approx(85.0)
+
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(seconds=1),
+                bids=(PriceLevel(0.52, 20.0),),
+                asks=(PriceLevel(0.52, 35.0),),
+            )
+        )
+        assert order.state == OrderState.FILLED
+        assert order.filled_size == pytest.approx(10.0)
+
+    def test_resting_buy_queue_clears_from_same_level_depth_removed(self):
+        me = self._engine()
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0,
+                bids=(PriceLevel(0.48, 100.0), PriceLevel(0.47, 20.0)),
+                asks=(PriceLevel(0.50, 20.0),),
+            )
+        )
+        order = BacktestOrder(
+            order_id=make_order_id(), token_id="tok", side="BUY",
+            price=0.48, size=10, tif=TIF_GTC, post_only=False,
+            submitted_at=T0,
+        )
+        me.submit(order)
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(milliseconds=200),
+                bids=(PriceLevel(0.48, 100.0), PriceLevel(0.47, 20.0)),
+                asks=(PriceLevel(0.50, 20.0),),
+            )
+        )
+        assert order.state == OrderState.WORKING
+        assert order.queue_ahead_shares == pytest.approx(65.0)
+
+        me.advance_to(
+            BookSnapshot(
+                token_id="tok",
+                observed_at=T0 + timedelta(seconds=1),
+                bids=(PriceLevel(0.48, 35.0),),
+                asks=(PriceLevel(0.48, 20.0),),
+            )
+        )
+        assert order.state == OrderState.FILLED
+        assert order.filled_size == pytest.approx(10.0)
+
     def test_cancel_with_latency_fills_in_window(self):
         me = self._engine()
         me.advance_to(_snap(T0, bid=0.50, ask=0.51, depth=1, qty=20))

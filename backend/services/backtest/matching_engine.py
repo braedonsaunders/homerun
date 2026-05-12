@@ -572,12 +572,6 @@ class MatchingEngine:
         self._books[snapshot.token_id] = _ResidualBook(snapshot=snapshot)
         new_book = self._books[snapshot.token_id]
         if old_book is not None:
-            try:
-                from services.optimization.queue_ahead import (
-                    compute_queue_ahead_shares as _qa,
-                )
-            except Exception:  # noqa: BLE001
-                _qa = None
             for order_id in list(self._working_by_token.get(snapshot.token_id, [])):
                 ord_ = self._orders.get(order_id)
                 if (
@@ -587,26 +581,28 @@ class MatchingEngine:
                     or ord_.queue_ahead_shares <= 0.0
                 ):
                     continue
-                if _qa is None:
-                    continue
-                # Re-compute queue-ahead from the new snapshot so that
-                # better-priced levels that disappeared between snapshots
-                # (filled or cancelled by external participants) correctly
-                # advance our queue position.  Taking min(old, new) keeps
-                # the position monotonically advancing — new entrants at
-                # better prices between snapshots do not push us back.
-                try:
-                    new_queue = _qa(
-                        bids=new_book.snapshot.bids,
-                        asks=new_book.snapshot.asks,
-                        side=ord_.side,
-                        limit_price=ord_.price,
-                    )
-                except Exception:  # noqa: BLE001
-                    continue
-                ord_.queue_ahead_shares = min(
-                    float(ord_.queue_ahead_shares),
-                    max(0.0, new_queue),
+                side_norm = (ord_.side or "").upper()
+                is_buy = side_norm == "BUY"
+                limit_price = float(ord_.price)
+                old_levels = old_book.snapshot.bids if is_buy else old_book.snapshot.asks
+                new_levels = new_book.snapshot.bids if is_buy else new_book.snapshot.asks
+                new_depth_by_price = {float(lvl.price): float(lvl.size or 0.0) for lvl in new_levels}
+                own_consumed_by_price = old_book.consumed_bids if is_buy else old_book.consumed_asks
+                external_consumed = 0.0
+                for lvl in old_levels:
+                    price = float(lvl.price)
+                    if is_buy:
+                        if price + 1e-12 < limit_price:
+                            continue
+                    elif price - 1e-12 > limit_price:
+                        continue
+                    old_depth = float(lvl.size or 0.0)
+                    new_depth = new_depth_by_price.get(price, 0.0)
+                    own_consumed = float(own_consumed_by_price.get(price, 0.0))
+                    external_consumed += max(0.0, (old_depth - new_depth) - own_consumed)
+                ord_.queue_ahead_shares = max(
+                    0.0,
+                    float(ord_.queue_ahead_shares) - external_consumed,
                 )
 
         # 3. Process orders newly admitted to the venue
