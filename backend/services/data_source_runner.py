@@ -7,6 +7,7 @@ import inspect
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import MethodType
 from typing import Any
 
 from sqlalchemy import delete, desc, func, select, tuple_
@@ -196,6 +197,14 @@ def _parse_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is not None:
         return parsed.astimezone(timezone.utc).replace(tzinfo=None)
     return parsed
+
+
+def _source_parse_datetime(_self: Any, value: Any) -> datetime | None:
+    return _parse_datetime(value)
+
+
+def _install_source_datetime_parser(instance: Any) -> None:
+    instance._parse_datetime = MethodType(_source_parse_datetime, instance)
 
 
 def _json_safe(value: Any) -> Any:
@@ -476,6 +485,7 @@ async def run_data_source(
                 class_name=source_class_name,
             )
         instance = runtime.instance
+        _install_source_datetime_parser(instance)
 
         async with release_conn(session):
             if hasattr(instance, "fetch_async"):
@@ -655,7 +665,7 @@ async def run_data_source(
 
         if runtime is not None:
             runtime.run_count += 1
-            runtime.last_run = datetime.now(timezone.utc)
+            runtime.last_run = _utcnow_naive()
             runtime.last_error = None
 
         source.status = "loaded"

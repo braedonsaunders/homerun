@@ -643,6 +643,39 @@ async def get_trader_signal_sequence_cursor(session, *, trader_id):
     return hot_state.get_signal_sequence_cursor(trader_id, "live")
 
 
+def _session_has_pending_writes(session: Any) -> bool:
+    for attr in ("new", "dirty", "deleted"):
+        try:
+            if getattr(session, attr, None):
+                return True
+        except Exception:
+            return True
+    return False
+
+
+def _session_in_transaction(session: Any) -> bool:
+    in_transaction = getattr(session, "in_transaction", None)
+    if callable(in_transaction):
+        return bool(in_transaction())
+    return bool(in_transaction)
+
+
+async def _release_clean_signal_read_transaction(session: Any, rows: list[Any]) -> None:
+    if _session_has_pending_writes(session):
+        return
+
+    expunge = getattr(session, "expunge", None)
+    if callable(expunge):
+        for row in rows:
+            try:
+                expunge(row)
+            except Exception:
+                continue
+
+    if _session_in_transaction(session):
+        await session.rollback()
+
+
 async def list_unconsumed_trade_signals(
     session,
     *,
@@ -698,7 +731,7 @@ async def list_unconsumed_trade_signals(
     if is_db_pressure_active() or current_backpressure_level() >= 0.5:
         return []
     try:
-        return await _list_unconsumed_trade_signals_authoritative(
+        rows = await _list_unconsumed_trade_signals_authoritative(
             session,
             trader_id=str(trader_id or ""),
             sources=list(sources or []),
@@ -710,6 +743,8 @@ async def list_unconsumed_trade_signals(
             exclude_market_ids=list(normalized_excluded_market_ids),
             limit=int(limit),
         )
+        await _release_clean_signal_read_transaction(session, rows)
+        return rows
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
         maybe_mark_db_pressure(exc, component="trader_orchestrator_signals", ttl_seconds=60.0)
         raise
@@ -1491,6 +1526,7 @@ async def _build_triggered_trade_signals(
             exclude_market_ids=list(exclude_market_ids or []),
             limit=max(len(ordered_ids), int(limit)),
         )
+        await _release_clean_signal_read_transaction(session, eligible_rows)
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
         maybe_mark_db_pressure(exc, component="trader_orchestrator_trigger_signals", ttl_seconds=60.0)
         eligible_rows = []

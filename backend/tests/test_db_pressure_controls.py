@@ -1,6 +1,7 @@
 import asyncio
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -59,6 +60,57 @@ def test_data_source_retention_throttle_is_per_source(monkeypatch):
 
     data_source_runner._retention_last_applied_mono["source-a"] -= 11.0
     assert data_source_runner._retention_due("source-a") is True
+
+
+def test_data_source_runner_installs_naive_datetime_parser():
+    instance = SimpleNamespace()
+
+    data_source_runner._install_source_datetime_parser(instance)
+
+    parsed = instance._parse_datetime("2026-05-12T04:45:00Z")
+
+    assert parsed is not None
+    assert parsed.tzinfo is None
+
+
+@pytest.mark.asyncio
+async def test_trader_signal_db_fallback_releases_clean_read_transaction(monkeypatch):
+    from workers import trader_orchestrator_worker as worker
+
+    rows = [SimpleNamespace(id="signal-1")]
+
+    class EmptyIntentRuntime:
+        async def list_unconsumed_signals(self, **_kwargs):
+            return []
+
+    async def fake_authoritative(_session, **_kwargs):
+        return rows
+
+    monkeypatch.setattr(worker, "get_intent_runtime", lambda: EmptyIntentRuntime())
+    monkeypatch.setattr(worker, "is_db_pressure_active", lambda: False)
+    monkeypatch.setattr(worker, "current_backpressure_level", lambda: 0.0)
+    monkeypatch.setattr(worker, "_list_unconsumed_trade_signals_authoritative", fake_authoritative)
+
+    session = SimpleNamespace(
+        new=[],
+        dirty=[],
+        deleted=[],
+        in_transaction=lambda: True,
+        expunge=Mock(),
+        rollback=AsyncMock(),
+    )
+
+    result = await worker.list_unconsumed_trade_signals(
+        session,
+        trader_id="trader-1",
+        sources=["scanner"],
+        statuses=["pending"],
+        limit=1,
+    )
+
+    assert result == rows
+    session.expunge.assert_called_once_with(rows[0])
+    session.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio
