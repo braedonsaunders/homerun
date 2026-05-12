@@ -215,6 +215,36 @@ async def test_get_balance_probes_signature_types_and_picks_non_zero_bucket():
 
 
 @pytest.mark.asyncio
+async def test_buy_pre_submit_gate_force_probes_signature_types_when_current_bucket_is_short(monkeypatch):
+    monkeypatch.setattr(settings, "MIN_ACCOUNT_BALANCE_USD", 50.0)
+
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = "0x1234567890abcdef1234567890abcdef12345678"
+    service._proxy_funder_address = service._wallet_address
+    service._balance_signature_type = 0
+    service._client = _BalanceClient(
+        {
+            0: {"balance": "12.0", "allowance": "12.0"},
+            1: {"balance": "165.0", "allowance": "165.0"},
+            2: {"balance": "12.0", "allowance": "12.0"},
+        },
+        builder_signature_type=0,
+    )
+    service.refresh_collateral_balance_allowance = AsyncMock(return_value=True)
+
+    gate_ok, gate_error = await service._enforce_buy_pre_submit_gate(
+        token_id="token-123",
+        required_notional_usd=Decimal("4.45"),
+    )
+
+    assert gate_ok is True
+    assert gate_error is None
+    assert service._balance_signature_type == 1
+    assert service._client.builder.signature_type == 1
+
+
+@pytest.mark.asyncio
 async def test_prepare_sell_balance_allowance_selects_signature_type_with_conditional_balance(monkeypatch):
     _install_balance_allowance_modules(monkeypatch)
 

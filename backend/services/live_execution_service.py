@@ -1172,7 +1172,7 @@ class LiveExecutionService:
         if force:
             self._balance_signature_type = None
 
-        balance = await self.get_balance()
+        balance = await self.get_balance(force_probe_all=force)
         if isinstance(balance, dict) and balance.get("error"):
             logger.warning("Signature refresh failed from balance probe: %s", balance["error"])
             return False
@@ -1796,18 +1796,17 @@ class LiveExecutionService:
         if available >= required_total_usdc:
             return True, None
 
-        if collateral_balance >= required_total_usdc and available < required_total_usdc:
-            await self.refresh_collateral_balance_allowance()
-            self._invalidate_balance_cache()
-            refreshed_balance = await self.get_balance()
-            refreshed_available_raw = safe_float(refreshed_balance.get("available")) if isinstance(refreshed_balance, dict) else None
-            refreshed_balance_raw = safe_float(refreshed_balance.get("balance")) if isinstance(refreshed_balance, dict) else None
-            if refreshed_available_raw is not None:
-                available = max(ZERO, _to_decimal(refreshed_available_raw))
-            if refreshed_balance_raw is not None:
-                collateral_balance = max(ZERO, _to_decimal(refreshed_balance_raw))
-            if available >= required_total_usdc:
-                return True, None
+        await self.refresh_collateral_balance_allowance()
+        self._invalidate_balance_cache()
+        refreshed_balance = await self.get_balance(force_probe_all=True)
+        refreshed_available_raw = safe_float(refreshed_balance.get("available")) if isinstance(refreshed_balance, dict) else None
+        refreshed_balance_raw = safe_float(refreshed_balance.get("balance")) if isinstance(refreshed_balance, dict) else None
+        if refreshed_available_raw is not None:
+            available = max(ZERO, _to_decimal(refreshed_available_raw))
+        if refreshed_balance_raw is not None:
+            collateral_balance = max(ZERO, _to_decimal(refreshed_balance_raw))
+        if available >= required_total_usdc:
+            return True, None
 
         signature_value_raw = balance.get("signature_type")
         signature_value = (
@@ -5824,13 +5823,14 @@ class LiveExecutionService:
         self._balance_cache = None
         self._balance_cache_at = 0.0
 
-    async def get_balance(self) -> dict:
+    async def get_balance(self, *, force_probe_all: bool = False) -> dict:
         """Get wallet balance.  Results are cached for a few seconds to avoid
         redundant CLOB API round-trips within the same order pipeline."""
         import time as _time
 
         if (
-            self._balance_cache is not None
+            not force_probe_all
+            and self._balance_cache is not None
             and (_time.monotonic() - self._balance_cache_at) < _BALANCE_CACHE_TTL_SECONDS
         ):
             return self._balance_cache
@@ -5931,7 +5931,7 @@ class LiveExecutionService:
                 primary_snapshot = None
 
             best_snapshot = primary_snapshot
-            needs_probe = primary_snapshot is None or (
+            needs_probe = force_probe_all or primary_snapshot is None or (
                 primary_snapshot["balance"] <= 0.0 and primary_snapshot["available"] <= 0.0
             )
 
@@ -5949,12 +5949,12 @@ class LiveExecutionService:
                     if best_snapshot is None:
                         best_snapshot = candidate_snapshot
                         continue
-                    if candidate_snapshot["balance"] > best_snapshot["balance"]:
+                    if candidate_snapshot["available"] > best_snapshot["available"]:
                         best_snapshot = candidate_snapshot
                         continue
                     if (
-                        candidate_snapshot["balance"] == best_snapshot["balance"]
-                        and candidate_snapshot["available"] > best_snapshot["available"]
+                        candidate_snapshot["available"] == best_snapshot["available"]
+                        and candidate_snapshot["balance"] > best_snapshot["balance"]
                     ):
                         best_snapshot = candidate_snapshot
 
