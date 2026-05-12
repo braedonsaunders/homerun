@@ -68,6 +68,12 @@ from models.database import (
     BookDeltaEvent,
     MarketMicrostructureSnapshot,
 )
+from services.live_pressure import (
+    current_backpressure_level,
+    is_db_pressure_active,
+    maybe_mark_db_pressure,
+    publish_backpressure,
+)
 from utils.logger import get_logger
 
 
@@ -112,6 +118,11 @@ _DELTA_QUEUE_MAX = 10000              # 2x snapshot queue — deltas are higher 
 _SNAPSHOT_FLUSH_BATCH = 250
 _DELTA_FLUSH_BATCH = 500
 _FLUSH_INTERVAL_SECONDS = 0.20
+_QUEUE_HIGH_WATER_FRACTION = 0.80
+_PRESSURE_SHED_LEVEL = 0.70
+_SLOW_FLUSH_BACKPRESSURE_MS = 1500.0
+_PRESSURE_PROBE_INTERVAL_SECONDS = 0.25
+_PRESSURE_SHED_CACHE_SECONDS = 0.50
 
 # Reject reasons surfaced via get_data_quality_stats().
 _REJECT_REASONS = (
@@ -215,6 +226,9 @@ class LiveMarketDataIngestor:
         self._reject_counts: dict[str, int] = {r: 0 for r in _REJECT_REASONS}
         self._sequence_gaps = 0
         self._flush_latency_samples: list[float] = []  # bounded sliding window
+        self._last_pressure_log_mono = 0.0
+        self._last_pressure_probe_mono = 0.0
+        self._pressure_shed_until_mono = 0.0
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -662,10 +676,15 @@ class LiveMarketDataIngestor:
         queue = self._snapshot_queue
         if queue is None:
             return
+        if self._should_shed_persistence(queue):
+            self._snapshot_dropped += 1
+            self._publish_queue_pressure("snapshot")
+            return
         try:
             queue.put_nowait(row)
         except asyncio.QueueFull:
             self._snapshot_dropped += 1
+            self._publish_queue_pressure("snapshot")
             if self._snapshot_dropped % 1000 == 1:
                 logger.warning(
                     "LiveMarketDataIngestor snapshot queue full",
@@ -676,15 +695,61 @@ class LiveMarketDataIngestor:
         queue = self._delta_queue
         if queue is None:
             return
+        if self._should_shed_persistence(queue):
+            self._delta_dropped += 1
+            self._publish_queue_pressure("delta")
+            return
         try:
             queue.put_nowait(row)
         except asyncio.QueueFull:
             self._delta_dropped += 1
+            self._publish_queue_pressure("delta")
             if self._delta_dropped % 1000 == 1:
                 logger.warning(
                     "LiveMarketDataIngestor delta queue full",
                     dropped=self._delta_dropped,
                 )
+
+    def _should_shed_persistence(self, queue: asyncio.Queue) -> bool:
+        now_mono = time.monotonic()
+        if now_mono < self._pressure_shed_until_mono:
+            return True
+        try:
+            maxsize = int(queue.maxsize or 0)
+            if maxsize > 0 and queue.qsize() >= int(maxsize * _QUEUE_HIGH_WATER_FRACTION):
+                self._pressure_shed_until_mono = max(
+                    self._pressure_shed_until_mono,
+                    now_mono + _PRESSURE_SHED_CACHE_SECONDS,
+                )
+                return True
+        except Exception:
+            return False
+        if now_mono - self._last_pressure_probe_mono < _PRESSURE_PROBE_INTERVAL_SECONDS:
+            return False
+        self._last_pressure_probe_mono = now_mono
+        if is_db_pressure_active() or current_backpressure_level() >= _PRESSURE_SHED_LEVEL:
+            self._pressure_shed_until_mono = now_mono + _PRESSURE_SHED_CACHE_SECONDS
+            return True
+        return False
+
+    def _publish_queue_pressure(self, kind: str) -> None:
+        publish_backpressure(
+            "market_data_ingestor",
+            level=0.85,
+            reason=f"{kind}_persistence_shed",
+        )
+        now_mono = time.monotonic()
+        if now_mono - self._last_pressure_log_mono < 30.0:
+            return
+        self._last_pressure_log_mono = now_mono
+        logger.warning(
+            "LiveMarketDataIngestor shedding persistence under pressure",
+            kind=kind,
+            snapshot_dropped=self._snapshot_dropped,
+            delta_dropped=self._delta_dropped,
+            backpressure_level=current_backpressure_level(),
+            db_pressure_active=is_db_pressure_active(),
+        )
 
     # ── Persistence ─────────────────────────────────────────────────────
 
@@ -713,6 +778,18 @@ class LiveMarketDataIngestor:
         kind: str,
     ) -> None:
         rows: list[Any] = []
+        if self._should_shed_persistence(queue):
+            dropped = 0
+            while dropped < batch and not queue.empty():
+                queue.get_nowait()
+                dropped += 1
+            if dropped:
+                if kind == "snapshot":
+                    self._snapshot_dropped += dropped
+                elif kind == "delta":
+                    self._delta_dropped += dropped
+                self._publish_queue_pressure(kind)
+            return
         while len(rows) < batch and not queue.empty():
             rows.append(queue.get_nowait())
         if not rows:
@@ -733,25 +810,21 @@ class LiveMarketDataIngestor:
         try:
             await asyncio.shield(_do_write())
         except BaseException as exc:
-            requeued = 0
-            dropped = 0
-            for row in rows:
-                try:
-                    queue.put_nowait(row)
-                    requeued += 1
-                except asyncio.QueueFull:
-                    dropped += 1
-            if dropped:
-                if kind == "snapshot":
-                    self._snapshot_dropped += dropped
-                elif kind == "delta":
-                    self._delta_dropped += dropped
+            if kind == "snapshot":
+                self._snapshot_dropped += len(rows)
+            elif kind == "delta":
+                self._delta_dropped += len(rows)
+            maybe_mark_db_pressure(exc, component=f"market_data_ingestor:{kind}", ttl_seconds=45.0)
+            publish_backpressure(
+                "market_data_ingestor",
+                level=0.95,
+                reason=f"{kind}_persist_failed:{type(exc).__name__}",
+            )
             logger.warning(
-                f"LiveMarketDataIngestor failed to persist {kind} batch",
+                f"LiveMarketDataIngestor dropped failed {kind} batch",
                 exc_info=exc,
                 rows=len(rows),
-                requeued=requeued,
-                dropped=dropped,
+                dropped=len(rows),
             )
             if isinstance(exc, asyncio.CancelledError):
                 raise
@@ -761,6 +834,12 @@ class LiveMarketDataIngestor:
         self._flush_latency_samples.append(latency_ms)
         if len(self._flush_latency_samples) > 100:
             self._flush_latency_samples = self._flush_latency_samples[-100:]
+        if latency_ms >= _SLOW_FLUSH_BACKPRESSURE_MS:
+            publish_backpressure(
+                "market_data_ingestor",
+                level=min(1.0, latency_ms / 5000.0),
+                reason=f"{kind}_flush_slow:{int(latency_ms)}ms",
+            )
 
     async def _drain(self, queue: asyncio.Queue | None, *, kind: str) -> None:
         if queue is None:

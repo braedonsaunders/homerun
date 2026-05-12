@@ -11,6 +11,7 @@ from utils.utcnow import utcnow, utcfromtimestamp
 
 from config import settings
 from models import Market, Event
+from services.live_pressure import publish_backpressure
 from utils.converters import coerce_bool as _coerce_bool
 from utils.rate_limiter import rate_limiter, endpoint_for_url
 from utils.logger import get_logger
@@ -501,6 +502,11 @@ class PolymarketClient:
                 pass
         backoff = min(backoff, _DATA_API_ENDPOINT_COOLDOWN_MAX_SECONDS)
         self._endpoint_cooldown_until[endpoint] = time.monotonic() + backoff
+        publish_backpressure(
+            f"polymarket:{endpoint}",
+            level=min(1.0, 0.65 + (0.35 * min(attempts, 5) / 5.0)),
+            reason=f"429_cooldown:{round(backoff, 1)}s",
+        )
         _logger.warning(
             "Polymarket data-api 429 — applying endpoint cooldown",
             endpoint=endpoint,

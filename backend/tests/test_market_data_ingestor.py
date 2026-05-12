@@ -26,6 +26,14 @@ from services.market_data_ingestor import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _disable_global_pressure(monkeypatch):
+    monkeypatch.setattr("services.market_data_ingestor.current_backpressure_level", lambda: 0.0)
+    monkeypatch.setattr("services.market_data_ingestor.is_db_pressure_active", lambda: False)
+    monkeypatch.setattr("services.market_data_ingestor.maybe_mark_db_pressure", lambda *args, **kwargs: False)
+    monkeypatch.setattr("services.market_data_ingestor.publish_backpressure", lambda *args, **kwargs: None)
+
+
 # Synthetic order book object: supports both attr access and
 # dict-style (the ingestor handles both).
 class _Book:
@@ -327,6 +335,20 @@ def test_trade_buffer_bounded():
 # ── Stats surface ─────────────────────────────────────────────────────
 
 
+def test_record_trade_sheds_persistence_under_db_pressure(monkeypatch):
+    ing = _ingestor_with_queues()
+    monkeypatch.setattr("services.market_data_ingestor.is_db_pressure_active", lambda: True)
+
+    ing.record_trade(
+        token_id="tok",
+        trade={"price": 0.42, "size": 10, "side": "BUY", "timestamp": time.time()},
+    )
+
+    stats = ing.get_data_quality_stats()
+    assert ing._snapshot_queue.qsize() == 0
+    assert stats["snapshot_queue_dropped"] == 1
+
+
 def test_stats_after_mixed_traffic():
     ing = _ingestor_with_queues()
     book = _Book(bids=[_level(0.50, 100)], asks=[_level(0.51, 80)])
@@ -345,7 +367,7 @@ def test_stats_after_mixed_traffic():
 
 
 @pytest.mark.asyncio
-async def test_flush_batch_requeues_rows_after_commit_timeout(monkeypatch):
+async def test_flush_batch_drops_rows_after_commit_timeout(monkeypatch):
     ing = _ingestor_with_queues()
     row = object()
     ing._snapshot_queue.put_nowait(row)
@@ -371,5 +393,6 @@ async def test_flush_batch_requeues_rows_after_commit_timeout(monkeypatch):
 
     await ing._flush_batch(queue=ing._snapshot_queue, batch=10, kind="snapshot")
 
-    assert ing._snapshot_queue.qsize() == 1
-    assert ing._snapshot_queue.get_nowait() is row
+    stats = ing.get_data_quality_stats()
+    assert ing._snapshot_queue.qsize() == 0
+    assert stats["snapshot_queue_dropped"] == 1

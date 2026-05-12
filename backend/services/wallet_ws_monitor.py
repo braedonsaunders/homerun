@@ -32,6 +32,7 @@ from sqlalchemy import Column, String, Float, Integer, Index
 
 from config import settings
 from models.database import Base, AsyncSessionLocal, DateTime
+from services.live_pressure import maybe_mark_db_pressure
 from services.shared_state import _commit_with_retry
 from utils.logger import get_logger
 
@@ -1777,24 +1778,28 @@ class WalletWebSocketMonitor:
             event: The WalletTradeEvent to persist.
         """
         try:
-            async with AsyncSessionLocal() as session:
-                db_event = WalletMonitorEvent(
-                    id=str(uuid.uuid4()),
-                    wallet_address=event.wallet_address,
-                    token_id=event.token_id,
-                    side=event.side,
-                    size=event.size,
-                    price=event.price,
-                    tx_hash=event.tx_hash,
-                    order_hash=event.order_hash,
-                    log_index=event.log_index,
-                    block_number=event.block_number,
-                    detection_latency_ms=event.latency_ms,
-                    detected_at=event.detected_at,
-                )
-                session.add(db_event)
-                await _commit_with_retry(session)
+            async def _write() -> None:
+                async with AsyncSessionLocal() as session:
+                    db_event = WalletMonitorEvent(
+                        id=str(uuid.uuid4()),
+                        wallet_address=event.wallet_address,
+                        token_id=event.token_id,
+                        side=event.side,
+                        size=event.size,
+                        price=event.price,
+                        tx_hash=event.tx_hash,
+                        order_hash=event.order_hash,
+                        log_index=event.log_index,
+                        block_number=event.block_number,
+                        detection_latency_ms=event.latency_ms,
+                        detected_at=event.detected_at,
+                    )
+                    session.add(db_event)
+                    await _commit_with_retry(session)
+
+            await asyncio.shield(_write())
         except Exception as e:
+            maybe_mark_db_pressure(e, component="wallet_ws_monitor:persist_event", ttl_seconds=45.0)
             logger.error(
                 "Failed to persist wallet monitor event",
                 error_type=type(e).__name__,

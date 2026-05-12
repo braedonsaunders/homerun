@@ -788,7 +788,7 @@ async def _reseed_wallet_state_cache_from_rest() -> None:
             # Last-resort: use the wallet the cache was pinned to via the
             # user-channel WS credential wiring.  If that's also empty,
             # there is genuinely nothing to seed against.
-            cache_wallet = cache._wallet_address  # noqa: SLF001 — internal
+            cache_wallet = cache.wallet_address()
             if not cache_wallet:
                 logger.warning(
                     "WalletStateCache reseeder skipped: live_execution_service "
@@ -804,13 +804,17 @@ async def _reseed_wallet_state_cache_from_rest() -> None:
                 live_execution_service.get_last_init_error(),
             )
 
+    cache_wallet = cache.wallet_address()
     wallet_address = (
-        getattr(live_execution_service, "_proxy_funder_address", None)
+        # Once the user-channel feed pins the cache wallet, reseed that
+        # wallet consistently.  The live client can temporarily expose
+        # the EOA while the proxy funder is still resolving; reseeding
+        # against that transient address repeatedly fights the cache pin
+        # and leaves the hot path reading stale wallet state.
+        cache_wallet
+        or getattr(live_execution_service, "_proxy_funder_address", None)
         or getattr(live_execution_service, "_wallet_address", None)
         or getattr(live_execution_service, "_eoa_address", None)
-        # Final fallback: the cache's own pinned wallet, set by
-        # polymarket_user_feed.configure_credentials at startup.
-        or cache._wallet_address  # noqa: SLF001 — internal
     )
     if not wallet_address:
         logger.warning(

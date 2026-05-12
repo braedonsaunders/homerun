@@ -1056,6 +1056,7 @@ _LATENCY_SLA_SUBSTAGE_KEYS: tuple[str, ...] = (
 _LATENCY_SLA_PER_SAMPLE_WARN_MS = 5000
 _LATENCY_SLA_PER_SAMPLE_WARN_COOLDOWN_SECONDS = 30.0
 _latency_per_sample_warn_logged_at: dict[str, datetime] = {}
+_ORCHESTRATOR_SNAPSHOT_PRESSURE_SKIP_LEVEL = 0.55
 _OPEN_ORDER_TIMEOUT_CLEANUP_FAILURE_COOLDOWN_SECONDS = 30
 _LIVE_PROVIDER_BLOCK_EVENT_COOLDOWN_SECONDS = 60
 _LIVE_RISK_CLAMP_EVENT_COOLDOWN_SECONDS = 300
@@ -1651,6 +1652,13 @@ def _session_dialect_name(session: Any) -> str:
         return ""
 
 
+def _session_has_pending_writes(session: Any) -> bool:
+    try:
+        return bool(getattr(session, "new", None) or getattr(session, "dirty", None) or getattr(session, "deleted", None))
+    except Exception:
+        return True
+
+
 async def _write_orchestrator_snapshot_best_effort(
     session: Any,
     *,
@@ -1670,6 +1678,10 @@ async def _write_orchestrator_snapshot_best_effort(
     )
     if not persist:
         return
+    if not _session_has_pending_writes(session):
+        pressure_level = current_backpressure_level()
+        if is_db_pressure_active() or pressure_level >= _ORCHESTRATOR_SNAPSHOT_PRESSURE_SKIP_LEVEL:
+            return
     try:
         await write_orchestrator_snapshot(session, **snapshot_kwargs)
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:

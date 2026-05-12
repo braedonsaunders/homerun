@@ -33,6 +33,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import load_only
 
 from models.database import AppSettings, DiscoveredWallet, AsyncSessionLocal
+from services.live_pressure import current_backpressure_level, is_db_pressure_active
 from services.polymarket import polymarket_client
 from services.pause_state import global_pause_state
 from utils.converters import coerce_bool as _coerce_bool
@@ -148,6 +149,15 @@ DISCOVERY_DEFAULT_MAX_MARKETS_PER_RUN = 100
 DISCOVERY_DEFAULT_MAX_WALLETS_PER_MARKET = 50
 DISCOVERY_DEFAULT_RECENT_MARKET_LOOKBACK_MINUTES = 180
 DISCOVERY_DEFAULT_MAINTENANCE_REFRESH_BATCH = 500
+DISCOVERY_STEADY_MAX_MARKETS_PER_RUN = 40
+DISCOVERY_STEADY_MAX_WALLETS_PER_MARKET = 20
+DISCOVERY_STEADY_MAX_ANALYSIS_PER_RUN = 120
+DISCOVERY_PRESSURE_MAX_MARKETS_PER_RUN = 10
+DISCOVERY_PRESSURE_MAX_WALLETS_PER_MARKET = 5
+DISCOVERY_PRESSURE_MAX_ANALYSIS_PER_RUN = 25
+DISCOVERY_STEADY_MARKET_CONCURRENCY = 4
+DISCOVERY_STEADY_ANALYSIS_CONCURRENCY = 3
+DISCOVERY_PRESSURE_CONCURRENCY = 1
 DISCOVERY_LEADERBOARD_PAGE_SIZE = 50
 DISCOVERY_LEADERBOARD_MIN_REQUESTS_PER_RUN = 6
 DISCOVERY_LEADERBOARD_MAX_REQUESTS_PER_RUN = 24
@@ -2633,10 +2643,30 @@ class WalletDiscoveryEngine:
             delay_between_markets = DISCOVERY_DEFAULT_DELAY_BETWEEN_MARKETS
             delay_between_wallets = DISCOVERY_DEFAULT_DELAY_BETWEEN_WALLETS
 
+        pressure_level = current_backpressure_level()
+        pressure_active = is_db_pressure_active() or pressure_level >= 0.5
+        if pressure_active:
+            max_markets = min(max_markets, DISCOVERY_PRESSURE_MAX_MARKETS_PER_RUN)
+            max_wallets_per_market = min(max_wallets_per_market, DISCOVERY_PRESSURE_MAX_WALLETS_PER_MARKET)
+            market_concurrency = DISCOVERY_PRESSURE_CONCURRENCY
+            analysis_concurrency = DISCOVERY_PRESSURE_CONCURRENCY
+            analysis_run_cap = DISCOVERY_PRESSURE_MAX_ANALYSIS_PER_RUN
+        else:
+            max_markets = min(max_markets, DISCOVERY_STEADY_MAX_MARKETS_PER_RUN)
+            max_wallets_per_market = min(max_wallets_per_market, DISCOVERY_STEADY_MAX_WALLETS_PER_MARKET)
+            market_concurrency = DISCOVERY_STEADY_MARKET_CONCURRENCY
+            analysis_concurrency = DISCOVERY_STEADY_ANALYSIS_CONCURRENCY
+            analysis_run_cap = DISCOVERY_STEADY_MAX_ANALYSIS_PER_RUN
+
         logger.info(
             "Starting discovery run",
             max_markets=max_markets,
             max_wallets_per_market=max_wallets_per_market,
+            market_concurrency=market_concurrency,
+            analysis_concurrency=analysis_concurrency,
+            analysis_run_cap=analysis_run_cap,
+            pressure_active=pressure_active,
+            pressure_level=round(pressure_level, 3),
         )
 
         try:
@@ -2688,7 +2718,7 @@ class WalletDiscoveryEngine:
             market_results = await _run_with_bounded_workers(
                 list(markets),
                 _discover_one_market,
-                concurrency=15,
+                concurrency=market_concurrency,
                 on_error=_on_market_error,
             )
             for result in market_results:
@@ -2759,10 +2789,13 @@ class WalletDiscoveryEngine:
                 stale_addresses,
                 maintenance_addresses,
             )
+            if len(addresses_to_analyze) > analysis_run_cap:
+                addresses_to_analyze = addresses_to_analyze[:analysis_run_cap]
 
             logger.info(
                 "Wallets requiring analysis",
                 total=len(addresses_to_analyze),
+                analysis_run_cap=analysis_run_cap,
                 priority_total=priority_counts.get("priority_total", 0),
                 priority_top_pool_unanalyzed=priority_counts.get("top_pool_unanalyzed", 0),
                 priority_smart_pool_unanalyzed=priority_counts.get("smart_pool_unanalyzed", 0),
@@ -2819,7 +2852,7 @@ class WalletDiscoveryEngine:
             await _run_with_bounded_workers(
                 list(addresses_to_analyze),
                 _analyze_one,
-                concurrency=12,
+                concurrency=analysis_concurrency,
                 on_error=_on_analysis_error,
             )
             logger.info(

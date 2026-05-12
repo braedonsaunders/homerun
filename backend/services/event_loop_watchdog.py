@@ -22,6 +22,7 @@ import asyncio
 import time
 from typing import Optional
 
+from services.live_pressure import publish_backpressure
 from utils.logger import get_logger
 
 logger = get_logger("event_loop_watchdog")
@@ -311,6 +312,11 @@ class _Watchdog:
             stalls_observed=self._stalls_observed,
             max_stall_seconds=round(self._max_stall_seconds, 3),
             task_groups=top_summary,
+        )
+        publish_backpressure(
+            "event_loop_watchdog",
+            level=min(1.0, max(0.5, stall_seconds / 2.0)),
+            reason=f"stall:{round(stall_seconds, 3)}s",
         )
 
     def status_snapshot(self) -> dict:

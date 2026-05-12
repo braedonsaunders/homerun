@@ -200,7 +200,12 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _source_parse_datetime(_self: Any, value: Any) -> datetime | None:
-    return _parse_datetime(value)
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc)
+    return parsed.replace(tzinfo=timezone.utc)
 
 
 def _install_source_datetime_parser(instance: Any) -> None:
