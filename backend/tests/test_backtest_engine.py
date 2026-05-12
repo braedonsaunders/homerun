@@ -512,6 +512,19 @@ class TestMetrics:
         assert lo is not None and hi is not None
         assert lo <= point <= hi
 
+    def test_bootstrap_ci_caps_large_sample_work(self):
+        xs = [float(i % 17) for i in range(50_000)]
+        calls = 0
+
+        def statistic(xs_):
+            nonlocal calls
+            calls += 1
+            return sum(xs_) / len(xs_)
+
+        lo, hi = bootstrap_ci(xs, statistic=statistic, seed=42)
+        assert lo is not None and hi is not None
+        assert calls <= 125
+
     def test_max_drawdown_basic(self):
         eq = [
             (T0, 1000.0),

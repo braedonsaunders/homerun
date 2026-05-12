@@ -2508,6 +2508,35 @@ async def _build_replay_live_context(
     if model_probability is not None and selected_live is not None:
         live_edge = (model_probability - selected_live) * 100.0
 
+    payload = getattr(signal, "payload_json", None)
+    if isinstance(payload, str):
+        try:
+            import json as _json
+            payload = _json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    seconds_left: float | None = None
+    synthetic_end_time: str | None = None
+    for key in ("end_time", "resolution_date", "event_end_time", "market_end_time"):
+        raw_end = payload.get(key) or pdata.get(key)
+        if not raw_end:
+            continue
+        try:
+            parsed_end = datetime.fromisoformat(str(raw_end).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if parsed_end.tzinfo is None:
+            parsed_end = parsed_end.replace(tzinfo=timezone.utc)
+        det = detected_at if detected_at.tzinfo is not None else detected_at.replace(tzinfo=timezone.utc)
+        ttl = (parsed_end - det).total_seconds()
+        if ttl > 0.0:
+            seconds_left = float(ttl)
+            synthetic_end_time = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
+            break
+    is_live = bool(seconds_left is not None and seconds_left > 0.0)
+
     return {
         "available": bool(selected_live is not None),
         "market_id": str(getattr(signal, "market_id", "") or ""),
@@ -2517,6 +2546,10 @@ async def _build_replay_live_context(
         "live_edge_percent": live_edge,
         "model_probability": model_probability,
         "signal_entry_price": float(getattr(signal, "entry_price", 0.0) or 0.0),
+        "seconds_left": seconds_left,
+        "is_live": is_live,
+        "is_current": is_live,
+        "end_time": synthetic_end_time,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "live_market_fetched_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -3855,6 +3888,8 @@ async def run_execution_backtest(
     def _safe_float_cfg(key: str, default: float | None) -> float | None:
         v = strategy_cfg.get(key)
         if v is None:
+            v = merged_runtime_config.get(key)
+        if v is None:
             return default
         try:
             f = float(v)
@@ -3872,6 +3907,8 @@ async def run_execution_backtest(
     # leave unlimited.  Live's default is 50 per trader (not per
     # strategy); we use the strategy-level value when present.
     open_pos_cap = strategy_cfg.get("max_open_positions")
+    if open_pos_cap is None:
+        open_pos_cap = merged_runtime_config.get("max_open_positions")
     if isinstance(open_pos_cap, (int, float)) and open_pos_cap > 0:
         open_pos_cap = int(open_pos_cap)
     else:
@@ -4469,6 +4506,14 @@ async def run_execution_backtest(
             effective_risk_limits = {
                 "max_trade_notional_usd": (
                     float(per_trade_cap) if per_trade_cap is not None else float(initial_capital_usd) * 0.10
+                ),
+                "max_per_market_exposure_usd": _safe_float_cfg(
+                    "max_per_market_exposure_usd",
+                    None,
+                ),
+                "max_position_notional_usd": _safe_float_cfg(
+                    "max_position_notional_usd",
+                    None,
                 ),
                 "max_open_positions": (
                     int(open_pos_cap) if open_pos_cap is not None else 50
@@ -5087,6 +5132,12 @@ async def run_execution_backtest(
                 cap_parts.append(f"gross_exposure_max=${gross_cap:.0f}")
             if per_trade_cap is not None:
                 cap_parts.append(f"per_trade_max=${per_trade_cap:.0f}")
+            per_market_cap = _safe_float_cfg("max_per_market_exposure_usd", None)
+            if per_market_cap is not None:
+                cap_parts.append(f"per_market_max=${per_market_cap:.0f}")
+            position_cap = _safe_float_cfg("max_position_notional_usd", None)
+            if position_cap is not None:
+                cap_parts.append(f"position_max=${position_cap:.0f}")
             if open_pos_cap is not None:
                 cap_parts.append(f"open_positions_max={open_pos_cap}")
             if cap_parts:
@@ -5094,24 +5145,10 @@ async def run_execution_backtest(
                     "risk caps from strategy config — " + " · ".join(cap_parts)
                 )
 
-            if not intents and tokens:
-                intents.append(
-                    TradeIntent(
-                        intent_id=f"seed_{tokens[0]}",
-                        emitted_at=start_dt,
-                        token_id=tokens[0],
-                        side="BUY",
-                        size=10.0,
-                        limit_price=0.50,
-                        tif="IOC",
-                        post_only=False,
-                        strategy_slug=slug,
-                        meta={"source": "seed"},
-                    )
-                )
+            if not intents:
                 result.validation_warnings.append(
-                    "No historical opportunities matched window/tokens; ran a "
-                    "single seed intent."
+                    "No historical opportunities survived evaluate/platform gates; "
+                    "execution engine ran zero synthetic orders."
                 )
             result.n_intents = len(intents)
     except Exception as e:

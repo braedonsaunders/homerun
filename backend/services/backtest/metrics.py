@@ -96,6 +96,8 @@ def bootstrap_ci(
     n_resamples: int = 2000,
     confidence: float = 0.95,
     seed: Optional[int] = None,
+    max_sample_size: int = 2000,
+    max_resample_draws: int = 250_000,
 ) -> tuple[Optional[float], Optional[float]]:
     """Percentile bootstrap CI for ``statistic(samples)``.
 
@@ -105,9 +107,15 @@ def bootstrap_ci(
     n = len(samples)
     if n < 8:
         return None, None
+    sample_list = list(samples)
+    if max_sample_size > 0 and n > max_sample_size:
+        step = (n - 1) / float(max_sample_size - 1)
+        sample_list = [sample_list[int(round(i * step))] for i in range(max_sample_size)]
+        n = len(sample_list)
+    if max_resample_draws > 0:
+        n_resamples = max(100, min(int(n_resamples), int(max_resample_draws // max(1, n))))
     rng = random.Random(seed)
     stats: list[float] = []
-    sample_list = list(samples)
     for _ in range(int(n_resamples)):
         resample = [sample_list[rng.randrange(n)] for _ in range(n)]
         try:
