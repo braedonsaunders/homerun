@@ -588,9 +588,8 @@ class MatchingEngine:
                 limit_price = float(ord_.price)
                 old_levels = old_book.snapshot.bids if is_buy else old_book.snapshot.asks
                 new_levels = new_book.snapshot.bids if is_buy else new_book.snapshot.asks
-                new_depth_by_price = {float(lvl.price): float(lvl.size or 0.0) for lvl in new_levels}
                 own_consumed_by_price = old_book.consumed_bids if is_buy else old_book.consumed_asks
-                external_consumed = 0.0
+                old_eligible_depth = 0.0
                 for lvl in old_levels:
                     price = float(lvl.price)
                     if is_buy:
@@ -598,10 +597,26 @@ class MatchingEngine:
                             continue
                     elif price - 1e-12 > limit_price:
                         continue
-                    old_depth = float(lvl.size or 0.0)
-                    new_depth = new_depth_by_price.get(price, 0.0)
-                    own_consumed = float(own_consumed_by_price.get(price, 0.0))
-                    external_consumed += max(0.0, (old_depth - new_depth) - own_consumed)
+                    old_eligible_depth += max(0.0, float(lvl.size or 0.0))
+                new_eligible_depth = 0.0
+                for lvl in new_levels:
+                    price = float(lvl.price)
+                    if is_buy:
+                        if price + 1e-12 < limit_price:
+                            continue
+                    elif price - 1e-12 > limit_price:
+                        continue
+                    new_eligible_depth += max(0.0, float(lvl.size or 0.0))
+                own_consumed = 0.0
+                for price, size in own_consumed_by_price.items():
+                    price = float(price)
+                    if is_buy:
+                        if price + 1e-12 < limit_price:
+                            continue
+                    elif price - 1e-12 > limit_price:
+                        continue
+                    own_consumed += max(0.0, float(size or 0.0))
+                external_consumed = max(0.0, old_eligible_depth - new_eligible_depth - own_consumed)
                 ord_.queue_ahead_shares = max(
                     0.0,
                     float(ord_.queue_ahead_shares) - external_consumed,
