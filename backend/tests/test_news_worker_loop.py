@@ -199,10 +199,15 @@ async def test_worker_retries_cycle_after_db_disconnect(monkeypatch):
     recover_pool_mock = AsyncMock()
     monkeypatch.setattr(news_worker, "recover_pool", recover_pool_mock)
     monkeypatch.setattr(news_worker, "_last_pool_recovery_at_monotonic", 0.0)
+
+    async def sleep_until_retry_finishes(_delay):
+        if run_cycle_mock.await_count >= 2:
+            raise asyncio.CancelledError()
+
     monkeypatch.setattr(
         news_worker.asyncio,
         "sleep",
-        AsyncMock(side_effect=[None, asyncio.CancelledError(), asyncio.CancelledError()]),
+        AsyncMock(side_effect=sleep_until_retry_finishes),
     )
 
     with pytest.raises(asyncio.CancelledError):

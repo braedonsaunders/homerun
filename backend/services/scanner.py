@@ -28,6 +28,7 @@ from services.ws_feeds import get_feed_manager
 from services.quality_filter import quality_filter
 from services.data_events import DataEvent, EventType
 from services.event_dispatcher import event_dispatcher
+from services.live_pressure import is_db_pressure_active
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from utils.logger import get_logger
@@ -2446,6 +2447,8 @@ class ArbitrageScanner:
     async def _persist_market_history_for_opportunities(self, opportunities: list[Opportunity]) -> None:
         """Persist backfilled market history so other workers/routes can read it immediately."""
         if not opportunities:
+            return
+        if is_db_pressure_active():
             return
         history = self.get_market_history_for_opportunities(opportunities)
         if not history:

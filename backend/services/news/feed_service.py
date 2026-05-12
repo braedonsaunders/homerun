@@ -27,11 +27,12 @@ from services.shared_state import _commit_with_retry
 from config import settings
 from models.database import AsyncSessionLocal, DataSource
 from services.data_source_runner import run_data_source
+from services.live_pressure import is_db_pressure_active
 from utils.utcnow import utcnow
 
 logger = logging.getLogger(__name__)
 
-_MAX_SOURCE_FETCH_CONCURRENCY = 4
+_MAX_SOURCE_FETCH_CONCURRENCY = 2
 _MAX_IN_MEMORY_ARTICLES = 1000
 
 
@@ -255,7 +256,8 @@ class NewsFeedService:
                 queue.task_done()
                 await asyncio.sleep(0)
 
-        worker_count = max(1, min(_MAX_SOURCE_FETCH_CONCURRENCY, len(sources)))
+        concurrency_cap = 1 if is_db_pressure_active() else _MAX_SOURCE_FETCH_CONCURRENCY
+        worker_count = max(1, min(concurrency_cap, len(sources)))
         workers = [
             asyncio.create_task(_worker(), name=f"news-feed-source-{i}")
             for i in range(worker_count)

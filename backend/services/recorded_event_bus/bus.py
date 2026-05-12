@@ -53,7 +53,7 @@ from services.recorded_event_bus.envelope import (
 from services.recorded_event_bus.catalog import (
     TopicSpec,
     require_topic,
-    touch_published,
+    schedule_touch_published,
     touch_replayed,
 )
 
@@ -264,16 +264,12 @@ class RecordedEventBus:
         #     than guess from publish() calls.
         #   * memory topics: nothing to bookkeep — pure fan-out.
         if spec.storage_kind == "parquet":
-            t = asyncio.create_task(touch_published(event.topic, n_events=1))
-            self._dispatch_tasks.add(t)
-            t.add_done_callback(self._dispatch_tasks.discard)
+            schedule_touch_published(event.topic, n_events=1)
         elif spec.storage_kind == "sql_table":
             # touch_published with n_events=0 only updates the
             # last_published_at timestamp — the count stays accurate
             # against the underlying table.
-            t = asyncio.create_task(touch_published(event.topic, n_events=0))
-            self._dispatch_tasks.add(t)
-            t.add_done_callback(self._dispatch_tasks.discard)
+            schedule_touch_published(event.topic, n_events=0)
 
     async def publish_many(self, events: Iterable[RecordedEvent]) -> None:
         """Batch publish — same semantics as a loop over ``publish``
@@ -301,15 +297,9 @@ class RecordedEventBus:
                             )
             # Same counter semantics as publish() — see that docstring.
             if spec.storage_kind == "parquet":
-                t = asyncio.create_task(
-                    touch_published(topic, n_events=len(batch))
-                )
-                self._dispatch_tasks.add(t)
-                t.add_done_callback(self._dispatch_tasks.discard)
+                schedule_touch_published(topic, n_events=len(batch))
             elif spec.storage_kind == "sql_table":
-                t = asyncio.create_task(touch_published(topic, n_events=0))
-                self._dispatch_tasks.add(t)
-                t.add_done_callback(self._dispatch_tasks.discard)
+                schedule_touch_published(topic, n_events=0)
 
     async def _dispatch(self, event: RecordedEvent) -> None:
         """Fan out to live subscribers as tasks — never awaits a

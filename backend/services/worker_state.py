@@ -33,6 +33,9 @@ from utils.retry import is_retryable_db_error as _shared_is_retryable_db_error
 
 logger = get_logger("worker_state")
 
+_WORKER_SNAPSHOT_PRESSURE_MIN_INTERVAL_SECONDS = 15.0
+_worker_snapshot_last_write_mono: dict[str, float] = {}
+
 
 _COMMIT_RETRYABLE_MARKERS = (
     "deadlock detected",
@@ -785,6 +788,24 @@ async def write_worker_snapshot(
     stats: Optional[dict[str, Any]] = None,
     publish_event: bool = True,
 ) -> None:
+    pressure_active = is_db_pressure_active()
+    worker_key = str(worker_name or "").strip().lower()
+    now_mono = time.monotonic()
+    if (
+        pressure_active
+        and bool(running)
+        and bool(enabled)
+        and last_run_at is None
+        and last_error is None
+        and worker_key
+    ):
+        last_write = _worker_snapshot_last_write_mono.get(worker_key)
+        if (
+            last_write is not None
+            and now_mono - last_write < _WORKER_SNAPSHOT_PRESSURE_MIN_INTERVAL_SECONDS
+        ):
+            return
+
     await _apply_snapshot_write_timeouts(session)
     updated_at = _now()
     resolved_interval = (
@@ -792,7 +813,7 @@ async def write_worker_snapshot(
         if interval_seconds is not None
         else _default_interval(worker_name)
     )
-    base_stats = summarize_worker_stats(stats) if is_db_pressure_active() else stats
+    base_stats = summarize_worker_stats(stats) if pressure_active else stats
     stats_payload = _with_runtime_process_stats(base_stats)
     values = {
         "worker_name": worker_name,
@@ -825,6 +846,8 @@ async def write_worker_snapshot(
             )
         )
         await _commit_with_retry(session)
+        if worker_key:
+            _worker_snapshot_last_write_mono[worker_key] = time.monotonic()
     except Exception as exc:
         maybe_mark_db_pressure(exc, component=f"worker_snapshot:{worker_name}")
         raise

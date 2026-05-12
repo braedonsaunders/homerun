@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 import threading as _threading
 import time
 from dataclasses import dataclass
@@ -129,6 +130,11 @@ _cache: dict[str, _CacheEntry] = {}
 # is loop-agnostic, fast enough for this workload, and contention-free
 # in practice (the cache is process-local with single-digit µs holds).
 _cache_lock = _threading.Lock()
+
+_TOUCH_PUBLISHED_FLUSH_DELAY_SECONDS = 1.0
+_touch_published_lock = _threading.Lock()
+_touch_published_pending: dict[str, dict[str, Any]] = {}
+_touch_published_task: asyncio.Task | None = None
 
 
 def _invalidate_cache(slug: Optional[str] = None) -> None:
@@ -336,7 +342,13 @@ async def delete_topic(slug: str) -> bool:
     return result.rowcount > 0
 
 
-async def touch_published(slug: str, *, n_events: int = 1, bytes_added: int = 0) -> None:
+async def touch_published(
+    slug: str,
+    *,
+    n_events: int = 1,
+    bytes_added: int = 0,
+    published_at: datetime | None = None,
+) -> None:
     """Lightweight write the bus calls after each successful publish
     batch — bumps last_published_at + counters.  Best-effort; failures
     log a warning but do not propagate (a counter desync isn't worth
@@ -351,21 +363,81 @@ async def touch_published(slug: str, *, n_events: int = 1, bytes_added: int = 0)
     SQLAlchemy's UoW.  A bare UPDATE is one round-trip, atomic against
     concurrent writers, and immune to lost-update races.
     """
+    normalized_slug = str(slug or "").strip()
+    if not normalized_slug:
+        return
+    published_at_value = published_at or datetime.now(timezone.utc).replace(tzinfo=None)
+    if published_at_value.tzinfo is not None:
+        published_at_value = published_at_value.astimezone(timezone.utc).replace(tzinfo=None)
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(
                 _sa_update(TopicCatalog)
-                .where(TopicCatalog.slug == slug)
+                .where(TopicCatalog.slug == normalized_slug)
                 .values(
-                    last_published_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    last_published_at=published_at_value,
                     event_count=_sa_func.coalesce(TopicCatalog.event_count, 0) + int(n_events),
                     bytes_on_disk=_sa_func.coalesce(TopicCatalog.bytes_on_disk, 0) + int(bytes_added),
                 )
             )
             await session.commit()
-        _invalidate_cache(slug)
+        _invalidate_cache(normalized_slug)
     except Exception:  # noqa: BLE001
-        logger.warning("topic_catalog.touch_published failed for %s", slug, exc_info=True)
+        logger.warning("topic_catalog.touch_published failed for %s", normalized_slug, exc_info=True)
+
+
+def schedule_touch_published(slug: str, *, n_events: int = 1, bytes_added: int = 0) -> None:
+    normalized_slug = str(slug or "").strip()
+    if not normalized_slug:
+        return
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    global _touch_published_task
+    with _touch_published_lock:
+        pending = _touch_published_pending.setdefault(
+            normalized_slug,
+            {"n_events": 0, "bytes_added": 0, "published_at": now},
+        )
+        pending["n_events"] = int(pending["n_events"]) + int(n_events)
+        pending["bytes_added"] = int(pending["bytes_added"]) + int(bytes_added)
+        if now > pending["published_at"]:
+            pending["published_at"] = now
+
+        if _touch_published_task is not None and not _touch_published_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        _touch_published_task = loop.create_task(_flush_scheduled_touch_published())
+
+
+async def _flush_scheduled_touch_published() -> None:
+    global _touch_published_task
+
+    try:
+        while True:
+            await asyncio.sleep(_TOUCH_PUBLISHED_FLUSH_DELAY_SECONDS)
+            with _touch_published_lock:
+                batch = dict(_touch_published_pending)
+                _touch_published_pending.clear()
+            if not batch:
+                return
+            for slug, payload in batch.items():
+                await touch_published(
+                    slug,
+                    n_events=int(payload["n_events"]),
+                    bytes_added=int(payload["bytes_added"]),
+                    published_at=payload["published_at"],
+                )
+            with _touch_published_lock:
+                if not _touch_published_pending:
+                    return
+    finally:
+        current_task = asyncio.current_task()
+        with _touch_published_lock:
+            if _touch_published_task is current_task:
+                _touch_published_task = None
 
 
 async def touch_replayed(slug: str) -> None:

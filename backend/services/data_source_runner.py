@@ -26,8 +26,10 @@ _RETENTION_BOUNDS: dict[str, tuple[int, int]] = {
 }
 _DB_DISCONNECT_RETRY_BASE_DELAY_SECONDS = 0.2
 _DB_DISCONNECT_POOL_RECOVERY_COOLDOWN_SECONDS = 2.0
+_RETENTION_MIN_INTERVAL_SECONDS = 600.0
 _db_recovery_lock: asyncio.Lock | None = None
 _db_last_recovery_at_monotonic = 0.0
+_retention_last_applied_mono: dict[str, float] = {}
 
 
 def _get_db_recovery_lock() -> asyncio.Lock:
@@ -258,6 +260,15 @@ def _resolve_retention_policy(
     out = dict(defaults)
     out.update(normalized)
     return out
+
+
+def _retention_due(source_id: str) -> bool:
+    if not source_id:
+        return False
+    last_applied = _retention_last_applied_mono.get(source_id)
+    if last_applied is None:
+        return True
+    return time.monotonic() - last_applied >= _RETENTION_MIN_INTERVAL_SECONDS
 
 
 async def _apply_retention_policy(
@@ -634,11 +645,13 @@ async def run_data_source(
         # Drain anything that didn't reach a batch boundary before retention.
         await _commit_batch_if_due(force=True)
 
-        retention_pruned = await _apply_retention_policy(
-            session,
-            source,
-            retention_policy=retention_policy,
-        )
+        if _retention_due(source_id):
+            retention_pruned = await _apply_retention_policy(
+                session,
+                source,
+                retention_policy=retention_policy,
+            )
+            _retention_last_applied_mono[source_id] = time.monotonic()
 
         if runtime is not None:
             runtime.run_count += 1
