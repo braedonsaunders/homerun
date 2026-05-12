@@ -1563,6 +1563,7 @@ async def test_cancel_session_fails_pre_submit_placeholder_orders(monkeypatch):
         "session": {"status": "placing", "signal_id": "signal-1", "trader_id": "trader-1", "mode": "live"},
         "orders": [
             {
+                "id": "execution-order-1",
                 "status": "placing",
                 "trader_order_id": "order-1",
                 "provider_order_id": None,
@@ -1586,11 +1587,24 @@ async def test_cancel_session_fails_pre_submit_placeholder_orders(monkeypatch):
         error_message=None,
         status="placing",
     )
+    placing_execution_order = session_engine_module.ExecutionSessionOrder(
+        id="execution-order-1",
+        session_id="session-1",
+        leg_id="leg-1",
+        trader_order_id="order-1",
+        provider_order_id=None,
+        provider_clob_order_id=None,
+        action="submit",
+        side="buy",
+        status="placing",
+        payload_json={"submission_intent": {"state": "pre_submit_persisted"}},
+    )
     db.execute = AsyncMock(
         return_value=SimpleNamespace(
             scalars=lambda: SimpleNamespace(all=lambda: [placing_order])
         )
     )
+    db.get = AsyncMock(return_value=placing_execution_order)
 
     monkeypatch.setattr(
         session_engine_module,
@@ -1622,6 +1636,10 @@ async def test_cancel_session_fails_pre_submit_placeholder_orders(monkeypatch):
     assert placing_order.error_message == timeout_reason
     assert placing_order.payload_json["submission_intent"]["state"] == "submit_timeout"
     assert placing_order.payload_json["submission_intent"]["submit_status"] == "timed_out"
+    assert placing_execution_order.status == "failed"
+    assert placing_execution_order.error_message == timeout_reason
+    assert placing_execution_order.payload_json["submission_intent"]["state"] == "submit_timeout"
+    assert placing_execution_order.payload_json["submission_intent"]["submit_status"] == "timed_out"
     assert update_leg_mock.await_count == 1
     assert update_leg_mock.await_args.kwargs["status"] == "failed"
     assert update_status_mock.await_count == 1

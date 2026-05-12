@@ -47,6 +47,17 @@ class _BalanceClient:
         return self.payload
 
 
+class _FunderAwareBalanceClient(_BalanceClient):
+    def __init__(self, payload_by_funder, *, builder_signature_type: int = 0, builder_funder: str):
+        super().__init__({}, builder_signature_type=builder_signature_type)
+        self.payload_by_funder = payload_by_funder
+        self.builder.funder = builder_funder
+
+    def get_balance_allowance(self, params=None):
+        self.get_calls += 1
+        return self.payload_by_funder.get(str(self.builder.funder), {"balance": "0", "allowance": "0"})
+
+
 def _install_balance_allowance_modules(monkeypatch) -> None:
     py_clob_client = types.ModuleType("py_clob_client_v2")
     clob_types = types.ModuleType("py_clob_client_v2.clob_types")
@@ -212,6 +223,36 @@ async def test_get_balance_probes_signature_types_and_picks_non_zero_bucket():
     assert result["reserved"] == pytest.approx(0.0)
     assert service._balance_signature_type == 1
     assert service._client.builder.signature_type == 1
+
+
+@pytest.mark.asyncio
+async def test_get_balance_repoints_builder_funder_for_each_signature_probe():
+    eoa = "0x0000000000000000000000000000000000000001"
+    proxy = "0x0000000000000000000000000000000000000002"
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = eoa
+    service._eoa_address = eoa
+    service._proxy_funder_address = proxy
+    service._balance_signature_type = 0
+    service._client = _FunderAwareBalanceClient(
+        {
+            eoa: {"balance": "0", "allowance": "0"},
+            proxy: {"balance": "165.0", "allowance": "165.0"},
+        },
+        builder_signature_type=0,
+        builder_funder=eoa,
+    )
+
+    result = await service.get_balance(force_probe_all=True)
+
+    assert result["address"] == proxy
+    assert result["balance"] == pytest.approx(165.0)
+    assert result["available"] == pytest.approx(165.0)
+    assert result["signature_type"] == 1
+    assert service._balance_signature_type == 1
+    assert service._client.builder.signature_type == 1
+    assert service._client.builder.funder == proxy
 
 
 @pytest.mark.asyncio

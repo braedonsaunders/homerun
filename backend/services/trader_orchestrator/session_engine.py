@@ -3093,6 +3093,13 @@ class ExecutionSessionEngine:
             if trader_order is None:
                 continue
             total_orders_processed += 1
+            execution_order_row = None
+            execution_order_id = str(order.get("id") or "").strip()
+            if execution_order_id and hasattr(self.db, "get"):
+                try:
+                    execution_order_row = await self.db.get(ExecutionSessionOrder, execution_order_id)
+                except Exception:
+                    execution_order_row = None
             payload = dict(trader_order.payload_json or {})
             submission_intent = payload.get("submission_intent")
             submission_intent = dict(submission_intent) if isinstance(submission_intent, dict) else {}
@@ -3172,6 +3179,22 @@ class ExecutionSessionEngine:
                     trader_order.reason = f"{trader_order.reason} | session:{terminal_key}:{reason}"
                 else:
                     trader_order.reason = f"session:{terminal_key}:{reason}"
+            if isinstance(execution_order_row, ExecutionSessionOrder):
+                execution_payload = dict(execution_order_row.payload_json or {})
+                if submission_intent:
+                    execution_payload["submission_intent"] = dict(submission_intent)
+                execution_payload["session_cancel"] = dict(payload["session_cancel"])
+                execution_order_row.status = next_status
+                execution_order_row.error_message = None if has_fill else reason
+                if has_fill:
+                    if filled_shares > 0.0:
+                        execution_order_row.size = float(filled_shares)
+                    if filled_notional_usd > 0.0:
+                        execution_order_row.notional_usd = float(filled_notional_usd)
+                    if avg_fill_price is not None and avg_fill_price > 0.0:
+                        execution_order_row.price = float(avg_fill_price)
+                execution_order_row.payload_json = execution_payload
+                execution_order_row.updated_at = now
             if next_status in {"cancelled", "failed"}:
                 hot_state.record_order_cancelled(
                     trader_id=str(trader_order.trader_id or ""),

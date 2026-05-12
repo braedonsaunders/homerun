@@ -74,6 +74,18 @@ def test_data_source_runner_installs_aware_source_datetime_parser():
     assert parsed == datetime(2026, 5, 12, 4, 45, tzinfo=timezone.utc)
 
 
+def test_data_source_runner_can_install_naive_datetime_parser_for_legacy_sources():
+    instance = SimpleNamespace()
+
+    data_source_runner._install_source_datetime_parser(instance, aware=False)
+
+    parsed = instance._parse_datetime("2026-05-12T04:45:00Z")
+
+    assert parsed is not None
+    assert parsed == datetime(2026, 5, 12, 4, 45)
+    assert parsed.tzinfo is None
+
+
 @pytest.mark.asyncio
 async def test_trader_signal_db_fallback_releases_clean_read_transaction(monkeypatch):
     from workers import trader_orchestrator_worker as worker
@@ -217,3 +229,40 @@ async def test_orchestrator_snapshot_persist_keeps_pending_writes_under_backpres
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_snapshot_persist_throttles_empty_sessions(monkeypatch):
+    from workers import trader_orchestrator_worker as worker
+
+    calls = []
+
+    async def fake_write(session, **kwargs):
+        calls.append((session, kwargs))
+
+    worker._orchestrator_snapshot_last_persist_mono.clear()
+    monkeypatch.setattr(worker, "current_backpressure_level", lambda: 0.0)
+    monkeypatch.setattr(worker, "is_db_pressure_active", lambda: False)
+    monkeypatch.setattr(worker, "write_orchestrator_snapshot", fake_write)
+
+    session = SimpleNamespace(new=[], dirty=[], deleted=[])
+
+    await worker._write_orchestrator_snapshot_best_effort(
+        session,
+        lane="general",
+        running=True,
+        enabled=True,
+        current_activity="first",
+        interval_seconds=5,
+    )
+    await worker._write_orchestrator_snapshot_best_effort(
+        session,
+        lane="general",
+        running=True,
+        enabled=True,
+        current_activity="second",
+        interval_seconds=5,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["current_activity"] == "first"

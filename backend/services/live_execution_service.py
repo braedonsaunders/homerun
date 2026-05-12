@@ -2212,7 +2212,7 @@ class LiveExecutionService:
                 # This sets self._balance_signature_type and client signature settings
                 # so orders are signed with the correct type (POLY_PROXY=1 for most wallets).
                 try:
-                    balance_info = await self.get_balance()
+                    balance_info = await self.get_balance(force_probe_all=True)
                     if "error" not in balance_info:
                         logger.info(
                             "Balance probe complete: sig_type=%s balance=%s",
@@ -5867,6 +5867,7 @@ class LiveExecutionService:
                     return _FallbackBalanceParams(signature_type)
 
             async def fetch_balance_snapshot(signature_type: int) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+                self._apply_signature_type_to_client(signature_type)
                 params = build_balance_params(signature_type)
                 try:
                     await self._run_client_io(self._client.update_balance_allowance, params, lock="balance")
@@ -5965,9 +5966,10 @@ class LiveExecutionService:
             selected_signature_type = int(best_snapshot["signature_type"])
             self._balance_signature_type = selected_signature_type
             self._apply_signature_type_to_client(selected_signature_type)
+            selected_address = self._execution_wallet_address() or address
 
             result = {
-                "address": address,
+                "address": selected_address,
                 "balance": best_snapshot["balance"],
                 "available": best_snapshot["available"],
                 "reserved": best_snapshot["reserved"],

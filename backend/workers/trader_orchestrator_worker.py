@@ -124,7 +124,7 @@ logger = get_logger("trader_orchestrator_worker")
 strategy_db_loader = strategy_loader
 
 _TRADER_TIMEOUT_CANCEL_GRACE_SECONDS = 5.0
-_MIN_LIVE_PROCESS_SIGNAL_CYCLE_TIMEOUT_SECONDS = 20.0  # soft budget for live signal-processing cycles
+_MIN_LIVE_PROCESS_SIGNAL_CYCLE_TIMEOUT_SECONDS = 60.0  # do not cancel live order submission mid-flight
 _STRATEGY_EVALUATION_TIMEOUT_SECONDS = 15.0
 
 # Fast-tier traders are owned by ``fast_trader_runtime`` — this shared
@@ -1021,6 +1021,8 @@ _TRADER_WALLET_STALE_LOG_INTERVAL_SECONDS = 30.0
 _LANE_GENERAL = "general"
 _LANE_CRYPTO = "crypto"
 _RUNTIME_TRIGGER_DEFAULT_CYCLE_TIMEOUT_SECONDS = 10.0
+_ORCHESTRATOR_SNAPSHOT_MIN_PERSIST_INTERVAL_SECONDS = 10.0
+_orchestrator_snapshot_last_persist_mono: dict[str, float] = {}
 _TERMINAL_STALE_ORDER_CHECK_INTERVAL_SECONDS = 30
 _TERMINAL_STALE_ORDER_MIN_AGE_MINUTES = 3
 _TERMINAL_STALE_ORDER_ALERT_COOLDOWN_SECONDS = 300
@@ -1678,12 +1680,24 @@ async def _write_orchestrator_snapshot_best_effort(
     )
     if not persist:
         return
-    if not _session_has_pending_writes(session):
+    has_pending_writes = _session_has_pending_writes(session)
+    if not has_pending_writes:
         pressure_level = current_backpressure_level()
         if is_db_pressure_active() or pressure_level >= _ORCHESTRATOR_SNAPSHOT_PRESSURE_SKIP_LEVEL:
             return
+        now_mono = time.monotonic()
+        lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
+        last_persisted_at = _orchestrator_snapshot_last_persist_mono.get(lane_key)
+        if (
+            last_persisted_at is not None
+            and now_mono - last_persisted_at < _ORCHESTRATOR_SNAPSHOT_MIN_PERSIST_INTERVAL_SECONDS
+        ):
+            return
     try:
         await write_orchestrator_snapshot(session, **snapshot_kwargs)
+        _orchestrator_snapshot_last_persist_mono[
+            str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
+        ] = time.monotonic()
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
         if hasattr(session, "rollback"):
             await session.rollback()
@@ -9629,6 +9643,7 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
     but is a no-op here.
     """
     runtime_trigger_task: asyncio.Task | None = None
+    lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
     # notifier_enabled is intentionally ignored on this plane — kept in
     # the signature for callers that still pass it.
     _ = notifier_enabled
@@ -9646,19 +9661,23 @@ async def start_loop(*, lane: str = _LANE_GENERAL, notifier_enabled: bool = True
 
     try:
         try:
-            if str(lane or _LANE_GENERAL).strip().lower() == _LANE_GENERAL:
-                runtime_trigger_task = asyncio.create_task(
-                    run_runtime_trigger_loop(lane=lane),
-                    name=f"trader-orchestrator-runtime-{lane}",
-                )
+            runtime_trigger_task = asyncio.create_task(
+                run_runtime_trigger_loop(lane=lane_key),
+                name=f"trader-orchestrator-runtime-{lane_key}",
+            )
+            if lane_key == _LANE_GENERAL:
                 await run_worker_loop(
-                    lane=lane,
+                    lane=lane_key,
                     write_snapshot=write_snapshot,
                     process_runtime_triggers=False,
                     process_scheduled_signals=False,
                 )
             else:
-                await run_worker_loop(lane=lane, write_snapshot=write_snapshot)
+                await run_worker_loop(
+                    lane=lane_key,
+                    write_snapshot=write_snapshot,
+                    process_runtime_triggers=False,
+                )
         except TypeError:
             await run_worker_loop()
     except asyncio.CancelledError:

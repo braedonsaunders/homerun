@@ -199,7 +199,7 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed
 
 
-def _source_parse_datetime(_self: Any, value: Any) -> datetime | None:
+def _source_parse_datetime_aware(_self: Any, value: Any) -> datetime | None:
     parsed = _parse_datetime(value)
     if parsed is None:
         return None
@@ -208,8 +208,18 @@ def _source_parse_datetime(_self: Any, value: Any) -> datetime | None:
     return parsed.replace(tzinfo=timezone.utc)
 
 
-def _install_source_datetime_parser(instance: Any) -> None:
-    instance._parse_datetime = MethodType(_source_parse_datetime, instance)
+def _source_parse_datetime_naive(_self: Any, value: Any) -> datetime | None:
+    return _parse_datetime(value)
+
+
+def _install_source_datetime_parser(instance: Any, *, aware: bool = True) -> None:
+    parser = _source_parse_datetime_aware if aware else _source_parse_datetime_naive
+    instance._parse_datetime = MethodType(parser, instance)
+
+
+def _is_naive_aware_datetime_compare_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "offset-naive" in text and "offset-aware" in text
 
 
 def _json_safe(value: Any) -> Any:
@@ -492,13 +502,21 @@ async def run_data_source(
         instance = runtime.instance
         _install_source_datetime_parser(instance)
 
-        async with release_conn(session):
+        async def _fetch_from_instance() -> Any:
             if hasattr(instance, "fetch_async"):
-                fetched = await _invoke_callable(instance.fetch_async)
-            elif hasattr(instance, "fetch"):
-                fetched = await _invoke_callable(instance.fetch)
-            else:
-                raise DataSourceValidationError("Source instance has no fetch/fetch_async method")
+                return await _invoke_callable(instance.fetch_async)
+            if hasattr(instance, "fetch"):
+                return await _invoke_callable(instance.fetch)
+            raise DataSourceValidationError("Source instance has no fetch/fetch_async method")
+
+        async with release_conn(session):
+            try:
+                fetched = await _fetch_from_instance()
+            except TypeError as exc:
+                if not _is_naive_aware_datetime_compare_error(exc):
+                    raise
+                _install_source_datetime_parser(instance, aware=False)
+                fetched = await _fetch_from_instance()
 
         if fetched is None:
             fetched_rows: list[Any] = []
@@ -519,7 +537,13 @@ async def run_data_source(
             raw_payload = dict(raw_item)
             transformed_payload = dict(raw_payload)
             if hasattr(instance, "transform"):
-                transformed = await _invoke_callable(instance.transform, dict(raw_payload))
+                try:
+                    transformed = await _invoke_callable(instance.transform, dict(raw_payload))
+                except TypeError as exc:
+                    if not _is_naive_aware_datetime_compare_error(exc):
+                        raise
+                    _install_source_datetime_parser(instance, aware=False)
+                    transformed = await _invoke_callable(instance.transform, dict(raw_payload))
                 if isinstance(transformed, dict):
                     transformed_payload = transformed
                 else:
