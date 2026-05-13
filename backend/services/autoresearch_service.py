@@ -53,6 +53,18 @@ from utils.utcnow import utcnow
 logger = get_logger(__name__)
 
 
+def _resolve_autoresearch_status(
+    experiment_id: str,
+    stored_status: str,
+    active_experiment_id: str | None,
+) -> str:
+    if active_experiment_id == experiment_id:
+        return "running"
+    if stored_status == "running":
+        return "failed"
+    return stored_status
+
+
 # ---------------------------------------------------------------------------
 # Composite scoring (matches param_optimizer formula)
 # ---------------------------------------------------------------------------
@@ -515,6 +527,38 @@ class AutoresearchService:
         self._stop_flags: dict[str, asyncio.Event] = {}  # trader_id -> stop event
         logger.info("AutoresearchService initialised")
 
+    async def _resolve_runtime_status(
+        self,
+        session,
+        row: AutoresearchExperiment,
+        session_key: str,
+    ) -> str:
+        active_experiment_id = self._active_experiments.get(session_key)
+        resolved_status = _resolve_autoresearch_status(
+            row.id,
+            row.status,
+            active_experiment_id,
+        )
+
+        if active_experiment_id is not None and active_experiment_id != row.id:
+            self._active_experiments.pop(session_key, None)
+            self._stop_flags.pop(session_key, None)
+
+        if resolved_status == row.status:
+            return resolved_status
+
+        now = utcnow()
+        row.status = resolved_status
+        row.finished_at = row.finished_at or now
+        row.updated_at = now
+        await session.commit()
+        logger.warning(
+            "Marked orphaned autoresearch experiment failed",
+            experiment_id=row.id,
+            session_key=session_key,
+        )
+        return resolved_status
+
     # ------------------------------------------------------------------
     # Status & history
     # ------------------------------------------------------------------
@@ -530,6 +574,9 @@ class AutoresearchService:
                     .limit(1)
                 )
             ).scalar_one_or_none()
+
+            if row is not None:
+                resolved_status = await self._resolve_runtime_status(session, row, trader_id)
 
         if row is None:
             return {
@@ -550,7 +597,7 @@ class AutoresearchService:
             "experiment_id": row.id,
             "trader_id": row.trader_id,
             "name": row.name,
-            "status": "running" if trader_id in self._active_experiments else row.status,
+            "status": resolved_status,
             "mode": getattr(row, "mode", "params") or "params",
             "strategy_id": getattr(row, "strategy_id", None),
             "best_version": getattr(row, "best_version", None),
@@ -699,6 +746,9 @@ class AutoresearchService:
                 )
             ).scalar_one_or_none()
 
+            if row is not None:
+                resolved_status = await self._resolve_runtime_status(session, row, session_key)
+
         if row is None:
             return {
                 "experiment_id": None,
@@ -719,7 +769,7 @@ class AutoresearchService:
             "strategy_id": row.strategy_id,
             "trader_id": row.trader_id,
             "name": row.name,
-            "status": "running" if session_key in self._active_experiments else row.status,
+            "status": resolved_status,
             "mode": getattr(row, "mode", "code") or "code",
             "best_version": getattr(row, "best_version", None),
             "iteration_count": row.iteration_count,
@@ -2069,6 +2119,9 @@ class AutoresearchService:
                 )
             ).scalar_one_or_none()
 
+            if row is not None:
+                resolved_status = await self._resolve_runtime_status(session, row, session_key)
+
         if row is None:
             return {
                 "experiment_id": None,
@@ -2089,7 +2142,7 @@ class AutoresearchService:
             "strategy_id": row.strategy_id,
             "trader_id": row.trader_id,
             "name": row.name,
-            "status": "running" if session_key in self._active_experiments else row.status,
+            "status": resolved_status,
             "mode": "strategy_params",
             "iteration_count": row.iteration_count,
             "best_score": row.best_score,

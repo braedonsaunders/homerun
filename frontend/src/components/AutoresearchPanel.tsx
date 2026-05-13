@@ -343,6 +343,7 @@ function StrategyCodeExperiments({
   const status: AutoresearchExperimentStatus | undefined = statusQuery.data
   const dbIterations: AutoresearchIteration[] = historyQuery.data?.iterations || []
   const settings: AutoresearchSettings | undefined = settingsQuery.data
+  const isExperimentRunning = isStreaming || status?.status === 'running'
 
   const allIterations: StreamIteration[] = isStreaming
     ? streamIterations
@@ -356,7 +357,7 @@ function StrategyCodeExperiments({
       }))
 
   const handleStart = () => {
-    if (isStreaming || !strategyId) return
+    if (isExperimentRunning || !strategyId) return
     setIsStreaming(true)
     setStreamIterations([])
     setStreamPhase('starting')
@@ -446,11 +447,11 @@ function StrategyCodeExperiments({
               size="sm"
               className="h-7 px-2 text-[10px]"
               onClick={() => setShowSettings(!showSettings)}
-              disabled={isStreaming}
+              disabled={isExperimentRunning}
             >
               {t('autoresearch.settings')}
             </Button>
-            {isStreaming ? (
+            {isExperimentRunning ? (
               <Button
                 type="button"
                 size="sm"
@@ -467,7 +468,7 @@ function StrategyCodeExperiments({
                 size="sm"
                 className="h-7 px-3 text-[11px] bg-purple-600 hover:bg-purple-500 text-white"
                 onClick={handleStart}
-                disabled={!strategyId}
+                disabled={!strategyId || isExperimentRunning}
               >
                 <Play className="w-3 h-3 mr-1" />
                 {t('autoresearch.start')}
@@ -483,7 +484,7 @@ function StrategyCodeExperiments({
 
         {/* Score header */}
         <div className="grid grid-cols-4 gap-2 text-[11px]">
-          <ScoreCard label={t('autoresearch.scoreStatus')} value={isStreaming ? streamPhase || t('autoresearch.running') : (status?.status ?? t('autoresearch.idle'))} tone={isStreaming ? 'good' : 'neutral'} />
+          <ScoreCard label={t('autoresearch.scoreStatus')} value={isStreaming ? streamPhase || t('autoresearch.running') : (status?.status ?? t('autoresearch.idle'))} tone={isExperimentRunning ? 'good' : 'neutral'} />
           <ScoreCard label={t('autoresearch.scoreBaseline')} value={baseline.toFixed(3)} tone="neutral" />
           <ScoreCard label={t('autoresearch.scoreBest')} value={best.toFixed(3)} tone={delta > 0 ? 'good' : 'neutral'} />
           <ScoreCard label="Δ" value={(delta >= 0 ? '+' : '') + delta.toFixed(3)} tone={delta > 0 ? 'good' : delta < 0 ? 'bad' : 'neutral'} />
