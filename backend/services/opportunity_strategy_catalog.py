@@ -371,6 +371,15 @@ def _with_retention_schema(schema: dict | None, default_config: dict | None = No
             param_fields.append(inferred)
             existing_keys.add(inferred_key)
 
+    for field in list(StrategySDK.trader_strategy_execution_config_schema().get("param_fields", [])):
+        if not isinstance(field, dict):
+            continue
+        key = str(field.get("key") or "").strip()
+        if not key or key in existing_keys:
+            continue
+        param_fields.append(dict(field))
+        existing_keys.add(key)
+
     for field in list(StrategySDK.strategy_retention_config_schema().get("param_fields", [])):
         if not isinstance(field, dict):
             continue

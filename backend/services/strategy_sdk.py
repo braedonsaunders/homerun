@@ -249,6 +249,132 @@ class StrategySDK:
             },
         ]
     }
+    TRADER_STRATEGY_EXECUTION_DEFAULTS: dict[str, Any] = {
+        "min_order_size_usd": 1.0,
+        "enforce_min_exit_notional": True,
+        "exit_price_ratio_floor": 0.5,
+        "exit_price_floor": 0.01,
+        "enforce_stop_loss_upside_guard": True,
+        "max_stop_loss_to_upside_ratio": 1.0,
+        "stop_loss_policy": "always",
+        "stop_loss_activation_seconds": 120.0,
+    }
+    TRADER_STRATEGY_EXECUTION_CONFIG_SCHEMA: dict[str, Any] = {
+        "param_fields": [
+            {
+                "key": "min_order_size_usd",
+                "label": "Min Order Size (USD)",
+                "type": "number",
+                "min": 0.01,
+                "description": "Minimum entry notional used by execution and exitability guards.",
+            },
+            {
+                "key": "shadow_min_order_size_usd",
+                "label": "Shadow Min Order Size (USD)",
+                "type": "number",
+                "min": 0.01,
+                "description": "Optional shadow-mode override. Empty uses Min Order Size.",
+            },
+            {
+                "key": "live_min_order_size_usd",
+                "label": "Live Min Order Size (USD)",
+                "type": "number",
+                "min": 0.01,
+                "description": "Optional live-mode override. Empty uses Min Order Size.",
+            },
+            {
+                "key": "enforce_min_exit_notional",
+                "label": "Enforce Min Exit Notional",
+                "type": "boolean",
+                "description": "Block entries too small to exit above the exchange minimum notional.",
+            },
+            {
+                "key": "exit_price_ratio_floor",
+                "label": "Exit Price Ratio Floor",
+                "type": "number",
+                "min": 0.01,
+                "max": 1.0,
+                "description": "Conservative exit price as a fraction of entry price for min-exit-notional sizing.",
+            },
+            {
+                "key": "live_exit_price_ratio_floor",
+                "label": "Live Exit Price Ratio Floor",
+                "type": "number",
+                "min": 0.01,
+                "max": 1.0,
+                "description": "Optional live-mode override. Empty uses Exit Price Ratio Floor.",
+            },
+            {
+                "key": "exit_price_floor",
+                "label": "Exit Price Floor",
+                "type": "number",
+                "min": 0.001,
+                "max": 0.99,
+                "description": "Absolute fallback exit price floor for min-exit-notional sizing.",
+            },
+            {
+                "key": "live_exit_price_floor",
+                "label": "Live Exit Price Floor",
+                "type": "number",
+                "min": 0.001,
+                "max": 0.99,
+                "description": "Optional live-mode override. Empty uses Exit Price Floor.",
+            },
+            {
+                "key": "enforce_stop_loss_upside_guard",
+                "label": "Enforce Stop-Loss Upside Guard",
+                "type": "boolean",
+                "description": "Reject entries whose configured stop-loss is too large relative to remaining upside.",
+            },
+            {
+                "key": "max_stop_loss_to_upside_ratio",
+                "label": "Max Stop-Loss To Upside Ratio",
+                "type": "number",
+                "min": 0.05,
+                "max": 10.0,
+            },
+            {
+                "key": "stop_loss_policy",
+                "label": "Stop-Loss Policy",
+                "type": "enum",
+                "options": ["always", "near_close"],
+            },
+            {
+                "key": "live_stop_loss_policy",
+                "label": "Live Stop-Loss Policy",
+                "type": "enum",
+                "options": ["always", "near_close"],
+                "description": "Optional live-mode override. Empty uses Stop-Loss Policy.",
+            },
+            {
+                "key": "stop_loss_activation_seconds",
+                "label": "Stop-Loss Activation (sec)",
+                "type": "number",
+                "min": 0,
+                "max": 86400,
+            },
+            {
+                "key": "live_stop_loss_activation_seconds",
+                "label": "Live Stop-Loss Activation (sec)",
+                "type": "number",
+                "min": 0,
+                "max": 86400,
+                "description": "Optional live-mode override. Empty uses Stop-Loss Activation.",
+            },
+            {
+                "key": "allow_taker_limit_buy_above_signal",
+                "label": "Allow Taker Limit Buy Above Signal Price",
+                "type": "boolean",
+                "description": "Optional strategy-level override. Empty falls back to the bot risk setting.",
+            },
+            {
+                "key": "aggressive_limit_buy_submit_as_gtc",
+                "label": "Submit Aggressive Buy Limits As GTC",
+                "type": "boolean",
+                "description": "Optional strategy-level override. Empty falls back to the bot risk setting.",
+            },
+        ]
+    }
     TRADER_FILTER_CONFIG_SCHEMA: dict[str, Any] = {
         "param_fields": [
             {"key": "min_confidence", "label": "Min Confidence", "type": "number", "min": 0, "max": 1},
@@ -1407,6 +1533,20 @@ class StrategySDK:
     @staticmethod
     def trader_execution_policy_config_schema() -> dict[str, Any]:
         return dict(StrategySDK.TRADER_EXECUTION_POLICY_CONFIG_SCHEMA)
+
+    @staticmethod
+    def trader_strategy_execution_defaults() -> dict[str, Any]:
+        return dict(StrategySDK.TRADER_STRATEGY_EXECUTION_DEFAULTS)
+
+    @staticmethod
+    def trader_strategy_execution_config_schema() -> dict[str, Any]:
+        return {
+            "param_fields": [
+                dict(field)
+                for field in StrategySDK.TRADER_STRATEGY_EXECUTION_CONFIG_SCHEMA.get("param_fields", [])
+                if isinstance(field, dict)
+            ]
+        }
 
     @staticmethod
     def validate_trader_execution_policy_config(config: Any) -> dict[str, Any]:

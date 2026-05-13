@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 import re
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -71,6 +71,12 @@ router = APIRouter(prefix="/strategy-manager", tags=["Strategies (Unified)"])
 # ---------------------------------------------------------------------------
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]{1,48}[a-z0-9]$")
+_RETENTION_PARAM_FIELD_KEYS = {
+    "max_opportunities",
+    "retention_window",
+    "retention_max_age_minutes",
+    "retention_max_opportunities",
+}
 
 
 def _get_crypto_scope_attr(attr_name: str) -> dict:
@@ -150,6 +156,26 @@ def _dedupe_param_fields(raw_fields: list[dict]) -> list[dict]:
     return deduped
 
 
+def _infer_param_field(key: str, value: Any) -> dict | None:
+    clean_key = str(key or "").strip()
+    if not clean_key or clean_key == "_schema":
+        return None
+    if isinstance(value, bool):
+        field_type = "boolean"
+    elif isinstance(value, int):
+        field_type = "integer"
+    elif isinstance(value, float):
+        field_type = "number"
+    elif isinstance(value, list):
+        field_type = "list"
+    elif isinstance(value, dict):
+        field_type = "json"
+    else:
+        field_type = "string"
+    label = " ".join(part.upper() if len(part) <= 3 else part.capitalize() for part in clean_key.split("_"))
+    return {"key": clean_key, "label": label or clean_key, "type": field_type}
+
+
 def _merge_config_schemas(base_schema: dict, extra_schema: dict) -> dict:
     merged = dict(base_schema or {})
     base_fields = _dedupe_param_fields(list(merged.get("param_fields") or []))
@@ -166,6 +192,35 @@ def _merge_config_schemas(base_schema: dict, extra_schema: dict) -> dict:
     return merged
 
 
+def _with_inferred_config_fields(schema: dict, config: dict | None) -> dict:
+    merged = dict(schema or {})
+    fields = _dedupe_param_fields(list(merged.get("param_fields") or []))
+    existing_keys = {str(field.get("key") or "").strip() for field in fields if isinstance(field, dict)}
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if str(key or "").strip() in _RETENTION_PARAM_FIELD_KEYS:
+                continue
+            inferred = _infer_param_field(str(key), value)
+            if not isinstance(inferred, dict):
+                continue
+            inferred_key = str(inferred.get("key") or "").strip()
+            if not inferred_key or inferred_key in existing_keys:
+                continue
+            fields.append(inferred)
+            existing_keys.add(inferred_key)
+    merged["param_fields"] = fields
+    return merged
+
+
+def _strategy_config_schema_for_ui(base_schema: dict | None, config: dict | None = None) -> dict:
+    with_execution_fields = _merge_config_schemas(
+        base_schema or {},
+        StrategySDK.trader_strategy_execution_config_schema(),
+    )
+    with_config_fields = _with_inferred_config_fields(with_execution_fields, config)
+    return _merge_config_schemas(with_config_fields, StrategySDK.strategy_retention_config_schema())
+
+
 def _default_config_schema_for_source(source_key: str) -> dict:
     normalized_source_key = str(source_key or "scanner").strip().lower()
     if normalized_source_key == "traders":
@@ -174,7 +229,7 @@ def _default_config_schema_for_source(source_key: str) -> dict:
         base_schema = news_edge_config_schema()
     else:
         base_schema = {}
-    return _merge_config_schemas(base_schema, StrategySDK.strategy_retention_config_schema())
+    return _strategy_config_schema_for_ui(base_schema)
 
 
 # ---------------------------------------------------------------------------
@@ -349,10 +404,7 @@ def _strategy_to_dict(row: Strategy) -> dict:
     capabilities = _detect_capabilities(row.source_code or "")
     source_key = row.source_key or "scanner"
     normalized_config = _resolved_strategy_config(row)
-    normalized_schema = _merge_config_schemas(
-        dict(row.config_schema or {}),
-        StrategySDK.strategy_retention_config_schema(),
-    )
+    normalized_schema = _strategy_config_schema_for_ui(dict(row.config_schema or {}), normalized_config)
     return {
         "id": row.id,
         "slug": row.slug,
@@ -1233,6 +1285,8 @@ async def get_unified_docs():
                 "StrategySDK.pool_eligibility_config_schema()": "Schema for pool eligibility tuning",
                 "news_edge_defaults()": "Default news strategy filters",
                 "news_edge_config_schema()": "Schema for news strategy filters",
+                "StrategySDK.trader_strategy_execution_defaults()": "Shared strategy execution guard defaults",
+                "StrategySDK.trader_strategy_execution_config_schema()": "Shared strategy execution guard schema",
                 "StrategySDK.strategy_retention_config_schema()": "Schema for max_opportunities and retention_window",
             },
             "validation_helpers": {
@@ -2257,9 +2311,9 @@ async def create_strategy(req: UnifiedStrategyCreateRequest):
     slug = _validate_slug(req.slug)
     source_key = str(req.source_key or "scanner").strip().lower()
     normalized_config = _normalize_strategy_config_for_source(source_key, req.config, strategy_slug=slug)
-    normalized_schema = _merge_config_schemas(
+    normalized_schema = _strategy_config_schema_for_ui(
         req.config_schema or _default_config_schema_for_source(source_key),
-        StrategySDK.strategy_retention_config_schema(),
+        normalized_config,
     )
 
     # Validate source code
@@ -2393,10 +2447,7 @@ async def update_strategy(strategy_id: str, req: UnifiedStrategyUpdateRequest):
                 snapshot_fields_changed.add("config")
                 reload_reasons.add("config")
         if req.config_schema is not None:
-            merged_schema = _merge_config_schemas(
-                req.config_schema,
-                StrategySDK.strategy_retention_config_schema(),
-            )
+            merged_schema = _strategy_config_schema_for_ui(req.config_schema, row.config or {})
             if merged_schema != (row.config_schema or {}):
                 row.config_schema = merged_schema
                 snapshot_fields_changed.add("config_schema")

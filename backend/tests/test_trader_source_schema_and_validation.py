@@ -74,6 +74,60 @@ async def test_scanner_and_weather_have_separate_strategy_sets(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_strategy_options_expose_shared_execution_guard_params(tmp_path):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    async with session_factory() as session:
+        schema = await build_trader_config_schema(session)
+
+    shared_field_keys = {
+        "min_order_size_usd",
+        "shadow_min_order_size_usd",
+        "live_min_order_size_usd",
+        "enforce_min_exit_notional",
+        "exit_price_ratio_floor",
+        "live_exit_price_ratio_floor",
+        "exit_price_floor",
+        "live_exit_price_floor",
+        "enforce_stop_loss_upside_guard",
+        "max_stop_loss_to_upside_ratio",
+        "stop_loss_policy",
+        "live_stop_loss_policy",
+        "stop_loss_activation_seconds",
+        "live_stop_loss_activation_seconds",
+        "allow_taker_limit_buy_above_signal",
+        "aggressive_limit_buy_submit_as_gtc",
+    }
+    shared_default_keys = {
+        "min_order_size_usd",
+        "enforce_min_exit_notional",
+        "exit_price_ratio_floor",
+        "exit_price_floor",
+        "enforce_stop_loss_upside_guard",
+        "max_stop_loss_to_upside_ratio",
+        "stop_loss_policy",
+        "stop_loss_activation_seconds",
+    }
+
+    checked = 0
+    for source in schema.get("sources", []):
+        for option in source.get("strategy_options") or []:
+            option_name = f"{source.get('key')}:{option.get('key')}"
+            field_keys = {
+                str(field.get("key") or "").strip()
+                for field in option.get("param_fields") or []
+                if isinstance(field, dict)
+            }
+            default_keys = set((option.get("default_params") or {}).keys())
+
+            assert shared_field_keys <= field_keys, option_name
+            assert shared_default_keys <= default_keys, option_name
+            checked += 1
+
+    assert checked > 0
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_normalize_trader_payload_rejects_invalid_source_strategy_pair(tmp_path):
     engine, session_factory = await _build_session_factory(tmp_path)
     async with session_factory() as session:

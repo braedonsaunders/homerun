@@ -5283,20 +5283,11 @@ function classifyStrategyParamGroup(fieldKey: string, field?: Record<string, unk
     return 'entry'
   }
   if (
-    key.includes('size')
-    || key.includes('sizing')
-    || key.includes('notional')
-    || key.includes('position')
-    || key.includes('multiplier')
-    || key.includes('kelly')
-    || key.includes('capital')
-  ) {
-    return 'sizing'
-  }
-  if (
     key.includes('take_profit')
     || key.includes('stop_loss')
     || key.includes('trailing')
+    || key.includes('min_exit')
+    || key.includes('exit_price')
     || key.includes('min_hold')
     || key.includes('max_hold')
     || key.startsWith('rapid_')
@@ -5306,9 +5297,19 @@ function classifyStrategyParamGroup(fieldKey: string, field?: Record<string, unk
     || key.includes('close_on_inactive')
     || key.includes('resolve_only')
     || key.includes('preplace_take_profit')
-    || key.includes('enforce_min_exit_notional')
   ) {
     return 'exit'
+  }
+  if (
+    key.includes('size')
+    || key.includes('sizing')
+    || key.includes('notional')
+    || key.includes('position')
+    || key.includes('multiplier')
+    || key.includes('kelly')
+    || key.includes('capital')
+  ) {
+    return 'sizing'
   }
   if (key.startsWith('risk') || key.startsWith('max_risk') || key.startsWith('resolution_risk')) {
     return 'risk'

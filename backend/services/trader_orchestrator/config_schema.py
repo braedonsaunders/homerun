@@ -137,6 +137,7 @@ def _resolved_default_params(row: Any) -> dict[str, Any]:
     merged = StrategySDK.normalize_strategy_retention_config(merged)
     for key in ("max_opportunities", "retention_window", "retention_max_age_minutes", "retention_max_opportunities"):
         merged.pop(key, None)
+    merged = {**StrategySDK.trader_strategy_execution_defaults(), **merged}
     return merged
 
 
@@ -147,6 +148,9 @@ def _strategy_param_fields(row: Any, *, default_params: dict[str, Any]) -> list[
         raw_fields = schema.get("param_fields")
         if isinstance(raw_fields, list):
             fields = [field for field in raw_fields if isinstance(field, dict)]
+    for field in StrategySDK.trader_strategy_execution_config_schema().get("param_fields", []):
+        if isinstance(field, dict):
+            fields.append(dict(field))
     deduped = _dedupe_param_fields(fields)
     existing_keys = {str(field.get("key") or "").strip() for field in deduped if isinstance(field, dict)}
 

@@ -1313,15 +1313,14 @@ async def generate_strategy_draft_with_ai(
     from api.routes_strategies import (
         _detect_capabilities,
         _infer_strategy_type,
-        _merge_config_schemas,
         _normalize_strategy_config_for_source,
+        _strategy_config_schema_for_ui,
         get_unified_docs,
     )
     from models.database import DataSource, Strategy
     from services.ai import get_llm_manager
     from services.ai.llm_provider import LLMMessage
     from services.strategy_loader import STRATEGY_TEMPLATE, validate_strategy_source
-    from services.strategy_sdk import StrategySDK
 
     manager = get_llm_manager()
     if not manager.is_available():
@@ -1420,9 +1419,9 @@ async def generate_strategy_draft_with_ai(
 
     parsed_config = _coerce_json_object(parsed.get("config"))
     config = _normalize_strategy_config_for_source(source_key, parsed_config)
-    config_schema = _merge_config_schemas(
+    config_schema = _strategy_config_schema_for_ui(
         _coerce_json_object(parsed.get("config_schema"), {"param_fields": []}),
-        StrategySDK.strategy_retention_config_schema(),
+        config,
     )
     aliases = _coerce_string_list(parsed.get("aliases"))
 
@@ -1507,15 +1506,14 @@ async def modify_strategy_code_with_ai(
     from api.routes_strategies import (
         _detect_capabilities,
         _infer_strategy_type,
-        _merge_config_schemas,
         _normalize_strategy_config_for_source,
+        _strategy_config_schema_for_ui,
         get_unified_docs,
     )
     from models.database import DataSource, Strategy
     from services.ai import get_llm_manager
     from services.ai.llm_provider import LLMMessage
     from services.strategy_loader import validate_strategy_source
-    from services.strategy_sdk import StrategySDK
 
     manager = get_llm_manager()
     if not manager.is_available():
@@ -1651,9 +1649,12 @@ async def modify_strategy_code_with_ai(
         source_key,
         _coerce_json_object(parsed.get("config"), _coerce_json_object(request.config)),
     )
-    config_schema = _merge_config_schemas(
-        _coerce_json_object(parsed.get("config_schema"), _coerce_json_object(request.config_schema, {"param_fields": []})),
-        StrategySDK.strategy_retention_config_schema(),
+    config_schema = _strategy_config_schema_for_ui(
+        _coerce_json_object(
+            parsed.get("config_schema"),
+            _coerce_json_object(request.config_schema, {"param_fields": []}),
+        ),
+        config,
     )
     aliases = _coerce_string_list(parsed.get("aliases")) or _coerce_string_list(request.aliases)
     change_summary = str(parsed.get("change_summary") or "").strip() or "AI modified strategy source."
