@@ -482,8 +482,11 @@ async def test_project_upserts_scopes_source_sweep_by_strategy_type(monkeypatch)
             del exc_type, exc, tb
             return False
 
+    upsert_kwargs = []
+
     async def _upsert_trade_signal(*args, **kwargs):
-        del args, kwargs
+        upsert_kwargs.append(kwargs)
+        del args
         return SimpleNamespace(status="pending", runtime_sequence=None, effective_price=None)
 
     expire_mock = AsyncMock(return_value=0)
@@ -528,6 +531,8 @@ async def test_project_upserts_scopes_source_sweep_by_strategy_type(monkeypatch)
     assert kwargs["keep_dedupe_keys"] == {"dedupe-corr-1"}
     assert kwargs["signal_types"] == ["scanner_opportunity"]
     assert kwargs["strategy_types"] == ["generic_pair_strategy"]
+    assert upsert_kwargs
+    assert upsert_kwargs[0]["ensure_subscription"] is False
 
 
 @pytest.mark.asyncio

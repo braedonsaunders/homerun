@@ -708,6 +708,7 @@ class SimulationPosition(Base):
 
     __table_args__ = (
         Index("idx_position_account", "account_id"),
+        Index("idx_position_account_status", "account_id", "status"),
         Index("idx_position_market", "market_id"),
     )
 
@@ -1026,6 +1027,7 @@ class DetectedAnomaly(Base):
         Index("idx_anomaly_type", "anomaly_type"),
         Index("idx_anomaly_wallet", "wallet_address"),
         Index("idx_anomaly_severity", "severity"),
+        Index("idx_anomaly_detected_at", "detected_at"),
     )
 
 
@@ -2018,6 +2020,7 @@ class DataSourceRecord(Base):
         # Index("idx_data_source_records_geotagged", "geotagged"),            # dropped — never scanned
         Index("idx_data_source_records_country", "country_iso3"),
         Index("idx_data_source_records_external", "source_slug", "external_id"),
+        Index("idx_data_source_records_source_ordering", "data_source_id", "observed_at", "ingested_at", "id"),
         Index("ix_data_source_records_data_source_id", "data_source_id"),
     )
 

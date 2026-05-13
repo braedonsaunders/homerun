@@ -34,7 +34,9 @@ from utils.retry import is_retryable_db_error as _shared_is_retryable_db_error
 logger = get_logger("worker_state")
 
 _WORKER_SNAPSHOT_PRESSURE_MIN_INTERVAL_SECONDS = 15.0
+_WORKER_SNAPSHOT_UNCHANGED_MIN_INTERVAL_SECONDS = 10.0
 _worker_snapshot_last_write_mono: dict[str, float] = {}
+_worker_snapshot_last_signature: dict[str, tuple[Any, ...]] = {}
 
 
 _COMMIT_RETRYABLE_MARKERS = (
@@ -189,6 +191,46 @@ def summarize_worker_snapshot(snapshot: Optional[dict[str, Any]]) -> dict[str, A
     payload = dict(snapshot or {})
     payload["stats"] = summarize_worker_stats(payload.get("stats"))
     return payload
+
+
+def _freeze_snapshot_signature_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return to_iso(value)
+    if isinstance(value, dict):
+        return tuple(
+            sorted(
+                (str(key), _freeze_snapshot_signature_value(nested))
+                for key, nested in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_snapshot_signature_value(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted(_freeze_snapshot_signature_value(item) for item in value))
+    return value if _is_status_scalar(value) else str(value)
+
+
+def _snapshot_signature(
+    *,
+    running: bool,
+    enabled: bool,
+    current_activity: Optional[str],
+    interval_seconds: int,
+    last_run_at: Optional[datetime],
+    lag_seconds: Optional[float],
+    last_error: Optional[str],
+    stats: Optional[dict[str, Any]],
+) -> tuple[Any, ...]:
+    return (
+        bool(running),
+        bool(enabled),
+        str(current_activity or ""),
+        int(interval_seconds),
+        to_iso(last_run_at),
+        None if lag_seconds is None else round(float(lag_seconds), 3),
+        str(last_error or ""),
+        _freeze_snapshot_signature_value(summarize_worker_stats(stats)),
+    )
 
 
 def _capture_pending_session_state(session: AsyncSession) -> dict[str, Any]:
@@ -791,11 +833,25 @@ async def write_worker_snapshot(
     pressure_active = is_db_pressure_active()
     worker_key = str(worker_name or "").strip().lower()
     now_mono = time.monotonic()
+    resolved_interval = (
+        max(1, int(interval_seconds))
+        if interval_seconds is not None
+        else _default_interval(worker_name)
+    )
+    signature = _snapshot_signature(
+        running=bool(running),
+        enabled=bool(enabled),
+        current_activity=current_activity,
+        interval_seconds=resolved_interval,
+        last_run_at=last_run_at,
+        lag_seconds=lag_seconds,
+        last_error=last_error,
+        stats=stats,
+    )
     if (
         pressure_active
         and bool(running)
         and bool(enabled)
-        and last_run_at is None
         and last_error is None
         and worker_key
     ):
@@ -803,16 +859,28 @@ async def write_worker_snapshot(
         if (
             last_write is not None
             and now_mono - last_write < _WORKER_SNAPSHOT_PRESSURE_MIN_INTERVAL_SECONDS
+            and (
+                last_run_at is None
+                or _worker_snapshot_last_signature.get(worker_key) == signature
+            )
+        ):
+            return
+    elif (
+        bool(running)
+        and bool(enabled)
+        and last_error is None
+        and worker_key
+        and _worker_snapshot_last_signature.get(worker_key) == signature
+    ):
+        last_write = _worker_snapshot_last_write_mono.get(worker_key)
+        if (
+            last_write is not None
+            and now_mono - last_write < _WORKER_SNAPSHOT_UNCHANGED_MIN_INTERVAL_SECONDS
         ):
             return
 
     await _apply_snapshot_write_timeouts(session)
     updated_at = _now()
-    resolved_interval = (
-        max(1, int(interval_seconds))
-        if interval_seconds is not None
-        else _default_interval(worker_name)
-    )
     base_stats = summarize_worker_stats(stats) if pressure_active else stats
     stats_payload = _with_runtime_process_stats(base_stats)
     values = {
@@ -848,6 +916,7 @@ async def write_worker_snapshot(
         await _commit_with_retry(session)
         if worker_key:
             _worker_snapshot_last_write_mono[worker_key] = time.monotonic()
+            _worker_snapshot_last_signature[worker_key] = signature
     except Exception as exc:
         maybe_mark_db_pressure(exc, component=f"worker_snapshot:{worker_name}")
         raise

@@ -1276,15 +1276,15 @@ async def upsert_trade_signal(
     signal_id: Optional[str] = None,
     runtime_sequence: Any = _RUNTIME_SEQUENCE_UNSET,
     commit: bool = True,
+    ensure_subscription: bool = True,
 ) -> TradeSignal:
     """Idempotently upsert a normalized trade signal by ``(source, dedupe_key)``.
 
-    Architectural note: every signal published here must have a live
+    Architectural note: every signal published here normally must have a live
     user-channel WS subscription in place BEFORE the orchestrator can
     pick it up — otherwise the orchestrator's freshness gate will
-    refuse to trade.  We ensure that subscription synchronously at
-    publish time below.  ``ensure_user_subscribed()`` is idempotent
-    and sub-millisecond when the condition is already in the set.
+    refuse to trade.  Projection callers may pre-subscribe before opening
+    their DB transaction and pass ``ensure_subscription=False``.
     """
     # Strategy-side subscription handoff.  The market_id passed here
     # is the Polymarket condition_id (hex address).  Adding it to the
@@ -1293,7 +1293,7 @@ async def upsert_trade_signal(
     # events for this market will flow into ``WalletStateCache``.
     # Failures are logged but never blocking — the freshness gate
     # provides the safety net downstream.
-    if market_id and isinstance(market_id, str) and market_id.startswith("0x"):
+    if ensure_subscription and market_id and isinstance(market_id, str) and market_id.startswith("0x"):
         try:
             from services.ws_feeds import get_feed_manager
 
@@ -1731,7 +1731,9 @@ async def upsert_trade_signal(
             publish_signal_emission = False
 
     if row is not None and runtime_sequence is not _RUNTIME_SEQUENCE_UNSET:
-        row.runtime_sequence = int(runtime_sequence) if runtime_sequence is not None else None
+        next_runtime_sequence = int(runtime_sequence) if runtime_sequence is not None else None
+        if getattr(row, "runtime_sequence", None) != next_runtime_sequence:
+            row.runtime_sequence = next_runtime_sequence
 
     if commit:
         await session.commit()

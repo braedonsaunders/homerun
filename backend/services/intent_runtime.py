@@ -3072,6 +3072,23 @@ class IntentRuntime:
             chunk = snapshot_items[chunk_start:chunk_start + _UPSERT_CHUNK_SIZE]
             if not chunk:
                 break
+            condition_ids = sorted(
+                {
+                    str(snapshot.get("market_id") or "").strip()
+                    for snapshot in chunk
+                    if str(snapshot.get("market_id") or "").strip().startswith("0x")
+                }
+            )
+            if condition_ids:
+                try:
+                    from services.ws_feeds import get_feed_manager
+
+                    await get_feed_manager().ensure_user_subscribed(condition_ids)
+                except Exception as exc:
+                    logger.debug(
+                        "intent_runtime user-channel subscribe before projection failed",
+                        exc_info=exc,
+                    )
             async with AsyncSessionLocal() as session:
                 # Mirrors Fix J's unmute in shared_state: if SET LOCAL
                 # silently fails (e.g. session not yet in transaction or
@@ -3195,6 +3212,7 @@ class IntentRuntime:
                         signal_id=str(snapshot.get("id") or "") or None,
                         runtime_sequence=snapshot.get("runtime_sequence"),
                         commit=False,
+                        ensure_subscription=False,
                     )
                     if desired_status and desired_status != str(getattr(row, "status", "") or "").strip().lower():
                         row.status = desired_status

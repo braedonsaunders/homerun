@@ -94,7 +94,7 @@ class RateLimiter:
     # 2 seconds of sustained rate.
     LIMITS = {
         "gamma_general": RateLimitConfig(requests_per_window=4000, window_seconds=10),
-        "gamma_markets": RateLimitConfig(requests_per_window=300, window_seconds=10),
+        "gamma_markets": RateLimitConfig(requests_per_window=120, window_seconds=10, burst_limit=12),
         "gamma_events": RateLimitConfig(requests_per_window=500, window_seconds=10),
         "gamma_search": RateLimitConfig(requests_per_window=350, window_seconds=10, burst_limit=70),
         "clob_general": RateLimitConfig(requests_per_window=9000, window_seconds=10),
@@ -111,7 +111,7 @@ class RateLimiter:
         "data_positions": 2,
         "data_trades": 4,
         "gamma_events": 6,
-        "gamma_markets": 6,
+        "gamma_markets": 2,
         "gamma_search": 4,
         "clob_prices_history": 4,
         "clob_market": 8,

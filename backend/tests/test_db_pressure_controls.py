@@ -74,6 +74,22 @@ def test_data_source_runner_installs_aware_source_datetime_parser():
     assert parsed == datetime(2026, 5, 12, 4, 45, tzinfo=timezone.utc)
 
 
+def test_data_source_runner_aware_parser_compares_against_naive_datetimes():
+    instance = SimpleNamespace()
+
+    data_source_runner._install_source_datetime_parser(instance)
+
+    parsed = instance._parse_datetime("2026-05-12T04:45:00Z")
+    naive_before = datetime(2026, 5, 12, 4, 44)
+    naive_after = datetime(2026, 5, 12, 4, 46)
+
+    assert parsed is not None
+    assert parsed > naive_before
+    assert naive_before < parsed
+    assert parsed < naive_after
+    assert naive_after > parsed
+
+
 def test_data_source_runner_can_install_naive_datetime_parser_for_legacy_sources():
     instance = SimpleNamespace()
 
@@ -156,6 +172,7 @@ async def test_worker_snapshot_heartbeat_defers_during_recent_db_pressure(monkey
             raise AssertionError("snapshot write should have been deferred")
 
     worker_state._worker_snapshot_last_write_mono.clear()
+    worker_state._worker_snapshot_last_signature.clear()
     worker_state._worker_snapshot_last_write_mono["news"] = time.monotonic()
     monkeypatch.setattr(worker_state, "is_db_pressure_active", lambda: True)
 
@@ -167,6 +184,42 @@ async def test_worker_snapshot_heartbeat_defers_during_recent_db_pressure(monkey
         current_activity="idle",
         interval_seconds=30,
         last_run_at=None,
+        last_error=None,
+        stats={"loop": "idle"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_snapshot_unchanged_heartbeat_defers_without_db_pressure(monkeypatch):
+    class FailingSession:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("unchanged snapshot write should have been deferred")
+
+    worker_state._worker_snapshot_last_write_mono.clear()
+    worker_state._worker_snapshot_last_signature.clear()
+    last_run_at = datetime(2026, 5, 12, 4, 45, tzinfo=timezone.utc)
+    signature = worker_state._snapshot_signature(
+        running=True,
+        enabled=True,
+        current_activity="idle",
+        interval_seconds=30,
+        last_run_at=last_run_at,
+        lag_seconds=None,
+        last_error=None,
+        stats={"loop": "idle"},
+    )
+    worker_state._worker_snapshot_last_write_mono["news"] = time.monotonic()
+    worker_state._worker_snapshot_last_signature["news"] = signature
+    monkeypatch.setattr(worker_state, "is_db_pressure_active", lambda: False)
+
+    await worker_state.write_worker_snapshot(
+        FailingSession(),
+        "news",
+        running=True,
+        enabled=True,
+        current_activity="idle",
+        interval_seconds=30,
+        last_run_at=last_run_at,
         last_error=None,
         stats={"loop": "idle"},
     )

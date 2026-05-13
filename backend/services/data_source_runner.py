@@ -8,6 +8,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import MethodType
+from time import mktime
 from typing import Any
 
 from sqlalchemy import delete, desc, func, select, tuple_
@@ -182,16 +183,34 @@ def _parse_datetime(value: Any) -> datetime | None:
         if value.tzinfo is not None:
             return value.astimezone(timezone.utc).replace(tzinfo=None)
         return value
+    if isinstance(value, tuple) and len(value) >= 6:
+        try:
+            return datetime.fromtimestamp(mktime(value), tz=timezone.utc).replace(tzinfo=None)
+        except Exception:
+            return None
 
     text = str(value).strip()
     if not text:
         return None
+    if text.isdigit():
+        try:
+            ts = int(text)
+            if ts > 10_000_000_000:
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
+        except Exception:
+            return None
     if text.endswith("Z"):
         text = f"{text[:-1]}+00:00"
 
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
+        for fmt in ("%Y%m%dT%H%M%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
         return None
 
     if parsed.tzinfo is not None:
@@ -199,13 +218,45 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed
 
 
+class _ComparableAwareDateTime(datetime):
+    @classmethod
+    def from_datetime(cls, value: datetime) -> "_ComparableAwareDateTime":
+        aware = value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return cls(
+            aware.year,
+            aware.month,
+            aware.day,
+            aware.hour,
+            aware.minute,
+            aware.second,
+            aware.microsecond,
+            tzinfo=timezone.utc,
+            fold=aware.fold,
+        )
+
+    def _coerce_other(self, other: Any) -> Any:
+        if isinstance(other, datetime) and other.tzinfo is None:
+            return other.replace(tzinfo=timezone.utc)
+        return other
+
+    def __lt__(self, other: Any) -> bool:
+        return super().__lt__(self._coerce_other(other))
+
+    def __le__(self, other: Any) -> bool:
+        return super().__le__(self._coerce_other(other))
+
+    def __gt__(self, other: Any) -> bool:
+        return super().__gt__(self._coerce_other(other))
+
+    def __ge__(self, other: Any) -> bool:
+        return super().__ge__(self._coerce_other(other))
+
+
 def _source_parse_datetime_aware(_self: Any, value: Any) -> datetime | None:
     parsed = _parse_datetime(value)
     if parsed is None:
         return None
-    if parsed.tzinfo is not None:
-        return parsed.astimezone(timezone.utc)
-    return parsed.replace(tzinfo=timezone.utc)
+    return _ComparableAwareDateTime.from_datetime(parsed)
 
 
 def _source_parse_datetime_naive(_self: Any, value: Any) -> datetime | None:
