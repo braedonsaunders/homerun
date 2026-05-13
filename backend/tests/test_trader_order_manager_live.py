@@ -111,6 +111,54 @@ async def test_submit_execution_leg_live_prefers_live_context_price_over_stale_l
 
 
 @pytest.mark.asyncio
+async def test_submit_execution_leg_live_skips_wide_book_before_provider_submit(monkeypatch):
+    execution_mock = AsyncMock(side_effect=AssertionError("spread gate must block before live broker submit"))
+    monkeypatch.setattr(order_manager, "execute_live_order", execution_mock)
+
+    token_id = "123456789012345678901"
+    signal = SimpleNamespace(
+        id="sig-wide-live-book",
+        market_id="123456789012345678",
+        direction="buy_yes",
+        entry_price=0.41,
+        market_question="Will wide live book be skipped?",
+        payload_json={"selected_token_id": token_id},
+        live_context={
+            "selected_outcome": "yes",
+            "selected_token_id": token_id,
+            "yes_token_id": token_id,
+            "live_selected_price": 0.43,
+            "execution_order_book": {
+                "bids": [{"price": 0.40, "size": 100.0}],
+                "asks": [{"price": 0.43, "size": 100.0}],
+            },
+        },
+    )
+
+    result = await order_manager.submit_execution_leg(
+        mode="live",
+        signal=signal,
+        leg={
+            "leg_id": "leg_wide_book",
+            "market_id": signal.market_id,
+            "market_question": signal.market_question,
+            "side": "buy",
+            "outcome": "yes",
+            "limit_price": 0.43,
+        },
+        notional_usd=10.0,
+        risk_limits={"max_spread_bps": 75.0},
+    )
+
+    assert result.status == "skipped"
+    assert result.error_message == "Book spread 722.9 bps exceeds max_spread_bps 75.0."
+    assert result.payload["reason"] == "max_spread_bps_exceeded"
+    assert result.payload["spread_bps"] == pytest.approx(722.89, rel=1e-4)
+    assert result.notional_usd == 0.0
+    execution_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_submit_execution_leg_live_taker_limit_caps_execution_to_explicit_execution_price_bound(monkeypatch):
     """Live taker_limit BUY caps to the explicit execution-price cap.
 

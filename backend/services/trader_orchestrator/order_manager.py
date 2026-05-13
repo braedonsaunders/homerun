@@ -1372,7 +1372,7 @@ async def submit_execution_leg(
     if _live_spread_rejected:
         return LegSubmitResult(
             leg_id=leg_id,
-            status="failed",
+            status="skipped",
             effective_price=price,
             error_message=f"Book spread {_live_spread_bps:.1f} bps exceeds max_spread_bps {_live_spread_cap:.1f}.",
             payload={
