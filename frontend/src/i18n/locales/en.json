@@ -5660,23 +5660,23 @@
       "title": "Stop Trader"
     },
     "tableHeaders": {
-      "avgPx": "Exposure",
-      "conf": "Edge",
+      "avgPx": "Avg Px",
+      "conf": "Conf",
       "confidence": "Confidence",
-      "dir": "w-[6%] text-[10px]",
+      "dir": "Dir",
       "edge": "Edge",
-      "evalAge": "Venue",
-      "exitPercent": "w-[5%] text-[10px]",
+      "evalAge": "Eval Age",
+      "exitPercent": "Exit %",
       "fill": "Fill",
-      "fillProgress": "Value",
+      "fillProgress": "Filled",
       "mark": "Mark",
-      "markAge": "w-[5%] text-[10px]",
+      "markAge": "Mark Age",
       "market": "Market",
-      "mode": "Orders",
-      "orders": "Conf",
+      "mode": "Mode",
+      "orders": "Orders",
       "updated": "Updated",
       "value": "Value",
-      "venue": "w-[8%] text-[10px]"
+      "venue": "Venue"
     },
     "tabs": {
       "decisions": "Decisions",
