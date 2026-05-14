@@ -171,7 +171,7 @@ def test_whitelist_zero_match_logs_warning(caplog):
     m1 = _market("m1", tags=["crypto"], event_slug="ev1")
     e1 = _event("ev1", markets=[m1])
 
-    with caplog.at_level(logging.WARNING, logger="services.scanner"):
+    with caplog.at_level(logging.WARNING):
         events, markets = ArbitrageScanner._apply_market_tag_whitelist(
             [e1], [m1], frozenset({"sports"})
         )
@@ -192,7 +192,7 @@ def test_whitelist_drop_emits_info_log_with_reason(caplog):
     e1 = _event("ev1", markets=[m1])
     e2 = _event("ev2", markets=[m2])
 
-    with caplog.at_level(logging.INFO, logger="services.scanner"):
+    with caplog.at_level(logging.INFO):
         events, markets = ArbitrageScanner._apply_market_tag_whitelist(
             [e1, e2], [m1, m2], frozenset({"crypto"})
         )

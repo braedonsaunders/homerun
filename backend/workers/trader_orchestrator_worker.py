@@ -1683,7 +1683,7 @@ async def _write_orchestrator_snapshot_best_effort(
         return
     has_pending_writes = _session_has_pending_writes(session)
     use_fresh_session = not has_pending_writes and isinstance(session, AsyncSession)
-    if use_fresh_session:
+    if not has_pending_writes:
         now_mono = time.monotonic()
         lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
         last_persisted_at = _orchestrator_snapshot_last_persist_mono.get(lane_key)

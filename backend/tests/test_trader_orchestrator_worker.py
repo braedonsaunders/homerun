@@ -345,6 +345,7 @@ async def test_write_orchestrator_snapshot_updates_runtime_status_before_db_writ
         "write_orchestrator_snapshot",
         _fake_write_orchestrator_snapshot,
     )
+    trader_orchestrator_worker._orchestrator_snapshot_last_persist_mono.clear()
 
     last_run_at = datetime(2026, 4, 9, 8, 40, 0, tzinfo=timezone.utc)
     try:
@@ -369,6 +370,7 @@ async def test_write_orchestrator_snapshot_updates_runtime_status_before_db_writ
         assert runtime_snapshot["stats"] == {"open_orders": 2}
     finally:
         runtime_status._orchestrator = original_snapshot  # type: ignore[attr-defined]
+        trader_orchestrator_worker._orchestrator_snapshot_last_persist_mono.clear()
 
 
 @pytest.mark.asyncio
@@ -388,6 +390,7 @@ async def test_write_orchestrator_snapshot_swallows_query_canceled_errors(monkey
         "write_orchestrator_snapshot",
         _raise_query_canceled,
     )
+    trader_orchestrator_worker._orchestrator_snapshot_last_persist_mono.clear()
 
     last_run_at = datetime(2026, 4, 10, 9, 15, 0, tzinfo=timezone.utc)
     try:
@@ -409,6 +412,7 @@ async def test_write_orchestrator_snapshot_swallows_query_canceled_errors(monkey
         assert runtime_snapshot["last_run_at"] == last_run_at.isoformat().replace("+00:00", "Z")
     finally:
         runtime_status._orchestrator = original_snapshot  # type: ignore[attr-defined]
+        trader_orchestrator_worker._orchestrator_snapshot_last_persist_mono.clear()
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,8 @@ def _reset_module_state(monkeypatch):
     """Each test starts with a fresh manager singleton + clean hot_state."""
     fresh_manager = tcc._TraderCycleContextManager()
     monkeypatch.setattr(tcc, "trader_cycle_context", fresh_manager)
+    monkeypatch.setattr(tcc, "is_db_pressure_active", lambda: False)
+    monkeypatch.setattr(tcc, "current_backpressure_level", lambda: 0.0)
     # Hot state is a process-global; clear it for test isolation.
     hot_state._snapshots.clear()  # type: ignore[attr-defined]
     hot_state._global_gross.clear()  # type: ignore[attr-defined]
