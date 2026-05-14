@@ -7380,6 +7380,7 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
   const worker = overviewQuery.data?.worker
   const orchestratorControl = overviewQuery.data?.control
+  const orchestratorRuntimeState = overviewQuery.data?.runtime_state
   const orchestratorConfig = overviewQuery.data?.config || null
   const metrics = overviewQuery.data?.metrics
   const executionLatency = metrics?.execution_latency || null
@@ -7443,21 +7444,43 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     : ''
   const orchestratorBoundMode = String(orchestratorControl?.mode || '').trim().toLowerCase()
   const workerActivity = String(worker?.current_activity || '').trim().toLowerCase()
-  const orchestratorWorkerRunning = Boolean(worker?.running)
-  const orchestratorRunning = orchestratorEnabled && orchestratorWorkerRunning
-  const orchestratorControlMismatch =
+  const orchestratorStateKey = String(orchestratorRuntimeState?.state || '').trim().toLowerCase()
+  const orchestratorWorkerRunning = Boolean(orchestratorRuntimeState?.worker_running ?? worker?.running)
+  const orchestratorHeartbeatStale = Boolean(orchestratorRuntimeState?.worker_stale ?? worker?.is_stale)
+  const orchestratorRunning = orchestratorStateKey
+    ? orchestratorStateKey === 'running'
+    : orchestratorEnabled && orchestratorWorkerRunning && !orchestratorHeartbeatStale
+  const orchestratorStartStopActive = orchestratorEnabled
+  const orchestratorBlocked = orchestratorStateKey
+    ? orchestratorStateKey === 'blocked'
+    : orchestratorEnabled && !orchestratorWorkerRunning && workerActivity.startsWith('blocked')
+  const orchestratorStartingFallback = Boolean(
     orchestratorEnabled &&
     !orchestratorWorkerRunning &&
-    !workerActivity.includes('start command queued') &&
-    !workerActivity.includes('live start command queued') &&
-    !workerActivity.startsWith('blocked')
-  const orchestratorStartStopActive = orchestratorEnabled
-  const orchestratorBlocked = orchestratorEnabled && !orchestratorWorkerRunning && workerActivity.startsWith('blocked')
-  const orchestratorStatusLabel = orchestratorBlocked
-    ? 'BLOCKED'
+    (
+      workerActivity.includes('start command queued') ||
+      workerActivity.includes('live start command queued')
+    )
+  )
+  const orchestratorStatusLabel = orchestratorRuntimeState?.label || (
+    orchestratorBlocked
+      ? 'BLOCKED'
+      : orchestratorHeartbeatStale
+        ? 'STALE'
+        : orchestratorRunning
+          ? 'RUNNING'
+          : orchestratorStartingFallback
+            ? 'STARTING'
+            : Boolean(orchestratorControl?.is_enabled) && Boolean(orchestratorControl?.is_paused)
+              ? 'PAUSED'
+              : 'STOPPED'
+  )
+  const orchestratorStatusDetail = String(orchestratorRuntimeState?.reason || worker?.current_activity || '').trim()
+  const orchestratorStatusVariant: 'default' | 'secondary' | 'destructive' = orchestratorHeartbeatStale || orchestratorBlocked
+    ? 'destructive'
     : orchestratorRunning
-      ? 'RUNNING'
-      : 'STOPPED'
+      ? 'default'
+      : 'secondary'
   const orchestratorStartRequestPending =
     startBySelectedAccountMutation.isPending &&
     !orchestratorEnabled &&
@@ -10208,8 +10231,8 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
           <span
             className={cn(
               'w-1.5 h-1.5 rounded-full',
-              worker?.last_error
-                ? 'bg-amber-400'
+              worker?.last_error || orchestratorHeartbeatStale
+                ? 'bg-red-500'
                 : orchestratorRunning
                   ? 'bg-emerald-500'
                   : 'bg-amber-400'
@@ -10222,15 +10245,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
         <div className="flex items-center gap-1.5">
           <Badge
             className="h-5 px-1.5 text-[10px]"
-            variant={orchestratorBlocked ? 'destructive' : orchestratorRunning ? 'default' : 'secondary'}
+            variant={orchestratorStatusVariant}
+            title={orchestratorStatusDetail || orchestratorStatusLabel}
           >
             {orchestratorStatusLabel}
           </Badge>
-          {orchestratorControlMismatch ? (
-            <Badge className="h-5 px-1.5 text-[10px]" variant="destructive">
-              {t('tradingPanel.controls.desync')}
-            </Badge>
-          ) : null}
           <Badge className="h-5 px-1.5 text-[10px]" variant={selectedAccountMode === 'live' ? 'destructive' : 'outline'}>
             {selectedAccountMode.toUpperCase()}
           </Badge>

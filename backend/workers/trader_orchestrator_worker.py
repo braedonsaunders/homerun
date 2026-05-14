@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 from sqlalchemy import and_, func, select, text, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models.database import (
@@ -1682,9 +1683,6 @@ async def _write_orchestrator_snapshot_best_effort(
         return
     has_pending_writes = _session_has_pending_writes(session)
     if not has_pending_writes:
-        pressure_level = current_backpressure_level()
-        if is_db_pressure_active() or pressure_level >= _ORCHESTRATOR_SNAPSHOT_PRESSURE_SKIP_LEVEL:
-            return
         now_mono = time.monotonic()
         lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
         last_persisted_at = _orchestrator_snapshot_last_persist_mono.get(lane_key)
@@ -1693,14 +1691,29 @@ async def _write_orchestrator_snapshot_best_effort(
             and now_mono - last_persisted_at < _ORCHESTRATOR_SNAPSHOT_MIN_PERSIST_INTERVAL_SECONDS
         ):
             return
+        heartbeat_required = lane_key == _LANE_GENERAL and (
+            bool(snapshot_kwargs.get("enabled")) or bool(snapshot_kwargs.get("running"))
+        )
+        pressure_level = current_backpressure_level()
+        if (
+            not heartbeat_required
+            and (is_db_pressure_active() or pressure_level >= _ORCHESTRATOR_SNAPSHOT_PRESSURE_SKIP_LEVEL)
+        ):
+            return
+    persist_session = session
     try:
-        await write_orchestrator_snapshot(session, **snapshot_kwargs)
+        if not has_pending_writes and isinstance(session, AsyncSession):
+            async with AsyncSessionLocal() as fresh_session:
+                persist_session = fresh_session
+                await write_orchestrator_snapshot(fresh_session, **snapshot_kwargs)
+        else:
+            await write_orchestrator_snapshot(session, **snapshot_kwargs)
         _orchestrator_snapshot_last_persist_mono[
             str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
         ] = time.monotonic()
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
-        if hasattr(session, "rollback"):
-            await session.rollback()
+        if hasattr(persist_session, "rollback"):
+            await persist_session.rollback()
         if isinstance(exc, OperationalError) and not _is_retryable_db_error(exc):
             raise
         logger.warning("Skipped orchestrator snapshot write due to transient DB error", exc_info=exc)

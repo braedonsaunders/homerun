@@ -90,7 +90,7 @@ from services.trader_order_verification import (
     trader_order_verification_hidden,
     trader_order_verification_rank,
 )
-from utils.utcnow import utcnow
+from utils.utcnow import as_utc, utcnow
 from utils.secrets import decrypt_secret
 from utils.converters import coerce_bool, safe_float, safe_int, to_iso
 from utils.market_urls import build_polymarket_market_url
@@ -4206,29 +4206,67 @@ def _serialize_control(row: TraderOrchestratorControl) -> dict[str, Any]:
     }
 
 
+def _parse_snapshot_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return as_utc(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return as_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _snapshot_stale_after_seconds(interval_seconds: int) -> float:
+    return max(
+        _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS,
+        float(max(1, interval_seconds)) * _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER,
+    )
+
+
+def _snapshot_freshness(
+    *,
+    running: bool,
+    interval_seconds: int,
+    updated_at: Any,
+    last_run_at: Any,
+) -> dict[str, Any]:
+    heartbeat_at = _parse_snapshot_time(updated_at) or _parse_snapshot_time(last_run_at)
+    stale_after_seconds = _snapshot_stale_after_seconds(interval_seconds)
+    lag_seconds: float | None = None
+    if heartbeat_at is not None:
+        lag_seconds = max(0.0, (as_utc(_now()) - heartbeat_at).total_seconds())
+    is_stale = bool(lag_seconds is not None and lag_seconds > stale_after_seconds)
+    return {
+        "heartbeat_at": heartbeat_at,
+        "heartbeat_lag_seconds": lag_seconds,
+        "stale_after_seconds": stale_after_seconds,
+        "is_stale": is_stale,
+        "running": bool(running) and not is_stale,
+    }
+
+
 def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
     interval_seconds = int(row.interval_seconds or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS)
-    lag_seconds: Optional[float] = None
-    if row.last_run_at is not None:
-        try:
-            lag_seconds = max(0.0, (_now() - row.last_run_at).total_seconds())
-        except Exception:
-            lag_seconds = None
-
-    running = bool(row.running)
-    if running and lag_seconds is not None:
-        stale_after_seconds = max(
-            _ORCHESTRATOR_SNAPSHOT_STALE_MIN_SECONDS,
-            float(max(1, interval_seconds)) * _ORCHESTRATOR_SNAPSHOT_STALE_MULTIPLIER,
-        )
-        if lag_seconds > stale_after_seconds:
-            running = False
+    freshness = _snapshot_freshness(
+        running=bool(row.running),
+        interval_seconds=interval_seconds,
+        updated_at=row.updated_at,
+        last_run_at=row.last_run_at,
+    )
 
     return {
         "id": row.id,
         "updated_at": to_iso(row.updated_at),
         "last_run_at": to_iso(row.last_run_at),
-        "running": running,
+        "heartbeat_at": to_iso(freshness["heartbeat_at"]),
+        "heartbeat_lag_seconds": freshness["heartbeat_lag_seconds"],
+        "stale_after_seconds": freshness["stale_after_seconds"],
+        "is_stale": freshness["is_stale"],
+        "running": freshness["running"],
         "enabled": bool(row.enabled),
         "current_activity": row.current_activity,
         "interval_seconds": interval_seconds,
@@ -4241,6 +4279,107 @@ def _serialize_snapshot(row: TraderOrchestratorSnapshot) -> dict[str, Any]:
         "daily_pnl": float(row.daily_pnl or 0.0),
         "last_error": row.last_error,
         "stats": row.stats_json or {},
+    }
+
+
+def _serialize_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    stats = dict(snapshot.get("stats") or {})
+    interval_seconds = int(snapshot.get("interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS)
+    freshness = _snapshot_freshness(
+        running=bool(snapshot.get("running")),
+        interval_seconds=interval_seconds,
+        updated_at=snapshot.get("updated_at"),
+        last_run_at=snapshot.get("last_run_at"),
+    )
+    return {
+        "id": ORCHESTRATOR_SNAPSHOT_ID,
+        "updated_at": snapshot.get("updated_at"),
+        "last_run_at": snapshot.get("last_run_at"),
+        "heartbeat_at": to_iso(freshness["heartbeat_at"]),
+        "heartbeat_lag_seconds": freshness["heartbeat_lag_seconds"],
+        "stale_after_seconds": freshness["stale_after_seconds"],
+        "is_stale": freshness["is_stale"],
+        "running": freshness["running"],
+        "enabled": bool(snapshot.get("enabled")),
+        "current_activity": snapshot.get("current_activity"),
+        "interval_seconds": interval_seconds,
+        "traders_total": int(stats.get("traders_total", 0) or 0),
+        "traders_running": int(stats.get("traders_running", 0) or 0),
+        "decisions_count": int(stats.get("decisions_count", 0) or 0),
+        "orders_count": int(stats.get("orders_count", 0) or 0),
+        "open_orders": int(stats.get("open_orders", 0) or 0),
+        "gross_exposure_usd": float(stats.get("gross_exposure_usd", 0.0) or 0.0),
+        "daily_pnl": float(stats.get("daily_pnl", 0.0) or 0.0),
+        "last_error": snapshot.get("last_error"),
+        "stats": stats,
+    }
+
+
+def compose_orchestrator_runtime_state(control: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
+    desired_enabled = bool(control.get("is_enabled"))
+    desired_paused = bool(control.get("is_paused"))
+    desired_active = desired_enabled and not desired_paused
+    kill_switch = bool(control.get("kill_switch"))
+    worker_running = bool(worker.get("running"))
+    worker_stale = bool(worker.get("is_stale"))
+    worker_activity = str(worker.get("current_activity") or "").strip()
+    worker_activity_key = worker_activity.lower()
+    heartbeat_lag_seconds = safe_float(worker.get("heartbeat_lag_seconds"), None)
+    stale_after_seconds = safe_float(worker.get("stale_after_seconds"), None)
+
+    state = "stopped"
+    label = "STOPPED"
+    reason = "Control is disabled."
+    can_place_orders = False
+
+    if desired_active and kill_switch:
+        state = "blocked"
+        label = "BLOCKED"
+        reason = "Kill switch is blocking live order placement."
+    elif desired_active and worker_stale:
+        state = "stale"
+        label = "STALE"
+        reason = "Control is enabled but the orchestrator heartbeat is stale."
+    elif desired_active and worker_activity_key.startswith("blocked"):
+        state = "blocked"
+        label = "BLOCKED"
+        reason = worker_activity or "Worker is blocked."
+    elif desired_active and worker_running:
+        state = "running"
+        label = "RUNNING"
+        reason = worker_activity or "Worker heartbeat is fresh."
+        can_place_orders = not kill_switch
+    elif desired_active and "start command queued" in worker_activity_key:
+        state = "starting"
+        label = "STARTING"
+        reason = worker_activity or "Start command is queued."
+    elif desired_active:
+        state = "starting"
+        label = "STARTING"
+        reason = "Control is enabled and waiting for the worker heartbeat."
+    elif desired_enabled and desired_paused:
+        state = "paused"
+        label = "PAUSED"
+        reason = "Control is paused."
+    elif worker_running:
+        state = "stopping"
+        label = "STOPPING"
+        reason = "Control is disabled and the worker is winding down."
+
+    return {
+        "state": state,
+        "label": label,
+        "reason": reason,
+        "desired_active": desired_active,
+        "desired_enabled": desired_enabled,
+        "desired_paused": desired_paused,
+        "worker_running": worker_running,
+        "worker_stale": worker_stale,
+        "kill_switch": kill_switch,
+        "can_place_orders": can_place_orders,
+        "heartbeat_at": worker.get("heartbeat_at") or worker.get("updated_at"),
+        "heartbeat_lag_seconds": heartbeat_lag_seconds,
+        "stale_after_seconds": stale_after_seconds,
     }
 
 
@@ -4909,25 +5048,7 @@ async def read_orchestrator_control(session: AsyncSession) -> dict[str, Any]:
 async def read_orchestrator_snapshot(session: AsyncSession) -> dict[str, Any]:
     runtime_snapshot = runtime_status.get_orchestrator()
     if os.environ.get("HOMERUN_PROCESS_ROLE") == "worker" and runtime_snapshot.get("updated_at") is not None:
-        stats = dict(runtime_snapshot.get("stats") or {})
-        return await _apply_wallet_live_exposure_floor(session, {
-            "id": ORCHESTRATOR_SNAPSHOT_ID,
-            "updated_at": runtime_snapshot.get("updated_at"),
-            "last_run_at": runtime_snapshot.get("last_run_at"),
-            "running": bool(runtime_snapshot.get("running")),
-            "enabled": bool(runtime_snapshot.get("enabled")),
-            "current_activity": runtime_snapshot.get("current_activity"),
-            "interval_seconds": int(runtime_snapshot.get("interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
-            "traders_total": int(stats.get("traders_total", 0) or 0),
-            "traders_running": int(stats.get("traders_running", 0) or 0),
-            "decisions_count": int(stats.get("decisions_count", 0) or 0),
-            "orders_count": int(stats.get("orders_count", 0) or 0),
-            "open_orders": int(stats.get("open_orders", 0) or 0),
-            "gross_exposure_usd": float(stats.get("gross_exposure_usd", 0.0) or 0.0),
-            "daily_pnl": float(stats.get("daily_pnl", 0.0) or 0.0),
-            "last_error": runtime_snapshot.get("last_error"),
-            "stats": stats,
-        })
+        return await _apply_wallet_live_exposure_floor(session, _serialize_runtime_snapshot(runtime_snapshot))
     return await _apply_wallet_live_exposure_floor(session, _serialize_snapshot(await ensure_orchestrator_snapshot(session)))
 
 
@@ -10393,6 +10514,7 @@ async def get_orchestrator_overview(session: AsyncSession) -> dict[str, Any]:
     return {
         "control": control,
         "worker": worker,
+        "runtime_state": compose_orchestrator_runtime_state(control, worker),
         "reconciliation_worker": await read_worker_snapshot(session, "trader_reconciliation"),
         "config": await compose_trader_orchestrator_config(session, control=control),
         "metrics": metrics,

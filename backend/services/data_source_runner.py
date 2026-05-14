@@ -366,6 +366,7 @@ async def _apply_retention_policy(
             delete(DataSourceRecord)
             .where(DataSourceRecord.data_source_id == source_id)
             .where(func.coalesce(DataSourceRecord.observed_at, DataSourceRecord.ingested_at) < cutoff)
+            .execution_options(synchronize_session=False)
         )
         max_age_deleted = int(delete_result.rowcount or 0)
 
@@ -413,7 +414,7 @@ async def _apply_retention_policy(
                     DataSourceRecord.id,
                 )
                 <= tuple_(b_observed, b_ingested, b_id),
-            )
+            ).execution_options(synchronize_session=False)
             delete_result = await session.execute(delete_stmt)
             max_records_deleted = int(delete_result.rowcount or 0)
 

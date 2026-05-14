@@ -324,6 +324,10 @@ export interface OrchestratorSnapshot {
   id?: string
   updated_at?: string | null
   last_run_at?: string | null
+  heartbeat_at?: string | null
+  heartbeat_lag_seconds?: number | null
+  stale_after_seconds?: number | null
+  is_stale?: boolean
   running: boolean
   enabled: boolean
   current_activity?: string | null
@@ -348,6 +352,7 @@ export interface OrchestratorStatusResponse {
     [k: string]: unknown
   }
   snapshot: OrchestratorSnapshot
+  runtime_state?: TraderOrchestratorRuntimeState
   config?: Record<string, unknown>
 }
 
@@ -678,6 +683,10 @@ export interface TraderOrchestratorOverview {
     enabled: boolean
     current_activity: string | null
     interval_seconds: number
+    heartbeat_at?: string | null
+    heartbeat_lag_seconds?: number | null
+    stale_after_seconds?: number | null
+    is_stale?: boolean
     signals_seen: number
     signals_selected: number
     decisions_count: number
@@ -689,6 +698,7 @@ export interface TraderOrchestratorOverview {
     updated_at: string | null
     stats: Record<string, any>
   }
+  runtime_state?: TraderOrchestratorRuntimeState
   reconciliation_worker?: {
     running: boolean
     enabled: boolean
@@ -711,6 +721,22 @@ export interface TraderOrchestratorOverview {
     execution_latency?: ExecutionLatencySummary
   }
   traders?: Trader[]
+}
+
+export interface TraderOrchestratorRuntimeState {
+  state: string
+  label: string
+  reason: string
+  desired_active: boolean
+  desired_enabled: boolean
+  desired_paused: boolean
+  worker_running: boolean
+  worker_stale: boolean
+  kill_switch: boolean
+  can_place_orders: boolean
+  heartbeat_at: string | null
+  heartbeat_lag_seconds: number | null
+  stale_after_seconds: number | null
 }
 
 export interface TraderOrchestratorControlResponse {
@@ -784,8 +810,9 @@ const mapOverviewToStatus = (overview: TraderOrchestratorOverview): TraderOrches
   const control = overview.control || ({} as TraderOrchestratorOverview['control'])
   const worker = overview.worker || ({} as TraderOrchestratorOverview['worker'])
   const metrics = overview.metrics || ({} as TraderOrchestratorOverview['metrics'])
-  const tradingActive = Boolean(control.is_enabled) && !Boolean(control.is_paused) && !Boolean(control.kill_switch)
-  const workerRunning = Boolean(worker.running)
+  const runtimeState = overview.runtime_state
+  const tradingActive = Boolean(runtimeState?.desired_active ?? (Boolean(control.is_enabled) && !Boolean(control.is_paused))) && !Boolean(control.kill_switch)
+  const workerRunning = Boolean(runtimeState?.worker_running ?? worker.running)
   const workerActivity = worker.current_activity || null
   const workerLastRunAt = worker.last_run_at || null
   const workerLastError = worker.last_error || null
@@ -794,7 +821,7 @@ const mapOverviewToStatus = (overview: TraderOrchestratorOverview): TraderOrches
 
   return {
     mode: control.mode || 'shadow',
-    running: tradingActive && workerRunning,
+    running: runtimeState ? runtimeState.state === 'running' : tradingActive && workerRunning,
     trading_active: tradingActive,
     worker_running: workerRunning,
     control: {

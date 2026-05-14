@@ -233,6 +233,10 @@ export function useRealtimeInvalidation(
           snapshot.control && typeof snapshot.control === 'object'
             ? snapshot.control
             : {}
+        const snapshotRuntimeState =
+          snapshot.runtime_state && typeof snapshot.runtime_state === 'object'
+            ? snapshot.runtime_state
+            : undefined
         const nextEnabled = typeof snapshot.is_enabled === 'boolean'
           ? snapshot.is_enabled
           : (typeof snapshotControl.is_enabled === 'boolean' ? snapshotControl.is_enabled : previousControl.is_enabled)
@@ -256,6 +260,7 @@ export function useRealtimeInvalidation(
             ...previousWorker,
             ...snapshot,
           },
+          runtime_state: snapshotRuntimeState,
           metrics: {
             ...previousMetrics,
             decisions_count: Number(snapshot.decisions_count ?? previousMetrics.decisions_count ?? 0),

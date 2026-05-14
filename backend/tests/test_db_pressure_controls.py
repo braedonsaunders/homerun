@@ -226,7 +226,7 @@ async def test_worker_snapshot_unchanged_heartbeat_defers_without_db_pressure(mo
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_snapshot_persist_defers_under_backpressure(monkeypatch):
+async def test_orchestrator_snapshot_persist_defers_low_priority_under_backpressure(monkeypatch):
     from workers import trader_orchestrator_worker as worker
 
     async def unexpected_write(*_args, **_kwargs):
@@ -240,11 +240,50 @@ async def test_orchestrator_snapshot_persist_defers_under_backpressure(monkeypat
 
     await worker._write_orchestrator_snapshot_best_effort(
         session,
+        lane="crypto",
+        running=False,
+        enabled=False,
+        current_activity="under pressure",
+        interval_seconds=5,
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_snapshot_persist_keeps_general_heartbeat_under_backpressure(monkeypatch):
+    from workers import trader_orchestrator_worker as worker
+
+    calls = []
+
+    async def fake_write(session, **kwargs):
+        calls.append((session, kwargs))
+
+    worker._orchestrator_snapshot_last_persist_mono.clear()
+    monkeypatch.setattr(worker, "current_backpressure_level", lambda: 0.7)
+    monkeypatch.setattr(worker, "is_db_pressure_active", lambda: False)
+    monkeypatch.setattr(worker, "write_orchestrator_snapshot", fake_write)
+
+    session = SimpleNamespace(new=[], dirty=[], deleted=[])
+
+    await worker._write_orchestrator_snapshot_best_effort(
+        session,
+        lane="general",
         running=True,
         enabled=True,
         current_activity="under pressure",
         interval_seconds=5,
     )
+
+    assert calls == [
+        (
+            session,
+            {
+                "running": True,
+                "enabled": True,
+                "current_activity": "under pressure",
+                "interval_seconds": 5,
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

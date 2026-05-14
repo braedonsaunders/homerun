@@ -14,6 +14,7 @@ from services.pause_state import global_pause_state
 from services.trader_orchestrator_state import (
     DEFAULT_PENDING_LIVE_EXIT_GUARD,
     arm_live_start,
+    compose_orchestrator_runtime_state,
     compose_trader_orchestrator_config,
     consume_live_arm_token,
     create_live_preflight,
@@ -215,6 +216,7 @@ async def get_status(session: AsyncSession = Depends(get_db_session)):
     payload = {
         "control": control,
         "snapshot": snapshot,
+        "runtime_state": compose_orchestrator_runtime_state(control, snapshot),
         "config": config,
     }
     return payload

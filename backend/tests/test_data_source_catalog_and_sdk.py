@@ -333,6 +333,57 @@ async def test_data_source_sdk_applies_max_records_retention(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_data_source_sdk_retention_handles_loaded_existing_datetime_rows(tmp_path, monkeypatch):
+    engine, session_factory = await _build_session_factory(tmp_path)
+    import services.data_source_runner as data_source_runner_module
+    import services.data_source_sdk as data_source_sdk_module
+
+    monkeypatch.setattr(data_source_sdk_module, "AsyncSessionLocal", session_factory)
+
+    source_code = (
+        "from datetime import datetime, timezone\\n"
+        "from services.data_source_sdk import BaseDataSource\\n\\n"
+        "class ExistingRowsRetentionSource(BaseDataSource):\\n"
+        "    name = 'Existing Rows Retention Source'\\n\\n"
+        "    async def fetch_async(self):\\n"
+        "        return [\\n"
+        "            {\\n"
+        "                'external_id': f'existing-{idx}',\\n"
+        "                'title': f'Existing {idx}',\\n"
+        "                'summary': 'loaded row retention test',\\n"
+        "                'category': 'events',\\n"
+        "                'source': 'unit_test',\\n"
+        "                'observed_at': datetime(2026, 2, 18, 12, idx, tzinfo=timezone.utc),\\n"
+        "                'tags': ['retention'],\\n"
+        "            }\\n"
+        "            for idx in range(1, 7)\\n"
+        "        ]\\n"
+    )
+
+    await DataSourceSDK.create_source(
+        slug="retention_existing_rows_source",
+        source_key="events",
+        source_kind="python",
+        source_code=source_code,
+        retention={"max_records": 3},
+        enabled=True,
+    )
+
+    first_result = await DataSourceSDK.run_source("retention_existing_rows_source", max_records=20)
+    assert first_result.get("status") == "success"
+
+    data_source_runner_module._retention_last_applied_mono.clear()
+    second_result = await DataSourceSDK.run_source("retention_existing_rows_source", max_records=20)
+    assert second_result.get("status") == "success"
+    assert int(second_result.get("retention_pruned_count") or 0) >= 3
+
+    records = await DataSourceSDK.get_records(source_slug="retention_existing_rows_source", limit=10)
+    assert [record.get("external_id") for record in records] == ["existing-6", "existing-5", "existing-4"]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_data_source_sdk_applies_max_age_days_retention(tmp_path, monkeypatch):
     engine, session_factory = await _build_session_factory(tmp_path)
     import services.data_source_sdk as data_source_sdk_module
