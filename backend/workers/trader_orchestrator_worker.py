@@ -1682,7 +1682,8 @@ async def _write_orchestrator_snapshot_best_effort(
     if not persist:
         return
     has_pending_writes = _session_has_pending_writes(session)
-    if not has_pending_writes:
+    use_fresh_session = not has_pending_writes and isinstance(session, AsyncSession)
+    if use_fresh_session:
         now_mono = time.monotonic()
         lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
         last_persisted_at = _orchestrator_snapshot_last_persist_mono.get(lane_key)
@@ -1702,7 +1703,7 @@ async def _write_orchestrator_snapshot_best_effort(
             return
     persist_session = session
     try:
-        if not has_pending_writes and isinstance(session, AsyncSession):
+        if use_fresh_session:
             async with AsyncSessionLocal() as fresh_session:
                 persist_session = fresh_session
                 await write_orchestrator_snapshot(fresh_session, **snapshot_kwargs)

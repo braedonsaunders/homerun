@@ -25,6 +25,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from services.recorded_event_bus import (
     RecordedEvent, EnvelopeValidationError, parse_topic,
@@ -38,6 +39,15 @@ from services.recorded_event_bus.catalog import (
 
 
 # ── Envelope ────────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module", autouse=True)
+async def _ensure_topic_catalog_schema():
+    from models.database import TopicCatalog, async_engine
+
+    async_engine.sync_engine.dispose(close=False)
+    async with async_engine.begin() as conn:
+        await conn.run_sync(lambda sync_conn: TopicCatalog.__table__.create(sync_conn, checkfirst=True))
 
 
 class TestEnvelope:

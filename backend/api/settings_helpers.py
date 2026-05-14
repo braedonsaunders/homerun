@@ -883,23 +883,83 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
 
     if maintenance:
         maint = maintenance
-        settings.auto_cleanup_enabled = maint.auto_cleanup_enabled
-        settings.cleanup_interval_hours = maint.cleanup_interval_hours
-        settings.cleanup_resolved_trade_days = maint.cleanup_resolved_trade_days
-        settings.cleanup_trade_signal_emission_days = maint.cleanup_trade_signal_emission_days
-        settings.cleanup_trade_signal_update_days = maint.cleanup_trade_signal_update_days
-        settings.cleanup_trade_signal_days = maint.cleanup_trade_signal_days
-        settings.cleanup_wallet_activity_rollup_days = maint.cleanup_wallet_activity_rollup_days
-        settings.cleanup_wallet_activity_dedupe_enabled = maint.cleanup_wallet_activity_dedupe_enabled
-        settings.llm_usage_retention_days = maint.llm_usage_retention_days
-        settings.trader_events_firehose_retention_days = maint.trader_events_firehose_retention_days
-        settings.trader_events_other_retention_days = maint.trader_events_other_retention_days
-        settings.market_cache_hygiene_enabled = maint.market_cache_hygiene_enabled
-        settings.market_cache_hygiene_interval_hours = maint.market_cache_hygiene_interval_hours
-        settings.market_cache_retention_days = maint.market_cache_retention_days
-        settings.market_cache_reference_lookback_days = maint.market_cache_reference_lookback_days
-        settings.market_cache_weak_entry_grace_days = maint.market_cache_weak_entry_grace_days
-        settings.market_cache_max_entries_per_slug = maint.market_cache_max_entries_per_slug
+        settings.auto_cleanup_enabled = getattr(maint, "auto_cleanup_enabled", settings.auto_cleanup_enabled)
+        settings.cleanup_interval_hours = getattr(maint, "cleanup_interval_hours", settings.cleanup_interval_hours)
+        settings.cleanup_resolved_trade_days = getattr(
+            maint,
+            "cleanup_resolved_trade_days",
+            settings.cleanup_resolved_trade_days,
+        )
+        settings.cleanup_trade_signal_emission_days = getattr(
+            maint,
+            "cleanup_trade_signal_emission_days",
+            settings.cleanup_trade_signal_emission_days,
+        )
+        settings.cleanup_trade_signal_update_days = getattr(
+            maint,
+            "cleanup_trade_signal_update_days",
+            settings.cleanup_trade_signal_update_days,
+        )
+        settings.cleanup_trade_signal_days = getattr(
+            maint,
+            "cleanup_trade_signal_days",
+            settings.cleanup_trade_signal_days,
+        )
+        settings.cleanup_wallet_activity_rollup_days = getattr(
+            maint,
+            "cleanup_wallet_activity_rollup_days",
+            settings.cleanup_wallet_activity_rollup_days,
+        )
+        settings.cleanup_wallet_activity_dedupe_enabled = getattr(
+            maint,
+            "cleanup_wallet_activity_dedupe_enabled",
+            settings.cleanup_wallet_activity_dedupe_enabled,
+        )
+        settings.llm_usage_retention_days = getattr(
+            maint,
+            "llm_usage_retention_days",
+            settings.llm_usage_retention_days,
+        )
+        settings.trader_events_firehose_retention_days = getattr(
+            maint,
+            "trader_events_firehose_retention_days",
+            settings.trader_events_firehose_retention_days,
+        )
+        settings.trader_events_other_retention_days = getattr(
+            maint,
+            "trader_events_other_retention_days",
+            settings.trader_events_other_retention_days,
+        )
+        settings.market_cache_hygiene_enabled = getattr(
+            maint,
+            "market_cache_hygiene_enabled",
+            settings.market_cache_hygiene_enabled,
+        )
+        settings.market_cache_hygiene_interval_hours = getattr(
+            maint,
+            "market_cache_hygiene_interval_hours",
+            settings.market_cache_hygiene_interval_hours,
+        )
+        settings.market_cache_retention_days = getattr(
+            maint,
+            "market_cache_retention_days",
+            settings.market_cache_retention_days,
+        )
+        settings.market_cache_reference_lookback_days = getattr(
+            maint,
+            "market_cache_reference_lookback_days",
+            settings.market_cache_reference_lookback_days,
+        )
+        settings.market_cache_weak_entry_grace_days = getattr(
+            maint,
+            "market_cache_weak_entry_grace_days",
+            settings.market_cache_weak_entry_grace_days,
+        )
+        settings.market_cache_max_entries_per_slug = getattr(
+            maint,
+            "market_cache_max_entries_per_slug",
+            settings.market_cache_max_entries_per_slug,
+        )
 
     if discovery:
         settings.discovery_max_discovered_wallets = discovery.max_discovered_wallets

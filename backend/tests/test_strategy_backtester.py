@@ -922,7 +922,7 @@ async def test_replay_discover_runs_strategies_that_only_override_detect(monkeyp
     )
 
     # Stub the per-tick price grid so TOK1 has a state at tick 1 onward.
-    async def _stub_grid(*, session, token_ids, ticks, end_dt, use_deltas):
+    async def _stub_grid(*, session, token_ids, ticks, end_dt, use_deltas, **_kwargs):
         return {
             "TOK1": [
                 None if i == 0 else {

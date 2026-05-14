@@ -125,37 +125,37 @@ def _event(slug: str, end_date: str) -> dict:
     }
 
 
-def test_get_series_configs_skips_empty_btc_eth_5m_defaults(monkeypatch):
-    """Plan 0038: BTC 5m and ETH 5m must default to "" so the
-    crypto lane never fetches them unless the operator explicitly
-    opts in via Settings. SOL 5m and XRP 5m remain enabled (the
-    crypto_5m_midcycle trader's active assets), and the other 12
-    series across 15m/1h/4h keep their hard-coded defaults."""
+def test_get_series_configs_keeps_empty_crypto_series_defaults(monkeypatch):
+    """Crypto series IDs default to blank until the operator opts in."""
+    from config import Settings
     from config import settings as _settings
 
-    # Mimic a fresh install: no DB row, so the Settings class
-    # attributes are the live runtime values.
-    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_BTC_5M", "")
-    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_ETH_5M", "")
-    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_SOL_5M", "10686")
-    monkeypatch.setattr(_settings, "BTC_ETH_HF_SERIES_XRP_5M", "10685")
+    series_fields = [
+        "BTC_ETH_HF_SERIES_BTC_15M",
+        "BTC_ETH_HF_SERIES_ETH_15M",
+        "BTC_ETH_HF_SERIES_SOL_15M",
+        "BTC_ETH_HF_SERIES_XRP_15M",
+        "BTC_ETH_HF_SERIES_BTC_5M",
+        "BTC_ETH_HF_SERIES_ETH_5M",
+        "BTC_ETH_HF_SERIES_SOL_5M",
+        "BTC_ETH_HF_SERIES_XRP_5M",
+        "BTC_ETH_HF_SERIES_BTC_1H",
+        "BTC_ETH_HF_SERIES_ETH_1H",
+        "BTC_ETH_HF_SERIES_SOL_1H",
+        "BTC_ETH_HF_SERIES_XRP_1H",
+        "BTC_ETH_HF_SERIES_BTC_4H",
+        "BTC_ETH_HF_SERIES_ETH_4H",
+        "BTC_ETH_HF_SERIES_SOL_4H",
+        "BTC_ETH_HF_SERIES_XRP_4H",
+    ]
+    for field_name in series_fields:
+        assert Settings.model_fields[field_name].default == ""
+    for field_name in series_fields:
+        monkeypatch.setattr(_settings, field_name, "")
 
     series = crypto_service._get_series_configs()
-    five_min = [(sid, asset) for sid, asset, tf in series if tf == "5min"]
-
-    assert ("10686", "SOL") in five_min
-    assert ("10685", "XRP") in five_min
-    # Empty BTC and ETH entries are present in the raw config but
-    # filtered out at the fetch boundary — see _fetch_all() below.
-    btc_eth_5m = [(sid, asset) for sid, asset in five_min if asset in {"BTC", "ETH"}]
-    assert all(not sid.strip() for sid, _ in btc_eth_5m), (
-        f"BTC 5m and ETH 5m must default to blank; got {btc_eth_5m}"
-    )
-
-    # 15m / 1h / 4h series are unchanged.
-    fifteen = [(sid, asset) for sid, asset, tf in series if tf == "15min"]
-    assert ("10192", "BTC") in fifteen
-    assert ("10191", "ETH") in fifteen
+    assert len(series) == 16
+    assert all(not str(series_id).strip() for series_id, _asset, _timeframe in series)
 
 
 def test_fetch_all_drops_blank_series_ids(monkeypatch):

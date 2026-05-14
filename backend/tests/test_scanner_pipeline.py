@@ -1641,6 +1641,7 @@ class TestSharedPriceHistoryAttach:
         }
         upsert_mock = AsyncMock(return_value=1)
         session_factory = _FakeAsyncSessionFactory()
+        monkeypatch.setattr(scanner_module, "is_db_pressure_active", lambda: False)
         monkeypatch.setattr(shared_state_module, "upsert_scanner_market_history", upsert_mock)
         monkeypatch.setattr(scanner_module, "AsyncSessionLocal", session_factory)
 
