@@ -16,7 +16,29 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from services import scanner as scanner_module  # noqa: E402
 from services.scanner import ArbitrageScanner  # noqa: E402
+
+
+class _DiagnosticLogSink:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def info(self, message: str, *args: object, **_kwargs: object) -> None:
+        self.messages.append(message % args if args else message)
+
+    def warning(self, message: str, *args: object, **_kwargs: object) -> None:
+        self.messages.append(message % args if args else message)
+
+
+def _capture_scanner_diagnostics(monkeypatch) -> _DiagnosticLogSink:
+    sink = _DiagnosticLogSink()
+    monkeypatch.setattr(
+        scanner_module,
+        "_stdlib_logging",
+        SimpleNamespace(getLogger=lambda _name: sink),
+    )
+    return sink
 
 
 def _market(
@@ -163,41 +185,37 @@ def test_whitelist_or_logic_multiple_tags():
     assert {e.slug for e in events} == {"ev1", "ev2"}
 
 
-def test_whitelist_zero_match_logs_warning(caplog):
+def test_whitelist_zero_match_logs_warning(monkeypatch):
     """When the whitelist is non-empty but matches nothing, an operator
     warning is emitted so the misconfiguration becomes visible."""
-    import logging
-
     m1 = _market("m1", tags=["crypto"], event_slug="ev1")
     e1 = _event("ev1", markets=[m1])
+    diagnostics = _capture_scanner_diagnostics(monkeypatch)
 
-    with caplog.at_level(logging.WARNING):
-        events, markets = ArbitrageScanner._apply_market_tag_whitelist(
-            [e1], [m1], frozenset({"sports"})
-        )
+    events, markets = ArbitrageScanner._apply_market_tag_whitelist(
+        [e1], [m1], frozenset({"sports"})
+    )
     assert markets == []
     assert events == []
     assert any(
-        "matched zero markets" in record.getMessage()
-        for record in caplog.records
+        "matched zero markets" in message
+        for message in diagnostics.messages
     )
 
 
-def test_whitelist_drop_emits_info_log_with_reason(caplog):
+def test_whitelist_drop_emits_info_log_with_reason(monkeypatch):
     """Non-empty filter that drops some markets logs the reason code."""
-    import logging
-
     m1 = _market("m1", tags=["crypto"], event_slug="ev1")
     m2 = _market("m2", tags=["politics"], event_slug="ev2")
     e1 = _event("ev1", markets=[m1])
     e2 = _event("ev2", markets=[m2])
+    diagnostics = _capture_scanner_diagnostics(monkeypatch)
 
-    with caplog.at_level(logging.INFO):
-        events, markets = ArbitrageScanner._apply_market_tag_whitelist(
-            [e1, e2], [m1, m2], frozenset({"crypto"})
-        )
+    events, markets = ArbitrageScanner._apply_market_tag_whitelist(
+        [e1, e2], [m1, m2], frozenset({"crypto"})
+    )
     assert markets == [m1]
     assert any(
-        "market_filter_tags_no_match" in record.getMessage()
-        for record in caplog.records
+        "market_filter_tags_no_match" in message
+        for message in diagnostics.messages
     )
