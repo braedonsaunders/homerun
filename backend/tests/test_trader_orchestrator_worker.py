@@ -2642,7 +2642,7 @@ async def test_run_trader_once_skips_heavy_maintenance_when_manage_only_cycle_is
 
 
 @pytest.mark.asyncio
-async def test_run_trader_once_skips_live_maintenance_on_runtime_trigger_cycle(monkeypatch):
+async def test_run_trader_once_reconciles_live_sessions_on_runtime_trigger_cycle(monkeypatch):
     trader_id = "trader-runtime-hot"
 
     class _Session:
@@ -2708,17 +2708,20 @@ async def test_run_trader_once_skips_live_maintenance_on_runtime_trigger_cycle(m
     trader_payload = dict(_base_trader_payload(allow_averaging=True))
     trader_payload["id"] = trader_id
 
-    decisions_written, orders_written, processed_signals = await trader_orchestrator_worker._run_trader_once(
-        trader_payload,
-        _base_control_payload(),
-        trigger_signal_ids_by_source={"crypto": ["signal-1"]},
-        trigger_signal_snapshots_by_source={"crypto": {}},
-    )
+    try:
+        decisions_written, orders_written, processed_signals = await trader_orchestrator_worker._run_trader_once(
+            trader_payload,
+            _base_control_payload(),
+            trigger_signal_ids_by_source={"crypto": ["signal-1"]},
+            trigger_signal_snapshots_by_source={"crypto": {}},
+        )
+    finally:
+        trader_orchestrator_worker._execution_session_maintenance_last_run.pop(trader_id, None)
 
     assert decisions_written == 0
     assert orders_written == 0
     assert processed_signals == 0
-    reconcile_sessions_mock.assert_not_awaited()
+    reconcile_sessions_mock.assert_awaited_once()
     timeout_cleanup_mock.assert_not_awaited()
 
 
@@ -2786,6 +2789,7 @@ async def test_run_trader_once_skips_live_maintenance_on_scheduled_cycle(monkeyp
     trader_payload = dict(_base_trader_payload(allow_averaging=True))
     trader_payload["id"] = trader_id
     trader_orchestrator_worker._trader_maintenance_last_run[trader_id] = datetime.now(timezone.utc)
+    trader_orchestrator_worker._execution_session_maintenance_last_run[trader_id] = datetime.now(timezone.utc)
 
     try:
         decisions_written, orders_written, processed_signals = await trader_orchestrator_worker._run_trader_once(
@@ -2795,6 +2799,7 @@ async def test_run_trader_once_skips_live_maintenance_on_scheduled_cycle(monkeyp
         )
     finally:
         trader_orchestrator_worker._trader_maintenance_last_run.pop(trader_id, None)
+        trader_orchestrator_worker._execution_session_maintenance_last_run.pop(trader_id, None)
 
     assert decisions_written == 0
     assert orders_written == 0

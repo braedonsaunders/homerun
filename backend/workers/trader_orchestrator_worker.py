@@ -1096,6 +1096,7 @@ _live_risk_clamp_event_cooldown_until: dict[str, datetime] = {}
 _live_provider_reconcile_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _live_provider_failure_snapshot_cache: dict[str, tuple[datetime, dict[str, Any]]] = {}
 _trader_maintenance_last_run: dict[str, datetime] = {}
+_execution_session_maintenance_last_run: dict[str, datetime] = {}
 _latency_sla_breach_logged_at: dict[str, datetime] = {}
 _latency_sla_breach_last_signature: dict[str, tuple[int | None, int | None, int | None]] = {}
 _TRADERS_SCOPE_CONTEXT_CACHE_TTL_SECONDS = 5.0
@@ -2163,6 +2164,21 @@ def _is_trader_maintenance_due(
     if not trader_id:
         return False
     last_run = _trader_maintenance_last_run.get(trader_id)
+    if last_run is None:
+        return True
+    interval_seconds = _trader_maintenance_interval_seconds(run_mode)
+    return (now - last_run).total_seconds() >= float(interval_seconds)
+
+
+def _is_execution_session_maintenance_due(
+    *,
+    trader_id: str,
+    run_mode: str,
+    now: datetime,
+) -> bool:
+    if not trader_id:
+        return False
+    last_run = _execution_session_maintenance_last_run.get(trader_id)
     if last_run is None:
         return True
     interval_seconds = _trader_maintenance_interval_seconds(run_mode)
@@ -4890,6 +4906,11 @@ async def _run_trader_once_inner(
             run_mode=run_mode,
             now=maintenance_now,
         )
+        run_execution_session_maintenance = _is_execution_session_maintenance_due(
+            trader_id=trader_id,
+            run_mode=run_mode,
+            now=maintenance_now,
+        )
         pre_maintenance_open_order_count = 0
         if stream_trigger_mode and effective_process_signals:
             run_trader_maintenance = False
@@ -4969,7 +4990,7 @@ async def _run_trader_once_inner(
                 )
                 _accumulate("mnt_inventory_sync", _mnt_inventory_sync_started)
         session_engine = ExecutionSessionEngine(session)
-        run_execution_maintenance = bool(run_trader_maintenance and hasattr(session, "execute"))
+        run_execution_maintenance = bool(run_execution_session_maintenance and hasattr(session, "execute"))
         if run_execution_maintenance:
             _mnt_session_reconcile_started = time.monotonic()
             try:
@@ -5000,8 +5021,18 @@ async def _run_trader_once_inner(
                     message=f"Expired {int(reconcile_result['expired'])} execution session(s)",
                     payload=reconcile_result,
                 )
+            if reconcile_result.get("failed", 0) > 0:
+                await create_trader_event(
+                    session,
+                    trader_id=trader_id,
+                    event_type="execution_sessions_failed",
+                    severity="warn",
+                    source="worker",
+                    message=f"Failed {int(reconcile_result['failed'])} stale execution session(s)",
+                    payload=reconcile_result,
+                )
             _accumulate("mnt_session_reconcile", _mnt_session_reconcile_started)
-        if run_execution_maintenance and pre_maintenance_open_order_count > 0:
+        if run_trader_maintenance and pre_maintenance_open_order_count > 0:
             _mnt_enforce_timeouts_started = time.monotonic()
             try:
                 timeout_cleanup = await asyncio.wait_for(
@@ -5042,6 +5073,8 @@ async def _run_trader_once_inner(
             _accumulate("mnt_enforce_timeouts", _mnt_enforce_timeouts_started)
         if run_trader_maintenance:
             _trader_maintenance_last_run[trader_id] = maintenance_now
+        if run_execution_maintenance:
+            _execution_session_maintenance_last_run[trader_id] = maintenance_now
         _checkpoint("maintenance")
         _setup_maint_events_started = time.monotonic()
         provider_reconcile_payload = timeout_cleanup.get("provider_reconcile")
