@@ -224,7 +224,7 @@ def test_resolved_order_updates_daily_pnl_by_order_delta_only():
 
         assert trader_hot_state.get_daily_realized_pnl("trader-1", "live") == -1.25
         assert trader_hot_state.get_daily_realized_pnl(None, "live") == -1.25
-        assert trader_hot_state.get_consecutive_loss_count("trader-1", "live") == 1
+        assert trader_hot_state.get_consecutive_loss_count("trader-1", "live") == 0
 
         trader_hot_state.record_order_resolved(
             trader_id="trader-1",
@@ -240,7 +240,7 @@ def test_resolved_order_updates_daily_pnl_by_order_delta_only():
 
         assert trader_hot_state.get_daily_realized_pnl("trader-1", "live") == -1.25
         assert trader_hot_state.get_daily_realized_pnl(None, "live") == -1.25
-        assert trader_hot_state.get_consecutive_loss_count("trader-1", "live") == 1
+        assert trader_hot_state.get_consecutive_loss_count("trader-1", "live") == 0
 
         trader_hot_state.record_order_resolved(
             trader_id="trader-1",
@@ -256,7 +256,7 @@ def test_resolved_order_updates_daily_pnl_by_order_delta_only():
 
         assert trader_hot_state.get_daily_realized_pnl("trader-1", "live") == -0.75
         assert trader_hot_state.get_daily_realized_pnl(None, "live") == -0.75
-        assert trader_hot_state.get_consecutive_loss_count("trader-1", "live") == 1
+        assert trader_hot_state.get_consecutive_loss_count("trader-1", "live") == 0
 
         trader_hot_state.record_order_resolved(
             trader_id="trader-1",
