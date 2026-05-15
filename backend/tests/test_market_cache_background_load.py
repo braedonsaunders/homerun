@@ -21,7 +21,8 @@ def test_market_cache_background_load_skips_discovery_worker(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_market_cache_background_load_is_single_flight():
+async def test_market_cache_background_load_is_single_flight(monkeypatch):
+    monkeypatch.delenv("HOMERUN_PROCESS_ROLE", raising=False)
     service = MarketCacheService()
     gate = asyncio.Event()
     calls: list[str] = []
@@ -48,7 +49,8 @@ async def test_market_cache_background_load_is_single_flight():
 
 
 @pytest.mark.asyncio
-async def test_market_cache_stats_report_loading_state():
+async def test_market_cache_stats_report_loading_state(monkeypatch):
+    monkeypatch.delenv("HOMERUN_PROCESS_ROLE", raising=False)
     service = MarketCacheService()
     gate = asyncio.Event()
 
