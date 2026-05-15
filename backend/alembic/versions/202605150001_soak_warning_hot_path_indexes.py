@@ -22,22 +22,19 @@ def upgrade() -> None:
     if "data_source_records" not in table_names():
         return
 
-    context = op.get_context()
-
     data_source_record_indexes = index_names("data_source_records")
     if "idx_data_source_records_source_ordering_desc" not in data_source_record_indexes:
-        with context.autocommit_block():
-            op.execute(
-                """
-                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_data_source_records_source_ordering_desc
-                ON data_source_records (
-                    data_source_id,
-                    (coalesce(observed_at, ingested_at)) DESC,
-                    ingested_at DESC,
-                    id DESC
-                )
-                """
+        op.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_data_source_records_source_ordering_desc
+            ON data_source_records (
+                data_source_id,
+                (coalesce(observed_at, ingested_at)) DESC,
+                ingested_at DESC,
+                id DESC
             )
+            """
+        )
 
 
 def downgrade() -> None:
