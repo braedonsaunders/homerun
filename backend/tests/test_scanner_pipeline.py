@@ -1621,6 +1621,42 @@ class TestSharedPriceHistoryAttach:
         assert scanner._hydrate_history_from_db.await_count == 0
 
     @pytest.mark.asyncio
+    async def test_attach_price_history_nonblocking_skips_db_hydration(self):
+        scanner = _build_scanner(strategies=[])
+        scanner._hydrate_history_from_db = AsyncMock(return_value=0)
+        scanner._backfill_market_history_for_opportunities = AsyncMock(return_value=None)
+        scanner._persist_market_history_for_opportunities = AsyncMock(return_value=None)
+
+        opp = Opportunity(
+            strategy="crypto_edge",
+            title="Crypto",
+            description="D",
+            total_cost=0.2,
+            expected_payout=0.5,
+            gross_profit=0.3,
+            fee=0.01,
+            net_profit=0.29,
+            roi_percent=145.0,
+            markets=[
+                {
+                    "id": "m_crypto_hot",
+                    "condition_id": "m_crypto_hot",
+                    "platform": "polymarket",
+                    "yes_price": 0.2,
+                    "no_price": 0.8,
+                }
+            ],
+            min_liquidity=1000.0,
+            max_position_size=10.0,
+            positions_to_take=[],
+        )
+
+        attached = await scanner.attach_price_history_to_opportunities([opp], timeout_seconds=0.0)
+
+        assert attached == 0
+        scanner._hydrate_history_from_db.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_persist_market_history_for_opportunities_writes_only_changed_rows(self, monkeypatch):
         import services.scanner as scanner_module
         import services.shared_state as shared_state_module

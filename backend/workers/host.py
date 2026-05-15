@@ -239,11 +239,10 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_intent_runtime": False,
         "start_feed_manager": False,
         "start_market_runtime": False,
-        # Market cache is rebuilt from DB on first access (see
-        # ``scanner.attach_price_history_to_opportunities``'s
-        # subprocess-aware comment); cheap to enable here so
-        # ``tracked_traders_worker`` can hydrate sparkline data.
-        "load_market_cache": True,
+        # Do not bulk-load ``cached_markets`` in discovery. The table can
+        # be hundreds of MB and discovery only needs occasional point
+        # lookups; MarketCacheService handles those lazily by primary key.
+        "load_market_cache": False,
         "load_news_feed": False,
         "initialize_live_execution": False,
         "start_copy_trade_service": False,

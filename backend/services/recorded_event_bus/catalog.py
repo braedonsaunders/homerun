@@ -28,9 +28,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Optional
 
-from sqlalchemy import select, delete, update as _sa_update, func as _sa_func
+from sqlalchemy import select, delete, update as _sa_update, func as _sa_func, text as _sa_text
 
 from models.database import AsyncSessionLocal, TopicCatalog
+from services.live_pressure import is_db_pressure_active, maybe_mark_db_pressure
 from services.recorded_event_bus.envelope import parse_topic
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,51 @@ _TOUCH_PUBLISHED_FLUSH_DELAY_SECONDS = 1.0
 _touch_published_lock = _threading.Lock()
 _touch_published_pending: dict[str, dict[str, Any]] = {}
 _touch_published_task: asyncio.Task | None = None
+
+
+def _requeue_touch_published_batch(batch: Mapping[str, Mapping[str, Any]]) -> None:
+    with _touch_published_lock:
+        for slug, payload in batch.items():
+            pending = _touch_published_pending.setdefault(
+                slug,
+                {"n_events": 0, "bytes_added": 0, "published_at": payload["published_at"]},
+            )
+            pending["n_events"] = int(pending["n_events"]) + int(payload["n_events"])
+            pending["bytes_added"] = int(pending["bytes_added"]) + int(payload["bytes_added"])
+            if payload["published_at"] > pending["published_at"]:
+                pending["published_at"] = payload["published_at"]
+
+
+async def _persist_touch_published_batch(batch: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    slugs = list(batch)
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            _sa_text(
+                """
+                UPDATE topic_catalog AS t
+                SET last_published_at = v.published_at,
+                    event_count = coalesce(t.event_count, 0) + v.n_events,
+                    bytes_on_disk = coalesce(t.bytes_on_disk, 0) + v.bytes_added,
+                    updated_at = v.published_at
+                FROM (
+                    SELECT
+                        unnest(CAST(:slugs AS text[])) AS slug,
+                        unnest(CAST(:published_ats AS timestamp[])) AS published_at,
+                        unnest(CAST(:n_events AS bigint[])) AS n_events,
+                        unnest(CAST(:bytes_added AS bigint[])) AS bytes_added
+                ) AS v
+                WHERE t.slug = v.slug
+                """
+            ),
+            {
+                "slugs": slugs,
+                "published_ats": [batch[slug]["published_at"] for slug in slugs],
+                "n_events": [int(batch[slug]["n_events"]) for slug in slugs],
+                "bytes_added": [int(batch[slug]["bytes_added"]) for slug in slugs],
+            },
+        )
+        await session.commit()
+    return slugs
 
 
 def _invalidate_cache(slug: Optional[str] = None) -> None:
@@ -423,12 +469,20 @@ async def _flush_scheduled_touch_published() -> None:
                 _touch_published_pending.clear()
             if not batch:
                 return
-            for slug, payload in batch.items():
-                await touch_published(
-                    slug,
-                    n_events=int(payload["n_events"]),
-                    bytes_added=int(payload["bytes_added"]),
-                    published_at=payload["published_at"],
+            if is_db_pressure_active():
+                _requeue_touch_published_batch(batch)
+                await asyncio.sleep(_TOUCH_PUBLISHED_FLUSH_DELAY_SECONDS)
+                continue
+            try:
+                slugs = await _persist_touch_published_batch(batch)
+                for slug in slugs:
+                    _invalidate_cache(slug)
+            except Exception as exc:  # noqa: BLE001
+                maybe_mark_db_pressure(exc, component="topic_catalog.touch_published", ttl_seconds=45.0)
+                _requeue_touch_published_batch(batch)
+                logger.warning(
+                    "topic_catalog.touch_published batch failed",
+                    exc_info=exc,
                 )
             with _touch_published_lock:
                 if not _touch_published_pending:

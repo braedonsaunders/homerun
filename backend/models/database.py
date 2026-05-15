@@ -166,6 +166,23 @@ class RetryableAsyncSession(AsyncSession):
         bag.add(task)
         task.add_done_callback(bag.discard)
 
+    async def _pending_inflight_after_wait(self, timeout: float | None = None) -> list[asyncio.Task]:
+        """Return shielded inner tasks still running after a bounded wait."""
+        bag = getattr(self, "_inflight_tasks", None)
+        if not bag:
+            return []
+        pending = [t for t in list(bag) if not t.done()]
+        if not pending:
+            return []
+        try:
+            _, still_pending = await asyncio.wait(
+                pending,
+                timeout=self._DRAIN_TIMEOUT_SECONDS if timeout is None else timeout,
+            )
+            return list(still_pending)
+        except Exception:
+            return pending
+
     async def _wait_inflight(self) -> None:
         """Drain any prior shielded inner tasks before starting new work.
 
@@ -179,16 +196,13 @@ class RetryableAsyncSession(AsyncSession):
         (asyncpg).  Calling this at the top of every public method that
         touches the connection serializes the cleanup with new work.
         """
-        bag = getattr(self, "_inflight_tasks", None)
-        if not bag:
-            return
-        pending = [t for t in list(bag) if not t.done()]
-        if not pending:
-            return
-        try:
-            await asyncio.wait(pending, timeout=self._DRAIN_TIMEOUT_SECONDS)
-        except Exception:
-            pass
+        pending = await self._pending_inflight_after_wait()
+        if pending:
+            self._fire_and_forget(self._drain_many_then_invalidate(pending))
+            raise asyncio.TimeoutError(
+                f"database operation still in flight after {self._DRAIN_TIMEOUT_SECONDS:.1f}s; "
+                "deferred connection invalidation until the protocol drains"
+            )
 
     @classmethod
     def _fire_and_forget(cls, coro) -> None:
@@ -242,9 +256,13 @@ class RetryableAsyncSession(AsyncSession):
 
     async def invalidate(self) -> None:
         try:
+            pending = await self._pending_inflight_after_wait(timeout=0.0)
+            if pending:
+                self._fire_and_forget(self._drain_many_then_invalidate(pending))
+                return
             await super().invalidate()
         except asyncio.CancelledError:
-            self._fire_and_forget(self._do_invalidate())
+            self._fire_and_forget(self._drain_many_then_invalidate([]))
             raise
         except Exception:
             pass
@@ -490,16 +508,10 @@ class RetryableAsyncSession(AsyncSession):
         bag = getattr(self, "_inflight_tasks", None)
         drain_timed_out = False
         connection_poisoned = False
+        pending_after_drain: list[asyncio.Task] = []
         if bag:
-            inflight = [t for t in list(bag) if not t.done()]
-            if inflight:
-                try:
-                    _done, pending = await asyncio.wait(
-                        inflight, timeout=self._DRAIN_TIMEOUT_SECONDS
-                    )
-                    drain_timed_out = bool(pending)
-                except Exception:
-                    drain_timed_out = True
+            pending_after_drain = await self._pending_inflight_after_wait()
+            drain_timed_out = bool(pending_after_drain)
             # Inspect the (now-completed) inner tasks.  If any of them
             # raised a connection-broken error (the asyncpg protocol
             # corruption case), the underlying socket is in a state
@@ -516,6 +528,9 @@ class RetryableAsyncSession(AsyncSession):
                     connection_poisoned = True
                     break
         if drain_timed_out or connection_poisoned:
+            if drain_timed_out:
+                self._fire_and_forget(self._drain_many_then_invalidate(pending_after_drain))
+                return
             try:
                 await super().invalidate()
             except Exception:
@@ -557,6 +572,26 @@ class RetryableAsyncSession(AsyncSession):
         """
         try:
             await inner
+        except Exception:
+            pass
+        try:
+            await super().invalidate()
+        except Exception:
+            pass
+
+    async def _drain_many_then_invalidate(self, tasks) -> None:
+        """Drain every still-active DB protocol task before invalidation.
+
+        A timed-out close/rollback path must not call ``invalidate`` while
+        asyncpg is still processing the previous extended-query exchange.
+        Waiting here keeps ownership with this session until the server
+        statement timeout, client command timeout, or pool reaper resolves
+        the in-flight operation.
+        """
+        try:
+            active = [t for t in list(tasks or []) if t is not None and not t.done()]
+            if active:
+                await asyncio.gather(*active, return_exceptions=True)
         except Exception:
             pass
         try:
@@ -2021,6 +2056,13 @@ class DataSourceRecord(Base):
         Index("idx_data_source_records_country", "country_iso3"),
         Index("idx_data_source_records_external", "source_slug", "external_id"),
         Index("idx_data_source_records_source_ordering", "data_source_id", "observed_at", "ingested_at", "id"),
+        Index(
+            "idx_data_source_records_source_ordering_desc",
+            "data_source_id",
+            text("(coalesce(observed_at, ingested_at)) DESC"),
+            text("ingested_at DESC"),
+            text("id DESC"),
+        ),
         Index("ix_data_source_records_data_source_id", "data_source_id"),
     )
 
@@ -2793,6 +2835,8 @@ class WalletActivityRollup(Base):
         Index("idx_war_wallet_time", "wallet_address", "traded_at"),
         Index("idx_war_market_side_time", "market_id", "side", "traded_at"),
         Index("idx_war_source_time", "source", "traded_at"),
+        Index("idx_war_traded_wallet_market", "traded_at", "wallet_address", "market_id"),
+        Index("idx_war_market_traded", "market_id", "traded_at"),
     )
 
 

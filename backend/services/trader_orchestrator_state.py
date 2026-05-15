@@ -200,21 +200,7 @@ def _normalize_status_key(status: Any) -> str:
 
 
 def _visible_trader_order_query_clause():
-    # Phase 3 step 3: tolerate the verification status living EITHER on
-    # trader_orders.verification_status (legacy) OR on
-    # trader_order_verification.verification_status (new side table).
-    # During dual-write the listener keeps them identical; once we drop
-    # the old column (step 4), this clause continues to work because
-    # ``func.coalesce`` skips the legacy NULL.  We don't add an explicit
-    # JOIN here because most callers SELECT TraderOrder rows and bring
-    # the side table along via the relationship loader (or accept the
-    # fall-through to the legacy column for now).  When step 4 lands,
-    # this becomes a JOIN clause; until then the legacy column is the
-    # source of truth and the listener guarantees it stays in sync.
-    verification_status_key = func.lower(
-        func.coalesce(TraderOrder.verification_status, TRADER_ORDER_VERIFICATION_LOCAL)
-    )
-    return ~verification_status_key.in_(tuple(TRADER_ORDER_HIDDEN_VERIFICATION_STATUSES))
+    return ~TraderOrder.verification_status.in_(tuple(TRADER_ORDER_HIDDEN_VERIFICATION_STATUSES))
 
 
 def _expand_trader_order_status_filter(status: Optional[str]) -> tuple[str, ...] | None:
@@ -9923,7 +9909,7 @@ async def get_realized_pnl(
     query = select(func.coalesce(func.sum(TraderOrder.actual_profit), 0.0)).where(
         TraderOrder.status.in_(tuple(REALIZED_ORDER_STATUSES)),
         _visible_trader_order_query_clause(),
-        func.lower(func.coalesce(TraderOrder.verification_status, "")).notin_(
+        TraderOrder.verification_status.notin_(
             (
                 "summary_only",
                 "local",
@@ -10885,9 +10871,7 @@ async def get_trader_orders_summary(
         "wallet_position",
         "venue_order",
     )
-    is_pnl_verified = func.lower(
-        func.coalesce(TraderOrder.verification_status, "")
-    ).notin_(_UNVERIFIED_VERIFICATION_STATUSES)
+    is_pnl_verified = TraderOrder.verification_status.notin_(_UNVERIFIED_VERIFICATION_STATUSES)
     profit_col = func.coalesce(TraderOrder.actual_profit, 0.0)
     # verified_profit_col is what gets summed for any "P&L" total. If the
     # row's verification_status is unverified, contribute 0 to the sum so

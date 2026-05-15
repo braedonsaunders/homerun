@@ -11,6 +11,15 @@ if str(BACKEND_ROOT) not in sys.path:
 from services.market_cache import MarketCacheService
 
 
+def test_market_cache_background_load_skips_discovery_worker(monkeypatch):
+    monkeypatch.setenv("HOMERUN_PROCESS_ROLE", "worker")
+    monkeypatch.setenv("HOMERUN_WORKER_PLANE", "discovery")
+
+    service = MarketCacheService()
+
+    assert service.start_background_load() is None
+
+
 @pytest.mark.asyncio
 async def test_market_cache_background_load_is_single_flight():
     service = MarketCacheService()
@@ -59,3 +68,14 @@ async def test_market_cache_stats_report_loading_state():
 
     gate.set()
     await task
+
+
+@pytest.mark.asyncio
+async def test_market_cache_hygiene_skips_discovery_worker(monkeypatch):
+    monkeypatch.setenv("HOMERUN_PROCESS_ROLE", "worker")
+    monkeypatch.setenv("HOMERUN_WORKER_PLANE", "discovery")
+
+    service = MarketCacheService()
+    result = await service.run_hygiene_if_due(force=True)
+
+    assert result == {"status": "skipped", "reason": "worker_plane", "plane": "discovery"}

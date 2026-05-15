@@ -11,6 +11,7 @@ lookups on the hot path) and the SQL database (for persistence across restarts).
 """
 
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 from utils.utcnow import utcnow
 from typing import Optional
@@ -37,6 +38,7 @@ from models.database import (
     WalletActivityRollup,
     MarketConfluenceSignal,
 )
+from services.live_pressure import is_db_pressure_active
 from utils.logger import get_logger
 from utils.retry import run_with_db_retries
 
@@ -115,6 +117,8 @@ class MarketCacheService:
     def start_background_load(self) -> Optional[asyncio.Task]:
         if self._loaded:
             return None
+        if not self._bulk_load_enabled():
+            return None
         task = self._load_task
         if task is not None and not task.done():
             return task
@@ -135,6 +139,12 @@ class MarketCacheService:
     @staticmethod
     def _norm(value: object) -> str:
         return str(value or "").strip().lower()
+
+    @staticmethod
+    def _bulk_load_enabled() -> bool:
+        if os.environ.get("HOMERUN_PROCESS_ROLE") != "worker":
+            return True
+        return os.environ.get("HOMERUN_WORKER_PLANE", "").strip().lower() in {"trading", "all"}
 
     # -------------------- Startup --------------------
 
@@ -177,7 +187,10 @@ class MarketCacheService:
                         select(CachedMarket).execution_options(yield_per=1000)
                     )
                     async for row in market_stream:
-                        next_market_cache[row.condition_id] = {
+                        key = self._norm(row.condition_id)
+                        if not key:
+                            continue
+                        next_market_cache[key] = {
                             "question": row.question,
                             "slug": row.slug,
                             "groupItemTitle": row.group_item_title,
@@ -235,7 +248,26 @@ class MarketCacheService:
 
     async def get_market(self, condition_id: str) -> Optional[dict]:
         """Get cached market metadata. Returns None if not cached."""
-        return self._market_cache.get(condition_id)
+        key = self._norm(condition_id)
+        if not key:
+            return None
+        cached = self._market_cache.get(key)
+        if cached is not None or self._loaded:
+            return cached
+        async with AsyncSessionLocal() as session:
+            row = await session.get(CachedMarket, key)
+        if row is None:
+            return None
+        payload = {
+            "question": row.question,
+            "slug": row.slug,
+            "groupItemTitle": row.group_item_title,
+            "category": row.category,
+            "active": row.active,
+            **(row.extra_data or {}),
+        }
+        self._market_cache[key] = payload
+        return payload
 
     async def delete_market(self, condition_id: str) -> bool:
         """Delete a market metadata entry from memory and DB."""
@@ -286,8 +318,11 @@ class MarketCacheService:
 
     async def set_market(self, condition_id: str, data: dict):
         """Cache market metadata (write-through: memory + DB)."""
+        key = self._norm(condition_id)
+        if not key:
+            return
         # Update in-memory cache immediately
-        self._market_cache[condition_id] = data
+        self._market_cache[key] = data
 
         async def _persist(_attempt: int) -> None:
             async with AsyncSessionLocal() as session:
@@ -303,7 +338,7 @@ class MarketCacheService:
                     extra = {k: v for k, v in data.items() if k not in known_keys}
 
                     stmt = pg_insert(CachedMarket).values(
-                        condition_id=condition_id,
+                        condition_id=key,
                         question=data.get("question"),
                         slug=data.get("slug"),
                         group_item_title=data.get("groupItemTitle"),
@@ -336,13 +371,13 @@ class MarketCacheService:
         except (DBAPIError, asyncio.TimeoutError) as e:
             logger.error(
                 "Failed to persist market cache entry",
-                condition_id=condition_id,
+                condition_id=key,
                 error=str(e),
             )
         except Exception as e:
             logger.error(
                 "Failed to persist market cache entry",
-                condition_id=condition_id,
+                condition_id=key,
                 error=str(e),
             )
 
@@ -350,9 +385,16 @@ class MarketCacheService:
         """Bulk cache market metadata."""
         if not markets:
             return
+        normalized_markets = {
+            key: data
+            for raw_key, data in markets.items()
+            if (key := self._norm(raw_key))
+        }
+        if not normalized_markets:
+            return
 
         # Update in-memory cache
-        self._market_cache.update(markets)
+        self._market_cache.update(normalized_markets)
 
         # Persist to database in a single transaction
         try:
@@ -366,7 +408,7 @@ class MarketCacheService:
                     "active",
                 }
 
-                for condition_id, data in markets.items():
+                for condition_id, data in normalized_markets.items():
                     extra = {k: v for k, v in data.items() if k not in known_keys}
                     stmt = pg_insert(CachedMarket).values(
                         condition_id=condition_id,
@@ -572,6 +614,12 @@ class MarketCacheService:
     ) -> dict:
         """Run market cache hygiene on an interval to keep metadata clean."""
         now = utcnow()
+        if os.environ.get("HOMERUN_PROCESS_ROLE") == "worker":
+            plane = os.environ.get("HOMERUN_WORKER_PLANE", "").strip().lower()
+            if plane not in {"trading", "all"}:
+                return {"status": "skipped", "reason": "worker_plane", "plane": plane or "unknown"}
+        if not force and is_db_pressure_active():
+            return {"status": "skipped", "reason": "db_pressure"}
         interval = timedelta(
             hours=max(
                 1,

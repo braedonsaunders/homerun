@@ -2587,7 +2587,8 @@ class ArbitrageScanner:
                 for market_id in lookup_ids:
                     if market_id not in self._market_price_history:
                         needed_ids.add(market_id)
-        if needed_ids:
+        hydrate_on_hot_path = bool(block_for_backfill or timeout_seconds is None or (timeout_seconds and timeout_seconds > 0))
+        if needed_ids and hydrate_on_hot_path:
             _t = _time.monotonic()
             try:
                 await self._hydrate_history_from_db(needed_ids)

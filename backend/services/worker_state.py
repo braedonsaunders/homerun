@@ -856,14 +856,11 @@ async def write_worker_snapshot(
         and worker_key
     ):
         last_write = _worker_snapshot_last_write_mono.get(worker_key)
-        if (
-            last_write is not None
-            and now_mono - last_write < _WORKER_SNAPSHOT_PRESSURE_MIN_INTERVAL_SECONDS
-            and (
-                last_run_at is None
-                or _worker_snapshot_last_signature.get(worker_key) == signature
-            )
-        ):
+        if last_write is None:
+            return
+        if now_mono - last_write < _WORKER_SNAPSHOT_PRESSURE_MIN_INTERVAL_SECONDS:
+            return
+        if last_run_at is None and _worker_snapshot_last_signature.get(worker_key) == signature:
             return
     elif (
         bool(running)

@@ -244,6 +244,8 @@ def test_visible_trader_order_query_clause_builds_not_in_filter():
     compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
 
     assert "NOT IN" in compiled.upper()
+    assert "lower(" not in compiled.lower()
+    assert "coalesce(" not in compiled.lower()
 
 
 def test_expand_trader_order_status_filter_maps_status_buckets():

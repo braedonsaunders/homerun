@@ -17,20 +17,22 @@ from services.recorded_event_bus import catalog
 async def test_scheduled_catalog_touches_coalesce_by_topic(monkeypatch):
     calls = []
 
-    async def fake_touch_published(slug, *, n_events=1, bytes_added=0, published_at=None):
-        calls.append(
-            {
-                "slug": slug,
-                "n_events": n_events,
-                "bytes_added": bytes_added,
-                "published_at": published_at,
-            }
-        )
+    async def fake_persist_touch_published_batch(batch):
+        for slug, payload in batch.items():
+            calls.append(
+                {
+                    "slug": slug,
+                    "n_events": payload["n_events"],
+                    "bytes_added": payload["bytes_added"],
+                    "published_at": payload["published_at"],
+                }
+            )
+        return list(batch)
 
     catalog._touch_published_pending.clear()
     catalog._touch_published_task = None
     monkeypatch.setattr(catalog, "_TOUCH_PUBLISHED_FLUSH_DELAY_SECONDS", 0.0)
-    monkeypatch.setattr(catalog, "touch_published", fake_touch_published)
+    monkeypatch.setattr(catalog, "_persist_touch_published_batch", fake_persist_touch_published_batch)
 
     catalog.schedule_touch_published("prices.book", n_events=1)
     catalog.schedule_touch_published("prices.book", n_events=4, bytes_added=128)

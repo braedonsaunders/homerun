@@ -67,7 +67,7 @@ if TYPE_CHECKING:
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from services.recorded_event_bus.catalog import TopicSpec, touch_published
+from services.recorded_event_bus.catalog import TopicSpec, schedule_touch_published
 from services.recorded_event_bus.envelope import RecordedEvent
 
 logger = logging.getLogger(__name__)
@@ -276,11 +276,8 @@ async def _flush_once(*, drain_all: bool = False) -> int:
                     topic, entity_id, date_str, len(events),
                 )
         # Update catalog counters.
-        for topic, (n, b) in per_topic_counts.items():
-            try:
-                await touch_published(topic, n_events=0, bytes_added=b)
-            except Exception:  # noqa: BLE001
-                logger.debug("touch_published failed for %s", topic, exc_info=True)
+        for topic, (_n, b) in per_topic_counts.items():
+            schedule_touch_published(topic, n_events=0, bytes_added=b)
         return n_written
 
 
