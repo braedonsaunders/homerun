@@ -52,13 +52,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import select
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from config import settings  # noqa: E402
-from models.database import Base, TradeSignal  # noqa: E402
+from models.database import Base, TradeSignal, TradeSignalEmission  # noqa: E402
 from models.opportunity import Opportunity  # noqa: E402
 from services import intent_runtime as intent_runtime_module  # noqa: E402
 from services.intent_runtime import IntentRuntime  # noqa: E402
@@ -171,8 +172,6 @@ async def _trade_signals_by_dedupe(
     session_factory, *, source: str, dedupe_key: str
 ) -> list[tuple[str, str]]:
     """Return [(id, status), ...] for `(source, dedupe_key)` rows."""
-    from sqlalchemy import select
-
     async with session_factory() as session:
         rows = (
             (
@@ -186,6 +185,69 @@ async def _trade_signals_by_dedupe(
             .all()
         )
         return [(str(row[0]), str(row[1])) for row in rows]
+
+
+@pytest.mark.asyncio
+async def test_status_projection_updates_signal_and_writes_emission(monkeypatch):
+    engine, session_factory = await build_postgres_session_factory(
+        Base, "intent_runtime_status_projection"
+    )
+    try:
+        signal_id = "22222222222222222222222222222222"
+        dedupe_key = "intent-runtime-status-projection"
+        await _insert_pre_restart_trade_signal(
+            session_factory,
+            signal_id=signal_id,
+            source="scanner",
+            strategy_type="generic_strategy",
+            market_id="market-status-projection",
+            dedupe_key=dedupe_key,
+            status="pending",
+        )
+        monkeypatch.setattr(
+            intent_runtime_module, "AsyncSessionLocal", session_factory
+        )
+
+        runtime = IntentRuntime()
+        await runtime._project_status_batch(
+            [
+                {
+                    "signal_id": signal_id,
+                    "status": "executed",
+                    "effective_price": 0.42,
+                }
+            ]
+        )
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(TradeSignal.status, TradeSignal.effective_price).where(
+                        TradeSignal.id == signal_id
+                    )
+                )
+            ).one()
+            emission = (
+                await session.execute(
+                    select(
+                        TradeSignalEmission.signal_id,
+                        TradeSignalEmission.status,
+                        TradeSignalEmission.effective_price,
+                        TradeSignalEmission.event_type,
+                        TradeSignalEmission.reason,
+                    ).where(TradeSignalEmission.signal_id == signal_id)
+                )
+            ).one()
+
+        assert row.status == "executed"
+        assert float(row.effective_price) == pytest.approx(0.42)
+        assert emission.signal_id == signal_id
+        assert emission.status == "executed"
+        assert float(emission.effective_price) == pytest.approx(0.42)
+        assert emission.event_type == "status_update"
+        assert emission.reason == "status:executed"
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

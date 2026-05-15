@@ -6192,14 +6192,22 @@ async def _run_trader_once_inner(
                         signal_emitted_at = _parse_iso(
                             str(signal_payload.get("signal_emitted_at") or signal_payload.get("ingested_at") or "")
                         )
+                        signal_release_anchor_at = signal_emitted_at
+                        if signal_source == "scanner":
+                            scanner_row_timestamp = _signal_cursor_timestamp(signal)
+                            if isinstance(scanner_row_timestamp, datetime):
+                                if scanner_row_timestamp.tzinfo is None:
+                                    scanner_row_timestamp = scanner_row_timestamp.replace(tzinfo=timezone.utc)
+                                if signal_release_anchor_at is None or scanner_row_timestamp > signal_release_anchor_at:
+                                    signal_release_anchor_at = scanner_row_timestamp
                         strict_release_age_budget_ms = max(
                             50,
                             safe_int(strategy_params.get("max_market_data_age_ms"), int(strict_age_budget_ms)),
                         )
-                        if signal_source == "crypto" and signal_emitted_at is not None:
+                        if signal_source in ("crypto", "scanner") and signal_release_anchor_at is not None:
                             signal_release_age_ms = max(
                                 0,
-                                int((signal_wake_started_at - signal_emitted_at).total_seconds() * 1000),
+                                int((signal_wake_started_at - signal_release_anchor_at).total_seconds() * 1000),
                             )
                             if signal_release_age_ms > strict_release_age_budget_ms:
                                 _enter_stage("strict_ws_release_stale")
@@ -6225,7 +6233,7 @@ async def _run_trader_once_inner(
                                         signal_id=signal_id,
                                         required_token_ids=list(getattr(signal, "required_token_ids", None) or []),
                                         reason="strict_ws_pricing_signal_release_stale",
-                                        min_observed_at=signal_emitted_at,
+                                        min_observed_at=signal_release_anchor_at,
                                         required_max_age_ms=strict_release_age_budget_ms,
                                     )
                                     deferred_signals += 1

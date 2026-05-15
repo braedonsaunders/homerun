@@ -37,8 +37,8 @@ _SIGNAL_ACTIVE_STATUSES = {"pending", "selected", "submitted"}
 _SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
 _STATUS_PROJECTION_BATCH_MAX = 64
 _UPSERT_PROJECTION_BATCH_MAX = 8
-_STATUS_PROJECTION_CHUNK_SIZE = 16
-_STATUS_PROJECTION_PRESSURE_CHUNK_SIZE = 4
+_STATUS_PROJECTION_CHUNK_SIZE = 4
+_STATUS_PROJECTION_PRESSURE_CHUNK_SIZE = 1
 # Fix Q (chunk_size 10→1) eliminated the multi-row lock-hold pattern
 # that produced ``LOCK CONTENTION wait=Lock/transactionid
 # query='UPDATE trade_signals SET source_item_id=$1, signal_type=$2,
@@ -3311,6 +3311,13 @@ class IntentRuntime:
         items = list(latest_by_signal_id.values())
         for chunk_start in range(0, len(items), _STATUS_CHUNK_SIZE):
             chunk = items[chunk_start:chunk_start + _STATUS_CHUNK_SIZE]
+            signal_ids = [
+                str(item.get("signal_id") or "").strip()
+                for item in chunk
+                if str(item.get("signal_id") or "").strip()
+            ]
+            if not signal_ids:
+                continue
             async with AsyncSessionLocal() as session:
                 # Mirrors Fix J's unmute in shared_state: if SET LOCAL
                 # silently fails (e.g. session not yet in transaction or
@@ -3348,66 +3355,103 @@ class IntentRuntime:
                         _PROJECTION_LOCK_TIMEOUT_MS,
                         exc_info=exc,
                     )
-                signal_ids = [str(item.get("signal_id") or "").strip() for item in chunk if str(item.get("signal_id") or "").strip()]
-                if not signal_ids:
-                    continue
-                rows = (
-                    await session.execute(
-                        select(TradeSignal).where(TradeSignal.id.in_(signal_ids))
-                    )
-                ).scalars().all()
-                rows_by_id = {
-                    str(row.id or "").strip(): row
-                    for row in rows
-                    if str(row.id or "").strip()
-                }
-                changed_any = False
-                changed_at = utcnow()
-                for item in chunk:
+                changed_at = _to_utc(utcnow()).replace(tzinfo=None)
+                values_sql: list[str] = []
+                params: dict[str, Any] = {"changed_at": changed_at}
+                for idx, item in enumerate(chunk):
                     signal_id = str(item.get("signal_id") or "").strip()
                     if not signal_id:
                         continue
-                    row = rows_by_id.get(signal_id)
-                    if row is None:
-                        continue
                     normalized_status = str(item.get("status") or "").strip().lower()
-                    previous_status = str(row.status or "").strip().lower()
                     effective_price = item.get("effective_price")
-                    if previous_status == normalized_status and (
-                        effective_price is None or row.effective_price == effective_price
-                    ):
-                        continue
-                    row.status = normalized_status
-                    row.updated_at = changed_at
-                    if effective_price is not None:
-                        row.effective_price = effective_price
-                    session.add(
-                        TradeSignalEmission(
-                            id=uuid.uuid4().hex,
-                            signal_id=row.id,
-                            source=str(row.source or ""),
-                            source_item_id=row.source_item_id,
-                            signal_type=str(row.signal_type or ""),
-                            strategy_type=row.strategy_type,
-                            market_id=str(row.market_id or ""),
-                            direction=row.direction,
-                            entry_price=row.entry_price,
-                            effective_price=row.effective_price,
-                            edge_percent=row.edge_percent,
-                            confidence=row.confidence,
-                            liquidity=row.liquidity,
-                            status=str(row.status or ""),
-                            dedupe_key=str(row.dedupe_key or ""),
-                            event_type="status_update",
-                            reason=f"status:{normalized_status}",
-                            payload_json=None,
-                            snapshot_json=None,
-                            created_at=changed_at,
-                        )
+                    params[f"signal_id_{idx}"] = signal_id
+                    params[f"status_{idx}"] = normalized_status
+                    params[f"effective_price_{idx}"] = effective_price
+                    params[f"has_effective_price_{idx}"] = effective_price is not None
+                    values_sql.append(
+                        f"("
+                        f"CAST(:signal_id_{idx} AS VARCHAR), "
+                        f"CAST(:status_{idx} AS VARCHAR), "
+                        f"CAST(:effective_price_{idx} AS NUMERIC(24, 12)), "
+                        f"CAST(:has_effective_price_{idx} AS BOOLEAN)"
+                        f")"
                     )
-                    changed_any = True
-                if changed_any:
-                    await session.commit()
+                if not values_sql:
+                    await session.rollback()
+                    continue
+                update_sql = text(
+                    f"""
+                    WITH incoming(signal_id, status, effective_price, has_effective_price) AS (
+                        VALUES {", ".join(values_sql)}
+                    ),
+                    updated AS (
+                        UPDATE trade_signals AS ts
+                        SET
+                            status = incoming.status,
+                            updated_at = :changed_at,
+                            effective_price = CASE
+                                WHEN incoming.has_effective_price THEN incoming.effective_price
+                                ELSE ts.effective_price
+                            END
+                        FROM incoming
+                        WHERE ts.id = incoming.signal_id
+                          AND (
+                            lower(coalesce(ts.status, '')) IS DISTINCT FROM incoming.status
+                            OR (
+                                incoming.has_effective_price
+                                AND ts.effective_price IS DISTINCT FROM incoming.effective_price
+                            )
+                          )
+                        RETURNING
+                            ts.id,
+                            ts.source,
+                            ts.source_item_id,
+                            ts.signal_type,
+                            ts.strategy_type,
+                            ts.market_id,
+                            ts.direction,
+                            ts.entry_price,
+                            ts.effective_price,
+                            ts.edge_percent,
+                            ts.confidence,
+                            ts.liquidity,
+                            ts.status,
+                            ts.dedupe_key
+                    )
+                    SELECT * FROM updated
+                    """
+                )
+                updated_rows = list((await session.execute(update_sql, params)).mappings().all())
+                if not updated_rows:
+                    await session.rollback()
+                    continue
+                emissions = [
+                    {
+                        "id": uuid.uuid4().hex,
+                        "signal_id": row["id"],
+                        "source": str(row["source"] or ""),
+                        "source_item_id": row["source_item_id"],
+                        "signal_type": str(row["signal_type"] or ""),
+                        "strategy_type": row["strategy_type"],
+                        "market_id": str(row["market_id"] or ""),
+                        "direction": row["direction"],
+                        "entry_price": row["entry_price"],
+                        "effective_price": row["effective_price"],
+                        "edge_percent": row["edge_percent"],
+                        "confidence": row["confidence"],
+                        "liquidity": row["liquidity"],
+                        "status": str(row["status"] or ""),
+                        "dedupe_key": str(row["dedupe_key"] or ""),
+                        "event_type": "status_update",
+                        "reason": f"status:{str(row['status'] or '').strip().lower()}",
+                        "payload_json": None,
+                        "snapshot_json": None,
+                        "created_at": changed_at,
+                    }
+                    for row in updated_rows
+                ]
+                await session.execute(TradeSignalEmission.__table__.insert(), emissions)
+                await session.commit()
 
 
 _intent_runtime: IntentRuntime | None = None
