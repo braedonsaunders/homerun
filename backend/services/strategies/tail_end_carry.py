@@ -1460,17 +1460,73 @@ class TailEndCarryStrategy(BaseStrategy):
             else (None, None)
         )
 
+        if is_sports:
+            hold_inversion_stop_enabled = _is_bool_true(config.get("sports_inversion_stop_enabled", False))
+        else:
+            hold_inversion_stop_enabled = _is_bool_true(config.get("inversion_stop_enabled", True))
+        hold_inversion_floor = clamp(safe_float(config.get("inversion_price_threshold"), 0.50), 0.05, 0.95)
+        if is_sports:
+            resolution_hold_minutes = max(0.0, safe_float(config.get("sports_resolution_hold_minutes"), 150.0))
+        else:
+            resolution_hold_minutes = max(0.0, safe_float(config.get("resolution_hold_minutes"), 360.0))
+        resolution_hold_max_loss_pct = clamp(
+            safe_float(config.get("resolution_hold_max_loss_pct"), 25.0), 5.0, 80.0
+        )
+        minutes_left = seconds_left / 60.0 if seconds_left is not None else None
+        in_resolution_hold = (
+            _is_bool_true(config.get("resolution_hold_enabled", True))
+            and minutes_left is not None
+            and minutes_left <= resolution_hold_minutes
+        )
+        if in_resolution_hold:
+            if entry_price > 0.0:
+                unrealized_loss_pct = ((entry_price - current_price) / entry_price) * 100.0
+                if unrealized_loss_pct >= resolution_hold_max_loss_pct:
+                    return ExitDecision(
+                        "close",
+                        (
+                            f"Resolution hold max-loss override ({unrealized_loss_pct:.1f}% loss >= "
+                            f"{resolution_hold_max_loss_pct:.0f}% threshold; entry={entry_price:.4f}, "
+                            f"current={current_price:.4f}, category={category})"
+                        ),
+                        close_price=current_price,
+                    )
+            if hold_inversion_stop_enabled and current_price <= hold_inversion_floor:
+                return ExitDecision(
+                    "close",
+                    (
+                        f"Resolution hold confirmed inversion: {current_price:.4f} <= "
+                        f"{hold_inversion_floor:.4f} (entry={entry_price:.4f}, category={category}, "
+                        f"minutes_left={minutes_left:.1f})"
+                    ),
+                    close_price=current_price,
+                )
+
+            if entry_price <= 0.0 or current_price >= entry_price:
+                scale_out_decision = self._evaluate_scale_out(
+                    position, current_price, seconds_left, config, strategy_context
+                )
+                if scale_out_decision is not None:
+                    return scale_out_decision
+
+            return ExitDecision(
+                "hold",
+                (
+                    f"Resolution proximity hold ({minutes_left:.0f}m left <= {resolution_hold_minutes:.0f}m; "
+                    f"category={category}, price={current_price:.4f}, entry={entry_price:.4f})"
+                ),
+                payload={"skip_default_exit": True},
+            )
+
         # -- #3: Velocity stop (cliff-drop catcher) --
-        # Run BEFORE resolution-hold so it can break the hold when the price
-        # is collapsing in the final minutes.
+        # Runs only outside the resolution-hold window; final-window thesis
+        # breaks are handled by the hard max-loss and inversion checks above.
         velocity_decision = self._velocity_check(token_id, current_price, seconds_left, config)
         if velocity_decision is not None:
             return velocity_decision
 
         # -- #2: Scale-out tier evaluation --
-        # Run BEFORE the resolution-proximity hold so high-price tiers (≥0.95
-        # at T-2h, ≥0.97 at T-30m) can actually fire — the hold would
-        # otherwise return early whenever the position is above entry.
+        # Outside the final hold, scale-out may still ratchet profit floors.
         scale_out_decision = self._evaluate_scale_out(
             position, current_price, seconds_left, config, strategy_context
         )
@@ -1481,11 +1537,9 @@ class TailEndCarryStrategy(BaseStrategy):
         # subsequent floor-breach check to enforce it on this same tick if
         # the price has already slipped past it.
 
-        # -- #2 (cont): Scale-out floor breach (runs before hold) --
+        # -- #2 (cont): Scale-out floor breach --
         # Once a tier has ratcheted ``_scale_out_trailing_floor``, treat any
-        # breach as an immediate close — even during the resolution hold,
-        # since holding through a known floor breach is what we just locked
-        # in profit to avoid.
+        # breach as an immediate close outside the resolution hold.
         scale_out_floor = None
         if isinstance(strategy_context, dict):
             scale_out_floor = safe_float(strategy_context.get("_scale_out_trailing_floor"), None)
@@ -1501,55 +1555,10 @@ class TailEndCarryStrategy(BaseStrategy):
                 close_price=current_price,
             )
 
-        # If a scale-out tier emitted "reduce" and the floor isn't breached
-        # this tick, surface it now — before the resolution-proximity hold,
-        # which would otherwise swallow it (high-price tiers fire when the
-        # position is above entry, exactly when the hold returns "hold").
+        # If a scale-out tier emitted "reduce" and the floor is not breached
+        # this tick, surface it now.
         if scale_out_decision is not None and scale_out_decision.action == "reduce":
             return scale_out_decision
-
-        # -- Resolution proximity hold --
-        # If resolution is imminent, hold regardless of price (the thesis is
-        # "converge to 1.00 at resolution" — let it play out).
-        # Sports get a tighter hold window (150min default vs 360min).
-        resolution_hold_enabled = _is_bool_true(config.get("resolution_hold_enabled", True))
-        if is_sports:
-            resolution_hold_minutes = max(0.0, safe_float(config.get("sports_resolution_hold_minutes"), 150.0))
-        else:
-            resolution_hold_minutes = max(0.0, safe_float(config.get("resolution_hold_minutes"), 360.0))
-
-        # Max unrealized loss override: if down >25%, exit even during resolution hold.
-        # The tail-carry thesis breaks if the position has inverted this far.
-        resolution_hold_max_loss_pct = clamp(
-            safe_float(config.get("resolution_hold_max_loss_pct"), 25.0), 5.0, 80.0
-        )
-
-        if resolution_hold_enabled and seconds_left is not None:
-            minutes_left = seconds_left / 60.0
-            if minutes_left <= resolution_hold_minutes:
-                is_underwater = False
-                if entry_price > 0.0:
-                    unrealized_loss_pct = ((entry_price - current_price) / entry_price) * 100.0
-                    if unrealized_loss_pct >= resolution_hold_max_loss_pct:
-                        return ExitDecision(
-                            "close",
-                            (
-                                f"Resolution hold max-loss override ({unrealized_loss_pct:.1f}% loss >= "
-                                f"{resolution_hold_max_loss_pct:.0f}% threshold; entry={entry_price:.4f}, "
-                                f"current={current_price:.4f}, category={category})"
-                            ),
-                            close_price=current_price,
-                        )
-                    is_underwater = current_price < entry_price
-                if not is_underwater:
-                    return ExitDecision(
-                        "hold",
-                        (
-                            f"Resolution proximity hold ({minutes_left:.0f}m left <= {resolution_hold_minutes:.0f}m; "
-                            f"category={category}, price={current_price:.4f})"
-                        ),
-                        payload={"skip_default_exit": True},
-                    )
 
         # -- #1: Inversion stop with time-weighted floor --
         # Static floor (legacy) is the lower bound; the TW schedule can

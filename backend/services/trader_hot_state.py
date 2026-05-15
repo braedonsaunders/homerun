@@ -38,7 +38,6 @@ from models.database import (
 from services.event_bus import event_bus
 from services.trader_orchestrator_state import (
     ACTIVE_POSITION_STATUS,
-    REALIZED_LOSS_ORDER_STATUSES,
     REALIZED_ORDER_STATUSES,
     REALIZED_WIN_ORDER_STATUSES,
     _extract_live_fill_metrics,
@@ -47,6 +46,7 @@ from services.trader_orchestrator_state import (
     _normalize_mode_key,
     _normalize_status_key,
     _position_cap_scope_key,
+    order_loss_counts_for_consecutive_halt,
 )
 from utils.converters import safe_float
 from utils.logger import get_logger
@@ -159,6 +159,7 @@ class _TraderSnapshot:
     daily_pnl_date: str = ""
     daily_realized_order_pnl: dict[str, float] = field(default_factory=dict)
     resolved_order_statuses: dict[str, str] = field(default_factory=dict)
+    resolved_order_thesis_losses: dict[str, bool] = field(default_factory=dict)
     consecutive_losses: int = 0
     last_loss_at: Optional[datetime] = None
     cursor_created_at: Optional[datetime] = None
@@ -725,6 +726,7 @@ async def _seed_from_db(session: AsyncSession) -> None:
                 TraderOrder.trader_id.label("trader_id"),
                 TraderOrder.status.label("status"),
                 TraderOrder.updated_at.label("updated_at"),
+                TraderOrder.payload_json.label("payload_json"),
                 func.row_number()
                 .over(
                     partition_by=TraderOrder.trader_id,
@@ -742,6 +744,7 @@ async def _seed_from_db(session: AsyncSession) -> None:
                     ranked_realized.c.trader_id,
                     ranked_realized.c.status,
                     ranked_realized.c.updated_at,
+                    ranked_realized.c.payload_json,
                 )
                 .where(ranked_realized.c.rn <= 100)
                 .order_by(ranked_realized.c.trader_id.asc(), ranked_realized.c.rn.asc())
@@ -768,7 +771,7 @@ async def _seed_from_db(session: AsyncSession) -> None:
             if current_locked:
                 continue
             status_key = _normalize_status_key(row.status)
-            if status_key in REALIZED_LOSS_ORDER_STATUSES:
+            if order_loss_counts_for_consecutive_halt(status_key, row.payload_json):
                 current_losses += 1
                 if current_last_loss is None:
                     current_last_loss = row.updated_at
@@ -1156,6 +1159,7 @@ def record_order_resolved(
             snap.daily_pnl_date = today_str
             snap.daily_realized_order_pnl.clear()
             snap.resolved_order_statuses.clear()
+            snap.resolved_order_thesis_losses.clear()
 
         previous_profit = snap.daily_realized_order_pnl.get(order_id_clean)
         pnl_delta = profit - previous_profit if previous_profit is not None else profit
@@ -1169,12 +1173,15 @@ def record_order_resolved(
         _global_daily_pnl[mode_key] = _global_daily_pnl.get(mode_key, 0.0) + pnl_delta
 
         previous_status = snap.resolved_order_statuses.get(order_id_clean)
+        previous_thesis_loss = snap.resolved_order_thesis_losses.get(order_id_clean, False)
+        counts_as_thesis_loss = order_loss_counts_for_consecutive_halt(status_key, payload)
         if order_id_clean:
             snap.resolved_order_statuses[order_id_clean] = status_key
-        if previous_status == status_key:
+            snap.resolved_order_thesis_losses[order_id_clean] = counts_as_thesis_loss
+        if previous_status == status_key and previous_thesis_loss == counts_as_thesis_loss:
             return
 
-        if status_key in REALIZED_LOSS_ORDER_STATUSES and previous_status not in REALIZED_LOSS_ORDER_STATUSES:
+        if counts_as_thesis_loss and not previous_thesis_loss:
             snap.consecutive_losses += 1
             snap.last_loss_at = utcnow()
         elif status_key in REALIZED_WIN_ORDER_STATUSES and previous_status not in REALIZED_WIN_ORDER_STATUSES:

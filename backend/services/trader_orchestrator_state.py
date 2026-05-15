@@ -164,6 +164,13 @@ DEFAULT_TIMEOUT_TAKER_RESCUE_TIME_IN_FORCE = "IOC"
 REALIZED_WIN_ORDER_STATUSES = {"resolved_win", "closed_win", "win"}
 REALIZED_LOSS_ORDER_STATUSES = {"resolved_loss", "closed_loss", "loss"}
 REALIZED_ORDER_STATUSES = REALIZED_WIN_ORDER_STATUSES | REALIZED_LOSS_ORDER_STATUSES
+THESIS_LOSS_CLOSE_TRIGGERS = {
+    "resolution",
+    "resolution_extreme_mark",
+    "resolution_inferred",
+    "wallet_absent_resolution",
+}
+THESIS_LOSS_WALLET_ACTIVITY_TYPES = {"redeem", "redemption", "redeemed"}
 ACTIVE_POSITION_STATUS = "open"
 INACTIVE_POSITION_STATUS = "closed"
 ACTIVE_EXECUTION_SESSION_STATUSES = {"pending", "placing", "working", "partial", "hedging", "paused"}
@@ -197,6 +204,34 @@ def _normalize_mode_key(mode: Any) -> str:
 
 def _normalize_status_key(status: Any) -> str:
     return str(status or "").strip().lower()
+
+
+def _dict_payload(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def order_loss_counts_for_consecutive_halt(status: Any, payload: Any) -> bool:
+    status_key = _normalize_status_key(status)
+    if status_key in {"resolved_loss", "loss"}:
+        return True
+    if status_key != "closed_loss":
+        return False
+
+    payload_dict = _dict_payload(payload)
+    close_payload = _dict_payload(payload_dict.get("position_close"))
+    pending_exit = _dict_payload(payload_dict.get("pending_live_exit"))
+    close_trigger = _normalize_status_key(
+        close_payload.get("close_trigger") or pending_exit.get("close_trigger")
+    )
+    if close_trigger in THESIS_LOSS_CLOSE_TRIGGERS or close_trigger.startswith("resolution"):
+        return True
+
+    price_source = _normalize_status_key(close_payload.get("price_source"))
+    if "resolution" in price_source or "redeem" in price_source:
+        return True
+
+    wallet_activity_type = _normalize_status_key(close_payload.get("wallet_activity_type"))
+    return wallet_activity_type in THESIS_LOSS_WALLET_ACTIVITY_TYPES
 
 
 def _visible_trader_order_query_clause():
@@ -10041,7 +10076,7 @@ async def _query_loss_streak(
     since: Optional[datetime] = None,
 ) -> int:
     query = (
-        select(TraderOrder.status, TraderOrder.updated_at)
+        select(TraderOrder.status, TraderOrder.updated_at, TraderOrder.payload_json)
         .where(TraderOrder.trader_id == trader_id)
         .where(TraderOrder.status.in_(tuple(REALIZED_ORDER_STATUSES)))
         .where(_visible_trader_order_query_clause())
@@ -10061,7 +10096,7 @@ async def _query_loss_streak(
     losses = 0
     for row in rows:
         status = _normalize_status_key(row.status)
-        if status in REALIZED_LOSS_ORDER_STATUSES:
+        if order_loss_counts_for_consecutive_halt(status, row.payload_json):
             losses += 1
             continue
         if status in REALIZED_WIN_ORDER_STATUSES:
@@ -10093,10 +10128,15 @@ async def _query_last_loss(
     mode: Optional[str],
     since: Optional[datetime] = None,
 ) -> Optional[datetime]:
-    query = select(func.max(TraderOrder.updated_at)).where(
-        TraderOrder.trader_id == trader_id,
-        TraderOrder.status.in_(tuple(REALIZED_LOSS_ORDER_STATUSES)),
-        _visible_trader_order_query_clause(),
+    query = (
+        select(TraderOrder.status, TraderOrder.updated_at, TraderOrder.payload_json)
+        .where(
+            TraderOrder.trader_id == trader_id,
+            TraderOrder.status.in_(tuple(REALIZED_LOSS_ORDER_STATUSES)),
+            _visible_trader_order_query_clause(),
+        )
+        .order_by(desc(TraderOrder.updated_at), desc(TraderOrder.id))
+        .limit(1000)
     )
     if mode is not None:
         mode_key = _normalize_mode_key(mode)
@@ -10107,7 +10147,11 @@ async def _query_last_loss(
     if since is not None:
         since_utc = since.replace(tzinfo=timezone.utc) if since.tzinfo is None else since.astimezone(timezone.utc)
         query = query.where(TraderOrder.updated_at >= since_utc)
-    return (await session.execute(query)).scalar_one_or_none()
+    rows = (await session.execute(query)).all()
+    for row in rows:
+        if order_loss_counts_for_consecutive_halt(row.status, row.payload_json):
+            return row.updated_at
+    return None
 
 
 async def _refresh_last_loss(
