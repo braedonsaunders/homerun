@@ -542,8 +542,14 @@ class LiveExecutionService:
         # 30-call burst onto the venue, while letting the typical 2-4
         # parallel orders proceed concurrently.
         self._client_io_lock: Optional[asyncio.Semaphore] = None
+        # SOAK-2026-05-16 P0-5: bumped default 8 → 16.  Soak observed
+        # io_lock_wait dominating submit_round_trip_ms (p95 17 s during
+        # peak concurrent traders × legs × balance refreshes).  16 still
+        # respects Polymarket's per-account API quota (~100 req/s for
+        # orders) but halves the queue depth.  Env-override path
+        # (POLYMARKET_CLIENT_IO_CONCURRENCY) is preserved.
         self._client_io_lock_concurrency = max(
-            1, int(getattr(settings, "POLYMARKET_CLIENT_IO_CONCURRENCY", 8))
+            1, int(getattr(settings, "POLYMARKET_CLIENT_IO_CONCURRENCY", 16))
         )
         # Split off balance / read-only SDK calls to a separate lock so
         # they don't queue behind in-flight order submissions.  Pre-split

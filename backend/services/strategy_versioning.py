@@ -41,7 +41,14 @@ class ResolvedStrategyVersion:
 # creates a new StrategyVersion snapshot.  TTL acts as a safety net;
 # operators can tolerate at most ``_CACHE_TTL_SECONDS`` of version lag
 # before a newly-saved strategy becomes visible.
-_CACHE_TTL_SECONDS: float = 60.0
+#
+# SOAK-2026-05-16 P0-7: bumped 60s → 600s.  Strategy version rows
+# change at human edit cadence (minutes to hours), not per cycle; the
+# 60s TTL was forcing 3 SQL hops per trader cycle, which showed up as
+# prs_resolve_version=2-6 s under pool pressure (R10-A observed
+# 2078 ms).  Every write path that touches Strategy or StrategyVersion
+# already invalidates by key, so this TTL is purely a safety net.
+_CACHE_TTL_SECONDS: float = 600.0
 
 
 @dataclass

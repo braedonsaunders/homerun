@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import WorkerControl, WorkerSnapshot
 from services.event_bus import event_bus
-from services.live_pressure import is_db_pressure_active, maybe_mark_db_pressure
+from services.live_pressure import is_db_pressure_active
 from utils.converters import to_iso
 from utils.logger import get_logger
 from utils.retry import db_retry_delay as _shared_db_retry_delay
@@ -914,8 +914,16 @@ async def write_worker_snapshot(
         if worker_key:
             _worker_snapshot_last_write_mono[worker_key] = time.monotonic()
             _worker_snapshot_last_signature[worker_key] = signature
-    except Exception as exc:
-        maybe_mark_db_pressure(exc, component=f"worker_snapshot:{worker_name}")
+    except Exception:
+        # SOAK-2026-05-16 P0-6: worker_snapshot writes are non-essential
+        # heartbeat upserts.  Previously a timeout here (e.g. canceling
+        # statement due to statement timeout) escalated to the global
+        # db_pressure flag — which then disabled the scanner snapshot
+        # persistence, market_data persistence, search reindex, and
+        # tracked-traders intelligence, even though the underlying DB
+        # was otherwise healthy.  Heartbeat failure must not be a
+        # cascade trigger; the next heartbeat cycle will retry, and
+        # real workload failures already escalate via their own paths.
         raise
 
     # Publish worker status update event (fire-and-forget, don't hold DB conn).

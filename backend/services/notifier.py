@@ -10,7 +10,7 @@ from html import escape as html_escape
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, tuple_
 
 from config import settings
 from models.database import (
@@ -53,7 +53,22 @@ logger = get_logger("notifier")
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 MAX_MESSAGES_PER_MINUTE = 20
-MONITOR_POLL_SECONDS = 5
+# SOAK-2026-05-16 P0-2: bumped 5s → 30s.  Three notifier queries
+# (events, new orders, updated orders) on million-row hot tables don't
+# need a 5s cadence — autotrader alerting is human-paced.  The 5s loop
+# was monopolising 3 pool slots × 22-29s on the trader_events scan
+# during peak load.
+MONITOR_POLL_SECONDS = 30
+# Cap each notifier batch fetch.  Issue/realized/active alerts are
+# rare; 50 rows per 30s window is ample headroom and bounds tail
+# latency on the keyset scan even if the index seek-stops late.
+NOTIFIER_BATCH_LIMIT = 50
+# Severities + event_types we surface as issue alerts (must stay in
+# sync with ``_is_issue_event``).  Used to push the filter into SQL so
+# Postgres returns only candidate rows instead of paging through the
+# firehose.
+NOTIFIER_ISSUE_SEVERITIES = ("warn", "warning", "error", "critical")
+NOTIFIER_ISSUE_EVENT_TYPES = ("kill_switch", "live_preflight")
 SETTINGS_REFRESH_SECONDS = 30
 DEFAULT_SUMMARY_INTERVAL_MINUTES = 60
 COMMAND_POLL_TIMEOUT_SECONDS = 25
@@ -773,6 +788,9 @@ class TelegramNotifier:
             await asyncio.sleep(MONITOR_POLL_SECONDS)
 
     async def _load_new_trader_orders(self, session) -> list[TraderOrder]:
+        # SOAK-2026-05-16 P0-1: row-value keyset (relies on composite
+        # index idx_trader_orders_created_at_id) so the planner can
+        # seek-and-stop at LIMIT instead of sorting the whole table.
         query = select(TraderOrder).order_by(
             TraderOrder.created_at.asc(),
             TraderOrder.id.asc(),
@@ -781,16 +799,11 @@ class TelegramNotifier:
         if self._last_order_cursor is not None:
             cursor_ts, cursor_id = self._last_order_cursor
             query = query.where(
-                or_(
-                    TraderOrder.created_at > cursor_ts.replace(tzinfo=None),
-                    and_(
-                        TraderOrder.created_at == cursor_ts.replace(tzinfo=None),
-                        TraderOrder.id > cursor_id,
-                    ),
-                )
+                tuple_(TraderOrder.created_at, TraderOrder.id)
+                > (cursor_ts.replace(tzinfo=None), cursor_id)
             )
 
-        rows = (await session.execute(query.limit(200))).scalars().all()
+        rows = (await session.execute(query.limit(NOTIFIER_BATCH_LIMIT))).scalars().all()
         if rows:
             last = rows[-1]
             if last.created_at is not None:
@@ -798,6 +811,8 @@ class TelegramNotifier:
         return rows
 
     async def _load_updated_trader_orders(self, session) -> list[TraderOrder]:
+        # SOAK-2026-05-16 P0-1: row-value keyset on the partial index
+        # idx_trader_orders_updated_at_id (WHERE updated_at IS NOT NULL).
         query = (
             select(TraderOrder)
             .where(TraderOrder.updated_at.is_not(None))
@@ -807,16 +822,11 @@ class TelegramNotifier:
         if self._last_order_update_cursor is not None:
             cursor_ts, cursor_id = self._last_order_update_cursor
             query = query.where(
-                or_(
-                    TraderOrder.updated_at > cursor_ts.replace(tzinfo=None),
-                    and_(
-                        TraderOrder.updated_at == cursor_ts.replace(tzinfo=None),
-                        TraderOrder.id > cursor_id,
-                    ),
-                )
+                tuple_(TraderOrder.updated_at, TraderOrder.id)
+                > (cursor_ts.replace(tzinfo=None), cursor_id)
             )
 
-        rows = (await session.execute(query.limit(300))).scalars().all()
+        rows = (await session.execute(query.limit(NOTIFIER_BATCH_LIMIT))).scalars().all()
         if rows:
             last = rows[-1]
             if last.updated_at is not None:
@@ -824,28 +834,63 @@ class TelegramNotifier:
         return rows
 
     async def _load_new_trader_events(self, session) -> list[TraderEvent]:
-        query = select(TraderEvent).order_by(
-            TraderEvent.created_at.asc(),
-            TraderEvent.id.asc(),
+        # SOAK-2026-05-16 P0-1/P0-3:
+        #  - row-value keyset on idx_trader_events_created_at_id
+        #  - severity/event_type predicate pushed into SQL so we don't
+        #    drag the firehose (~7600 rows/min) across the wire just to
+        #    drop 99% of them in _is_issue_event.
+        #
+        # Because the SQL filter is narrow, we MUST advance the cursor
+        # past non-issue rows too, otherwise quiet hours leave the
+        # cursor far behind and every poll has to skip-scan a growing
+        # window.  We do this with a second O(log N) watermark probe
+        # against the index tail, and only advance to the watermark
+        # when the issue batch did NOT hit the LIMIT (i.e. we know
+        # there were no more issues to fetch in that window).
+        query = (
+            select(TraderEvent)
+            .where(
+                or_(
+                    func.lower(TraderEvent.severity).in_(NOTIFIER_ISSUE_SEVERITIES),
+                    TraderEvent.event_type.in_(NOTIFIER_ISSUE_EVENT_TYPES),
+                )
+            )
+            .order_by(TraderEvent.created_at.asc(), TraderEvent.id.asc())
         )
 
         if self._last_event_cursor is not None:
             cursor_ts, cursor_id = self._last_event_cursor
             query = query.where(
-                or_(
-                    TraderEvent.created_at > cursor_ts.replace(tzinfo=None),
-                    and_(
-                        TraderEvent.created_at == cursor_ts.replace(tzinfo=None),
-                        TraderEvent.id > cursor_id,
-                    ),
-                )
+                tuple_(TraderEvent.created_at, TraderEvent.id)
+                > (cursor_ts.replace(tzinfo=None), cursor_id)
             )
 
-        rows = (await session.execute(query.limit(200))).scalars().all()
-        if rows:
+        rows = (await session.execute(query.limit(NOTIFIER_BATCH_LIMIT))).scalars().all()
+
+        if rows and len(rows) >= NOTIFIER_BATCH_LIMIT:
+            # Hit the limit — there may be more issue rows; advance the
+            # cursor only past what we actually returned.  Next poll
+            # will continue from here.
             last = rows[-1]
             if last.created_at is not None:
                 self._last_event_cursor = (_to_utc(last.created_at), str(last.id))
+        else:
+            # Caught up on issue rows in the current window.  Probe the
+            # tail of the index to skip over non-issue firehose rows
+            # cheaply (single index seek, no heap fetch needed).
+            watermark = (
+                await session.execute(
+                    select(TraderEvent.created_at, TraderEvent.id)
+                    .order_by(
+                        TraderEvent.created_at.desc(),
+                        TraderEvent.id.desc(),
+                    )
+                    .limit(1)
+                )
+            ).first()
+            if watermark is not None and watermark[0] is not None:
+                self._last_event_cursor = (_to_utc(watermark[0]), str(watermark[1]))
+
         return rows
 
     @staticmethod

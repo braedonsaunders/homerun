@@ -6299,11 +6299,17 @@ async def reconcile_live_positions(
                 # path — the WS feed is supposed to have these
                 # tokens; if it doesn't we use the cached/live midpoint
                 # already in ``ws_mid_prices`` and accept the gap.
+                # SOAK-2026-05-16 P0-4: release the DB connection while
+                # waiting on the venue.  external_io was holding the
+                # session open for 12-18 s during reconciliation,
+                # showing up as ``Long transaction held … uow_dirty=0``
+                # warnings in the soak log.
                 try:
-                    batch = await asyncio.wait_for(
-                        polymarket_client.get_midpoints_batch(unresolved_token_ids),
-                        timeout=4.0,
-                    )
+                    async with release_conn(session):
+                        batch = await asyncio.wait_for(
+                            polymarket_client.get_midpoints_batch(unresolved_token_ids),
+                            timeout=4.0,
+                        )
                 except Exception:
                     batch = {}
             elif unresolved_token_ids:
@@ -6349,11 +6355,14 @@ async def reconcile_live_positions(
         pending_exit_order_ids = sorted(_pending_order_id_set)
         pending_exit_snapshots: dict[str, dict[str, Any]] = {}
         if pending_exit_provider_ids:
-            pending_exit_snapshots = await _load_mapping_with_timeout(
-                lambda: live_execution_service.get_order_snapshots_by_clob_ids(pending_exit_provider_ids),
-                timeout=_ORDER_SNAPSHOT_LOAD_TIMEOUT_SECONDS,
-                fallback=_cached_order_snapshots_by_clob_ids(pending_exit_provider_ids),
-            )
+            # SOAK-2026-05-16 P0-4: release DB connection during the
+            # provider HTTP fetch.
+            async with release_conn(session):
+                pending_exit_snapshots = await _load_mapping_with_timeout(
+                    lambda: live_execution_service.get_order_snapshots_by_clob_ids(pending_exit_provider_ids),
+                    timeout=_ORDER_SNAPSHOT_LOAD_TIMEOUT_SECONDS,
+                    fallback=_cached_order_snapshots_by_clob_ids(pending_exit_provider_ids),
+                )
 
         # Backfill: fetch entry fill snapshots for orders missing entry price.
         # IOC/FAK orders may have average_fill_price=0 in LiveTradingOrder because
@@ -6375,11 +6384,14 @@ async def reconcile_live_positions(
             if _bf_clob:
                 entry_backfill_clob_ids.append(_bf_clob)
         if entry_backfill_clob_ids:
-            entry_backfill_snapshots = await _load_mapping_with_timeout(
-                lambda: live_execution_service.get_order_snapshots_by_clob_ids(entry_backfill_clob_ids),
-                timeout=_ORDER_SNAPSHOT_LOAD_TIMEOUT_SECONDS,
-                fallback=_cached_order_snapshots_by_clob_ids(entry_backfill_clob_ids),
-            )
+            # SOAK-2026-05-16 P0-4: release DB connection during the
+            # entry-backfill provider HTTP fetch.
+            async with release_conn(session):
+                entry_backfill_snapshots = await _load_mapping_with_timeout(
+                    lambda: live_execution_service.get_order_snapshots_by_clob_ids(entry_backfill_clob_ids),
+                    timeout=_ORDER_SNAPSHOT_LOAD_TIMEOUT_SECONDS,
+                    fallback=_cached_order_snapshots_by_clob_ids(entry_backfill_clob_ids),
+                )
 
     _lc_t2 = _time.monotonic()
 
