@@ -253,7 +253,6 @@ _TRANSIENT_TRANSPORT_MARKERS = (
     "request exception",
     "proxy error",
     "proxyerror",
-    "invalid username/password",
     "connection reset",
     "connection refused",
     "connection closed",
@@ -270,9 +269,26 @@ _TRANSIENT_TRANSPORT_MARKERS = (
     "connectionerror",
 )
 
+_AUTH_FAILURE_MARKERS = (
+    "invalid username/password",
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+    "invalid api secret",
+    "invalid api credentials",
+    "invalid credentials",
+)
+
+
+def _is_auth_failure_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text) and any(marker in text for marker in _AUTH_FAILURE_MARKERS)
+
 
 def _is_transient_transport_error(exc: Exception) -> bool:
     """Check if an exception is a transient network/proxy error worth retrying."""
+    if _is_auth_failure_text(exc):
+        return False
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return True
     try:
@@ -283,6 +299,8 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     except ImportError:
         pass
     text = str(exc).lower()
+    if _is_auth_failure_text(text):
+        return False
     return any(marker in text for marker in _TRANSIENT_TRANSPORT_MARKERS)
 
 
@@ -503,6 +521,9 @@ class LiveExecutionService:
         self._last_init_error: Optional[str] = None
         self._init_retry_not_before: Optional[datetime] = None
         self._last_missing_dependency_log_at: Optional[datetime] = None
+        self._auth_circuit_opened_at: Optional[datetime] = None
+        self._auth_circuit_reason: Optional[str] = None
+        self._auth_circuit_last_logged_at: float = 0.0
         self._orders: OrderedDict[str, Order] = OrderedDict()
         self._positions: dict[str, Position] = {}
         self._stats = TradingStats()
@@ -652,6 +673,40 @@ class LiveExecutionService:
         if self._init_lock is None:
             self._init_lock = asyncio.Lock()
         return self._init_lock
+
+    def clob_auth_circuit_open(self) -> bool:
+        return self._auth_circuit_opened_at is not None
+
+    def clob_auth_circuit_reason(self) -> Optional[str]:
+        return self._auth_circuit_reason
+
+    def is_auth_failure_message(self, value: Any) -> bool:
+        return _is_auth_failure_text(value)
+
+    def _clear_auth_circuit(self) -> None:
+        self._auth_circuit_opened_at = None
+        self._auth_circuit_reason = None
+        self._auth_circuit_last_logged_at = 0.0
+
+    def _trip_auth_circuit(self, reason: Any) -> None:
+        message = str(reason or "Polymarket API authentication failed.").strip()
+        if not message:
+            message = "Polymarket API authentication failed."
+        now = utcnow()
+        first_trip = self._auth_circuit_opened_at is None
+        self._auth_circuit_opened_at = now
+        self._auth_circuit_reason = message
+        self._last_init_error = message
+        self._init_retry_not_before = None
+        self._initialized = False
+        self._client = None
+        self._wallet_address = None
+        self._eoa_address = None
+        self._proxy_funder_address = None
+        log_mono = _time.monotonic()
+        if first_trip or (log_mono - self._auth_circuit_last_logged_at) >= 300.0:
+            self._auth_circuit_last_logged_at = log_mono
+            logger.error("Polymarket auth circuit opened; live submissions disabled until credentials change", error=message)
 
     def _get_clob_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Dedicated thread pool for CLOB SDK calls.
@@ -1951,6 +2006,15 @@ class LiveExecutionService:
         return False, error_message
 
     async def ensure_initialized(self) -> bool:
+        if self.clob_auth_circuit_open():
+            log_mono = _time.monotonic()
+            if (log_mono - self._auth_circuit_last_logged_at) >= 300.0:
+                self._auth_circuit_last_logged_at = log_mono
+                logger.error(
+                    "Polymarket auth circuit still open; refusing live client initialization",
+                    error=self._auth_circuit_reason,
+                )
+            return False
         if self.is_ready():
             await self._sync_trading_transport()
             return True
@@ -2344,6 +2408,7 @@ class LiveExecutionService:
                 )
                 self._last_init_error = None
                 self._init_retry_not_before = None
+                self._clear_auth_circuit()
                 # Now the connection is warm we can start the keepalive
                 # loop — the loop's first ping will renew the warm
                 # connection, not establish a cold one.
@@ -2367,6 +2432,9 @@ class LiveExecutionService:
                 self._proxy_funder_address = None
                 return False
             except Exception as e:
+                if _is_auth_failure_text(e):
+                    self._trip_auth_circuit(e)
+                    return False
                 logger.error(f"Failed to initialize trading client: {e}")
                 self._last_init_error = str(e)
                 self._init_retry_not_before = None
@@ -4893,6 +4961,23 @@ class LiveExecutionService:
                     break
 
                 error_message = str(response.get("errorMsg", response.get("error", "Unknown error")))
+                if _is_auth_failure_text(error_message):
+                    self._trip_auth_circuit(error_message)
+                    order.status = OrderStatus.FAILED
+                    order.error_message = error_message
+                    await self._release_reservation(
+                        size_usd=size_usd,
+                        side=side,
+                        token_id=token_key,
+                    )
+                    reserved = False
+                    logger.error(
+                        "Order rejected by Polymarket authentication; live submissions circuit-opened",
+                        token_id=token_key,
+                        side=side.value,
+                        error=error_message[:200],
+                    )
+                    break
                 if (
                     attempt == 0
                     and self._is_invalid_signature_error(error_message)
@@ -5026,6 +5111,8 @@ class LiveExecutionService:
         except Exception as e:
             order.status = OrderStatus.FAILED
             order.error_message = str(e)
+            if _is_auth_failure_text(e):
+                self._trip_auth_circuit(e)
             if reserved:
                 await self._release_reservation(
                     size_usd=size_usd,
@@ -5036,6 +5123,8 @@ class LiveExecutionService:
             error_str = str(e).lower()
             if "no orders found to match" in error_str or "fak" in error_str:
                 logger.info(f"Order execution no-fill (FAK/FOK no liquidity): {e}")
+            elif _is_auth_failure_text(e):
+                logger.error("Order execution rejected by Polymarket authentication; live submissions circuit-opened")
             else:
                 logger.error(f"Order execution error: {e}")
 

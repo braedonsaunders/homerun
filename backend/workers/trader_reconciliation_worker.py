@@ -131,6 +131,9 @@ _DEFAULT_INTER_TRADER_SLEEP_SECONDS = 0.1
 _SCHEDULED_CYCLE_COOLDOWN_SECONDS = 1.0
 _EVENT_CYCLE_COOLDOWN_SECONDS = 0.5
 _POSITION_TICK_CYCLE_COOLDOWN_SECONDS = 0.25
+_TERMINAL_AUDIT_INTERVAL_SECONDS = 300.0
+_TERMINAL_AUDIT_TIMEOUT_SECONDS = 8.0
+_terminal_audit_next_due_by_trader: dict[str, float] = {}
 _RECONCILE_TRIGGER_EVENTS = frozenset(
     {
         "trader_order",
@@ -154,6 +157,18 @@ _inflight_timed_tasks: dict[str, asyncio.Task] = {}
 _TRADER_RECONCILE_TIMEOUT_LOG_INTERVAL_SECONDS = 300.0
 _reconcile_timeout_last_log_mono: dict[str, float] = {}
 _reconcile_timeout_suppressed_count: dict[str, int] = {}
+
+
+def _terminal_audit_due(trader_id: str) -> bool:
+    now_mono = time.monotonic()
+    if trader_id not in _terminal_audit_next_due_by_trader:
+        _terminal_audit_next_due_by_trader[trader_id] = now_mono + _TERMINAL_AUDIT_INTERVAL_SECONDS
+        return False
+    next_due = _terminal_audit_next_due_by_trader.get(trader_id, 0.0)
+    if now_mono < next_due:
+        return False
+    _terminal_audit_next_due_by_trader[trader_id] = now_mono + _TERMINAL_AUDIT_INTERVAL_SECONDS
+    return True
 
 
 def _should_emit_reconcile_timeout_warning(trader_id: str) -> tuple[bool, int]:
@@ -499,8 +514,33 @@ async def _reconcile_live_state_for_trader_inner(
                 trader_id=trader_id,
                 trader_params=trader_params,
                 dry_run=False,
+                include_terminal_audit=False,
                 reason="reconciliation_worker",
             )
+    if _terminal_audit_due(trader_id):
+        try:
+            async with AsyncSessionLocal() as session:
+                terminal_audit_result = await asyncio.wait_for(
+                    reconcile_live_positions(
+                        session,
+                        trader_id=trader_id,
+                        trader_params=trader_params,
+                        dry_run=False,
+                        include_active_candidates=False,
+                        include_terminal_audit=True,
+                        reason="reconciliation_terminal_audit",
+                    ),
+                    timeout=_TERMINAL_AUDIT_TIMEOUT_SECONDS,
+                )
+            lifecycle_result["terminal_audit"] = terminal_audit_result
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Terminal live reconciliation audit timed out for trader=%s timeout=%.1fs",
+                trader_id,
+                _TERMINAL_AUDIT_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning("Terminal live reconciliation audit failed for trader=%s", trader_id, exc_info=exc)
     async with AsyncSessionLocal() as session:
         inventory_result = await sync_trader_position_inventory(
             session,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -816,6 +817,22 @@ class ExecutionSessionEngine:
         reason: str | None,
         explicit_strategy_params: dict[str, Any] | None = None,
     ) -> SessionExecutionResult:
+        _execution_started_at = _time.monotonic()
+        _execution_timing_ms: dict[str, float] = {}
+
+        def _record_execution_timing(stage: str, started_at: float) -> None:
+            elapsed_ms = max(0.0, (_time.monotonic() - started_at) * 1000.0)
+            previous_ms = safe_float(_execution_timing_ms.get(stage), 0.0) or 0.0
+            _execution_timing_ms[stage] = round(previous_ms + elapsed_ms, 3)
+
+        def _payload_with_execution_timing(payload: dict[str, Any]) -> dict[str, Any]:
+            enriched = dict(payload)
+            timing = dict(_execution_timing_ms)
+            timing["total_ms"] = round(max(0.0, (_time.monotonic() - _execution_started_at) * 1000.0), 3)
+            enriched["execution_timing_ms"] = timing
+            return enriched
+
+        _session_build_started_at = _time.monotonic()
         plan, legs, constraints = self._build_plan(
             signal,
             strategy_key=strategy_key,
@@ -872,6 +889,7 @@ class ExecutionSessionEngine:
         skip_reasons: list[str] = []
         bundle_recovery_outcome: dict[str, Any] | None = None
         entry_submit_placeholders: dict[str, tuple[TraderOrder, ExecutionSessionOrder]] = {}
+        _record_execution_timing("session_build", _session_build_started_at)
 
         def _append_event(
             *,
@@ -1093,21 +1111,25 @@ class ExecutionSessionEngine:
             }
 
         async def _commit_pre_submit_projection() -> None:
-            self.db.add(session_row)
-            for leg_row in leg_rows.values():
-                self.db.add(leg_row)
-            for trader_order in trader_orders:
-                self.db.add(trader_order)
-            await self.db.flush()
-            for execution_order in execution_orders:
-                self.db.add(execution_order)
-            if execution_orders:
+            _started_at = _time.monotonic()
+            try:
+                self.db.add(session_row)
+                for leg_row in leg_rows.values():
+                    self.db.add(leg_row)
+                for trader_order in trader_orders:
+                    self.db.add(trader_order)
                 await self.db.flush()
-            for execution_event in execution_events:
-                self.db.add(execution_event)
-            if execution_events:
-                await self.db.flush()
-            await self.db.commit()
+                for execution_order in execution_orders:
+                    self.db.add(execution_order)
+                if execution_orders:
+                    await self.db.flush()
+                for execution_event in execution_events:
+                    self.db.add(execution_event)
+                if execution_events:
+                    await self.db.flush()
+                await self.db.commit()
+            finally:
+                _record_execution_timing("pre_submit_projection", _started_at)
 
         def _create_entry_submit_placeholder(
             *,
@@ -1200,6 +1222,7 @@ class ExecutionSessionEngine:
             signal_status: str,
             effective_price: float | None,
         ) -> None:
+            _projection_started_at = _time.monotonic()
             normalized_signal_id = str(getattr(signal, "id", "") or "").strip()
             normalized_signal_status = str(signal_status or "").strip().lower()
             # Flush trader_orders (and session/leg parents) before
@@ -1262,6 +1285,7 @@ class ExecutionSessionEngine:
             # (fast/live paths): a no-op if there's nothing pending.
             try:
                 await self.db.commit()
+                _record_execution_timing("projection_db_persist", _projection_started_at)
             except DBAPIError as commit_exc:
                 try:
                     await self.db.rollback()
@@ -1301,6 +1325,7 @@ class ExecutionSessionEngine:
             # Exception: pass`` swallowing semantics — exceptions from
             # any publish surface as elements in the results list and
             # are then ignored, exactly like before.
+            _publish_started_at = _time.monotonic()
             _publish_tasks = [event_bus.publish("execution_session", _serialize_execution_session(session_row))]
             _publish_tasks.extend(
                 event_bus.publish("execution_leg", _serialize_execution_leg(leg_row))
@@ -1320,6 +1345,8 @@ class ExecutionSessionEngine:
             )
             if _publish_tasks:
                 await asyncio.gather(*_publish_tasks, return_exceptions=True)
+            _record_execution_timing("projection_publish", _publish_started_at)
+            _record_execution_timing("projection_persist", _projection_started_at)
 
         async def _persist_execution_projection_safely(
             *,
@@ -1418,6 +1445,7 @@ class ExecutionSessionEngine:
             legs_with_notionals: list[tuple[dict[str, Any], float]],
             wave_error_message: str,
         ) -> list[LegSubmitResult]:
+            _started_at = _time.monotonic()
             try:
                 async with release_conn(self.db):
                     return await submit_execution_wave(
@@ -1433,6 +1461,8 @@ class ExecutionSessionEngine:
                     _finalize_cancelled_live_submit(error_message=wave_error_message)
                 )
                 raise
+            finally:
+                _record_execution_timing("venue_submit_wave", _started_at)
 
         _append_event(
             event_type="session_created",
@@ -1464,11 +1494,11 @@ class ExecutionSessionEngine:
                 effective_price=None,
                 error_message=rejection_reason,
                 orders_written=0,
-                payload={
+                payload=_payload_with_execution_timing({
                     "execution_plan": plan,
                     "bundle_coverage": bundle_coverage,
                     "legs": [],
-                },
+                }),
                 created_orders=[],
             )
 
@@ -1496,11 +1526,11 @@ class ExecutionSessionEngine:
                 effective_price=None,
                 error_message=rejection_reason,
                 orders_written=0,
-                payload={
+                payload=_payload_with_execution_timing({
                     "execution_plan": plan,
                     "self_crossing_plan": self_crossing_violation,
                     "legs": [],
-                },
+                }),
                 created_orders=[],
             )
 
@@ -1536,11 +1566,11 @@ class ExecutionSessionEngine:
                 effective_price=None,
                 error_message=rejection_reason,
                 orders_written=0,
-                payload={
+                payload=_payload_with_execution_timing({
                     "execution_plan": plan,
                     "bundle_preflight": preflight_violation,
                     "legs": [],
-                },
+                }),
                 created_orders=[],
             )
 
@@ -1988,7 +2018,7 @@ class ExecutionSessionEngine:
                     effective_price=effective_price,
                     error_message=violation_reason,
                     orders_written=0,
-                    payload={
+                    payload=_payload_with_execution_timing({
                         "execution_plan": plan,
                         "legs": leg_execution_records,
                         "pair_lock_violation": {
@@ -1997,7 +2027,7 @@ class ExecutionSessionEngine:
                             "cancelled_provider_orders": cancelled_provider_orders,
                             "cancel_failed_provider_orders": cancel_failed_provider_orders,
                         },
-                    },
+                    }),
                     created_orders=created_order_records,
                 )
 
@@ -2817,11 +2847,11 @@ class ExecutionSessionEngine:
             effective_price=effective_price,
             error_message=error_message,
             orders_written=orders_written,
-            payload={
+            payload=_payload_with_execution_timing({
                 "execution_plan": plan,
                 "legs": leg_execution_records,
                 "submit_breakdowns": list(_submit_wave_breakdowns),
-            },
+            }),
             created_orders=created_order_records,
         )
 

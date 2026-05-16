@@ -141,6 +141,14 @@ async def execute_live_order(
             error_message="Order size must be greater than zero.",
             payload={**base_payload, "submission": "rejected"},
         )
+    if live_execution_service.clob_auth_circuit_open():
+        reason = live_execution_service.clob_auth_circuit_reason() or "Trading service authentication failed."
+        return LiveOrderExecution(
+            status="failed",
+            effective_price=None,
+            error_message=reason,
+            payload={**base_payload, "submission": "auth_unavailable"},
+        )
     if not await live_execution_service.ensure_initialized():
         return LiveOrderExecution(
             status="failed",
@@ -356,6 +364,7 @@ async def execute_live_order(
                             f"{str(order.error_message or '')} | post_only_retry_price={retry_price:.4f} failed: {retry_error_message}"
                         ).strip(" |")
     except Exception as exc:
+        auth_failure = live_execution_service.is_auth_failure_message(exc)
         logger.error(
             "Live order placement failed",
             token_id=normalized_token_id,
@@ -370,7 +379,7 @@ async def execute_live_order(
             error_message=str(exc),
             payload={
                 **base_payload,
-                "submission": "exception",
+                "submission": "auth_unavailable" if auth_failure else "exception",
                 "resolved_price": resolved_price,
                 "price_resolution": price_resolution,
                 "submitted_order_type": str(getattr(order_type, "value", order_type) or ""),

@@ -34,6 +34,26 @@ async def test_execute_live_order_blocks_when_trading_init_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_live_order_blocks_auth_circuit_without_retrying_init(monkeypatch):
+    ensure_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "clob_auth_circuit_open", lambda: True)
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "clob_auth_circuit_reason", lambda: "invalid username/password")
+    monkeypatch.setattr(live_execution_adapter.live_execution_service, "ensure_initialized", ensure_mock)
+
+    result = await live_execution_adapter.execute_live_order(
+        token_id="123456789012345678901",
+        side="BUY",
+        size=5.0,
+        fallback_price=0.45,
+    )
+
+    assert result.status == "failed"
+    assert result.error_message == "invalid username/password"
+    assert result.payload.get("submission") == "auth_unavailable"
+    ensure_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_execute_live_order_initializes_and_places_order(monkeypatch):
     ensure_mock = AsyncMock(return_value=True)
     place_mock = AsyncMock(

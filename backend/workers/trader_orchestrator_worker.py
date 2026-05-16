@@ -7736,6 +7736,7 @@ async def _run_trader_once_inner(
                             reason=final_reason,
                         )
                         _accumulate("ps_submit_order", _submit_mono)
+                        _submit_session_timing_ms: dict[str, float] = {}
                         # Surface the place_order sub-stage breakdown so
                         # the cycle-slow log names which step (lock_wait
                         # vs create_order vs post_order vs buy_gate) ate
@@ -7750,6 +7751,18 @@ async def _run_trader_once_inner(
                             _result_payload = getattr(submit_result, "payload", None)
                             if not isinstance(_result_payload, dict):
                                 _result_payload = {}
+                            _execution_timing = _result_payload.get("execution_timing_ms") or {}
+                            if isinstance(_execution_timing, dict):
+                                for _stage_name, _stage_ms in _execution_timing.items():
+                                    try:
+                                        _ms_val = float(_stage_ms or 0.0)
+                                    except (TypeError, ValueError):
+                                        continue
+                                    if _ms_val <= 0.0:
+                                        continue
+                                    _timing_key = f"submit_session_{_stage_name}"
+                                    stage_timings_ms[_timing_key] = round(_ms_val, 1)
+                                    _submit_session_timing_ms[_stage_name] = round(_ms_val, 1)
                             _wave_breakdowns = _result_payload.get("submit_breakdowns") or []
                             if not isinstance(_wave_breakdowns, list):
                                 _wave_breakdowns = []
@@ -7792,6 +7805,8 @@ async def _run_trader_once_inner(
                             0,
                             int((submit_completed_at - submit_started_at).total_seconds() * 1000),
                         )
+                        if _submit_session_timing_ms:
+                            submit_latency_payload["submit_session_timing_ms"] = dict(_submit_session_timing_ms)
                         latency_sample = _build_execution_latency_sample(
                             runtime_signal,
                             wake_started_at=signal_wake_started_at,
@@ -7840,8 +7855,7 @@ async def _run_trader_once_inner(
                                 "emit_to_submit_start_ms": latency_sample.get("emit_to_submit_start_ms"),
                             }
                         )
-                        await create_trader_event(
-                            session,
+                        await hot_state.buffer_trader_event(
                             trader_id=trader_id,
                             event_type="execution_latency",
                             severity="info",
@@ -7858,7 +7872,6 @@ async def _run_trader_once_inner(
                                 "strategy_key": resolved_strategy_key,
                                 "latency": submit_latency_payload,
                             },
-                            commit=False,
                         )
                         execution_session_id = None
                         execution_error_message = None
@@ -8098,8 +8111,7 @@ async def _run_trader_once_inner(
                                     occupied_market_ids.add(opened_market_id)
                                 intra_cycle_committed_usd += size_usd
                         if final_decision == "failed" and order_status in {"failed", "cancelled", "expired"}:
-                            await create_trader_event(
-                                session,
+                            await hot_state.buffer_trader_event(
                                 trader_id=trader_id,
                                 event_type="execution_failed",
                                 severity="error",
@@ -8116,7 +8128,6 @@ async def _run_trader_once_inner(
                                     "market_question": getattr(runtime_signal, "market_question", None),
                                     "direction": getattr(runtime_signal, "direction", None),
                                 },
-                                commit=False,
                             )
                             # Mark the signal as failed so it won't be retried
                             # endlessly.  Without this, FAK no-fill errors loop

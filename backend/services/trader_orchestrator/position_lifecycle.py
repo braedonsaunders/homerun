@@ -5158,6 +5158,8 @@ async def reconcile_live_positions(
     force_mark_to_market: bool = False,
     max_age_hours: Optional[int] = None,
     order_ids: Optional[list[str]] = None,
+    include_active_candidates: bool = True,
+    include_terminal_audit: bool = True,
     reason: str = "live_position_lifecycle",
 ) -> dict[str, Any]:
     """Lifecycle management for live positions.
@@ -5178,19 +5180,22 @@ async def reconcile_live_positions(
     import time as _time
     _lc_t0 = _time.monotonic()
 
-    candidates = list(
-        (
-            await session.execute(
-                select(TraderOrder).where(
-                    TraderOrder.trader_id == trader_id,
-                    TraderOrder.mode == "live",
-                    TraderOrder.status.in_(tuple(LIVE_ACTIVE_STATUSES)),
+    if include_active_candidates:
+        candidates = list(
+            (
+                await session.execute(
+                    select(TraderOrder).where(
+                        TraderOrder.trader_id == trader_id,
+                        TraderOrder.mode == "live",
+                        TraderOrder.status.in_(tuple(LIVE_ACTIVE_STATUSES)),
+                    )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
+    else:
+        candidates = []
 
     requested_order_ids = {str(value or "").strip() for value in (order_ids or []) if str(value or "").strip()}
     if order_ids:
@@ -5225,50 +5230,53 @@ async def reconcile_live_positions(
     reverse_signal_ids_by_source: dict[str, list[str]] = {}
 
     candidate_ids = {str(row.id) for row in candidates}
-    terminal_age_expr = func.coalesce(
-        TraderOrder.updated_at,
-        TraderOrder.executed_at,
-        TraderOrder.created_at,
-    )
-    terminal_stmt = select(TraderOrder).where(
-        TraderOrder.trader_id == trader_id,
-        TraderOrder.mode == "live",
-        TraderOrder.status.in_(
-            (
-                "closed_win",
-                "closed_loss",
-                "resolved",
-                "resolved_win",
-                "resolved_loss",
-                "cancelled",
-                "failed",
-                "rejected",
-                "error",
-            )
-        ),
-    ).order_by(terminal_age_expr.asc(), TraderOrder.id.asc())
-    if requested_order_ids:
-        terminal_stmt = terminal_stmt.where(TraderOrder.id.in_(requested_order_ids))
-    if max_age_hours is not None:
-        cutoff = now - timedelta(hours=max(1, int(max_age_hours)))
-        terminal_stmt = terminal_stmt.where(terminal_age_expr <= cutoff)
-    else:
-        audit_cutoff = now_naive - timedelta(
-            hours=max(_TERMINAL_REOPEN_LOOKBACK_HOURS, _NONACTIVE_WALLET_REOPEN_LOOKBACK_HOURS)
+    if include_terminal_audit:
+        terminal_age_expr = func.coalesce(
+            TraderOrder.updated_at,
+            TraderOrder.executed_at,
+            TraderOrder.created_at,
         )
-        terminal_stmt = terminal_stmt.where(terminal_age_expr >= audit_cutoff)
-        # Bound the SQL fetch.  Without a LIMIT, traders with hundreds of
-        # terminal orders in the 72h lookback window were returning the
-        # full set every reconciliation cycle (driving pre_io >10s).  We
-        # take the OLDEST first and cap well above the Python-side
-        # _TERMINAL_REOPEN_AUDIT_MAX_ROWS_PER_PASS so the post-filter
-        # still has room.
-        terminal_stmt = terminal_stmt.limit(_TERMINAL_REOPEN_AUDIT_MAX_ROWS_PER_PASS * 8)
-    terminal_rows = list(((await session.execute(terminal_stmt)).scalars().all()))
-    if max_age_hours is None:
-        terminal_rows = [row for row in terminal_rows if _terminal_row_requires_reopen_audit(row, now_naive)]
-        terminal_rows = terminal_rows[:_TERMINAL_REOPEN_AUDIT_MAX_ROWS_PER_PASS]
-    terminal_rows = _dedupe_live_authority_rows(terminal_rows)
+        terminal_stmt = select(TraderOrder).where(
+            TraderOrder.trader_id == trader_id,
+            TraderOrder.mode == "live",
+            TraderOrder.status.in_(
+                (
+                    "closed_win",
+                    "closed_loss",
+                    "resolved",
+                    "resolved_win",
+                    "resolved_loss",
+                    "cancelled",
+                    "failed",
+                    "rejected",
+                    "error",
+                )
+            ),
+        ).order_by(terminal_age_expr.asc(), TraderOrder.id.asc())
+        if requested_order_ids:
+            terminal_stmt = terminal_stmt.where(TraderOrder.id.in_(requested_order_ids))
+        if max_age_hours is not None:
+            cutoff = now - timedelta(hours=max(1, int(max_age_hours)))
+            terminal_stmt = terminal_stmt.where(terminal_age_expr <= cutoff)
+        else:
+            audit_cutoff = now_naive - timedelta(
+                hours=max(_TERMINAL_REOPEN_LOOKBACK_HOURS, _NONACTIVE_WALLET_REOPEN_LOOKBACK_HOURS)
+            )
+            terminal_stmt = terminal_stmt.where(terminal_age_expr >= audit_cutoff)
+            # Bound the SQL fetch.  Without a LIMIT, traders with hundreds of
+            # terminal orders in the 72h lookback window were returning the
+            # full set every reconciliation cycle (driving pre_io >10s).  We
+            # take the OLDEST first and cap well above the Python-side
+            # _TERMINAL_REOPEN_AUDIT_MAX_ROWS_PER_PASS so the post-filter
+            # still has room.
+            terminal_stmt = terminal_stmt.limit(_TERMINAL_REOPEN_AUDIT_MAX_ROWS_PER_PASS * 8)
+        terminal_rows = list(((await session.execute(terminal_stmt)).scalars().all()))
+        if max_age_hours is None:
+            terminal_rows = [row for row in terminal_rows if _terminal_row_requires_reopen_audit(row, now_naive)]
+            terminal_rows = terminal_rows[:_TERMINAL_REOPEN_AUDIT_MAX_ROWS_PER_PASS]
+        terminal_rows = _dedupe_live_authority_rows(terminal_rows)
+    else:
+        terminal_rows = []
 
     # 2026-05-09: detach-then-rollback pattern. Slow_tx and
     # _capture_slow_commit_diagnostic showed commit_ms=2155 / 4329 with
@@ -9719,6 +9727,26 @@ async def reconcile_live_positions(
                         held += 1
                         continue
 
+                    if (
+                        strategy_exit is not None
+                        and getattr(strategy_exit, "action", None) in {"close", "reduce"}
+                        and not market_tradable
+                    ):
+                        if not dry_run:
+                            payload["position_state"] = next_state
+                            payload["nontradable_strategy_exit_suppressed"] = {
+                                "reason": str(getattr(strategy_exit, "reason", "") or ""),
+                                "action": str(getattr(strategy_exit, "action", "") or ""),
+                                "suppressed_at": _iso_utc(now),
+                                "mark_price": exit_eval_price,
+                                "mark_source": exit_eval_price_source,
+                            }
+                            row.payload_json = payload
+                            row.updated_at = now
+                            state_updates += 1
+                        held += 1
+                        continue
+
                     active_take_profit_limit = (
                         isinstance(pending_exit, dict)
                         and str(pending_exit.get("kind") or "").strip().lower() == "take_profit_limit"
@@ -9743,6 +9771,7 @@ async def reconcile_live_positions(
                         not resolve_only
                         and take_profit_pct is not None
                         and pnl_pct is not None
+                        and market_tradable
                         and min_hold_passed
                         and not active_take_profit_limit
                         and pnl_pct >= take_profit_pct
@@ -9754,6 +9783,7 @@ async def reconcile_live_positions(
                         not resolve_only
                         and stop_loss_pct is not None
                         and pnl_pct is not None
+                        and market_tradable
                         and min_hold_passed
                         and pnl_pct <= -abs(stop_loss_pct)
                     ):
@@ -9766,6 +9796,7 @@ async def reconcile_live_positions(
                         and trailing_stop_pct > 0
                         and exit_eval_price is not None
                         and highest_price is not None
+                        and market_tradable
                         and min_hold_passed
                     ):
                         trailing_trigger_price = highest_price * (1.0 - (trailing_stop_pct / 100.0))
@@ -9777,6 +9808,7 @@ async def reconcile_live_positions(
                         not resolve_only
                         and max_hold_minutes is not None
                         and age_minutes is not None
+                        and market_tradable
                         and age_minutes >= max_hold_minutes
                     ):
                         if exit_eval_price is not None:
