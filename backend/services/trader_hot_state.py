@@ -1760,10 +1760,68 @@ async def flush_audit_buffer() -> int:
         # whose lock is permanently owned by another writer) would
         # cycle through the buffer forever, growing it toward the cap
         # and silently dropping fresher entries via the FIFO eviction.
+        #
+        # SOAK-2026-05-18 reliability fix: classify each group's failure
+        # as either "semantic" (lock contention, serialization,
+        # constraint violation — count toward retry budget) or
+        # "infra" (DB unreachable, connection refused, pool exhausted —
+        # do NOT count, so a 50-hour postgres outage doesn't
+        # permanently drop audit rows that would commit fine once the
+        # DB recovers).  Production soak observed thousands of
+        # trader_event drops during a postgres outage; those were
+        # legitimate audit rows lost because retry budget ran out
+        # against an unreachable host.  ``maybe_mark_db_pressure``'s
+        # classification is the same rule used elsewhere in the
+        # codebase to detect infra-level DB failures, so the
+        # signal-versus-noise contract stays consistent.
+        from services.live_pressure import maybe_mark_db_pressure as _classify
+
+        infra_failure_groups: set[str] = set()
+        for group_name, group_exc in group_failures:
+            if group_exc is None:
+                continue
+            # ``maybe_mark_db_pressure`` returns True for DBAPIError,
+            # InterfaceError, OperationalError, PendingRollbackError,
+            # ResourceClosedError, and known fragments like
+            # "connection refused", "statement timeout", etc.  Also
+            # publishes the pressure flag so downstream pacers see it.
+            if _classify(group_exc, component=f"trader_hot_state:{group_name}"):
+                infra_failure_groups.add(group_name)
+            else:
+                # asyncpg/asyncio raise ConnectionRefusedError directly
+                # (no DBAPIError wrapper) when the listener socket is
+                # unreachable.  These don't match the live_pressure
+                # fragment list, so we add an explicit check.
+                if isinstance(group_exc, (ConnectionRefusedError, ConnectionResetError, OSError)):
+                    infra_failure_groups.add(group_name)
+
         retry_entries: list[_AuditEntry] = []
         exhausted_entries: list[_AuditEntry] = []
         for entry in failed_entries:
-            entry.retry_count += 1
+            # An entry only fails because its group failed; we can map
+            # entry → group by replaying the group-collection order.
+            # In practice, audit groups for a single flush all fail
+            # together when DB is unreachable, so iterate every group
+            # the entry could belong to and skip the increment if any
+            # is infra-classified.  The kind→groups mapping is small.
+            entry_kind = entry.kind
+            infra = False
+            if entry_kind == "decision" and "append_only" in infra_failure_groups:
+                infra = True
+            elif entry_kind == "decision_checks" and "append_only" in infra_failure_groups:
+                infra = True
+            elif entry_kind == "trader_event" and "append_only" in infra_failure_groups:
+                infra = True
+            elif entry_kind == "consumption" and "consumption" in infra_failure_groups:
+                infra = True
+            elif entry_kind == "cursor" and "cursor" in infra_failure_groups:
+                infra = True
+            elif entry_kind == "signal_status" and "signal_status" in infra_failure_groups:
+                infra = True
+            elif entry_kind == "experiment_assignment" and "experiment_assignment" in infra_failure_groups:
+                infra = True
+            if not infra:
+                entry.retry_count += 1
             if entry.retry_count > _AUDIT_MAX_RETRIES:
                 exhausted_entries.append(entry)
             else:

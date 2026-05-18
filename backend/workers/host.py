@@ -713,7 +713,18 @@ class WorkerHost:
           1-2 crashes/hr → 1s   (current behavior)
           3-5 crashes/hr → 5s
           6-9 crashes/hr → 15s
-          10+ crashes/hr → 60s + ERROR-level alert
+          10-19 crashes/hr → 60s + ERROR-level alert
+          20-49 crashes/hr → 5 min
+          50+ crashes/hr → 30 min
+
+        SOAK-2026-05-18: the upper tiers were added after a 50-hour
+        postgres outage produced 15+ crashes per worker in 5 minutes.
+        The previous 60s ceiling meant each worker still relaunched every
+        minute against an unreachable DB, generating 1000+ log lines and
+        keeping the host CPU pegged on retry-spawn churn.  At 5-30 min
+        cooldown the host effectively quiesces until the DB returns and
+        recovers within the same hour-long crash window once the first
+        crash-free cycle prunes the history.
         """
         import time as _time
         now = _time.monotonic()
@@ -724,7 +735,11 @@ class WorkerHost:
             history.pop(0)
         history.append(now)
         crashes_in_window = len(history)
-        if crashes_in_window >= 10:
+        if crashes_in_window >= 50:
+            cooldown = 1800.0
+        elif crashes_in_window >= 20:
+            cooldown = 300.0
+        elif crashes_in_window >= 10:
             cooldown = 60.0
         elif crashes_in_window >= 6:
             cooldown = 15.0

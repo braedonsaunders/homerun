@@ -58,7 +58,19 @@ class OpportunityRecorder:
         # Pre-load known IDs so the first scan after restart deduplicates
         await self._load_known_ids()
 
-        # Start background resolution checker
+        # Start background resolution checker.  Cancel any prior task
+        # first — scanner_worker restarts call ``start()`` again without
+        # ``stop()``, and without this cancel each restart leaked
+        # another concurrent _resolution_loop task.  Soak observed
+        # 140 errors/min of "Resolution check failed" from accumulated
+        # leaked tasks during a multi-hour DB outage with worker
+        # crash-loop.
+        if self._resolution_task is not None and not self._resolution_task.done():
+            self._resolution_task.cancel()
+            try:
+                await self._resolution_task
+            except (asyncio.CancelledError, Exception):
+                pass
         self._running = True
         self._resolution_task = asyncio.create_task(self._resolution_loop())
         logger.info("Opportunity recorder started")
@@ -160,17 +172,43 @@ class OpportunityRecorder:
     # ------------------------------------------------------------------
 
     async def _resolution_loop(self):
-        """Periodically resolve open opportunities."""
+        """Periodically resolve open opportunities.
+
+        SOAK-2026-05-18: on persistent failure (e.g. postgres down), use
+        exponential backoff with a cap rather than logging an error every
+        cycle.  Production soak observed 700+ "Resolution check failed"
+        entries in 5 minutes of postgres outage — log spam masked the
+        actual problem and burned CPU on a hot retry loop.
+        """
+        failure_streak = 0
         while self._running:
             try:
-                await asyncio.sleep(_RESOLUTION_CHECK_INTERVAL)
+                if failure_streak == 0:
+                    sleep_seconds = _RESOLUTION_CHECK_INTERVAL
+                else:
+                    # 30s → 1m → 2m → 4m → 8m, capped at 10m (the normal
+                    # cycle interval).  Quick to recover on transient
+                    # outage, slow enough that 50 h of postgres downtime
+                    # only logs ~360 errors instead of ~70 000.
+                    sleep_seconds = min(
+                        _RESOLUTION_CHECK_INTERVAL,
+                        30.0 * (2 ** min(failure_streak - 1, 6)),
+                    )
+                await asyncio.sleep(sleep_seconds)
                 if not self._running:
                     break
                 await self._check_resolutions()
+                failure_streak = 0
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.error("Resolution check failed", exc_info=True)
+                failure_streak += 1
+                if failure_streak == 1 or failure_streak % 10 == 0:
+                    logger.error(
+                        "Resolution check failed",
+                        failure_streak=failure_streak,
+                        exc_info=True,
+                    )
 
     async def _check_resolutions(self):
         """Check unresolved opportunities against the Polymarket API."""
