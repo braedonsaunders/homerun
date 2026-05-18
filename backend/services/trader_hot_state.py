@@ -1764,36 +1764,51 @@ async def flush_audit_buffer() -> int:
         # SOAK-2026-05-18 reliability fix: classify each group's failure
         # as either "semantic" (lock contention, serialization,
         # constraint violation — count toward retry budget) or
-        # "infra" (DB unreachable, connection refused, pool exhausted —
-        # do NOT count, so a 50-hour postgres outage doesn't
+        # "infra" (DB unreachable / connection refused / transport
+        # closed — do NOT count, so a 50-hour postgres outage doesn't
         # permanently drop audit rows that would commit fine once the
-        # DB recovers).  Production soak observed thousands of
-        # trader_event drops during a postgres outage; those were
-        # legitimate audit rows lost because retry budget ran out
-        # against an unreachable host.  ``maybe_mark_db_pressure``'s
-        # classification is the same rule used elsewhere in the
-        # codebase to detect infra-level DB failures, so the
-        # signal-versus-noise contract stays consistent.
-        from services.live_pressure import maybe_mark_db_pressure as _classify
+        # DB recovers).
+        #
+        # We deliberately do NOT use ``live_pressure.maybe_mark_db_pressure``
+        # for the classification — its fragment list includes "lock
+        # timeout", "deadlock", "statement timeout", which are
+        # legitimate semantic failures that SHOULD count toward the
+        # per-entry retry budget (otherwise a hot-locked row cycles
+        # forever).  Infra detection here is narrower: only transport
+        # / unreachable-host errors qualify.
+        def _is_infra_failure(exc: BaseException) -> bool:
+            from sqlalchemy.exc import InterfaceError, OperationalError, ResourceClosedError
+            if isinstance(exc, (ConnectionRefusedError, ConnectionResetError, BrokenPipeError)):
+                return True
+            if isinstance(exc, (InterfaceError, ResourceClosedError)):
+                return True
+            if isinstance(exc, OperationalError):
+                # OperationalError covers BOTH transport issues (closed
+                # connection) and semantic ones (lock timeout).  Inspect
+                # the underlying message to discriminate.
+                msg = str(getattr(exc, "orig", exc)).lower()
+                infra_markers = (
+                    "connection refused",
+                    "connection is closed",
+                    "connection reset",
+                    "transport is closed",
+                    "no connection",
+                    "server closed the connection",
+                    "could not connect",
+                )
+                return any(m in msg for m in infra_markers)
+            # OSError covers raw socket-level failures (asyncpg can raise
+            # these directly before a SQLAlchemy wrapper kicks in).
+            if isinstance(exc, OSError):
+                return True
+            return False
 
         infra_failure_groups: set[str] = set()
         for group_name, group_exc in group_failures:
             if group_exc is None:
                 continue
-            # ``maybe_mark_db_pressure`` returns True for DBAPIError,
-            # InterfaceError, OperationalError, PendingRollbackError,
-            # ResourceClosedError, and known fragments like
-            # "connection refused", "statement timeout", etc.  Also
-            # publishes the pressure flag so downstream pacers see it.
-            if _classify(group_exc, component=f"trader_hot_state:{group_name}"):
+            if _is_infra_failure(group_exc):
                 infra_failure_groups.add(group_name)
-            else:
-                # asyncpg/asyncio raise ConnectionRefusedError directly
-                # (no DBAPIError wrapper) when the listener socket is
-                # unreachable.  These don't match the live_pressure
-                # fragment list, so we add an explicit check.
-                if isinstance(group_exc, (ConnectionRefusedError, ConnectionResetError, OSError)):
-                    infra_failure_groups.add(group_name)
 
         retry_entries: list[_AuditEntry] = []
         exhausted_entries: list[_AuditEntry] = []
