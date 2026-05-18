@@ -1113,20 +1113,25 @@ class ExecutionSessionEngine:
         async def _commit_pre_submit_projection() -> None:
             _started_at = _time.monotonic()
             try:
+                # P1-2 Phase 2: add ALL rows first, then a SINGLE flush.
+                # SQLAlchemy's unit-of-work dependency resolver orders the
+                # INSERTs correctly (sessions/legs → trader_orders →
+                # execution_orders[FK trader_order_id] → execution_events).
+                # Previously we did 3 separate flushes which each cost a
+                # DB round-trip; soak observed pre_submit_projection at
+                # 2.6 s p50 / 6.0 s p95, with the round-trip overhead a
+                # measurable portion.  One flush serialises the same
+                # writes but pays the network round-trip only once.
                 self.db.add(session_row)
                 for leg_row in leg_rows.values():
                     self.db.add(leg_row)
                 for trader_order in trader_orders:
                     self.db.add(trader_order)
-                await self.db.flush()
                 for execution_order in execution_orders:
                     self.db.add(execution_order)
-                if execution_orders:
-                    await self.db.flush()
                 for execution_event in execution_events:
                     self.db.add(execution_event)
-                if execution_events:
-                    await self.db.flush()
+                await self.db.flush()
                 await self.db.commit()
             finally:
                 _record_execution_timing("pre_submit_projection", _started_at)
@@ -1225,35 +1230,41 @@ class ExecutionSessionEngine:
             _projection_started_at = _time.monotonic()
             normalized_signal_id = str(getattr(signal, "id", "") or "").strip()
             normalized_signal_status = str(signal_status or "").strip().lower()
-            # Flush trader_orders (and session/leg parents) before
-            # execution_orders so the FK trader_order_id is satisfied at
-            # flush time for any newly-created rows in shadow mode.
+            # P1-2 Phase 2: add ALL rows first, then a SINGLE flush.
+            # SQLAlchemy's UoW dependency resolver orders the INSERTs
+            # correctly (sessions/legs → trader_orders →
+            # execution_orders[FK trader_order_id] → execution_events).
+            # Pre-fix this path did 3 separate flushes paying 3x the
+            # round-trip cost; soak observed projection_db_persist at
+            # 3.5 s p50 / 7.9 s p95.
             self.db.add(session_row)
             for leg_row in leg_rows.values():
                 self.db.add(leg_row)
             for trader_order in trader_orders:
                 self.db.add(trader_order)
-            await self.db.flush()
             for execution_order in execution_orders:
                 self.db.add(execution_order)
-            if execution_orders:
-                await self.db.flush()
             for execution_event in execution_events:
                 self.db.add(execution_event)
-            if execution_events:
-                await self.db.flush()
+            await self.db.flush()
             if normalized_signal_id:
-                await set_trade_signal_status(
-                    self.db,
-                    normalized_signal_id,
-                    normalized_signal_status,
-                    effective_price=effective_price,
-                    commit=False,
-                )
-                await self._publish_hot_signal_status(
-                    signal_id=normalized_signal_id,
-                    status=normalized_signal_status,
-                    effective_price=effective_price,
+                # P1-2 Phase 3 (scoped): the DB update and Redis hot-state
+                # publish are independent (different transports, no shared
+                # state).  Run them concurrently so the caller waits on
+                # max(db_update, redis_publish) instead of their sum.
+                await asyncio.gather(
+                    set_trade_signal_status(
+                        self.db,
+                        normalized_signal_id,
+                        normalized_signal_status,
+                        effective_price=effective_price,
+                        commit=False,
+                    ),
+                    self._publish_hot_signal_status(
+                        signal_id=normalized_signal_id,
+                        status=normalized_signal_status,
+                        effective_price=effective_price,
+                    ),
                 )
             sync_targets = {
                 (
