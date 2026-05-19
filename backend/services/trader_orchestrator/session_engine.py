@@ -1113,25 +1113,30 @@ class ExecutionSessionEngine:
         async def _commit_pre_submit_projection() -> None:
             _started_at = _time.monotonic()
             try:
-                # P1-2 Phase 2: add ALL rows first, then a SINGLE flush.
-                # SQLAlchemy's unit-of-work dependency resolver orders the
-                # INSERTs correctly (sessions/legs → trader_orders →
-                # execution_orders[FK trader_order_id] → execution_events).
-                # Previously we did 3 separate flushes which each cost a
-                # DB round-trip; soak observed pre_submit_projection at
-                # 2.6 s p50 / 6.0 s p95, with the round-trip overhead a
-                # measurable portion.  One flush serialises the same
-                # writes but pays the network round-trip only once.
+                # Flush trader_orders (and session/leg parents) before
+                # execution_orders so the FK trader_order_id is satisfied
+                # at flush time for any newly-created rows.  SOAK-2026-05-19:
+                # P1-2 Phase 2 tried to collapse this into a single flush on
+                # the assumption that SQLAlchemy's UoW dependency resolver
+                # would order the INSERTs.  It did not — the next soak
+                # surfaced "Signal processing failed (IntegrityError)"
+                # warnings in the UI, which is a FK constraint violation
+                # at COMMIT.  Reverted to staged flushes.  The pre-existing
+                # comment was load-bearing.
                 self.db.add(session_row)
                 for leg_row in leg_rows.values():
                     self.db.add(leg_row)
                 for trader_order in trader_orders:
                     self.db.add(trader_order)
+                await self.db.flush()
                 for execution_order in execution_orders:
                     self.db.add(execution_order)
+                if execution_orders:
+                    await self.db.flush()
                 for execution_event in execution_events:
                     self.db.add(execution_event)
-                await self.db.flush()
+                if execution_events:
+                    await self.db.flush()
                 await self.db.commit()
             finally:
                 _record_execution_timing("pre_submit_projection", _started_at)
@@ -1230,23 +1235,27 @@ class ExecutionSessionEngine:
             _projection_started_at = _time.monotonic()
             normalized_signal_id = str(getattr(signal, "id", "") or "").strip()
             normalized_signal_status = str(signal_status or "").strip().lower()
-            # P1-2 Phase 2: add ALL rows first, then a SINGLE flush.
-            # SQLAlchemy's UoW dependency resolver orders the INSERTs
-            # correctly (sessions/legs → trader_orders →
-            # execution_orders[FK trader_order_id] → execution_events).
-            # Pre-fix this path did 3 separate flushes paying 3x the
-            # round-trip cost; soak observed projection_db_persist at
-            # 3.5 s p50 / 7.9 s p95.
+            # Flush trader_orders (and session/leg parents) before
+            # execution_orders so the FK trader_order_id is satisfied at
+            # flush time for any newly-created rows in shadow mode.
+            # SOAK-2026-05-19: P1-2 Phase 2 tried to collapse this into a
+            # single flush — the next soak surfaced "Signal processing
+            # failed (IntegrityError)" warnings in the UI, which is a FK
+            # constraint violation at COMMIT.  Reverted to staged flushes.
             self.db.add(session_row)
             for leg_row in leg_rows.values():
                 self.db.add(leg_row)
             for trader_order in trader_orders:
                 self.db.add(trader_order)
+            await self.db.flush()
             for execution_order in execution_orders:
                 self.db.add(execution_order)
+            if execution_orders:
+                await self.db.flush()
             for execution_event in execution_events:
                 self.db.add(execution_event)
-            await self.db.flush()
+            if execution_events:
+                await self.db.flush()
             if normalized_signal_id:
                 # NOTE: must be sequential, NOT asyncio.gather.
                 # set_trade_signal_status uses self.db and
