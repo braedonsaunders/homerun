@@ -7722,30 +7722,34 @@ async def _run_trader_once_inner(
                         )
                         _enter_stage("submit_order")
                         _submit_mono = time.monotonic()
-                        # P1-2 Phase 1: release the orchestrator's pool
-                        # connection during the engine.execute_signal call.
-                        # submit_order opens its OWN AsyncSessionLocal, so
-                        # the orchestrator's session is purely idle for the
-                        # duration of the engine's pre-submit commit + HTTP
-                        # wave + post-submit commit (~6-15 s).  Pre-fix the
-                        # orchestrator's session reported as a 46-50 s
-                        # empty transaction (uow_dirty=0) because it held
-                        # the connection from cycle-start through cycle-end
-                        # while doing no DB work itself.
-                        async with release_conn(session):
-                            submit_result = await submit_order(
-                                trader_id=trader_id,
-                                signal=runtime_signal,
-                                decision_id=decision_row.id,
-                                strategy_key=resolved_strategy_key,
-                                strategy_version=resolved_strategy_version,
-                                strategy_params=strategy_params,
-                                explicit_strategy_params=explicit_strategy_params,
-                                risk_limits=effective_risk_limits,
-                                mode=str(control.get("mode", "shadow")),
-                                size_usd=size_usd,
-                                reason=final_reason,
-                            )
+                        # NOTE: do NOT wrap this in release_conn(session).
+                        # Line 7706 above already calls
+                        # ``await session.reset()`` between commit and
+                        # submit — the existing pattern documented at
+                        # live_market_context.py:1798 ("The trader cycle
+                        # calls session.reset() between commit and submit
+                        # to release the DB connection during the provider
+                        # round trip").  A Phase 1 attempt to add
+                        # release_conn here doubled the reset/flush
+                        # sequence and produced SQLAlchemy
+                        # IllegalStateChangeError (gkpj) on every signal:
+                        # 234 trader cycle failures in 26 min in one soak,
+                        # 97 in 21 min in another.  submit_order opens its
+                        # own AsyncSessionLocal so the orchestrator's
+                        # released connection here is sufficient.
+                        submit_result = await submit_order(
+                            trader_id=trader_id,
+                            signal=runtime_signal,
+                            decision_id=decision_row.id,
+                            strategy_key=resolved_strategy_key,
+                            strategy_version=resolved_strategy_version,
+                            strategy_params=strategy_params,
+                            explicit_strategy_params=explicit_strategy_params,
+                            risk_limits=effective_risk_limits,
+                            mode=str(control.get("mode", "shadow")),
+                            size_usd=size_usd,
+                            reason=final_reason,
+                        )
                         _accumulate("ps_submit_order", _submit_mono)
                         _submit_session_timing_ms: dict[str, float] = {}
                         # Surface the place_order sub-stage breakdown so
