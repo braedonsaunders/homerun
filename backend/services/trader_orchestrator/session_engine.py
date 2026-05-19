@@ -1248,23 +1248,25 @@ class ExecutionSessionEngine:
                 self.db.add(execution_event)
             await self.db.flush()
             if normalized_signal_id:
-                # P1-2 Phase 3 (scoped): the DB update and Redis hot-state
-                # publish are independent (different transports, no shared
-                # state).  Run them concurrently so the caller waits on
-                # max(db_update, redis_publish) instead of their sum.
-                await asyncio.gather(
-                    set_trade_signal_status(
-                        self.db,
-                        normalized_signal_id,
-                        normalized_signal_status,
-                        effective_price=effective_price,
-                        commit=False,
-                    ),
-                    self._publish_hot_signal_status(
-                        signal_id=normalized_signal_id,
-                        status=normalized_signal_status,
-                        effective_price=effective_price,
-                    ),
+                # NOTE: must be sequential, NOT asyncio.gather.
+                # set_trade_signal_status uses self.db and
+                # _publish_hot_signal_status calls into intent_runtime
+                # which also touches DB sessions; running them
+                # concurrently triggers SQLAlchemy IllegalStateChangeError
+                # (gkpj) on AsyncSession.  Phase 3 scoped attempt to
+                # parallelize them via gather caused 234 trader cycle
+                # failures in 26 min and was reverted.
+                await set_trade_signal_status(
+                    self.db,
+                    normalized_signal_id,
+                    normalized_signal_status,
+                    effective_price=effective_price,
+                    commit=False,
+                )
+                await self._publish_hot_signal_status(
+                    signal_id=normalized_signal_id,
+                    status=normalized_signal_status,
+                    effective_price=effective_price,
                 )
             sync_targets = {
                 (
