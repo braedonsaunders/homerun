@@ -216,8 +216,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = _default_database_url()
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
-    DATABASE_WORKER_POOL_SIZE: int = 80
-    DATABASE_WORKER_MAX_OVERFLOW: int = 10
+    # SOAK-2026-05-18: bumped worker pool 80→120, overflow 10→20.
+    # 2026-05-18 21:10 soak measured _persist_orders pool_wait
+    # p50=1109ms, p95=3328ms — sustained pool starvation under the
+    # certainty_shock + tail_end_carry workload.  Postgres
+    # max_connections is 200 (docker-compose.infra.yml), so 140 worker
+    # slots + 30 API slots leaves headroom for the audit + fast pools
+    # (2 + 12 = 14) plus operator psql sessions.
+    DATABASE_WORKER_POOL_SIZE: int = 120
+    DATABASE_WORKER_MAX_OVERFLOW: int = 20
     DATABASE_POOL_TIMEOUT_SECONDS: int = 30
     DATABASE_POOL_RECYCLE_SECONDS: int = 300
     DATABASE_CONNECT_TIMEOUT_SECONDS: float = 8.0

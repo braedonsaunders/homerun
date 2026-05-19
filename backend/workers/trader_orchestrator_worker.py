@@ -4467,6 +4467,22 @@ async def _run_terminal_stale_order_watchdog(session: Any, *, now: datetime | No
                     reason="terminal_market_watchdog",
                 )
             remediation["closed"] = int(remediation["closed"]) + int(lifecycle_result.get("closed", 0) or 0)
+            # SOAK-2026-05-18: surface skipped_reasons + would_close from
+            # reconcile_live_positions so the watchdog log explains WHY
+            # closed=0 when remediation runs but doesn't close.  Soak
+            # observed the same stale order flagged every 5 min with
+            # closed=0, inventory_updates=1 — no signal as to whether
+            # reconcile saw a candidate it refused to close or whether
+            # the order didn't match the would-close criteria at all.
+            remediation["would_close"] = int(remediation.get("would_close", 0)) + int(
+                lifecycle_result.get("would_close", 0) or 0
+            )
+            lifecycle_skipped = lifecycle_result.get("skipped_reasons") or {}
+            if isinstance(lifecycle_skipped, dict) and lifecycle_skipped:
+                merged = dict(remediation.get("skipped_reasons") or {})
+                for reason, count in lifecycle_skipped.items():
+                    merged[str(reason)] = int(merged.get(str(reason), 0)) + int(count or 0)
+                remediation["skipped_reasons"] = merged
             inventory_result = await sync_trader_position_inventory(
                 session,
                 trader_id=trader_id,
@@ -8275,6 +8291,21 @@ async def _run_trader_once_inner(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    # SOAK-2026-05-18: accumulate ps_decision_writes on
+                    # the failure path too.  Without this, any exception
+                    # between line 7482 (the _decision_writes_mono start)
+                    # and the success-path accumulate at 8268 leaves the
+                    # bucket at zero — the time spent appears as
+                    # ps_unaccounted instead, which made the recent soak's
+                    # 11s "unaccounted" look like a mystery latency sink
+                    # when it was just gkpj-failed cycles' decision-write
+                    # work not being attributed.  NameError guard handles
+                    # iterations that took an early branch before setting
+                    # _decision_writes_mono.
+                    try:
+                        _accumulate("ps_decision_writes", _decision_writes_mono)
+                    except NameError:
+                        pass
                     try:
                         await session.rollback()
                     except Exception:
