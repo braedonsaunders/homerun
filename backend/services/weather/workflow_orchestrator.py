@@ -454,18 +454,29 @@ class WeatherWorkflowOrchestrator:
         stale_markets: list = []
         seen: set[str] = set()
         scanned_events = 0
-        offset = 0
         page_size = 100
         # Weather pages can be deep in the event feed; stop only after a wider crawl.
-        max_events_offset = 15000
+        # SOAK-2026-05-19: was offset-based via ``get_events(offset=N)`` with
+        # ``max_events_offset=15000``.  Polymarket's offset-based ``/events``
+        # endpoint rejects ``offset >= ~10100`` with HTTP 422, so every cycle
+        # error'd at the same offset — 33 identical "Weather workflow cycle
+        # failed" errors in the 17:34-23:46 soak.  Switched to the cursor-
+        # based ``/events/keyset`` paginator (the documented non-deprecated
+        # path; offset variant deprecated since Apr 10 2026 per polymarket.py).
+        max_events_to_scan = 15000
+        after_cursor: Optional[str] = None
         now = datetime.now(timezone.utc)
 
-        while offset < max_events_offset and len(markets) < limit:
-            events = await polymarket_client.get_events(closed=False, limit=page_size, offset=offset)
+        while scanned_events < max_events_to_scan and len(markets) < limit:
+            events, next_cursor = await polymarket_client.get_events_keyset_page(
+                closed=False,
+                limit=page_size,
+                after_cursor=after_cursor,
+            )
             if not events:
                 break
             scanned_events += len(events)
-            offset += page_size
+            after_cursor = next_cursor
 
             for ev in events:
                 for m in ev.markets:
@@ -506,6 +517,11 @@ class WeatherWorkflowOrchestrator:
                         break
                 if len(markets) >= limit:
                     break
+
+            # End of keyset pagination: no next cursor means we've walked
+            # the full event feed.
+            if not after_cursor:
+                break
 
         if markets:
             logger.info(

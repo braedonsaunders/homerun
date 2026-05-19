@@ -734,14 +734,22 @@ class PolymarketClient:
 
         return [Event.from_gamma_response(e) for e in data]
 
-    async def _get_events_keyset_page(
+    async def get_events_keyset_page(
         self,
         *,
         closed: bool,
         limit: int,
         after_cursor: Optional[str],
     ) -> tuple[list[Event], Optional[str]]:
-        """Fetch one page of events via the cursor-based /events/keyset endpoint."""
+        """Fetch one page of events via the cursor-based /events/keyset endpoint.
+
+        Public paginator (was ``_get_events_keyset_page``).  Callers that
+        need to iterate pages with early termination — e.g. weather
+        discovery scanning until enough parseable markets are found —
+        should use this instead of ``get_events(offset=...)``.  The
+        offset-based endpoint rejects requests beyond ~10000 with HTTP
+        422 (observed in the 2026-05-19 weather soak).
+        """
         params: dict = {"closed": str(closed).lower(), "limit": limit}
         if after_cursor:
             params["after_cursor"] = after_cursor
@@ -752,6 +760,9 @@ class PolymarketClient:
         items = payload.get("events", []) if isinstance(payload, dict) else []
         next_cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
         return [Event.from_gamma_response(e) for e in items], next_cursor or None
+
+    # Internal alias retained for the existing ``get_all_events`` caller.
+    _get_events_keyset_page = get_events_keyset_page
 
     async def get_all_events(self, closed: bool = False) -> list[Event]:
         """Fetch all events with cursor-based pagination.
