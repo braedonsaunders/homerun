@@ -9242,45 +9242,75 @@ async def run_worker_loop(
                     await _worker_sleep(2)
                     continue
 
+                # 2026-05-20: this prep phase was previously a single
+                # ``async with AsyncSessionLocal() as session:`` spanning
+                # ~150 lines.  The session was held across read_orchestrator_control,
+                # list_traders, an in-memory WS health check, optional
+                # update_orchestrator_control + create_trader_event writes,
+                # session.get(AppSettings), and a final list_traders fallback —
+                # plus all the pure-Python computation between them.  Production
+                # logs showed this single session held for **up to 62 seconds**
+                # with ``uow_dirty=0 uow_new=0 tables=-`` (i.e. zero DB work)
+                # because the event loop was busy elsewhere between awaits.
+                # Postgres responds in <1ms locally; the latency is Python-side
+                # scheduling, but the held session still parks an MVCC snapshot
+                # and a pool connection.
+                #
+                # Split into six discrete phases.  Each phase opens its own
+                # session ONLY for its DB work; in-memory computation runs
+                # between sessions with no transaction held.  Atomicity is
+                # preserved where required: the WS auto-pause control+event
+                # writes stay in one session because they're a single
+                # decision; the disabled/credentials snapshot writes use the
+                # snapshot helper's fresh-session fast-path so the outer
+                # session never needs to be passed in.
+
+                # Phase 1: read orchestrator control (single short session).
                 async with AsyncSessionLocal() as session:
                     control = await read_orchestrator_control(session)
-                    manual_force_cycle = _parse_iso(control.get("requested_run_at")) is not None
-                    if manual_force_cycle:
-                        run_maintenance = False
 
-                    mode = _canonical_trader_mode(control.get("mode"), default="shadow")
-                    cycle_interval = max(
-                        1,
-                        int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
+                # Phase 2: pure-Python derivation from control.  No session.
+                manual_force_cycle = _parse_iso(control.get("requested_run_at")) is not None
+                if manual_force_cycle:
+                    run_maintenance = False
+                mode = _canonical_trader_mode(control.get("mode"), default="shadow")
+                cycle_interval = max(
+                    1,
+                    int(control.get("run_interval_seconds") or ORCHESTRATOR_DEFAULT_RUN_INTERVAL_SECONDS),
+                )
+                sleep_seconds = cycle_interval
+                default_trader_cycle_timeout = float(max(30, cycle_interval * 3))
+                control_settings = dict(control.get("settings") or {})
+                global_runtime_settings = dict(control_settings.get("global_runtime") or {})
+                configured_trader_cycle_timeout = safe_float(
+                    global_runtime_settings.get("trader_cycle_timeout_seconds"),
+                    0.0,
+                )
+                # Scheduled cycles do maintenance + full signal scans —
+                # they need substantially more headroom than runtime
+                # triggers.  Floor at 30s to avoid the cycle timing out
+                # before individual DB queries can complete.
+                effective_trader_cycle_timeout = (
+                    configured_trader_cycle_timeout
+                    if configured_trader_cycle_timeout > 0
+                    else default_trader_cycle_timeout
+                )
+                trader_cycle_timeout_seconds = float(
+                    max(
+                        30.0,
+                        min(
+                            180.0,
+                            effective_trader_cycle_timeout,
+                        ),
                     )
-                    sleep_seconds = cycle_interval
-                    default_trader_cycle_timeout = float(max(30, cycle_interval * 3))
-                    control_settings = dict(control.get("settings") or {})
-                    global_runtime_settings = dict(control_settings.get("global_runtime") or {})
-                    configured_trader_cycle_timeout = safe_float(
-                        global_runtime_settings.get("trader_cycle_timeout_seconds"),
-                        0.0,
-                    )
-                    # Scheduled cycles do maintenance + full signal scans —
-                    # they need substantially more headroom than runtime
-                    # triggers.  Floor at 30s to avoid the cycle timing out
-                    # before individual DB queries can complete.
-                    effective_trader_cycle_timeout = (
-                        configured_trader_cycle_timeout
-                        if configured_trader_cycle_timeout > 0
-                        else default_trader_cycle_timeout
-                    )
-                    trader_cycle_timeout_seconds = float(
-                        max(
-                            30.0,
-                            min(
-                                180.0,
-                                effective_trader_cycle_timeout,
-                            ),
-                        )
-                    )
+                )
 
-                    if not control.get("is_enabled"):
+                # Phase 3: disabled-cycle branch — needs traders list to
+                # decide between manage-only vs hard-skip.  Re-opens the
+                # session for the list_traders read; closes before any
+                # decision so the snapshot write below uses its own session.
+                if not control.get("is_enabled"):
+                    async with AsyncSessionLocal() as session:
                         traders = [
                             trader
                             for trader in await list_traders(
@@ -9289,14 +9319,15 @@ async def run_worker_loop(
                             )
                             if _trader_matches_lane(trader, lane_key) and not _is_fast_tier_trader(trader)
                         ]
-                        has_active_traders = any(
-                            bool(trader.get("is_enabled", True)) and not bool(trader.get("is_paused", False))
-                            for trader in traders
-                        )
-                        if has_active_traders:
-                            manage_only_cycle = True
-                            manage_only_reasons.append("global_disabled")
-                        else:
+                    has_active_traders = any(
+                        bool(trader.get("is_enabled", True)) and not bool(trader.get("is_paused", False))
+                        for trader in traders
+                    )
+                    if has_active_traders:
+                        manage_only_cycle = True
+                        manage_only_reasons.append("global_disabled")
+                    else:
+                        async with AsyncSessionLocal() as session:
                             disabled_stats = await _build_orchestrator_snapshot_metrics(
                                 session=session,
                                 lane=lane_key,
@@ -9312,26 +9343,28 @@ async def run_worker_loop(
                                 interval_seconds=cycle_interval,
                                 stats=disabled_stats,
                             )
-                            skip_cycle = True
+                        skip_cycle = True
 
-                    if not skip_cycle and bool(control.get("is_paused")):
-                        manage_only_cycle = True
-                        manage_only_reasons.append("global_pause")
+                if not skip_cycle and bool(control.get("is_paused")):
+                    manage_only_cycle = True
+                    manage_only_reasons.append("global_pause")
 
-                    if not skip_cycle and bool(control.get("kill_switch")):
-                        manage_only_cycle = True
-                        manage_only_reasons.append("kill_switch")
+                if not skip_cycle and bool(control.get("kill_switch")):
+                    manage_only_cycle = True
+                    manage_only_reasons.append("kill_switch")
 
-                    # WS feed health gate — auto-pause when Polymarket WS is persistently down
-                    # Must run even when manage_only_cycle (e.g. global_pause from WS auto-pause)
-                    # so the recovery branch can clear _ws_auto_paused and unpause.
-                    if not skip_cycle and mode == "live":
-                        try:
-                            ws_health = get_feed_manager().health_check()
-                            poly_failures = ws_health.get("polymarket", {}).get("stats", {}).get("consecutive_failures", 0)
-                            if poly_failures >= _WS_FAILURE_PAUSE_THRESHOLD:
-                                if not _ws_auto_paused:
-                                    _ws_auto_paused = True
+                # Phase 4: WS feed health gate — check is in-memory; the
+                # pause/resume DB action (when state changes) runs in a
+                # short atomic session so update_orchestrator_control +
+                # create_trader_event remain in one transaction.
+                if not skip_cycle and mode == "live":
+                    try:
+                        ws_health = get_feed_manager().health_check()
+                        poly_failures = ws_health.get("polymarket", {}).get("stats", {}).get("consecutive_failures", 0)
+                        if poly_failures >= _WS_FAILURE_PAUSE_THRESHOLD:
+                            if not _ws_auto_paused:
+                                _ws_auto_paused = True
+                                async with AsyncSessionLocal() as session:
                                     await update_orchestrator_control(session, is_paused=True)
                                     await create_trader_event(
                                         session,
@@ -9344,14 +9377,15 @@ async def run_worker_loop(
                                             "Auto-trader paused."
                                         ),
                                     )
-                                    logger.error(
-                                        "Polymarket WS persistently down, auto-pausing orchestrator",
-                                        consecutive_failures=poly_failures,
-                                    )
-                                manage_only_cycle = True
-                                manage_only_reasons.append("ws_feed_down")
-                            elif _ws_auto_paused and poly_failures == 0:
-                                _ws_auto_paused = False
+                                logger.error(
+                                    "Polymarket WS persistently down, auto-pausing orchestrator",
+                                    consecutive_failures=poly_failures,
+                                )
+                            manage_only_cycle = True
+                            manage_only_reasons.append("ws_feed_down")
+                        elif _ws_auto_paused and poly_failures == 0:
+                            _ws_auto_paused = False
+                            async with AsyncSessionLocal() as session:
                                 await update_orchestrator_control(session, is_paused=False)
                                 await create_trader_event(
                                     session,
@@ -9361,35 +9395,45 @@ async def run_worker_loop(
                                     severity="info",
                                     message="Polymarket WS feed recovered. Auto-trader resumed.",
                                 )
-                                logger.info("Polymarket WS recovered; auto-resuming orchestrator")
-                        except Exception as exc:
-                            logger.debug("WS health check skipped: %s", exc)
+                            logger.info("Polymarket WS recovered; auto-resuming orchestrator")
+                    except Exception as exc:
+                        logger.debug("WS health check skipped: %s", exc)
 
-                    if not skip_cycle:
-                        if not skip_cycle and mode == "live":
-                            app_settings = await session.get(AppSettings, "default")
-                            if not _is_live_credentials_configured(app_settings):
-                                creds_stats = await _build_orchestrator_snapshot_metrics(
-                                    session=session,
-                                    lane=lane_key,
-                                    traders=traders,
-                                )
-                                await _write_orchestrator_snapshot_best_effort(
-                                    session,
-                                    lane=lane_key,
-                                    persist=write_snapshot,
-                                    running=False,
-                                    enabled=True,
-                                    current_activity="Blocked: live credentials missing",
-                                    interval_seconds=cycle_interval,
-                                    last_error=None,
-                                    stats=creds_stats,
-                                )
-                                skip_cycle = True
-                            else:
-                                needs_live_execution_init = True
+                # Phase 5: live-credentials check.  Read AppSettings + verify
+                # inside a single short session, then close BEFORE the
+                # branch decision.  ``_is_live_credentials_configured``
+                # is sync (just decrypts secrets in-memory) — calling it
+                # inside the session keeps the ORM object live for attribute
+                # access without holding the session for long.
+                if not skip_cycle and mode == "live":
+                    async with AsyncSessionLocal() as session:
+                        app_settings = await session.get(AppSettings, "default")
+                        creds_ok = _is_live_credentials_configured(app_settings)
+                    if not creds_ok:
+                        async with AsyncSessionLocal() as session:
+                            creds_stats = await _build_orchestrator_snapshot_metrics(
+                                session=session,
+                                lane=lane_key,
+                                traders=traders,
+                            )
+                            await _write_orchestrator_snapshot_best_effort(
+                                session,
+                                lane=lane_key,
+                                persist=write_snapshot,
+                                running=False,
+                                enabled=True,
+                                current_activity="Blocked: live credentials missing",
+                                interval_seconds=cycle_interval,
+                                last_error=None,
+                                stats=creds_stats,
+                            )
+                        skip_cycle = True
+                    else:
+                        needs_live_execution_init = True
 
-                    if not skip_cycle and not traders:
+                # Phase 6: trader list fallback (only if Phase 3 didn't run).
+                if not skip_cycle and not traders:
+                    async with AsyncSessionLocal() as session:
                         traders = [
                             trader
                             for trader in await list_traders(
