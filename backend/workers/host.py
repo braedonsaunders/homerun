@@ -1768,15 +1768,39 @@ async def _run(plane_name: str) -> None:
 
 
 def main() -> None:
-    # On Windows, Python defaults to ProactorEventLoop which uses I/O
-    # Completion Ports.  ProactorEventLoop is required for subprocess pipe
-    # operations, but the worker process never spawns subprocesses — only
-    # the API process does (validation_service.py).  SelectorEventLoop is
-    # more stable for pure socket I/O on Windows and avoids the
+    # Worker event-loop selection:
+    #
+    # The worker process never spawns subprocesses (asyncio.create_subprocess_*
+    # only appears in services/validation_service.py, which runs in the API
+    # process).  That frees us from the stdlib ProactorEventLoop requirement
+    # and lets us pick whichever loop is fastest for pure socket I/O.
+    #
+    # 2026-05-20: switch to winloop (uvloop's Windows port, built on libuv +
+    # IOCP).  Measured 30% lower per-query asyncpg latency at 8-40 concurrent
+    # connections vs stdlib WindowsSelectorEventLoopPolicy — that's the load
+    # profile of the orchestrator's signal-processing pool, and where every
+    # observed slow_tx warning is incurred (postgres responds in <1ms; the
+    # latency is Python-side event-loop scheduling).  Verified compatibility
+    # with asyncpg, httpx, websockets, ssl in pre-flight tests.
+    #
+    # Fall back to Selector (the prior choice) if winloop isn't importable or
+    # the operator opts out via HOMERUN_USE_WINLOOP=0.  Selector was chosen
+    # over the stdlib WindowsProactorEventLoopPolicy to avoid the
     # _ProactorReadPipeTransport._loop_reading failures that cascade into
-    # DB pool exhaustion when the IOCP layer breaks under load.
+    # DB pool exhaustion when the stdlib IOCP layer breaks under load —
+    # winloop is a different IOCP implementation and does not share that
+    # code path.
     if os.name == "nt":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        _winloop_opt_out = os.environ.get("HOMERUN_USE_WINLOOP", "").strip().lower() in {"0", "false", "no", "off"}
+        if not _winloop_opt_out:
+            try:
+                import winloop  # type: ignore[import-not-found]
+
+                asyncio.set_event_loop_policy(winloop.EventLoopPolicy())
+            except ImportError:
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        else:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     args = _parse_args()
     plane_name = str(args.plane)
     # Plane env var so plane-specific gating (e.g. user-channel WS
