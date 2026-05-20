@@ -183,8 +183,13 @@ def test_latency_ms_is_populated_per_gate():
     """The pipeline times each gate; predicates don't need to."""
 
     def _slow_pred(ctx: GateContext) -> GateResult:
-        # Sleep ~3ms.
-        time.sleep(0.003)
+        # Busy-loop until perf_counter advances by ≥30ms — sleep on Windows
+        # has 15.6ms scheduler quantum so time.sleep(small) can return 0ms,
+        # which flakes the latency assertion below.  A busy-loop reads the
+        # monotonic clock directly and doesn't depend on the scheduler.
+        target = time.perf_counter() + 0.030
+        while time.perf_counter() < target:
+            pass
         return _pass()
 
     pipeline = GatePipeline(
@@ -197,10 +202,10 @@ def test_latency_ms_is_populated_per_gate():
     assert run.passed is True
     slow_latency = run.per_gate[0][1].latency_ms
     fast_latency = run.per_gate[1][1].latency_ms
-    # Slow gate slept ~3ms; on most systems that is at least 1ms.
     assert slow_latency >= 1.0, f"expected slow gate >= 1ms, got {slow_latency}"
-    # Fast gate should be measurably shorter than slow gate.
-    assert fast_latency <= slow_latency + 1.0
+    # Fast gate should be measurably shorter than slow gate (with a generous
+    # margin since clock granularity can absorb the tiny per_pass() call).
+    assert fast_latency <= slow_latency
 
 
 def test_total_latency_approximately_sum_of_per_gate():
