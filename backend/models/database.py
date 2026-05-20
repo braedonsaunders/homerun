@@ -2531,7 +2531,11 @@ class AutoresearchIteration(Base):
     __tablename__ = "autoresearch_iterations"
 
     id = Column(String, primary_key=True, default=lambda: str(__import__("uuid").uuid4()))
-    experiment_id = Column(String, ForeignKey("autoresearch_experiments.id"), nullable=False)
+    experiment_id = Column(
+        String,
+        ForeignKey("autoresearch_experiments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     iteration_number = Column(Integer, nullable=False)
     proposed_params_json = Column(JSON, nullable=True)
     baseline_score = Column(Float, default=0.0)
