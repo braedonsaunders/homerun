@@ -18,13 +18,19 @@ alembic==1.13.2
 asyncpg==0.30.0
 greenlet>=3.0.0
 
-# Faster asyncio event loop on Windows (workers only — API uses
-# stdlib Proactor because validation_service needs create_subprocess_exec).
-# winloop is the libuv-based uvloop port that supports Windows IOCP.
-# 2026-05-20 measured: 30% lower per-query latency at 8-40 concurrent
-# connections (the orchestrator's actual load profile) vs the stdlib
-# WindowsSelectorEventLoopPolicy the workers were using.  Opt-out:
-# set HOMERUN_USE_WINLOOP=0 to fall back to Selector.
+# Faster asyncio event loop for the worker plane (API process is
+# unaffected — validation_service.py uses create_subprocess_exec which
+# requires stdlib Proactor on Windows).  workers/host.py picks the
+# fastest loop at startup; both opt out via HOMERUN_FAST_LOOP=0.
+#
+#   * Linux + macOS: uvloop (libuv-based, de-facto standard for
+#     high-throughput asyncio).  Skipped on Windows: POSIX-only.
+#   * Windows: winloop (uvloop's Windows port, IOCP-based).  Avoids
+#     the stdlib ProactorEventLoop _loop_reading failures.
+#
+# Either dep is optional at install time — host.py falls back to the
+# stdlib default if the platform-appropriate package can't import.
+uvloop>=0.21.0; sys_platform != "win32"
 winloop>=0.6.3; sys_platform == "win32"
 cryptography>=42.0.0
 

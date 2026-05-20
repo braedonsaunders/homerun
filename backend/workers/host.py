@@ -1767,40 +1767,66 @@ async def _run(plane_name: str) -> None:
         await host.shutdown()
 
 
-def main() -> None:
-    # Worker event-loop selection:
-    #
-    # The worker process never spawns subprocesses (asyncio.create_subprocess_*
-    # only appears in services/validation_service.py, which runs in the API
-    # process).  That frees us from the stdlib ProactorEventLoop requirement
-    # and lets us pick whichever loop is fastest for pure socket I/O.
-    #
-    # 2026-05-20: switch to winloop (uvloop's Windows port, built on libuv +
-    # IOCP).  Measured 30% lower per-query asyncpg latency at 8-40 concurrent
-    # connections vs stdlib WindowsSelectorEventLoopPolicy — that's the load
-    # profile of the orchestrator's signal-processing pool, and where every
-    # observed slow_tx warning is incurred (postgres responds in <1ms; the
-    # latency is Python-side event-loop scheduling).  Verified compatibility
-    # with asyncpg, httpx, websockets, ssl in pre-flight tests.
-    #
-    # Fall back to Selector (the prior choice) if winloop isn't importable or
-    # the operator opts out via HOMERUN_USE_WINLOOP=0.  Selector was chosen
-    # over the stdlib WindowsProactorEventLoopPolicy to avoid the
-    # _ProactorReadPipeTransport._loop_reading failures that cascade into
-    # DB pool exhaustion when the stdlib IOCP layer breaks under load —
-    # winloop is a different IOCP implementation and does not share that
-    # code path.
-    if os.name == "nt":
-        _winloop_opt_out = os.environ.get("HOMERUN_USE_WINLOOP", "").strip().lower() in {"0", "false", "no", "off"}
-        if not _winloop_opt_out:
-            try:
-                import winloop  # type: ignore[import-not-found]
+def _select_fast_event_loop_policy() -> None:
+    """Pick the fastest available asyncio event loop for the worker plane.
 
-                asyncio.set_event_loop_policy(winloop.EventLoopPolicy())
-            except ImportError:
-                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        else:
+    Workers never spawn subprocesses (asyncio.create_subprocess_* only appears
+    in services/validation_service.py, which runs in the API process), so we
+    are not bound by the stdlib ProactorEventLoop requirement and can pick
+    whichever loop is fastest for pure socket I/O.
+
+    Cross-platform preference order:
+      * Linux + macOS: uvloop (libuv-based; the de-facto standard for
+        high-throughput asyncio).  Skipped on Windows because uvloop is
+        POSIX-only.
+      * Windows: winloop (uvloop's Windows port, IOCP-based).  Falls back
+        to WindowsSelectorEventLoopPolicy on ImportError.  We intentionally
+        avoid stdlib WindowsProactorEventLoopPolicy because of historical
+        _ProactorReadPipeTransport._loop_reading crashes under load —
+        winloop is a separate IOCP implementation that does not share that
+        code path.
+
+    Why not also override the API process?  validation_service.py uses
+    asyncio.create_subprocess_exec which requires Proactor on Windows.
+    The API entry point therefore stays on Python defaults.
+
+    Opt out via HOMERUN_FAST_LOOP=0 (also accepts ``false``/``no``/``off``).
+    Backwards compatible with the prior HOMERUN_USE_WINLOOP=0 toggle.
+
+    2026-05-20 (Windows): measured 30% lower asyncpg per-query latency at
+    8-40 concurrent connections vs WindowsSelectorEventLoopPolicy.  Linux +
+    macOS gains are typically larger because uvloop is more battle-tested.
+    """
+    opt_out = (
+        os.environ.get("HOMERUN_FAST_LOOP", "").strip().lower() in {"0", "false", "no", "off"}
+        or os.environ.get("HOMERUN_USE_WINLOOP", "").strip().lower() in {"0", "false", "no", "off"}
+    )
+    if opt_out:
+        if os.name == "nt":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        return
+
+    if os.name != "nt":
+        try:
+            import uvloop  # type: ignore[import-not-found]
+
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+            return
+        except ImportError:
+            # No uvloop available — leave Python's default (epoll/kqueue) in place.
+            return
+
+    # Windows
+    try:
+        import winloop  # type: ignore[import-not-found]
+
+        asyncio.set_event_loop_policy(winloop.EventLoopPolicy())
+    except ImportError:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+def main() -> None:
+    _select_fast_event_loop_policy()
     args = _parse_args()
     plane_name = str(args.plane)
     # Plane env var so plane-specific gating (e.g. user-channel WS
