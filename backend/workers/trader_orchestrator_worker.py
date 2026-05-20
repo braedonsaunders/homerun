@@ -8979,13 +8979,20 @@ async def _run_trader_once_with_timeout(
                     trader_id,
                 )
         raise
-    except OperationalError as exc:
+    except (OperationalError, InterfaceError, DBAPIError) as exc:
+        # InterfaceError ("connection is closed") fires when postgres kills
+        # an idle-in-transaction session via idle_in_transaction_session_timeout.
+        # Pre-2026-05-20 these fell through to the generic Exception clause and
+        # logged as ERROR — they're transient, the next cycle just retries.
+        # DBAPIError is the common base so we catch the asyncpg + psycopg2
+        # variants of "connection closed" uniformly.
         if not _is_retryable_db_error(exc):
             raise
         logger.warning(
-            "Trader cycle skipped due to transient DB error for trader=%s process_signals=%s",
+            "Trader cycle skipped due to transient DB error for trader=%s process_signals=%s exc_type=%s",
             trader_id,
             process_signals,
+            type(exc).__name__,
         )
         return 0, 0, 0
     except Exception as exc:
