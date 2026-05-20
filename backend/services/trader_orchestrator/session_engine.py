@@ -28,6 +28,12 @@ from services.trader_orchestrator.execution_policies import (
     requires_pair_lock,
     supports_reprice,
 )
+from services.trader_orchestrator.gate_pipeline import (
+    CostClass,
+    Gate,
+    GateContext,
+    GatePipeline,
+)
 from services.trader_orchestrator.order_manager import (
     LegSubmitResult,
     _check_max_spread_bps,
@@ -37,6 +43,12 @@ from services.trader_orchestrator.order_manager import (
     _safe_signal_payload,
     cancel_live_provider_order,
     submit_execution_wave,
+)
+from services.trader_orchestrator.venue_gates import (
+    GATE_NAME_BUY_COLLATERAL,
+    GATE_NAME_MAX_SPREAD_BPS,
+    buy_collateral_gate,
+    max_spread_bps_gate,
 )
 from services.trader_orchestrator_state import (
     _extract_copy_source_wallet_from_payload,
@@ -1147,164 +1159,102 @@ class ExecutionSessionEngine:
             finally:
                 _record_execution_timing("pre_submit_projection", _started_at)
 
+        def _build_venue_preflight_pipeline() -> GatePipeline:
+            """Phase 2: declarative venue-preflight pipeline.
+
+            Gates run in ``CostClass`` order — currently both are L1
+            (cached balance / cached order book) so the order is by
+            registration: collateral first (cheaper failure mode for
+            live BUYs), then spread.  Both gates short-circuit on
+            reject — once a leg fails one gate, the other does not run.
+            """
+            return GatePipeline(
+                [
+                    Gate(
+                        name=GATE_NAME_BUY_COLLATERAL,
+                        cost_class=CostClass.L1_CACHED,
+                        predicate=buy_collateral_gate,
+                    ),
+                    Gate(
+                        name=GATE_NAME_MAX_SPREAD_BPS,
+                        cost_class=CostClass.L1_CACHED,
+                        predicate=max_spread_bps_gate,
+                    ),
+                ]
+            )
+
         async def pre_db_venue_preflight(
             *,
             legs_with_notionals: list[tuple[dict[str, Any], float]],
         ) -> dict[str, dict[str, Any]]:
-            """Phase 1 gate-pipeline hoist: run venue gates BEFORE the
-            placeholder DB writes so signals that would be rejected at
-            submit time don't pay the 5-13s ``_commit_pre_submit_projection``
-            cost for nothing.
+            """Phase 2 gate-pipeline implementation.
 
-            Returns a ``{leg_id: result_dict}`` mapping. Each result is
-            either::
+            Runs the venue-preflight pipeline once per leg and translates
+            the :class:`PipelineRun` into the same ``{leg_id: result_dict}``
+            mapping shape Phase 1 produced.  The result dict keys
+            (``status``, ``reason``, ``error_message``, ``payload_extras``,
+            ``token_id``, ``shares``, ``effective_notional_usd``,
+            ``effective_price``) are byte-identical to the inline Phase 1
+            output — :func:`_synthesize_preflight_skipped_result` and all
+            downstream consumers see no change.
 
-                {"status": "pass"}
-
-            or::
-
-                {
-                    "status": "reject",
-                    "reason": "buy_pre_submit_gate" | "max_spread_bps_exceeded",
-                    "error_message": str,
-                    "payload_extras": {...},
-                    "token_id": str | None,
-                    "shares": float | None,
-                    "effective_notional_usd": float,
-                    "effective_price": float | None,
-                }
-
-            The existing gates inside ``submit_leg`` remain authoritative
-            (post-DB backstop). If preflight itself raises, all legs are
-            treated as ``pass`` and trading proceeds — preflight failure
-            must never block.
+            Catastrophic pipeline failure ⇒ mark every leg as pass.
+            Trading must never be blocked by a preflight bug.
             """
             _started_at = _time.monotonic()
             results: dict[str, dict[str, Any]] = {}
             payload = _safe_signal_payload(signal)
             live_context = _safe_live_context(signal, payload)
             mode_key = str(mode or "").strip().lower()
+            pipeline = _build_venue_preflight_pipeline()
             try:
                 for leg_payload, leg_notional in legs_with_notionals:
                     leg_id = str(leg_payload.get("leg_id") or "").strip()
                     if not leg_id:
                         continue
 
-                    side_key = str(leg_payload.get("side") or "buy").strip().lower()
-                    order_side = "SELL" if side_key == "sell" else "BUY"
-                    limit_price = safe_float(leg_payload.get("limit_price"), None)
                     requested_shares = safe_float(leg_payload.get("requested_shares"), None)
-                    effective_notional = float(max(0.0, leg_notional))
+                    limit_price = safe_float(leg_payload.get("limit_price"), None)
 
-                    # 1) BUY collateral gate — live mode only. Shadow path
-                    # does not check this in submit_leg either (it's a
-                    # USDC-on-wallet check, irrelevant for simulated fills).
-                    if mode_key == "live" and order_side == "BUY":
-                        token_id, _token_source, _token_attempts = _resolve_token_id_for_leg(
-                            leg=leg_payload,
-                            payload=payload,
-                            live_context=live_context,
-                        )
-                        if token_id:
-                            try:
-                                # Reference via the module to avoid the
-                                # local-name shadowing trap: ``execute_signal``
-                                # has a nested ``from services.live_execution_service
-                                # import live_execution_service`` in its rescue
-                                # path, which makes ``live_execution_service``
-                                # a local name throughout the enclosing scope.
-                                buy_gate_ok, buy_gate_error = (
-                                    await live_execution_service_module.live_execution_service.check_buy_pre_submit_gate(
-                                        token_id=token_id,
-                                        required_notional_usd=effective_notional,
-                                    )
-                                )
-                            except Exception as exc:
-                                # Preflight failure → treat as pass.
-                                logger.warning(
-                                    "pre_db_venue_preflight: buy gate raised %r; falling back to submit_leg gate",
-                                    exc,
-                                )
-                                results[leg_id] = {"status": "pass"}
-                                continue
-                            if not buy_gate_ok:
-                                results[leg_id] = {
-                                    "status": "reject",
-                                    "reason": "buy_pre_submit_gate",
-                                    "error_message": buy_gate_error or "BUY pre-submit gate failed.",
-                                    "payload_extras": {
-                                        "mode": mode_key,
-                                        "submission": "skipped",
-                                        "reason": "buy_pre_submit_gate",
-                                        "token_id": token_id,
-                                        "leg": dict(leg_payload),
-                                        "requested_shares": requested_shares,
-                                        "requested_notional_usd": float(leg_notional),
-                                        "effective_notional_usd": effective_notional,
-                                        "preflight_rejected": True,
-                                    },
-                                    "token_id": token_id,
-                                    "shares": requested_shares,
-                                    "effective_notional_usd": effective_notional,
-                                    "effective_price": limit_price,
-                                }
-                                continue
-
-                    # 2) Max-spread gate — runs for both shadow and live so
-                    # the shadow preview matches what live would do. Mirrors
-                    # the post-DB check inside submit_leg.
-                    token_id_for_book, _src, _attempts = _resolve_token_id_for_leg(
+                    ctx = GateContext(
+                        runtime_signal=signal,
+                        decision=None,
                         leg=leg_payload,
-                        payload=payload,
                         live_context=live_context,
+                        risk_limits=risk_limits,
+                        strategy_params={},
+                        mode=mode_key,
+                        extras={"signal_payload": payload},
                     )
-                    try:
-                        book_payload, _trades, _book_age_ms, _quote_source, _quote_err = (
-                            await _resolve_shadow_book_and_tape(
-                                token_id=token_id_for_book,
-                                live_context=live_context,
-                            )
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "pre_db_venue_preflight: book resolution raised %r; falling back to submit_leg gate",
-                            exc,
-                        )
+                    run = await pipeline.run(ctx)
+
+                    if run.passed:
                         results[leg_id] = {"status": "pass"}
                         continue
 
-                    spread_rejected, spread_bps, spread_cap = _check_max_spread_bps(
-                        book_payload=book_payload,
-                        risk_limits=risk_limits,
-                    )
-                    if spread_rejected:
-                        results[leg_id] = {
-                            "status": "reject",
-                            "reason": "max_spread_bps_exceeded",
-                            "error_message": (
-                                f"Book spread {spread_bps:.1f} bps exceeds "
-                                f"max_spread_bps {spread_cap:.1f}."
-                            ),
-                            "payload_extras": {
-                                "mode": mode_key,
-                                "submission": "rejected",
-                                "reason": "max_spread_bps_exceeded",
-                                "spread_bps": round(float(spread_bps), 2),
-                                "max_spread_bps": float(spread_cap),
-                                "token_id": token_id_for_book,
-                                "leg": dict(leg_payload),
-                                "requested_notional_usd": float(leg_notional),
-                                "effective_notional_usd": 0.0,
-                                "preflight_rejected": True,
-                            },
-                            "token_id": token_id_for_book,
-                            "shares": requested_shares,
-                            "effective_notional_usd": 0.0,
-                            "effective_price": limit_price,
-                        }
-                        continue
-
-                    results[leg_id] = {"status": "pass"}
+                    # Translate the rejecting gate's GateResult.detail
+                    # into the Phase 1 result-dict shape.
+                    rejecting_name, rejecting_result = run.per_gate[-1]
+                    detail = rejecting_result.detail or {}
+                    payload_extras = dict(detail.get("payload_extras") or {})
+                    # The gate stored requested_notional_usd in its detail
+                    # as the leg's requested amount.  Phase 1 used the
+                    # ``leg_notional`` argument passed in from the caller
+                    # — for parity, override here.  All other fields are
+                    # already gate-supplied.
+                    payload_extras["requested_notional_usd"] = float(leg_notional)
+                    results[leg_id] = {
+                        "status": "reject",
+                        "reason": rejecting_result.reason or rejecting_name,
+                        "error_message": rejecting_result.error_message or "",
+                        "payload_extras": payload_extras,
+                        "token_id": detail.get("token_id"),
+                        "shares": detail.get("requested_shares", requested_shares),
+                        "effective_notional_usd": float(
+                            detail.get("effective_notional_usd", 0.0) or 0.0
+                        ),
+                        "effective_price": detail.get("effective_price", limit_price),
+                    }
             except Exception as exc:
                 # Catastrophic preflight failure must NEVER block trading.
                 # Mark every leg as "pass" and let submit_leg's existing

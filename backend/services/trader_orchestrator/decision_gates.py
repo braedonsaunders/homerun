@@ -6,8 +6,114 @@ from typing import Any, Callable
 from config import settings
 from services.data_events import BlockReason
 from services.strategy_sdk import StrategySDK
+from services.trader_orchestrator.gate_pipeline import (
+    CostClass,
+    Gate,
+    GateContext,
+    GatePipeline,
+)
+from services.trader_orchestrator.platform_gates import (
+    GATE_NAME_SIGNAL_STALENESS,
+    GATE_NAME_STRATEGY_DEMOTED,
+    GATE_NAME_TRADING_SCHEDULE,
+    signal_staleness_gate,
+    strategy_demoted_gate,
+    trading_schedule_gate,
+)
 from utils.converters import coerce_bool as _coerce_bool, safe_float
 from utils.signal_helpers import normalize_position_side
+
+
+# Phase 2: declarative pipeline for the cheapest top-of-function platform
+# gates.  Built once at module-load and reused across every call to
+# ``apply_platform_decision_gates`` — predicates are pure functions, so
+# the pipeline carries no per-call state.  Remaining platform gates
+# inside ``apply_platform_decision_gates`` continue to run inline (the
+# legacy code path); migrating more is Phase 3 work.
+_PLATFORM_GATE_PIPELINE: GatePipeline = GatePipeline(
+    [
+        Gate(
+            name=GATE_NAME_STRATEGY_DEMOTED,
+            cost_class=CostClass.L0_MEMORY,
+            predicate=strategy_demoted_gate,
+        ),
+        Gate(
+            name=GATE_NAME_SIGNAL_STALENESS,
+            cost_class=CostClass.L0_MEMORY,
+            predicate=signal_staleness_gate,
+        ),
+        Gate(
+            name=GATE_NAME_TRADING_SCHEDULE,
+            cost_class=CostClass.L0_MEMORY,
+            predicate=trading_schedule_gate,
+        ),
+    ]
+)
+
+
+def _apply_platform_gate_pipeline_result(
+    *,
+    run_per_gate: list[tuple[str, Any]],
+    platform_gates: list[dict[str, Any]],
+    checks_payload: list[dict[str, Any]],
+    runtime_signal: Any,
+    strategy: Any | None,
+    invoke_hooks: bool,
+) -> tuple[bool, str]:
+    """Apply the side effects from a pipeline run.
+
+    Mirrors the legacy inline behavior: appends ``platform_gates`` and
+    ``checks_payload`` rows from each gate's :attr:`GateResult.detail`,
+    and invokes ``strategy.on_blocked`` for the rejecting gate.
+
+    Returns ``(blocked, reason)``.  When blocked, the caller updates
+    ``final_decision = 'blocked'`` and ``final_reason = reason``.
+    """
+
+    blocked = False
+    final_reason = ""
+    for gate_name, result in run_per_gate:
+        detail = result.detail or {}
+        platform_gate_row = detail.get("platform_gate")
+        if platform_gate_row:
+            platform_gates.append(platform_gate_row)
+        checks_payload_row = detail.get("checks_payload")
+        if checks_payload_row:
+            checks_payload.append(checks_payload_row)
+
+        if not result.passed:
+            blocked = True
+            final_reason = result.reason or ""
+            on_blocked = detail.get("on_blocked")
+            if (
+                invoke_hooks
+                and on_blocked
+                and strategy is not None
+                and hasattr(strategy, "on_blocked")
+            ):
+                swallow_errors = bool(on_blocked.get("swallow_errors", False))
+                if swallow_errors:
+                    try:
+                        strategy.on_blocked(
+                            runtime_signal,
+                            on_blocked.get("reason"),
+                            on_blocked.get("context") or {},
+                        )
+                    except Exception:
+                        # Match legacy: strategy_demoted swallowed
+                        # hook errors so a misbehaving strategy can't
+                        # break decision evaluation.
+                        pass
+                else:
+                    # Legacy signal_staleness and trading_schedule
+                    # blocks did NOT wrap on_blocked in try/except —
+                    # preserve that so unexpected exceptions surface.
+                    strategy.on_blocked(
+                        runtime_signal,
+                        on_blocked.get("reason"),
+                        on_blocked.get("context") or {},
+                    )
+    return blocked, final_reason
 
 
 def _parse_hhmm_utc(value: Any) -> tuple[int, int] | None:
@@ -656,104 +762,60 @@ def apply_platform_decision_gates(
     strict_ws_gate_recorded = False
     live_revalidation_gate_recorded = False
 
-    if final_decision == "selected" and demoted_strategy_types:
-        # Strategy demotion gate — short-circuits before any other check
-        # so demoted strategies cost zero downstream evaluation.
-        # ``demoted_strategy_types`` is a set of strategy_type slugs that
-        # the validation guardrail (or a manual override) has parked.
-        # Signals are still recorded in the runtime queue but never
-        # reach order submission. Override via the orchestrator's
-        # strategy health panel or the Strategies → Health subtab.
-        strategy_type = str(getattr(runtime_signal, "strategy_type", "") or "").strip().lower()
-        if strategy_type and strategy_type in demoted_strategy_types:
-            final_decision = "blocked"
-            final_reason = f"Strategy demoted under validation guardrail (strategy_type={strategy_type})"
-            platform_gates.append(
-                {
-                    "gate": "strategy_demoted",
-                    "status": "blocked",
-                    "detail": final_reason,
-                }
-            )
-            if invoke_hooks and strategy is not None and hasattr(strategy, "on_blocked"):
-                try:
-                    strategy.on_blocked(
-                        runtime_signal,
-                        BlockReason.STRATEGY_DEMOTED,
-                        {"strategy_type": strategy_type},
-                    )
-                except Exception:
-                    pass
-
+    # Phase 2: run the cheap L0_MEMORY gates (strategy_demoted,
+    # signal_staleness, trading_schedule) via the formal pipeline.  The
+    # remaining inline checks below still run sequentially — Phase 3 will
+    # migrate more.  When ``final_decision`` is already not 'selected' on
+    # entry, the pipeline is skipped entirely (matches the legacy
+    # behavior where each of these three gates was guarded by
+    # ``if final_decision == "selected"``).
     if final_decision == "selected":
-        # Signal staleness gate — opt-in per strategy via max_signal_age_seconds.
-        # Edges on fast-decaying markets (weather/temperature/crypto tickers)
-        # are gone by the time a multi-second-old signal reaches submit; FAK
-        # orders then kill without matching, or worse, cross at a price the
-        # strategy never evaluated.  Skip silently when the strategy doesn't
-        # set a cutoff so other strategies are unaffected.
-        max_age_seconds = safe_float(params.get("max_signal_age_seconds"), None)
-        if max_age_seconds is not None and max_age_seconds > 0.0:
-            signal_observed_at = _runtime_signal_staleness_anchor(runtime_signal)
-            if signal_observed_at is not None:
-                age_seconds = (datetime.now(timezone.utc) - signal_observed_at).total_seconds()
-                if age_seconds > max_age_seconds:
-                    final_decision = "blocked"
-                    final_reason = (
-                        f"Signal stale: age={age_seconds:.1f}s > max={max_age_seconds:.1f}s"
-                    )
-                    platform_gates.append(
-                        {
-                            "gate": "signal_staleness",
-                            "status": "blocked",
-                            "detail": final_reason,
-                        }
-                    )
-                    if invoke_hooks and strategy is not None and hasattr(strategy, "on_blocked"):
-                        strategy.on_blocked(
-                            runtime_signal,
-                            BlockReason.STALE_SIGNAL,
-                            {"age_seconds": age_seconds, "max_age_seconds": max_age_seconds},
-                        )
-                else:
-                    platform_gates.append(
-                        {
-                            "gate": "signal_staleness",
-                            "status": "passed",
-                            "detail": f"age={age_seconds:.1f}s <= max={max_age_seconds:.1f}s",
-                        }
-                    )
-
-    if final_decision == "selected":
-        if trading_schedule_ok:
-            platform_gates.append(
-                {
-                    "gate": "trading_schedule",
-                    "status": "passed",
-                    "detail": "Inside configured UTC trading schedule",
-                }
+        pipeline_ctx = GateContext(
+            runtime_signal=runtime_signal,
+            decision=decision_obj,
+            strategy_params=params,
+            mode=execution_mode,
+            extras={
+                "demoted_strategy_types": demoted_strategy_types or set(),
+                "trading_schedule_ok": bool(trading_schedule_ok),
+                "trading_schedule_config": dict(trading_schedule_config or {}),
+            },
+        )
+        pipeline_run = _PLATFORM_GATE_PIPELINE.run_sync(pipeline_ctx)
+        pipeline_blocked, pipeline_block_reason = (
+            _apply_platform_gate_pipeline_result(
+                run_per_gate=pipeline_run.per_gate,
+                platform_gates=platform_gates,
+                checks_payload=checks_payload,
+                runtime_signal=runtime_signal,
+                strategy=strategy,
+                invoke_hooks=invoke_hooks,
             )
-        else:
+        )
+        if pipeline_blocked:
             final_decision = "blocked"
-            final_reason = "Outside configured trading schedule (UTC)"
-            platform_gates.append(
-                {
-                    "gate": "trading_schedule",
-                    "status": "blocked",
-                    "detail": final_reason,
-                }
-            )
-            if invoke_hooks and strategy is not None:
-                if hasattr(strategy, "on_blocked"):
-                    strategy.on_blocked(
-                        runtime_signal,
-                        BlockReason.TRADING_WINDOW,
-                        {"trading_schedule": trading_schedule_config},
-                    )
+            final_reason = pipeline_block_reason
+            # When the pipeline short-circuits before ``trading_schedule``
+            # would have run, legacy code emitted a "skipped" row for it.
+            # Replay that here so the platform_gates list still names
+            # every legacy gate.
+            ran_gate_names = {name for name, _ in pipeline_run.per_gate}
+            if GATE_NAME_TRADING_SCHEDULE not in ran_gate_names:
+                platform_gates.append(
+                    {
+                        "gate": GATE_NAME_TRADING_SCHEDULE,
+                        "status": "skipped",
+                        "detail": f"Skipped because strategy decision is '{final_decision}'",
+                    }
+                )
     else:
+        # Pre-pipeline decision was already not 'selected' (e.g. the
+        # strategy itself rejected) — skip the pipeline entirely.  Legacy
+        # code in this branch emitted ONLY the trading_schedule "skipped"
+        # row, so we mirror that.
         platform_gates.append(
             {
-                "gate": "trading_schedule",
+                "gate": GATE_NAME_TRADING_SCHEDULE,
                 "status": "skipped",
                 "detail": f"Skipped because strategy decision is '{final_decision}'",
             }

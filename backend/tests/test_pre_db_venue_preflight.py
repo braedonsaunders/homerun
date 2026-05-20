@@ -33,6 +33,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from services.trader_orchestrator import session_engine as session_engine_module
+from services.trader_orchestrator import venue_gates as venue_gates_module
 from services import intent_runtime as intent_runtime_module
 
 
@@ -205,11 +206,9 @@ async def test_preflight_happy_path_writes_placeholders_and_submits(monkeypatch)
     # Preflight book resolution returns an empty (no measurable spread)
     # book.  With max_spread_bps unset in risk_limits the gate is a no-op
     # regardless, so legs pass preflight.
-    monkeypatch.setattr(
-        session_engine_module,
-        "_resolve_shadow_book_and_tape",
-        AsyncMock(return_value=(None, [], None, "test_no_book", None)),
-    )
+    _no_book = AsyncMock(return_value=(None, [], None, "test_no_book", None))
+    monkeypatch.setattr(session_engine_module, "_resolve_shadow_book_and_tape", _no_book)
+    monkeypatch.setattr(venue_gates_module, "_resolve_shadow_book_and_tape", _no_book)
     # BUY collateral gate passes.
     monkeypatch.setattr(
         session_engine_module.live_execution_service,
@@ -269,18 +268,14 @@ async def test_preflight_all_spread_reject_skips_projection_commit(monkeypatch):
         "bids": [{"price": 0.20, "size": 100.0}],
         "asks": [{"price": 0.80, "size": 100.0}],
     }
-    monkeypatch.setattr(
-        session_engine_module,
-        "_resolve_shadow_book_and_tape",
-        AsyncMock(return_value=(wide_book, [], 0.0, "test_wide_book", None)),
-    )
+    _wide = AsyncMock(return_value=(wide_book, [], 0.0, "test_wide_book", None))
+    monkeypatch.setattr(session_engine_module, "_resolve_shadow_book_and_tape", _wide)
+    monkeypatch.setattr(venue_gates_module, "_resolve_shadow_book_and_tape", _wide)
     # Force the spread gate to reject deterministically regardless of how
     # _compute_book_spread_bps interprets the book shape.
-    monkeypatch.setattr(
-        session_engine_module,
-        "_check_max_spread_bps",
-        lambda *, book_payload, risk_limits: (True, 9999.0, 100.0),
-    )
+    _reject = lambda *, book_payload, risk_limits: (True, 9999.0, 100.0)
+    monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _reject)
+    monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _reject)
     # BUY gate is irrelevant for this test, but stub it as passing.
     monkeypatch.setattr(
         session_engine_module.live_execution_service,
@@ -343,6 +338,7 @@ async def test_preflight_mixed_only_passing_leg_persists_placeholder(monkeypatch
         return ({"bids": [], "asks": []}, [], 0.0, "test_book", None)
 
     monkeypatch.setattr(session_engine_module, "_resolve_shadow_book_and_tape", _fake_resolve)
+    monkeypatch.setattr(venue_gates_module, "_resolve_shadow_book_and_tape", _fake_resolve)
 
     def _fake_spread(*, book_payload, risk_limits):
         token_id = last_token.get("token_id") or ""
@@ -351,6 +347,7 @@ async def test_preflight_mixed_only_passing_leg_persists_placeholder(monkeypatch
         return (False, None, 100.0)
 
     monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _fake_spread)
+    monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _fake_spread)
     monkeypatch.setattr(
         session_engine_module.live_execution_service,
         "check_buy_pre_submit_gate",
@@ -408,16 +405,12 @@ async def test_preflight_buy_collateral_fail_marks_leg_skipped(monkeypatch):
     ]
 
     # Spread gate passes.
-    monkeypatch.setattr(
-        session_engine_module,
-        "_resolve_shadow_book_and_tape",
-        AsyncMock(return_value=(None, [], None, "test_no_book", None)),
-    )
-    monkeypatch.setattr(
-        session_engine_module,
-        "_check_max_spread_bps",
-        lambda *, book_payload, risk_limits: (False, None, None),
-    )
+    _no_book = AsyncMock(return_value=(None, [], None, "test_no_book", None))
+    monkeypatch.setattr(session_engine_module, "_resolve_shadow_book_and_tape", _no_book)
+    monkeypatch.setattr(venue_gates_module, "_resolve_shadow_book_and_tape", _no_book)
+    _pass = lambda *, book_payload, risk_limits: (False, None, None)
+    monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _pass)
+    monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _pass)
     # BUY collateral gate REJECTS.
     monkeypatch.setattr(
         session_engine_module.live_execution_service,
