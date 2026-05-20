@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import statistics
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Union
@@ -32,6 +34,26 @@ from typing import Any, Awaitable, Callable, Union
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# Per-gate rolling-window size for percentile calculation.  256 samples
+# is enough to produce a stable p99 estimate (~3 samples in the tail)
+# while keeping the per-gate memory at ~2KB for a deque of floats.
+_DEFAULT_WINDOW_SIZE = 256
+
+# How many recent samples to consider when evaluating budget violation.
+# Smaller than the percentile window: we want to react quickly to a
+# regression rather than wait for the full 256 samples to roll over.
+_BUDGET_VIOLATION_LOOKBACK = 32
+
+# Budget-violation alert rate-limit.  We don't want one per cycle for a
+# gate that's persistently slow — once per 5 minutes per gate is plenty.
+_BUDGET_VIOLATION_LOG_INTERVAL_SECONDS = 300.0
+
+# Multiple of declared budget at which p95 triggers a violation log.
+# 2x leaves room for the normal noise / cold-cache outliers a gate's
+# author would already have accounted for in their declared budget.
+_BUDGET_VIOLATION_RATIO = 2.0
 
 
 class CostClass(IntEnum):
@@ -142,6 +164,259 @@ class PipelineRun:
     total_latency_ms: float = 0.0
 
 
+@dataclass(slots=True)
+class GateMetricsSnapshot:
+    """Point-in-time stats for one gate.
+
+    Returned by :meth:`GateMetrics.snapshot`.  Percentiles are computed
+    from the rolling window of the most-recent ``window_size`` latency
+    samples — older samples have aged out.  ``runs`` / ``rejects`` /
+    ``budget_violations`` are lifetime counters since process start or
+    last :meth:`GateMetrics.reset`.
+    """
+
+    name: str
+    cost_class: str
+    runs: int
+    rejects: int
+    reject_rate: float
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    max_ms: float
+    budget_ms: float | None
+    budget_violations: int
+    auto_demoted: bool
+
+
+@dataclass(slots=True)
+class _GateAggregator:
+    """Per-gate aggregation state.  Internal to :class:`GateMetrics`."""
+
+    name: str
+    cost_class: CostClass
+    budget_ms: float | None
+    latencies: deque[float]
+    runs: int = 0
+    rejects: int = 0
+    max_ms: float = 0.0
+    budget_violations: int = 0
+    auto_demoted: bool = False
+    last_violation_log_mono: float = 0.0
+
+
+class GateMetrics:
+    """In-memory per-gate latency + rejection aggregator.
+
+    One singleton per orchestrator process.  ``record()`` is called by
+    :class:`GatePipeline` after every gate execution and updates the
+    aggregator in O(1) (deque append + scalar increments + one constant-
+    time monotonic-clock read).  ``snapshot()`` computes percentiles
+    from the rolling window on demand — callers pay the percentile cost,
+    not the hot path.
+
+    Thread-safety
+    -------------
+    The backing dict and per-gate deque are updated from a single
+    asyncio loop in the trader orchestrator process, so no lock is
+    needed.  If we ever go multi-threaded, the dict mutation in
+    ``_get_or_create`` and the deque append in ``record`` become
+    hazardous — add a :class:`threading.Lock` at that point.  Reading
+    via ``snapshot()`` from a different thread is best-effort: it may
+    see slightly-stale data but cannot corrupt structures because each
+    aggregator is read field-by-field.
+
+    Memory bound
+    ------------
+    ``window_size`` per gate, each a float (~28B on CPython).  At 256
+    samples per gate, a gate uses ~7KB.  Even 1000 distinct gates would
+    fit in under 10MB.
+
+    Auto-demotion
+    -------------
+    ``auto_demote`` is opt-in via constructor flag.  When ``True`` and
+    a gate's observed p95 (over the last
+    :data:`_BUDGET_VIOLATION_LOOKBACK` samples) exceeds its declared
+    ``latency_budget_ms`` by :data:`_BUDGET_VIOLATION_RATIO`x, the gate
+    is marked ``auto_demoted=True`` in subsequent snapshots and a
+    structured warning is logged (rate-limited to once per gate per
+    :data:`_BUDGET_VIOLATION_LOG_INTERVAL_SECONDS`).  Phase 4 LOGS the
+    violation but does not actually move the gate to a slower cost
+    class — that's a behavioral change the next phase will ship behind
+    a separate flag once we trust the detection.
+    """
+
+    def __init__(
+        self,
+        *,
+        window_size: int = _DEFAULT_WINDOW_SIZE,
+        auto_demote: bool = False,
+    ) -> None:
+        if window_size <= 0:
+            raise ValueError(f"window_size must be > 0, got {window_size}")
+        self._window_size = int(window_size)
+        self._auto_demote = bool(auto_demote)
+        self._gates: dict[str, _GateAggregator] = {}
+
+    @property
+    def window_size(self) -> int:
+        return self._window_size
+
+    @property
+    def auto_demote(self) -> bool:
+        return self._auto_demote
+
+    def set_auto_demote(self, enabled: bool) -> None:
+        """Toggle auto-demote logging at runtime (e.g. from settings)."""
+        self._auto_demote = bool(enabled)
+
+    def _get_or_create(self, gate_name: str, cost_class: CostClass, budget_ms: float | None) -> _GateAggregator:
+        agg = self._gates.get(gate_name)
+        if agg is None:
+            agg = _GateAggregator(
+                name=gate_name,
+                cost_class=cost_class,
+                budget_ms=float(budget_ms) if budget_ms is not None else None,
+                latencies=deque(maxlen=self._window_size),
+            )
+            self._gates[gate_name] = agg
+        else:
+            # Update on every record so re-registering a gate at a
+            # different cost class / budget reflects the latest values
+            # without losing the rolling window.
+            agg.cost_class = cost_class
+            if budget_ms is not None:
+                agg.budget_ms = float(budget_ms)
+        return agg
+
+    def record(
+        self,
+        gate_name: str,
+        cost_class: CostClass,
+        result: GateResult,
+        *,
+        budget_ms: float | None = None,
+    ) -> None:
+        """Update aggregates for a single gate execution.
+
+        Called from :meth:`GatePipeline.run` and :meth:`run_sync` after
+        each gate finishes.  Must stay O(1) on the hot path — no
+        allocation beyond the bounded-size deque's internal storage.
+        """
+
+        agg = self._get_or_create(gate_name, cost_class, budget_ms)
+        latency = float(result.latency_ms or 0.0)
+        agg.runs += 1
+        if not result.passed:
+            agg.rejects += 1
+        if latency > agg.max_ms:
+            agg.max_ms = latency
+        agg.latencies.append(latency)
+
+        if agg.budget_ms is not None and len(agg.latencies) >= _BUDGET_VIOLATION_LOOKBACK:
+            recent = list(agg.latencies)[-_BUDGET_VIOLATION_LOOKBACK:]
+            recent_p95 = _percentile(recent, 95.0)
+            if recent_p95 > agg.budget_ms * _BUDGET_VIOLATION_RATIO:
+                agg.budget_violations += 1
+                if self._auto_demote:
+                    agg.auto_demoted = True
+                now_mono = time.monotonic()
+                if (
+                    now_mono - agg.last_violation_log_mono
+                    >= _BUDGET_VIOLATION_LOG_INTERVAL_SECONDS
+                ):
+                    agg.last_violation_log_mono = now_mono
+                    logger.warning(
+                        "Gate budget violation",
+                        gate=agg.name,
+                        declared_class=agg.cost_class.name,
+                        declared_budget_ms=agg.budget_ms,
+                        observed_p95_ms=round(recent_p95, 3),
+                        sample_size=len(recent),
+                    )
+
+    def snapshot(self) -> list[GateMetricsSnapshot]:
+        """Return current snapshot of all known gates.
+
+        Percentiles are computed lazily — callers pay the cost.  Order
+        matches insertion order (first time the gate was recorded).
+        """
+        out: list[GateMetricsSnapshot] = []
+        for agg in self._gates.values():
+            latencies = list(agg.latencies)
+            p50 = _percentile(latencies, 50.0)
+            p95 = _percentile(latencies, 95.0)
+            p99 = _percentile(latencies, 99.0)
+            reject_rate = (agg.rejects / agg.runs) if agg.runs else 0.0
+            out.append(
+                GateMetricsSnapshot(
+                    name=agg.name,
+                    cost_class=agg.cost_class.name,
+                    runs=agg.runs,
+                    rejects=agg.rejects,
+                    reject_rate=round(reject_rate, 4),
+                    p50_ms=round(p50, 3),
+                    p95_ms=round(p95, 3),
+                    p99_ms=round(p99, 3),
+                    max_ms=round(agg.max_ms, 3),
+                    budget_ms=agg.budget_ms,
+                    budget_violations=agg.budget_violations,
+                    auto_demoted=agg.auto_demoted,
+                )
+            )
+        return out
+
+    def reset(self, gate_name: str | None = None) -> None:
+        """Clear stats.  If ``gate_name`` is given, only that gate is
+        cleared.  Otherwise every gate's stats are dropped.  The gate
+        registration itself isn't recreated — the next ``record()`` for
+        that gate will re-create the aggregator.
+        """
+        if gate_name is None:
+            self._gates.clear()
+            return
+        self._gates.pop(gate_name, None)
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Compute a percentile from a list of floats.
+
+    Uses :func:`statistics.quantiles` with ``n=100`` so the result is
+    the index ``int(pct) - 1`` of the returned list.  Returns 0.0 for
+    fewer than two samples (quantiles requires at least n=2 distinct
+    points to interpolate).  For a single sample, the sample itself is
+    returned — useful so a gate that has only run once shows that
+    latency rather than 0.
+    """
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return float(values[0])
+    # statistics.quantiles raises if all values are identical and n>1,
+    # which can happen in tests with a stubbed-zero latency. Guard.
+    try:
+        quantiles = statistics.quantiles(values, n=100, method="inclusive")
+    except statistics.StatisticsError:
+        return float(values[-1])
+    idx = max(0, min(98, int(pct) - 1))
+    return float(quantiles[idx])
+
+
+# Module-level singleton.  See :func:`get_gate_metrics`.
+_metrics = GateMetrics()
+
+
+def get_gate_metrics() -> GateMetrics:
+    """Return the process-wide :class:`GateMetrics` singleton.
+
+    Provided as a function (not a bare module attribute) so tests can
+    monkeypatch the global by patching this getter, and so future
+    refactors can swap in a per-orchestrator-instance metrics object
+    without breaking every call site.
+    """
+    return _metrics
+
+
 # Internal record holding the gate plus its registration order so the
 # pipeline can sort stably within a cost class.
 @dataclass(slots=True)
@@ -246,6 +521,17 @@ class GatePipeline:
                 )
             elapsed_ms = max(0.0, (time.monotonic() - gate_start) * 1000.0)
             result.latency_ms = round(elapsed_ms, 3)
+            try:
+                _metrics.record(
+                    gate.name,
+                    gate.cost_class,
+                    result,
+                    budget_ms=gate.latency_budget_ms,
+                )
+            except Exception:
+                # Metrics is a side channel — never let a bug here
+                # block trading.  Drop the sample and continue.
+                pass
             per_gate.append((gate.name, result))
             if not result.passed:
                 passed_overall = False
@@ -318,6 +604,16 @@ class GatePipeline:
                 )
             elapsed_ms = max(0.0, (time.monotonic() - gate_start) * 1000.0)
             result.latency_ms = round(elapsed_ms, 3)
+            try:
+                _metrics.record(
+                    gate.name,
+                    gate.cost_class,
+                    result,
+                    budget_ms=gate.latency_budget_ms,
+                )
+            except Exception:
+                # See note in run() — never let metrics break trading.
+                pass
             per_gate.append((gate.name, result))
             if not result.passed:
                 passed_overall = False
@@ -348,8 +644,11 @@ __all__ = [
     "CostClass",
     "Gate",
     "GateContext",
+    "GateMetrics",
+    "GateMetricsSnapshot",
     "GatePipeline",
     "GatePredicate",
     "GateResult",
     "PipelineRun",
+    "get_gate_metrics",
 ]

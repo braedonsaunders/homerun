@@ -58,6 +58,7 @@ from api.routes_topic_catalog import router as topic_catalog_router
 from api.routes_strategy_reverse_engineer import router as strategy_re_router
 from api.routes_fill_model import router as fill_model_router
 from api.routes_orchestrator_live import router as orchestrator_live_router
+from api.routes_admin import router as admin_router
 from api.routes_maintenance import router as maintenance_router
 from api.routes_operator import router as operator_router
 from api.routes_settings import router as settings_router
@@ -1144,6 +1145,7 @@ app.include_router(trader_orchestrator_router, prefix="/api", tags=["Trader Orch
 app.include_router(traders_router, prefix="/api", tags=["Traders"])
 app.include_router(trader_sources_router, prefix="/api", tags=["Trader Sources"])
 app.include_router(maintenance_router, prefix="/api", tags=["Maintenance"])
+app.include_router(admin_router, prefix="/api", tags=["Admin"])
 app.include_router(operator_router, prefix="/api", tags=["Operator"])
 app.include_router(settings_router, prefix="/api", tags=["Settings"])
 app.include_router(ui_lock_router, prefix="/api", tags=["UI Lock"])

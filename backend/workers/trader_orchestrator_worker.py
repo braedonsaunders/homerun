@@ -36,6 +36,7 @@ from models.database import (
     init_database,
     release_conn,
 )
+from services.trader_orchestrator.gate_pipeline import get_gate_metrics
 from services.trader_orchestrator.hot_path import allow_polymarket_rest_call, hot_path_no_rest
 from services.wallet_state_cache import get_wallet_state_cache
 from services.trader_orchestrator.live_market_context import (
@@ -1231,6 +1232,33 @@ async def _build_orchestrator_snapshot_metrics(
         merged["gross_exposure_usd"] += float(current_lane_metrics.get("gross_exposure_usd", 0.0) or 0.0)
         merged["daily_pnl"] += float(current_lane_metrics.get("daily_pnl", 0.0) or 0.0)
     merged["execution_latency"] = await execution_latency_metrics.snapshot()
+    # Phase 4: compact per-gate stats for the operator UI.  Top 10 by
+    # run count — these are the gates the orchestrator is exercising
+    # most, which is what the dashboard wants to surface "what's
+    # blocking trades right now".  Stats are in-memory and reset on
+    # restart; the snapshot is a point-in-time view, not a log.
+    try:
+        gate_snaps = get_gate_metrics().snapshot()
+        gate_snaps.sort(key=lambda s: s.runs, reverse=True)
+        merged["gate_stats_top10"] = [
+            {
+                "name": s.name,
+                "cost_class": s.cost_class,
+                "runs": s.runs,
+                "rejects": s.rejects,
+                "reject_rate": s.reject_rate,
+                "p50_ms": s.p50_ms,
+                "p95_ms": s.p95_ms,
+                "p99_ms": s.p99_ms,
+                "budget_ms": s.budget_ms,
+                "budget_violations": s.budget_violations,
+            }
+            for s in gate_snaps[:10]
+        ]
+    except Exception:
+        # Metrics is a side channel — never let a bug here break
+        # snapshot persistence.  Drop the field and continue.
+        merged["gate_stats_top10"] = []
     return merged
 
 

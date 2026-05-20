@@ -33,6 +33,7 @@ from services.trader_orchestrator.gate_pipeline import (
     Gate,
     GateContext,
     GatePipeline,
+    GateResult,
 )
 from services.trader_orchestrator.order_manager import (
     LegSubmitResult,
@@ -1245,6 +1246,11 @@ class ExecutionSessionEngine:
             live_context = _safe_live_context(signal, payload)
             mode_key = str(mode or "").strip().lower()
             pipeline = _build_venue_preflight_pipeline(strategy=strategy)
+            # Per-cycle per-gate accumulator.  Each leg may run a
+            # different subset of gates (short-circuit), so we collect
+            # the union across legs and surface a compact summary on
+            # the cycle's stage_timings_ms.  Keys are gate names.
+            _cycle_gate_runs: dict[str, list[tuple[bool, float]]] = {}
             try:
                 for leg_payload, leg_notional in legs_with_notionals:
                     leg_id = str(leg_payload.get("leg_id") or "").strip()
@@ -1265,6 +1271,10 @@ class ExecutionSessionEngine:
                         extras={"signal_payload": payload},
                     )
                     run = await pipeline.run(ctx)
+                    for _gname, _gresult in run.per_gate:
+                        _cycle_gate_runs.setdefault(_gname, []).append(
+                            (bool(_gresult.passed), float(_gresult.latency_ms or 0.0))
+                        )
 
                     if run.passed:
                         results[leg_id] = {"status": "pass"}
@@ -1308,6 +1318,49 @@ class ExecutionSessionEngine:
                 }
             finally:
                 _record_execution_timing("preflight_total_ms", _started_at)
+                # Compact per-gate summary for the cycle slow-log.  We
+                # keep this small: only gates that ran in this cycle,
+                # and only three numbers each.  Aggregated across legs
+                # for the same gate so the slow-log line stays short.
+                if _cycle_gate_runs:
+                    _gate_stats_summary: dict[str, dict[str, float]] = {}
+                    for _gname, _entries in _cycle_gate_runs.items():
+                        if not _entries:
+                            continue
+                        _runs = len(_entries)
+                        _rejects = sum(1 for passed, _ in _entries if not passed)
+                        _latencies = sorted(lat for _, lat in _entries)
+                        # p95 of the per-cycle sample.  Small N here
+                        # (usually <=3 legs) — index-based pick is fine.
+                        _p95_idx = max(0, int(0.95 * (_runs - 1)))
+                        _gate_stats_summary[_gname] = {
+                            "runs": _runs,
+                            "rejects": _rejects,
+                            "p95_ms": round(_latencies[_p95_idx], 3),
+                        }
+                    existing = _execution_timing_ms.get("preflight_gate_stats")
+                    if isinstance(existing, dict):
+                        # Multiple preflight invocations within a single
+                        # cycle (e.g. retry waves) accumulate — merge
+                        # by summing runs/rejects and taking max p95.
+                        for _gname, _stat in _gate_stats_summary.items():
+                            prev = existing.get(_gname)
+                            if isinstance(prev, dict):
+                                existing[_gname] = {
+                                    "runs": int(prev.get("runs", 0) or 0) + int(_stat["runs"]),
+                                    "rejects": int(prev.get("rejects", 0) or 0) + int(_stat["rejects"]),
+                                    "p95_ms": round(
+                                        max(
+                                            float(prev.get("p95_ms", 0.0) or 0.0),
+                                            float(_stat["p95_ms"]),
+                                        ),
+                                        3,
+                                    ),
+                                }
+                            else:
+                                existing[_gname] = _stat
+                    else:
+                        _execution_timing_ms["preflight_gate_stats"] = _gate_stats_summary
             return results
 
         def _synthesize_preflight_skipped_result(
