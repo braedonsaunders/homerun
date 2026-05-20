@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import ExecutionSessionEvent, ExecutionSessionLeg, ExecutionSessionOrder, TraderOrder, release_conn
 from services.event_bus import event_bus
 from services.live_execution_adapter import execute_live_order
+from services import live_execution_service as live_execution_service_module
 from services.live_execution_service import live_execution_service
 from services.signal_bus import set_trade_signal_status
 from services.strategy_sdk import StrategySDK
@@ -29,6 +30,11 @@ from services.trader_orchestrator.execution_policies import (
 )
 from services.trader_orchestrator.order_manager import (
     LegSubmitResult,
+    _check_max_spread_bps,
+    _resolve_shadow_book_and_tape,
+    _resolve_token_id_for_leg,
+    _safe_live_context,
+    _safe_signal_payload,
     cancel_live_provider_order,
     submit_execution_wave,
 )
@@ -1141,6 +1147,204 @@ class ExecutionSessionEngine:
             finally:
                 _record_execution_timing("pre_submit_projection", _started_at)
 
+        async def pre_db_venue_preflight(
+            *,
+            legs_with_notionals: list[tuple[dict[str, Any], float]],
+        ) -> dict[str, dict[str, Any]]:
+            """Phase 1 gate-pipeline hoist: run venue gates BEFORE the
+            placeholder DB writes so signals that would be rejected at
+            submit time don't pay the 5-13s ``_commit_pre_submit_projection``
+            cost for nothing.
+
+            Returns a ``{leg_id: result_dict}`` mapping. Each result is
+            either::
+
+                {"status": "pass"}
+
+            or::
+
+                {
+                    "status": "reject",
+                    "reason": "buy_pre_submit_gate" | "max_spread_bps_exceeded",
+                    "error_message": str,
+                    "payload_extras": {...},
+                    "token_id": str | None,
+                    "shares": float | None,
+                    "effective_notional_usd": float,
+                    "effective_price": float | None,
+                }
+
+            The existing gates inside ``submit_leg`` remain authoritative
+            (post-DB backstop). If preflight itself raises, all legs are
+            treated as ``pass`` and trading proceeds — preflight failure
+            must never block.
+            """
+            _started_at = _time.monotonic()
+            results: dict[str, dict[str, Any]] = {}
+            payload = _safe_signal_payload(signal)
+            live_context = _safe_live_context(signal, payload)
+            mode_key = str(mode or "").strip().lower()
+            try:
+                for leg_payload, leg_notional in legs_with_notionals:
+                    leg_id = str(leg_payload.get("leg_id") or "").strip()
+                    if not leg_id:
+                        continue
+
+                    side_key = str(leg_payload.get("side") or "buy").strip().lower()
+                    order_side = "SELL" if side_key == "sell" else "BUY"
+                    limit_price = safe_float(leg_payload.get("limit_price"), None)
+                    requested_shares = safe_float(leg_payload.get("requested_shares"), None)
+                    effective_notional = float(max(0.0, leg_notional))
+
+                    # 1) BUY collateral gate — live mode only. Shadow path
+                    # does not check this in submit_leg either (it's a
+                    # USDC-on-wallet check, irrelevant for simulated fills).
+                    if mode_key == "live" and order_side == "BUY":
+                        token_id, _token_source, _token_attempts = _resolve_token_id_for_leg(
+                            leg=leg_payload,
+                            payload=payload,
+                            live_context=live_context,
+                        )
+                        if token_id:
+                            try:
+                                # Reference via the module to avoid the
+                                # local-name shadowing trap: ``execute_signal``
+                                # has a nested ``from services.live_execution_service
+                                # import live_execution_service`` in its rescue
+                                # path, which makes ``live_execution_service``
+                                # a local name throughout the enclosing scope.
+                                buy_gate_ok, buy_gate_error = (
+                                    await live_execution_service_module.live_execution_service.check_buy_pre_submit_gate(
+                                        token_id=token_id,
+                                        required_notional_usd=effective_notional,
+                                    )
+                                )
+                            except Exception as exc:
+                                # Preflight failure → treat as pass.
+                                logger.warning(
+                                    "pre_db_venue_preflight: buy gate raised %r; falling back to submit_leg gate",
+                                    exc,
+                                )
+                                results[leg_id] = {"status": "pass"}
+                                continue
+                            if not buy_gate_ok:
+                                results[leg_id] = {
+                                    "status": "reject",
+                                    "reason": "buy_pre_submit_gate",
+                                    "error_message": buy_gate_error or "BUY pre-submit gate failed.",
+                                    "payload_extras": {
+                                        "mode": mode_key,
+                                        "submission": "skipped",
+                                        "reason": "buy_pre_submit_gate",
+                                        "token_id": token_id,
+                                        "leg": dict(leg_payload),
+                                        "requested_shares": requested_shares,
+                                        "requested_notional_usd": float(leg_notional),
+                                        "effective_notional_usd": effective_notional,
+                                        "preflight_rejected": True,
+                                    },
+                                    "token_id": token_id,
+                                    "shares": requested_shares,
+                                    "effective_notional_usd": effective_notional,
+                                    "effective_price": limit_price,
+                                }
+                                continue
+
+                    # 2) Max-spread gate — runs for both shadow and live so
+                    # the shadow preview matches what live would do. Mirrors
+                    # the post-DB check inside submit_leg.
+                    token_id_for_book, _src, _attempts = _resolve_token_id_for_leg(
+                        leg=leg_payload,
+                        payload=payload,
+                        live_context=live_context,
+                    )
+                    try:
+                        book_payload, _trades, _book_age_ms, _quote_source, _quote_err = (
+                            await _resolve_shadow_book_and_tape(
+                                token_id=token_id_for_book,
+                                live_context=live_context,
+                            )
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "pre_db_venue_preflight: book resolution raised %r; falling back to submit_leg gate",
+                            exc,
+                        )
+                        results[leg_id] = {"status": "pass"}
+                        continue
+
+                    spread_rejected, spread_bps, spread_cap = _check_max_spread_bps(
+                        book_payload=book_payload,
+                        risk_limits=risk_limits,
+                    )
+                    if spread_rejected:
+                        results[leg_id] = {
+                            "status": "reject",
+                            "reason": "max_spread_bps_exceeded",
+                            "error_message": (
+                                f"Book spread {spread_bps:.1f} bps exceeds "
+                                f"max_spread_bps {spread_cap:.1f}."
+                            ),
+                            "payload_extras": {
+                                "mode": mode_key,
+                                "submission": "rejected",
+                                "reason": "max_spread_bps_exceeded",
+                                "spread_bps": round(float(spread_bps), 2),
+                                "max_spread_bps": float(spread_cap),
+                                "token_id": token_id_for_book,
+                                "leg": dict(leg_payload),
+                                "requested_notional_usd": float(leg_notional),
+                                "effective_notional_usd": 0.0,
+                                "preflight_rejected": True,
+                            },
+                            "token_id": token_id_for_book,
+                            "shares": requested_shares,
+                            "effective_notional_usd": 0.0,
+                            "effective_price": limit_price,
+                        }
+                        continue
+
+                    results[leg_id] = {"status": "pass"}
+            except Exception as exc:
+                # Catastrophic preflight failure must NEVER block trading.
+                # Mark every leg as "pass" and let submit_leg's existing
+                # in-line gates do their authoritative check.
+                logger.warning(
+                    "pre_db_venue_preflight raised %r; falling back to submit_leg gates",
+                    exc,
+                )
+                results = {
+                    str(leg.get("leg_id") or ""): {"status": "pass"}
+                    for leg, _ in legs_with_notionals
+                    if leg.get("leg_id")
+                }
+            finally:
+                _record_execution_timing("preflight_total_ms", _started_at)
+            return results
+
+        def _synthesize_preflight_skipped_result(
+            *,
+            leg_id: str,
+            preflight: dict[str, Any],
+        ) -> LegSubmitResult:
+            """Build a ``LegSubmitResult`` that matches the shape ``submit_leg``
+            produces for a post-DB rejection (status='skipped', payload
+            carries the reason). Downstream code at the
+            ``wave_results`` merge site reads ``result.error_message``,
+            ``result.status`` and ``result.payload['reason']`` — those
+            must be identical to the in-line path."""
+            return LegSubmitResult(
+                leg_id=leg_id,
+                status="skipped",
+                effective_price=preflight.get("effective_price"),
+                error_message=preflight.get("error_message"),
+                payload=dict(preflight.get("payload_extras") or {}),
+                provider_order_id=None,
+                provider_clob_order_id=None,
+                shares=preflight.get("shares"),
+                notional_usd=float(preflight.get("effective_notional_usd") or 0.0),
+            )
+
         def _create_entry_submit_placeholder(
             *,
             leg_id: str,
@@ -1636,9 +1840,49 @@ class ExecutionSessionEngine:
                         leg_id=leg_id_for_key,
                     )
             wave_with_notionals = [(leg, safe_float(leg.get("requested_notional_usd"), 0.0)) for leg in wave]
+
+            # Phase 1 hoist: run venue gates BEFORE the placeholder DB
+            # writes so legs that would be rejected by submit_leg's
+            # collateral / spread gates don't pay the 5-13s
+            # ``_commit_pre_submit_projection`` cost for nothing.  Existing
+            # in-line gates inside ``submit_leg`` remain the authoritative
+            # post-DB backstop.
+            preflight_results = await pre_db_venue_preflight(
+                legs_with_notionals=wave_with_notionals,
+            )
+            preflight_pre_rejected_results: list[LegSubmitResult] = []
+            submittable_legs_with_notionals: list[tuple[dict[str, Any], float]] = []
+            for leg_payload, leg_notional in wave_with_notionals:
+                leg_id_pf = str(leg_payload.get("leg_id") or "").strip()
+                pf_result = preflight_results.get(leg_id_pf, {"status": "pass"})
+                if pf_result.get("status") == "reject":
+                    preflight_pre_rejected_results.append(
+                        _synthesize_preflight_skipped_result(
+                            leg_id=leg_id_pf,
+                            preflight=pf_result,
+                        )
+                    )
+                else:
+                    submittable_legs_with_notionals.append((leg_payload, leg_notional))
+
+            # Telemetry: count of pre-rejected legs and the DB placeholder
+            # writes we avoided.  ``dbwrites_avoided`` counts the
+            # _create_entry_submit_placeholder calls we skipped — those are
+            # the writes that dominated cycle time on all-reject signals.
+            _preflight_legs_pre_rejected = len(preflight_pre_rejected_results)
+            if _preflight_legs_pre_rejected:
+                _prev_rejected = (
+                    safe_float(_execution_timing_ms.get("preflight_legs_pre_rejected"), 0.0) or 0.0
+                )
+                _execution_timing_ms["preflight_legs_pre_rejected"] = round(
+                    _prev_rejected + float(_preflight_legs_pre_rejected),
+                    3,
+                )
+
             if mode == "live":
                 created_pre_submit_placeholders = False
-                for leg_payload, _leg_notional in wave_with_notionals:
+                _placeholders_skipped_for_preflight = 0
+                for leg_payload, _leg_notional in submittable_legs_with_notionals:
                     leg_id = str(leg_payload.get("leg_id") or "").strip()
                     if not leg_id or leg_id in entry_submit_placeholders:
                         continue
@@ -1650,12 +1894,35 @@ class ExecutionSessionEngine:
                         continue
                     entry_submit_placeholders[leg_id] = placeholder_pair
                     created_pre_submit_placeholders = True
+                # Count the placeholders we would have written for the
+                # preflight-rejected legs but did not.  This is the
+                # concrete DB-write savings the hoist delivers.
+                _placeholders_skipped_for_preflight = _preflight_legs_pre_rejected
+                if _placeholders_skipped_for_preflight:
+                    _prev_avoided = (
+                        safe_float(_execution_timing_ms.get("preflight_dbwrites_avoided"), 0.0) or 0.0
+                    )
+                    _execution_timing_ms["preflight_dbwrites_avoided"] = round(
+                        _prev_avoided + float(_placeholders_skipped_for_preflight),
+                        3,
+                    )
+                # If every leg in the wave was preflight-rejected, skip
+                # the projection flush entirely — no DB write at all.
                 if created_pre_submit_placeholders:
                     await _commit_pre_submit_projection()
-            wave_results = await _submit_execution_wave_with_cancellation_protection(
-                legs_with_notionals=wave_with_notionals,
-                wave_error_message="Execution session cancelled during live order submission.",
-            )
+            if submittable_legs_with_notionals:
+                wave_results = await _submit_execution_wave_with_cancellation_protection(
+                    legs_with_notionals=submittable_legs_with_notionals,
+                    wave_error_message="Execution session cancelled during live order submission.",
+                )
+            else:
+                wave_results = []
+
+            # Merge synthesized preflight-rejected results back into
+            # wave_results so the downstream decision-row writing /
+            # leg-status mapping at the bottom of this loop is unchanged.
+            if preflight_pre_rejected_results:
+                wave_results = list(wave_results) + preflight_pre_rejected_results
 
             # Append each leg's place_order sub-stage breakdown to the
             # function-scope ``_submit_wave_breakdowns`` collector so the
