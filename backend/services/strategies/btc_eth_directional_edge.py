@@ -5447,3 +5447,162 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
 
     def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
         logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)
+
+    # ------------------------------------------------------------------
+    # Phase 3: declarative pre-submit gates
+    # ------------------------------------------------------------------
+    #
+    # The full evaluate() flow does dozens of gates; here we hoist the
+    # cheapest, signal-source / scope / live-window gates that can be
+    # decided from in-memory payload data alone.  Inline evaluate logic
+    # remains the authoritative source — these short-circuit earlier.
+
+    def get_pre_submit_gates(self):
+        from services.strategy_sdk import Gate, CostClass, GateContext, GateResult
+
+        def _payload(ctx: GateContext) -> dict:
+            payload = (ctx.extras or {}).get("signal_payload")
+            if isinstance(payload, dict):
+                return payload
+            payload = getattr(ctx.runtime_signal, "payload_json", None)
+            return payload if isinstance(payload, dict) else {}
+
+        def _merged_params(ctx: GateContext) -> dict:
+            merged = dict(self.default_config or {})
+            merged.update(ctx.strategy_params or {})
+            return merged
+
+        def source_origin_predicate(ctx: GateContext) -> GateResult:
+            signal = ctx.runtime_signal
+            payload = _payload(ctx)
+            source_ok = str(getattr(signal, "source", "") or "") == "crypto"
+            signal_type = str(getattr(signal, "signal_type", "") or "").strip().lower()
+            origin_ok = (
+                str(payload.get("strategy_origin") or "").strip().lower()
+                == "crypto_worker"
+                or signal_type.startswith("crypto_worker")
+            )
+            if not (source_ok and origin_ok):
+                return GateResult(
+                    passed=False,
+                    reason="btc_eth_edge_source_origin",
+                    error_message=(
+                        "Signal must originate from crypto_worker; "
+                        f"got source={getattr(signal, 'source', None)!r} "
+                        f"signal_type={signal_type!r}"
+                    ),
+                    detail={
+                        "source": getattr(signal, "source", None),
+                        "signal_type": signal_type,
+                    },
+                )
+            return GateResult(passed=True)
+
+        def live_window_predicate(ctx: GateContext) -> GateResult:
+            cfg = _merged_params(ctx)
+            if not to_bool(cfg.get("live_window_required"), True):
+                return GateResult(passed=True)
+            payload = _payload(ctx)
+            live_market = payload.get("live_market") if isinstance(payload.get("live_market"), dict) else {}
+            is_live_raw = live_market.get("is_live")
+            if not isinstance(is_live_raw, bool):
+                is_live_raw = payload.get("is_live")
+            seconds_left = safe_float(
+                (live_market.get("seconds_left") if isinstance(live_market, dict) else None),
+                None,
+            )
+            if seconds_left is None:
+                seconds_left = safe_float(payload.get("seconds_left"), None)
+            # Pass if data is missing — defer to the full evaluate() logic.
+            if not isinstance(is_live_raw, bool) and seconds_left is None:
+                return GateResult(passed=True)
+            is_live = (
+                bool(is_live_raw)
+                if isinstance(is_live_raw, bool)
+                else (seconds_left is not None and seconds_left > 0.0)
+            )
+            if not is_live:
+                return GateResult(
+                    passed=False,
+                    reason="btc_eth_edge_live_window",
+                    error_message="Crypto cycle not in live window",
+                    detail={
+                        "is_live": is_live_raw,
+                        "seconds_left": seconds_left,
+                    },
+                )
+            return GateResult(passed=True)
+
+        def asset_scope_predicate(ctx: GateContext) -> GateResult:
+            cfg = _merged_params(ctx)
+            payload = _payload(ctx)
+            live_market = payload.get("live_market") if isinstance(payload.get("live_market"), dict) else {}
+
+            def _normalize(value: Any) -> str:
+                if value is None:
+                    return ""
+                return str(value).strip().lower()
+
+            signal_asset = _normalize(
+                live_market.get("asset")
+                or live_market.get("coin")
+                or live_market.get("symbol")
+                or payload.get("asset")
+                or payload.get("coin")
+                or payload.get("symbol")
+            )
+
+            def _scope(value: Any) -> set[str]:
+                if isinstance(value, str):
+                    items = [s.strip() for s in value.split(",")]
+                elif isinstance(value, (list, tuple, set)):
+                    items = [str(s).strip() for s in value]
+                else:
+                    return set()
+                return {s.lower() for s in items if s}
+
+            include_assets = _scope(cfg.get("include_assets"))
+            exclude_assets = _scope(cfg.get("exclude_assets"))
+            if include_assets and (not signal_asset or signal_asset not in include_assets):
+                return GateResult(
+                    passed=False,
+                    reason="btc_eth_edge_asset_scope",
+                    error_message=(
+                        f"Asset {signal_asset!r} not in include_assets={sorted(include_assets)}"
+                    ),
+                    detail={
+                        "asset": signal_asset,
+                        "include_assets": sorted(include_assets),
+                    },
+                )
+            if signal_asset and signal_asset in exclude_assets:
+                return GateResult(
+                    passed=False,
+                    reason="btc_eth_edge_asset_scope",
+                    error_message=(
+                        f"Asset {signal_asset!r} explicitly excluded"
+                    ),
+                    detail={
+                        "asset": signal_asset,
+                        "exclude_assets": sorted(exclude_assets),
+                    },
+                )
+            return GateResult(passed=True)
+
+        return [
+            Gate(
+                name="btc_eth_edge_source_origin",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=source_origin_predicate,
+            ),
+            Gate(
+                name="btc_eth_edge_asset_scope",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=asset_scope_predicate,
+            ),
+            Gate(
+                name="btc_eth_edge_live_window",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=live_window_predicate,
+            ),
+        ]

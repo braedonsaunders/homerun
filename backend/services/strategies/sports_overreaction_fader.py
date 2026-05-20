@@ -642,3 +642,112 @@ class SportsOverreactionFaderStrategy(BaseStrategy):
             )
 
         return self.default_exit_check(position, market_state)
+
+    # ------------------------------------------------------------------
+    # Phase 3: declarative pre-submit gates
+    # ------------------------------------------------------------------
+    #
+    # Inline detect-time filters already enforce these; the gates run
+    # the same predicates at signal-submit time so a stale/updated
+    # liquidity or spread reading short-circuits before DB writes.
+
+    def get_pre_submit_gates(self):
+        from services.strategy_sdk import Gate, CostClass, GateContext, GateResult
+
+        def _payload(ctx: GateContext) -> dict:
+            payload = (ctx.extras or {}).get("signal_payload")
+            if isinstance(payload, dict):
+                return payload
+            payload = getattr(ctx.runtime_signal, "payload_json", None)
+            return payload if isinstance(payload, dict) else {}
+
+        def _merged_params(ctx: GateContext) -> dict:
+            merged = dict(self.default_config or {})
+            merged.update(ctx.strategy_params or {})
+            return merged
+
+        def liquidity_floor_predicate(ctx: GateContext) -> GateResult:
+            cfg = _merged_params(ctx)
+            min_liq = float(safe_float(cfg.get("min_liquidity"), 0.0) or 0.0)
+            if min_liq <= 0.0:
+                return GateResult(passed=True)
+            liq = safe_float(getattr(ctx.runtime_signal, "liquidity", None), None)
+            if liq is None:
+                liq = safe_float(_payload(ctx).get("liquidity"), None)
+            if liq is None:
+                return GateResult(passed=True)
+            if float(liq) < min_liq:
+                return GateResult(
+                    passed=False,
+                    reason="sports_fader_min_liquidity",
+                    error_message=f"Liquidity {liq:.0f} < min {min_liq:.0f}",
+                    detail={"liquidity": float(liq), "min_liquidity": min_liq},
+                )
+            return GateResult(passed=True)
+
+        def max_spread_bps_predicate(ctx: GateContext) -> GateResult:
+            cfg = _merged_params(ctx)
+            cap_bps = float(safe_float(cfg.get("max_spread_bps"), 0.0) or 0.0)
+            if cap_bps <= 0.0:
+                return GateResult(passed=True)
+            payload = _payload(ctx)
+            book_spread_bps = safe_float(payload.get("book_spread_bps"), None)
+            if book_spread_bps is None:
+                # Fall through to L1 venue gate which has live book.
+                return GateResult(passed=True)
+            if float(book_spread_bps) > cap_bps:
+                return GateResult(
+                    passed=False,
+                    reason="sports_fader_max_spread_bps",
+                    error_message=(
+                        f"Book spread {book_spread_bps:.0f}bps > cap {cap_bps:.0f}bps"
+                    ),
+                    detail={
+                        "book_spread_bps": float(book_spread_bps),
+                        "max_spread_bps": cap_bps,
+                    },
+                )
+            return GateResult(passed=True)
+
+        def favorite_probability_predicate(ctx: GateContext) -> GateResult:
+            cfg = _merged_params(ctx)
+            min_prob = float(safe_float(cfg.get("min_favorite_prob"), 0.0) or 0.0)
+            if min_prob <= 0.0:
+                return GateResult(passed=True)
+            payload = _payload(ctx)
+            fav_prob = safe_float(payload.get("_favorite_probability"), None)
+            if fav_prob is None:
+                fav_prob = safe_float(payload.get("favorite_probability"), None)
+            if fav_prob is None:
+                return GateResult(passed=True)
+            if float(fav_prob) < min_prob:
+                return GateResult(
+                    passed=False,
+                    reason="sports_fader_min_favorite_prob",
+                    error_message=(
+                        f"Favorite probability {fav_prob:.3f} < min {min_prob:.3f}"
+                    ),
+                    detail={
+                        "favorite_probability": float(fav_prob),
+                        "min_favorite_prob": min_prob,
+                    },
+                )
+            return GateResult(passed=True)
+
+        return [
+            Gate(
+                name="sports_fader_min_liquidity",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=liquidity_floor_predicate,
+            ),
+            Gate(
+                name="sports_fader_max_spread_bps",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=max_spread_bps_predicate,
+            ),
+            Gate(
+                name="sports_fader_min_favorite_prob",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=favorite_probability_predicate,
+            ),
+        ]

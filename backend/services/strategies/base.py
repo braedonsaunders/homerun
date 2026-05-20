@@ -928,6 +928,31 @@ class BaseStrategy(ABC):
             reason: Human-readable reason for the cap.
         """
 
+    def get_pre_submit_gates(self) -> list:
+        """Return strategy-declared gates that run BEFORE order submission.
+
+        Default: no custom gates. Override in subclasses to declare gates
+        that reject signals before the orchestrator pays the DB-write cost.
+
+        Each gate must declare its CostClass honestly:
+        - L0_MEMORY (<5ms): pure in-memory check (params, signal payload, attrs)
+        - L1_CACHED (<50ms): cached value with TTL (orderbook, recent decisions)
+        - L2_IO (<500ms): network/DB read (wallet refresh, chain probe)
+
+        Gates returning passed=False short-circuit the pipeline. Subsequent
+        gates from the strategy or platform do NOT run for that signal.
+
+        Telemetry: each gate's name appears in the cycle log and per-gate
+        rejection counters. Strategies are encouraged to use stable names.
+
+        The return type is ``list[Gate]`` — import ``Gate`` from
+        ``services.strategy_sdk`` to declare them.  Using ``list`` here
+        avoids a circular import between ``strategies.base`` and
+        ``trader_orchestrator.gate_pipeline``; the orchestrator's
+        integration point validates the actual ``Gate`` type at runtime.
+        """
+        return []
+
     def on_fill(
         self,
         order: Any,

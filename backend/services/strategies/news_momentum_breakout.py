@@ -848,3 +848,128 @@ class NewsMomentumBreakoutStrategy(BaseStrategy):
 
     def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
         logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)
+
+    # ------------------------------------------------------------------
+    # Phase 3: declarative pre-submit gates
+    # ------------------------------------------------------------------
+    #
+    # Cheap (L0_MEMORY) subset of custom_checks: liquidity floor, entry
+    # band, exclude-crypto/sports/keyword scoping.  Inline checks remain
+    # — these gates short-circuit earlier in the pipeline only.
+
+    def get_pre_submit_gates(self):
+        from services.strategy_sdk import Gate, CostClass, GateContext, GateResult
+
+        def _payload(ctx: GateContext) -> dict:
+            payload = (ctx.extras or {}).get("signal_payload")
+            if isinstance(payload, dict):
+                return payload
+            payload = getattr(ctx.runtime_signal, "payload_json", None)
+            return payload if isinstance(payload, dict) else {}
+
+        def _merged_params(ctx: GateContext) -> dict:
+            merged = dict(self.default_config or {})
+            merged.update(ctx.strategy_params or {})
+            return merged
+
+        def liquidity_floor_predicate(ctx: GateContext) -> GateResult:
+            cfg = _merged_params(ctx)
+            min_liq = float(safe_float(cfg.get("min_liquidity"), 0.0) or 0.0)
+            if min_liq <= 0.0:
+                return GateResult(passed=True)
+            liq = safe_float(getattr(ctx.runtime_signal, "liquidity", None), None)
+            if liq is None:
+                liq = safe_float(_payload(ctx).get("liquidity"), None)
+            if liq is None:
+                return GateResult(passed=True)
+            if float(liq) < min_liq:
+                return GateResult(
+                    passed=False,
+                    reason="news_momentum_min_liquidity",
+                    error_message=f"Liquidity {liq:.0f} < min {min_liq:.0f}",
+                    detail={"liquidity": float(liq), "min_liquidity": min_liq},
+                )
+            return GateResult(passed=True)
+
+        def market_scope_predicate(ctx: GateContext) -> GateResult:
+            payload = _payload(ctx)
+            cfg = _merged_params(ctx)
+            exclude_crypto = self._to_bool(cfg.get("exclude_crypto_markets"), True)
+            exclude_sports = self._to_bool(cfg.get("exclude_sports_markets"), True)
+            excluded_keywords = self._normalize_excluded_keywords(
+                cfg.get("exclude_market_keywords")
+            )
+            market_text = self._signal_market_text(ctx.runtime_signal, payload)
+            if exclude_crypto and self._is_crypto_market_text(market_text):
+                return GateResult(
+                    passed=False,
+                    reason="news_momentum_market_scope",
+                    error_message="Crypto market excluded by news_momentum scope.",
+                    detail={"market_scope": "crypto"},
+                )
+            if exclude_sports and self._is_sports_market_text(market_text):
+                return GateResult(
+                    passed=False,
+                    reason="news_momentum_market_scope",
+                    error_message="Sports market excluded by news_momentum scope.",
+                    detail={"market_scope": "sports"},
+                )
+            blocked = self._first_blocked_keyword(market_text, excluded_keywords)
+            if blocked:
+                return GateResult(
+                    passed=False,
+                    reason="news_momentum_excluded_keyword",
+                    error_message=f"Market contains excluded keyword: {blocked!r}",
+                    detail={"keyword": blocked},
+                )
+            return GateResult(passed=True)
+
+        def entry_band_predicate(ctx: GateContext) -> GateResult:
+            cfg = _merged_params(ctx)
+            min_entry = float(safe_float(cfg.get("min_entry_price"), 0.0) or 0.0)
+            max_entry = float(safe_float(cfg.get("max_entry_price"), 1.0) or 1.0)
+            leg = ctx.leg if isinstance(ctx.leg, dict) else {}
+            limit_price = safe_float(leg.get("limit_price"), None)
+            if limit_price is None:
+                payload = _payload(ctx)
+                positions = payload.get("positions_to_take")
+                if isinstance(positions, list) and positions:
+                    first = positions[0]
+                    if isinstance(first, dict):
+                        limit_price = safe_float(first.get("price"), None)
+            if limit_price is None or float(limit_price) <= 0.0:
+                return GateResult(passed=True)
+            price = float(limit_price)
+            if price < min_entry or price > max_entry:
+                return GateResult(
+                    passed=False,
+                    reason="news_momentum_entry_band",
+                    error_message=(
+                        f"Entry price {price:.3f} outside band "
+                        f"[{min_entry:.3f}, {max_entry:.3f}]"
+                    ),
+                    detail={
+                        "entry_price": price,
+                        "min_entry_price": min_entry,
+                        "max_entry_price": max_entry,
+                    },
+                )
+            return GateResult(passed=True)
+
+        return [
+            Gate(
+                name="news_momentum_market_scope",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=market_scope_predicate,
+            ),
+            Gate(
+                name="news_momentum_min_liquidity",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=liquidity_floor_predicate,
+            ),
+            Gate(
+                name="news_momentum_entry_band",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=entry_band_predicate,
+            ),
+        ]

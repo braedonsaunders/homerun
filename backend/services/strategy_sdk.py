@@ -107,6 +107,49 @@ class StrategySDK:
         result = asyncio.get_event_loop().run_until_complete(
             StrategySDK.ask_llm("Analyze this market situation...")
         )
+
+    Gate primitives (Phase 3)
+    -------------------------
+    Strategies can declare custom pre-submit gates by overriding
+    ``BaseStrategy.get_pre_submit_gates()`` and returning a list of
+    :class:`Gate` instances.  The orchestrator folds these into the
+    venue-preflight pipeline so a strategy gate can short-circuit a
+    signal *before* the DB-write cost.
+
+    Primitives re-exported on this module (import from
+    ``services.strategy_sdk``):
+
+    * :class:`Gate` — declarative gate definition
+    * :class:`CostClass` — latency-budget tier (L0_MEMORY, L1_CACHED, L2_IO)
+    * :class:`GateContext` — read-only context passed to predicates
+    * :class:`GateResult` — predicate return value (passed, reason, detail)
+
+    Example::
+
+        from services.strategy_sdk import Gate, CostClass, GateContext, GateResult
+
+        def _min_prob_predicate(ctx: GateContext) -> GateResult:
+            params = ctx.strategy_params or {}
+            min_prob = float(params.get("min_probability", 0.0))
+            payload = ctx.extras.get("signal_payload") or {}
+            prob = float(payload.get("yes_probability") or 0.0)
+            if prob < min_prob:
+                return GateResult(
+                    passed=False,
+                    reason="below_min_probability",
+                    detail={"min_probability": min_prob, "probability": prob},
+                )
+            return GateResult(passed=True)
+
+        class MyStrategy(BaseStrategy):
+            def get_pre_submit_gates(self):
+                return [
+                    Gate(
+                        name="my_min_probability",
+                        cost_class=CostClass.L0_MEMORY,
+                        predicate=_min_prob_predicate,
+                    ),
+                ]
     """
 
     # PriceWindow is the canonical rolling-window primitive — it makes
@@ -3903,3 +3946,23 @@ class StrategySDK:
             "regime": market_regime_classifier.get_regime(market_id),
             "params": market_regime_classifier.get_regime_params(market_id),
         }
+
+
+# Re-export Gate primitives so user strategies don't need to import from
+# the orchestrator package directly.  Strategies override
+# ``BaseStrategy.get_pre_submit_gates()`` and return a list of ``Gate``
+# instances; the orchestrator folds them into its venue-preflight pipeline.
+from services.trader_orchestrator.gate_pipeline import (  # noqa: E402
+    CostClass,
+    Gate,
+    GateContext,
+    GateResult,
+)
+
+__all__ = [
+    "CostClass",
+    "Gate",
+    "GateContext",
+    "GateResult",
+    "StrategySDK",
+]

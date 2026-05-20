@@ -1691,3 +1691,162 @@ class TailEndCarryStrategy(BaseStrategy):
 
     def on_size_capped(self, original_size: float, capped_size: float, reason: str) -> None:
         logger.info("%s: size capped $%.0f → $%.0f — %s", self.name, original_size, capped_size, reason)
+
+    # ------------------------------------------------------------------
+    # Phase 3: declarative pre-submit gates
+    # ------------------------------------------------------------------
+    #
+    # The gates below mirror the cheap (in-memory) subset of the inline
+    # checks the strategy already runs in ``custom_checks``/``evaluate``.
+    # They run as L0_MEMORY in the orchestrator's pre-submit pipeline so
+    # rejections short-circuit BEFORE the L1_CACHED venue gates and
+    # BEFORE the DB-write cost.
+    #
+    # The inline checks are KEPT as a backstop — behaviour is unchanged
+    # in production; the gates simply move the same rejection earlier.
+
+    def get_pre_submit_gates(self):
+        from services.strategy_sdk import Gate, CostClass, GateContext, GateResult
+
+        params = dict(self.default_config or {})
+
+        def _signal_payload_of(ctx: GateContext) -> dict:
+            payload = (ctx.extras or {}).get("signal_payload")
+            if isinstance(payload, dict):
+                return payload
+            payload = getattr(ctx.runtime_signal, "payload_json", None)
+            return payload if isinstance(payload, dict) else {}
+
+        def _effective_params(ctx: GateContext) -> dict:
+            merged = dict(params)
+            merged.update(ctx.strategy_params or {})
+            return merged
+
+        def _selected_probability(payload: dict, signal: Any) -> float:
+            attr = safe_float(getattr(signal, "selected_probability", None), None)
+            if attr is not None and attr > 0.0:
+                return float(attr)
+            from utils.signal_helpers import selected_probability as _sp
+            try:
+                return float(_sp(payload) or 0.0)
+            except Exception:
+                return 0.0
+
+        def excluded_keyword_predicate(ctx: GateContext) -> GateResult:
+            payload = _signal_payload_of(ctx)
+            cfg = _effective_params(ctx)
+            excluded = self._normalize_excluded_keywords(cfg.get("exclude_market_keywords"))
+            if not excluded:
+                return GateResult(passed=True)
+            text_parts = []
+            for key in (
+                "market_question", "title", "description",
+                "market_id", "market_slug", "event_title",
+                "event_slug", "category",
+            ):
+                val = payload.get(key)
+                if isinstance(val, str) and val:
+                    text_parts.append(val.lower())
+            text = " ".join(text_parts)
+            blocked = self._first_blocked_keyword(text, excluded)
+            if blocked:
+                return GateResult(
+                    passed=False,
+                    reason="tail_carry_excluded_keyword",
+                    error_message=f"Market contains excluded keyword: {blocked!r}",
+                    detail={"keyword": blocked, "text_len": len(text)},
+                )
+            return GateResult(passed=True)
+
+        def probability_band_predicate(ctx: GateContext) -> GateResult:
+            payload = _signal_payload_of(ctx)
+            cfg = _effective_params(ctx)
+            min_prob = float(safe_float(cfg.get("min_probability"), 0.85) or 0.0)
+            max_prob = float(safe_float(cfg.get("max_probability"), 0.999) or 0.999)
+            prob = _selected_probability(payload, ctx.runtime_signal)
+            if prob <= 0.0:
+                # Missing data ⇒ defer to inline logic.
+                return GateResult(passed=True)
+            if prob < min_prob or prob > max_prob:
+                return GateResult(
+                    passed=False,
+                    reason="tail_carry_probability_band",
+                    error_message=(
+                        f"Probability {prob:.3f} outside band "
+                        f"[{min_prob:.3f}, {max_prob:.3f}]"
+                    ),
+                    detail={
+                        "probability": prob,
+                        "min_probability": min_prob,
+                        "max_probability": max_prob,
+                    },
+                )
+            return GateResult(passed=True)
+
+        def min_liquidity_predicate(ctx: GateContext) -> GateResult:
+            cfg = _effective_params(ctx)
+            min_liq = float(safe_float(cfg.get("min_liquidity"), 0.0) or 0.0)
+            if min_liq <= 0.0:
+                return GateResult(passed=True)
+            liq = safe_float(getattr(ctx.runtime_signal, "liquidity", None), None)
+            if liq is None:
+                payload = _signal_payload_of(ctx)
+                liq = safe_float(payload.get("liquidity"), None)
+            if liq is None:
+                return GateResult(passed=True)
+            if float(liq) < min_liq:
+                return GateResult(
+                    passed=False,
+                    reason="tail_carry_min_liquidity",
+                    error_message=f"Liquidity {liq:.0f} < min {min_liq:.0f}",
+                    detail={"liquidity": float(liq), "min_liquidity": min_liq},
+                )
+            return GateResult(passed=True)
+
+        def min_upside_predicate(ctx: GateContext) -> GateResult:
+            payload = _signal_payload_of(ctx)
+            cfg = _effective_params(ctx)
+            min_upside = float(safe_float(cfg.get("min_upside_percent"), 0.0) or 0.0)
+            if min_upside <= 0.0:
+                return GateResult(passed=True)
+            prob = _selected_probability(payload, ctx.runtime_signal)
+            if prob <= 0.0:
+                return GateResult(passed=True)
+            upside_pct = ((1.0 - prob) / prob * 100.0) if prob > 0.0 else 0.0
+            if upside_pct < min_upside:
+                return GateResult(
+                    passed=False,
+                    reason="tail_carry_min_upside",
+                    error_message=(
+                        f"Upside {upside_pct:.2f}% < min {min_upside:.2f}%"
+                    ),
+                    detail={
+                        "upside_percent": round(upside_pct, 3),
+                        "min_upside_percent": min_upside,
+                        "probability": prob,
+                    },
+                )
+            return GateResult(passed=True)
+
+        return [
+            Gate(
+                name="tail_carry_excluded_keyword",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=excluded_keyword_predicate,
+            ),
+            Gate(
+                name="tail_carry_probability_band",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=probability_band_predicate,
+            ),
+            Gate(
+                name="tail_carry_min_liquidity",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=min_liquidity_predicate,
+            ),
+            Gate(
+                name="tail_carry_min_upside",
+                cost_class=CostClass.L0_MEMORY,
+                predicate=min_upside_predicate,
+            ),
+        ]

@@ -1159,16 +1159,27 @@ class ExecutionSessionEngine:
             finally:
                 _record_execution_timing("pre_submit_projection", _started_at)
 
-        def _build_venue_preflight_pipeline() -> GatePipeline:
-            """Phase 2: declarative venue-preflight pipeline.
+        def _build_venue_preflight_pipeline(
+            strategy: Any | None = None,
+        ) -> GatePipeline:
+            """Phase 2 + 3: declarative venue-preflight pipeline.
 
-            Gates run in ``CostClass`` order — currently both are L1
-            (cached balance / cached order book) so the order is by
-            registration: collateral first (cheaper failure mode for
-            live BUYs), then spread.  Both gates short-circuit on
-            reject — once a leg fails one gate, the other does not run.
+            Phase 2 registers the two venue gates (collateral, max-spread)
+            — both ``L1_CACHED`` so they run in registration order.
+
+            Phase 3 additionally folds in any gates the active strategy
+            declares via ``BaseStrategy.get_pre_submit_gates()``.  Because
+            :class:`GatePipeline` orders gates by ``CostClass``, an
+            ``L0_MEMORY`` strategy gate runs *before* the venue's L1
+            gates — short-circuiting cheap rejections before the cached
+            balance / order-book lookups.
+
+            Strategy errors must never block trading: if the strategy's
+            ``get_pre_submit_gates()`` raises, log and continue with
+            only the venue gates.  Invalid gate objects (non-``Gate``
+            entries in the list) are skipped with a warning.
             """
-            return GatePipeline(
+            pipeline = GatePipeline(
                 [
                     Gate(
                         name=GATE_NAME_BUY_COLLATERAL,
@@ -1182,10 +1193,31 @@ class ExecutionSessionEngine:
                     ),
                 ]
             )
+            if strategy is not None:
+                try:
+                    strategy_gates = strategy.get_pre_submit_gates() or []
+                except Exception as exc:
+                    logger.warning(
+                        "Strategy %s get_pre_submit_gates raised; skipping",
+                        type(strategy).__name__,
+                        exc_info=exc,
+                    )
+                    strategy_gates = []
+                for g in strategy_gates:
+                    if not isinstance(g, Gate):
+                        logger.warning(
+                            "Strategy %s yielded non-Gate object %r; skipped",
+                            type(strategy).__name__,
+                            g,
+                        )
+                        continue
+                    pipeline.register(g)
+            return pipeline
 
         async def pre_db_venue_preflight(
             *,
             legs_with_notionals: list[tuple[dict[str, Any], float]],
+            strategy: Any | None = None,
         ) -> dict[str, dict[str, Any]]:
             """Phase 2 gate-pipeline implementation.
 
@@ -1198,6 +1230,12 @@ class ExecutionSessionEngine:
             output — :func:`_synthesize_preflight_skipped_result` and all
             downstream consumers see no change.
 
+            Phase 3: when ``strategy`` is provided, its
+            ``get_pre_submit_gates()`` are folded into the pipeline.  L0
+            strategy gates run before the L1 venue gates, so cheap
+            strategy-side rejections short-circuit before the cached
+            balance / order-book lookups.
+
             Catastrophic pipeline failure ⇒ mark every leg as pass.
             Trading must never be blocked by a preflight bug.
             """
@@ -1206,7 +1244,7 @@ class ExecutionSessionEngine:
             payload = _safe_signal_payload(signal)
             live_context = _safe_live_context(signal, payload)
             mode_key = str(mode or "").strip().lower()
-            pipeline = _build_venue_preflight_pipeline()
+            pipeline = _build_venue_preflight_pipeline(strategy=strategy)
             try:
                 for leg_payload, leg_notional in legs_with_notionals:
                     leg_id = str(leg_payload.get("leg_id") or "").strip()
@@ -1222,7 +1260,7 @@ class ExecutionSessionEngine:
                         leg=leg_payload,
                         live_context=live_context,
                         risk_limits=risk_limits,
-                        strategy_params={},
+                        strategy_params=dict(strategy_params or {}),
                         mode=mode_key,
                         extras={"signal_payload": payload},
                     )
@@ -1799,6 +1837,7 @@ class ExecutionSessionEngine:
             # post-DB backstop.
             preflight_results = await pre_db_venue_preflight(
                 legs_with_notionals=wave_with_notionals,
+                strategy=strategy_instance,
             )
             preflight_pre_rejected_results: list[LegSubmitResult] = []
             submittable_legs_with_notionals: list[tuple[dict[str, Any], float]] = []
