@@ -4733,8 +4733,17 @@ async def reconcile_shadow_positions(
         prev_last_mark = safe_float(position_state.get("last_mark_price"))
         prev_mark_source = str(position_state.get("last_mark_source") or "")
         prev_marked_at = _parse_iso_utc_naive(position_state.get("last_marked_at"))
+        # Anchor high/low to entry_price on first observation — see the
+        # rationale comment in reconcile_live_positions.  Same bug
+        # shape applies in shadow: a missed trailing-stop trigger
+        # because the lifecycle's first mark landed below entry and
+        # took over as the trailing anchor.
         highest_price = prev_high
         lowest_price = prev_low
+        if highest_price is None and entry_price > 0.0:
+            highest_price = entry_price
+        if lowest_price is None and entry_price > 0.0:
+            lowest_price = entry_price
         if current_price is not None:
             if highest_price is None:
                 highest_price = current_price
@@ -9519,8 +9528,26 @@ async def reconcile_live_positions(
         prev_last_mark = safe_float(position_state.get("last_mark_price"))
         prev_mark_source = str(position_state.get("last_mark_source") or "")
         prev_marked_at = _parse_iso_utc_naive(position_state.get("last_marked_at"))
+        # Anchor highest/lowest to entry_price on first observation.
+        # 2026-05-20 production bug: order 1ada192f opened at $0.925,
+        # price dipped to $0.565 (39% drawdown), then drifted back up
+        # before resolution.  The lifecycle's first mark happened
+        # AFTER the dip, so highest_price was initialized from the
+        # mark ($0.565), not from entry ($0.925).  The strategy's
+        # trailing stop (12% from high) then anchored at $0.565 and
+        # never fired even though the position was 39% under water
+        # against the actual purchase price.  Position held to
+        # resolution and lost the full $10.05.
+        #
+        # Fix: seed highest/lowest with entry_price so the trailing-
+        # stop anchor is the price we ACTUALLY paid.  Matches the
+        # backtest engine pattern at backtest/engine.py:467.
         highest_price = prev_high
         lowest_price = prev_low
+        if highest_price is None and entry_price > 0.0:
+            highest_price = entry_price
+        if lowest_price is None and entry_price > 0.0:
+            lowest_price = entry_price
         if current_price is not None:
             if highest_price is None:
                 highest_price = current_price
