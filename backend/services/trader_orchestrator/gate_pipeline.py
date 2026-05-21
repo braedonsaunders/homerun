@@ -201,7 +201,7 @@ class _GateAggregator:
     max_ms: float = 0.0
     budget_violations: int = 0
     auto_demoted: bool = False
-    last_violation_log_mono: float = 0.0
+    last_violation_log_mono: float = float("-inf")
 
 
 class GateMetrics:
