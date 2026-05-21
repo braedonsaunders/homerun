@@ -231,7 +231,15 @@ _LIVE_EXIT_PRESSURE_MAX_SUBMISSIONS_PER_PASS = 1
 _LIVE_EXIT_PREP_ALLOWANCE_TIMEOUT_SECONDS = 6.0
 _MARKET_INFO_LOAD_TIMEOUT_SECONDS = 2.5
 _ORDER_SNAPSHOT_LOAD_TIMEOUT_SECONDS = 2.0
-_RECONCILE_TIMING_WARN_SECONDS = 20.0
+# Lowered from 20s to 5s 2026-05-20: the slow_tx hook reports
+# trader-reconciliation-reconcile commits held 10-12s with
+# uow_dirty=0 tables=- (Core SQL writes don't show in ORM UoW). The
+# 20s threshold suppressed every one of those — we never see the
+# ``lifecycle_detail`` breakdown that pinpoints which phase
+# (pre_io / external_io / processing / executemany / commit) is slow.
+# 5s catches the long tail without flooding for the steady-state
+# 1-3s runs.
+_RECONCILE_TIMING_WARN_SECONDS = 5.0
 _TERMINAL_REOPEN_LOOKBACK_HOURS = 72.0
 _NONACTIVE_WALLET_REOPEN_LOOKBACK_HOURS = 72.0
 _TERMINAL_REOPEN_AUDIT_COOLDOWN_SECONDS = 1800.0
@@ -10352,6 +10360,29 @@ async def reconcile_live_positions(
         )
     _lc_t3 = _time.monotonic()
 
+    # Close out any tx that was opened during the candidates loop before
+    # the bulk UPDATE block runs. The loop can leave a tx open in two
+    # ways: (a) ``_emit_armed_reverse_signal`` calls
+    # ``upsert_trade_signal(commit=False)`` which writes via session.add;
+    # (b) the in-loop notional-correction UPDATE at the wallet-trade
+    # close path (single-row Core execute). Both happen inside the loop
+    # AFTER the last ``release_conn`` — so the resulting tx is carried
+    # through the grouped-exit block (pure Python) plus the bulk UPDATE
+    # block, often 10+s in soak. Commit them now so the bulk UPDATE
+    # gets a fresh, short-lived tx and slow_tx attribution is
+    # unambiguous (the bulk UPDATE's own commit_time isolates
+    # ``executemany + commit`` cost).
+    #
+    # Unconditional commit (not rollback-if-empty): ``session.dirty /
+    # new / deleted`` only track ORM-attached changes — the wallet-trade
+    # path's ``await session.execute(update(...))`` is Core SQL and
+    # writes invisibly to those counters. Rolling back here would lose
+    # those writes. An empty commit costs one WAL fsync; under contention
+    # that's measurable but bounded (sub-second in practice), versus the
+    # 10+s tx-span this guards against.
+    if session.in_transaction():
+        await session.commit()
+
     if not dry_run and (closed > 0 or state_updates > 0):
         touched_by_id: dict[str, TraderOrder] = {}
         for row in candidates:
@@ -10499,7 +10530,15 @@ async def reconcile_live_positions(
             else:
                 logger.debug("reconcile_live_positions timing: %s", _timing_msg)
         else:
-            await session.commit()
+            # ``touched_rows`` empty but ``closed > 0 or state_updates > 0``
+            # — this is mostly unreachable (both counters set row.updated_at
+            # = now, which is exactly what populates touched_rows), but the
+            # else exists defensively. Use rollback instead of commit so we
+            # don't pay WAL fsync for an empty tx — that empty commit was
+            # the source of recurring ``Long transaction held .. uow_dirty=0
+            # tables=-`` slow_tx warnings in soak.
+            if session.in_transaction():
+                await session.rollback()
         await _publish_trader_order_updates(publish_rows)
         if reverse_signal_ids_by_source:
             await _publish_reverse_signal_batches(reverse_signal_ids_by_source, emitted_at=now)
