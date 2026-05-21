@@ -50,6 +50,16 @@ from services.live_execution_service import (
 # ---------------------------------------------------------------------------
 
 
+def _to_decimal_compat(value: float) -> Decimal:
+    """Match the keeper's float→Decimal conversion (``_to_decimal`` on a
+    float goes via str()) so equality comparisons in tests line up with
+    the value the keeper actually stores.
+    """
+    from services.live_execution_service import _to_decimal
+
+    return max(Decimal("0"), _to_decimal(value))
+
+
 def _make_service(*, available: float | None = 1000.0, min_balance: float = 0.0) -> LiveExecutionService:
     """Build a service whose ``get_balance`` returns the configured
     snapshot.  No network, no SDK — every test runs in pure memory.
@@ -287,73 +297,91 @@ async def test_reconciler_settles_local_reservations_into_chain(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reconciler_halts_after_threshold_consecutive_down_divergences(monkeypatch):
-    """``_KEEPER_HALT_THRESHOLD`` consecutive DOWN-divergent reads halt
-    the keeper.  Subsequent BUY gate calls reject with the halt reason.
+async def test_reconciler_converges_down_without_halting(monkeypatch):
+    """DOWN-divergence (chain < expected) must CONVERGE to the chain,
+    NOT halt.
 
-    DOWN-divergence (chain < expected) is the dangerous case: we may
-    have spent money we didn't reserve.  This must halt to prevent
-    over-spending at the venue.
+    The 2026-05-21 19h soak halted for 16 hours on a $20 DOWN-
+    divergence: the fast-submit path placed orders that spent chain
+    collateral the keeper never reserved (fast path bypasses the
+    keeper gate).  The keeper's reservation model is inherently
+    approximate; the chain is truth.  The reconciler converges to the
+    chain and the gate naturally rejects orders it can no longer fund
+    — no halt, no operator intervention, no 16-hour outage.
     """
     monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
     service = _make_service(available=1000.0)
     async with service._get_keeper_lock():
         await service._keeper_bootstrap_locked()
 
-    # Chain drops to $500 (we expected $1000) — DOWN by $500, dangerous.
+    # Chain drops to $500 (we expected $1000) — a fast-path order or
+    # fill the keeper never reserved.  DOWN by $500.
     await _drive_balance(service, 500.0)
-    for _ in range(_KEEPER_HALT_THRESHOLD):
+    for _ in range(_KEEPER_HALT_THRESHOLD + 2):
         await service._keeper_reconcile_once()
 
-    assert service._keeper_halted is True
-    assert service._keeper_halt_reason is not None
-    assert "down-divergence" in service._keeper_halt_reason.lower()
+    # NEVER halts — converges to the chain truth.
+    assert service._keeper_halted is False
+    assert service._keeper_chain_available == Decimal("500")
+    assert service._keeper_reserved_since_chain == Decimal("0")
+    assert service._keeper_effective_available() == Decimal("500")
 
-    # Gate now rejects with the halt reason surfaced.
+    # Gate works against the (correct, lower) balance: a $100 order
+    # still fits, a $600 order does not.
+    ok, _ = await service._enforce_buy_pre_submit_gate(
+        token_id="tok", required_notional_usd=Decimal("100")
+    )
+    assert ok
     ok, err = await service._enforce_buy_pre_submit_gate(
-        token_id="tok",
-        required_notional_usd=Decimal("10"),
+        token_id="tok", required_notional_usd=Decimal("600")
     )
     assert ok is False
-    assert err is not None
-    err_lower = err.lower()
-    assert "divergence" in err_lower
-    assert "clear_collateral_halt" in err_lower
+    assert "insufficient effective collateral" in (err or "")
 
 
 @pytest.mark.asyncio
-async def test_reconciler_auto_accepts_up_divergence_without_halt(monkeypatch):
-    """UP-divergence (chain > expected) is BENIGN and must NOT halt.
-
-    Real-world causes for chain-available going UP unexpectedly:
-      * External wallet deposit
-      * Venue auto-cancelled a working order on market resolution
-      * Slippage refund larger than the conservative reservation
-      * Position settled and venue returned the collateral
-
-    The 5/2026/05 production halt was exactly this case — a $10.98
-    UP-divergence on the trading wallet (likely a venue-side cancel
-    refund) caused the keeper to halt and block 267 BUY orders.  The
-    fix: auto-accept the new (higher) chain reading and converge.
+async def test_reconciler_tracks_divergence_streak_for_observability(monkeypatch):
+    """Persistent divergence still increments the streak (operator
+    observability) even though it never halts.
     """
     monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
     service = _make_service(available=1000.0)
     async with service._get_keeper_lock():
         await service._keeper_bootstrap_locked()
 
-    # Chain JUMPS UP by $10.98 — exactly the production scenario.
+    # Reserve nothing; drive a sustained gap so each reconcile sees
+    # the expected ($1000) vs actual drift.  Because the reconciler
+    # converges each cycle, the divergence is only seen on the FIRST
+    # cycle after each chain change — so alternate the chain to keep
+    # producing divergence.
+    await _drive_balance(service, 500.0)
+    await service._keeper_reconcile_once()  # expected 1000, actual 500 → streak 1
+    assert service._keeper_divergence_streak == 1
+    # Converged to 500; next reconcile at 500 is clean → streak resets.
+    await service._keeper_reconcile_once()
+    assert service._keeper_divergence_streak == 0
+    assert service._keeper_halted is False
+
+
+@pytest.mark.asyncio
+async def test_reconciler_converges_up_without_halt(monkeypatch):
+    """UP-divergence (chain > expected) converges to the higher chain
+    reading.  Real causes: deposit, venue cancel refund, settlement.
+    """
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
+    service = _make_service(available=1000.0)
+    async with service._get_keeper_lock():
+        await service._keeper_bootstrap_locked()
+
+    # Chain JUMPS UP by $10.98 — the original 2026-05-20 scenario.
     await _drive_balance(service, 1010.98)
     for _ in range(_KEEPER_HALT_THRESHOLD + 5):
         await service._keeper_reconcile_once()
 
-    # Must NOT halt — UP-divergence is benign.
     assert service._keeper_halted is False
-    # Keeper accepted the new chain reading.
     assert service._keeper_chain_available == Decimal("1010.98")
-    # Streak never accumulated past zero (each reconcile resets it).
-    assert service._keeper_divergence_streak == 0
 
-    # Gate still works normally with the new (higher) balance.
+    # Gate works normally with the new (higher) balance.
     ok, err = await service._enforce_buy_pre_submit_gate(
         token_id="tok",
         required_notional_usd=Decimal("100"),
@@ -387,41 +415,6 @@ async def test_reconciler_up_divergence_settles_pending_reservations(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_reconciler_single_down_divergence_does_not_halt(monkeypatch):
-    """A one-shot DOWN-divergence (single chain read off, then back in
-    line) must not halt — that's the in-flight-order race we explicitly
-    want to filter.
-
-    Key semantics: on DOWN-divergence we do NOT silently absorb the
-    new chain value into the keeper.  The streak only resets when the
-    chain reading matches our model again (i.e. the in-flight order
-    catches up at the venue and the next chain read shows the
-    expected balance).
-    """
-    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
-    service = _make_service(available=1000.0)
-    async with service._get_keeper_lock():
-        await service._keeper_bootstrap_locked()
-
-    # Chain blips DOWN to $500 — DOWN-divergent vs the keeper's $1000
-    # model.  Could be a real loss of bookkeeping (dangerous) or just
-    # an in-flight order race — keeper holds its model.
-    await _drive_balance(service, 500.0)
-    await service._keeper_reconcile_once()
-    assert service._keeper_divergence_streak == 1
-    # Keeper model held — chain reading was NOT silently absorbed.
-    assert service._keeper_chain_available == Decimal("1000")
-
-    # Chain recovers — matches expected ($1000 with zero reserved).
-    # Streak resets and the keeper accepts the (unchanged) reading.
-    await _drive_balance(service, 1000.0)
-    await service._keeper_reconcile_once()
-    assert service._keeper_divergence_streak == 0
-    assert service._keeper_halted is False
-    assert service._keeper_chain_available == Decimal("1000")
-
-
-@pytest.mark.asyncio
 async def test_tolerance_window_absorbs_small_drift(monkeypatch):
     """Drift within ``_KEEPER_DIVERGENCE_TOLERANCE_USD`` does not bump
     the streak (covers normal slippage refunds on partial fills).
@@ -441,30 +434,46 @@ async def test_tolerance_window_absorbs_small_drift(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_halt_clears_only_via_operator_action(monkeypatch):
-    """Halts do NOT auto-clear on a clean reconcile — the divergence
-    needs a human to acknowledge before resuming.
+async def test_reconciler_never_auto_halts_under_sustained_divergence(monkeypatch):
+    """The reconciler must NEVER auto-halt, even under sustained
+    divergence in either direction.  This is the core regression
+    guard for the 2026-05-21 16-hour outage: the keeper is a
+    converging cache, not a circuit breaker.  Trading is gated by
+    ``effective_available`` (which tracks the chain) and the
+    authoritative ``submit_leg`` venue gate — never by a keeper halt.
     """
     monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
     service = _make_service(available=1000.0)
     async with service._get_keeper_lock():
         await service._keeper_bootstrap_locked()
 
-    await _drive_balance(service, 500.0)
-    for _ in range(_KEEPER_HALT_THRESHOLD):
+    # Sustained, alternating divergence in both directions — the
+    # pathological case that would have tripped any streak-based halt.
+    for value in (500.0, 1500.0, 200.0, 1800.0, 50.0) * 3:
+        await _drive_balance(service, value)
         await service._keeper_reconcile_once()
-    assert service._keeper_halted is True
+        assert service._keeper_halted is False, (
+            f"keeper must never auto-halt; tripped at chain={value}"
+        )
+        # Always converges to the latest chain reading.
+        assert service._keeper_chain_available == _to_decimal_compat(value)
 
-    # Reconcile cleanly — still halted.
-    await _drive_balance(service, 500.0)
-    await service._keeper_reconcile_once()
-    assert service._keeper_halted is True
 
-    # Operator clear — resumes.
-    cleared = service.clear_collateral_halt(reason="reviewed by ops")
-    assert cleared is True
+@pytest.mark.asyncio
+async def test_clear_collateral_halt_is_safe_noop_when_not_halted(monkeypatch):
+    """``clear_collateral_halt`` remains available for operator use
+    (and for any future manual-halt path) but is a safe no-op when
+    nothing is halted — the reconciler no longer auto-halts.
+    """
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
+    service = _make_service(available=1000.0)
+    async with service._get_keeper_lock():
+        await service._keeper_bootstrap_locked()
+
     assert service._keeper_halted is False
-    assert service._keeper_halt_reason is None
+    cleared = service.clear_collateral_halt(reason="nothing to clear")
+    assert cleared is False
+    assert service._keeper_halted is False
 
 
 # ---------------------------------------------------------------------------

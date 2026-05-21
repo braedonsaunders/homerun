@@ -126,27 +126,36 @@ _BALANCE_CACHE_TTL_SECONDS = 30.0
 #     then maintains the running balance locally as orders are reserved
 #     and released.
 #   * A background reconciler refreshes the chain on a fixed cadence and
-#     compares ``chain_available`` to ``keeper_available + keeper_reserved
-#     _delta``.  Divergence beyond tolerance HALTS new submissions and
-#     emits a trader event for operator review.
-#   * The submit_leg authoritative gate ( inside ``place_order``) remains
-#     the venue-side backstop — the keeper is the cheap pre-DB gate, not
-#     the only line of defence.
+#     ALWAYS converges to it (the chain is truth).  The keeper is a
+#     between-reconcile cache, NOT a circuit breaker — it never halts
+#     trading.  Divergence is surfaced as a WARNING for observability
+#     but never blocks the trading plane.  (Revised 2026-05-21 after a
+#     16-hour outage: the prior design auto-halted on divergence, but
+#     the keeper's reservation model is inherently approximate — the
+#     fast-submit path bypasses the keeper, fills land off the
+#     conservative limit*size reservation, and the venue charges fees —
+#     so divergence is normal, not a fault.)
+#   * The ``submit_leg`` authoritative gate (inside ``place_order``)
+#     remains the venue-side backstop.  If the keeper briefly
+#     over-estimates available collateral, the venue rejects the order:
+#     worst case is one wasted attempt, never a financial loss.  If
+#     funds genuinely drop, the keeper re-syncs DOWN on the next cycle
+#     and the gate naturally rejects orders it can no longer fund.
 #
 # This is the standard pre-trade risk pattern used by every prop shop,
 # market maker, and CLOB-facing HFT desk: pre-trade gates execute in
-# memory in microseconds, while exchange-side reconciliation runs on its
-# own clock and halts trading on divergence rather than probing inline.
+# memory in microseconds, the cache converges to the exchange on its
+# own clock, and the exchange-side gate is the authority.
 _KEEPER_RECONCILE_INTERVAL_SECONDS = 5.0
-# Tolerance for chain-vs-keeper divergence before halting new
-# submissions.  $1.00 covers normal slippage refunds on partial fills
-# (limit*size > actual_spend) and rounding in the venue's collateral
-# math.  Anything larger is a real bug — either we missed a reservation
-# or the venue lost ours.
+# Divergence beyond this tolerance is logged as a WARNING for operator
+# observability (it does NOT halt trading).  $1.00 filters normal
+# slippage refunds on partial fills (limit*size > actual_spend) and
+# rounding in the venue's collateral math; larger drift usually means a
+# fast-path order or fill the keeper's reservation model didn't track.
 _KEEPER_DIVERGENCE_TOLERANCE_USD = Decimal("1.00")
-# Three consecutive divergence detections before halt.  A single chain
-# read can race a just-submitted order on the venue side; demanding
-# three consecutive reads at the same drift filters the race.
+# Retained for the observability streak counter (how many consecutive
+# reconciles have been divergent).  No longer gates a halt — kept so
+# the WARNING log can report a persistence count for the operator.
 _KEEPER_HALT_THRESHOLD = 3
 # Cap on how long the keeper trusts its in-memory snapshot without a
 # successful reconcile.  If the chain stays unreachable longer than
@@ -6306,14 +6315,47 @@ class LiveExecutionService:
         """Run one cycle of the chain-vs-keeper reconciler.
 
         Returns True on a successful reconcile (chain reachable),
-        False on transient failure.  On divergence beyond tolerance
-        for ``_KEEPER_HALT_THRESHOLD`` consecutive cycles, halts the
-        keeper and emits an alert event.
+        False on transient failure.
 
-        Race-safety: the reserved-since-chain snapshot is taken at the
-        same moment we send the chain query, so any reservation that
-        races the chain HTTP roundtrip lands AFTER the snapshot and
-        survives the settlement step.
+        Design (revised 2026-05-21): **the chain is the source of
+        truth; the keeper is a between-reconcile cache; the venue-side
+        gate inside ``place_order`` is the authoritative backstop.**
+        The reconciler ALWAYS converges to the chain reading.  It does
+        NOT halt trading on divergence.
+
+        Why no halt:
+
+          * The keeper's local model is INHERENTLY approximate.  The
+            fast-submit path (``fast_submit.py``) bypasses the keeper's
+            reserve entirely, fills land at prices different from the
+            conservative limit*size reservation, the venue charges
+            fees, and partial fills happen.  Every one of these makes
+            the chain move outside the keeper's reservation tracking.
+            A halt on >$1 drift therefore fires constantly in normal
+            operation — the 2026-05-20 19h soak halted for 16 hours on
+            a $20 DOWN-divergence caused by fast-path orders the keeper
+            never saw, blocking 100% of trading.
+
+          * Halting provides no real safety.  The gate uses
+            ``effective_available = chain - reserved`` and the
+            reconciler keeps ``chain`` synced to reality every cycle.
+            If funds genuinely drop (drain, fee, fill), the keeper
+            re-syncs DOWN and the gate naturally rejects orders it can
+            no longer fund — no halt needed.  If the keeper briefly
+            over-estimates (thinks we have more than we do), the
+            authoritative ``submit_leg`` gate rejects at the venue;
+            worst case is one wasted order attempt, not a financial
+            loss.
+
+          * Persistent divergence is still surfaced as a WARNING for
+            operator observability (see ``_keeper_divergence_streak``)
+            — we just never let it block the trading plane.
+
+        Race-safety: ``reserved_snapshot`` is captured at the moment we
+        send the chain query, so the chain reading reflects exactly
+        those reservations.  Anything reserved AFTER the snapshot
+        survives as a deduction from the new chain reading on the next
+        reconcile.
         """
         async with self._get_keeper_lock():
             reserved_snapshot = self._keeper_reserved_since_chain
@@ -6333,11 +6375,11 @@ class LiveExecutionService:
         new_chain = max(ZERO, _to_decimal(available_raw))
 
         async with self._get_keeper_lock():
+            self._keeper_last_chain_at = _time.monotonic()
             if not previously_initialized:
                 # Bootstrap path: nothing to settle yet, just seed.
                 self._keeper_chain_available = new_chain
                 self._keeper_reserved_since_chain = ZERO
-                self._keeper_last_chain_at = _time.monotonic()
                 self._keeper_initialized = True
                 self._keeper_divergence_streak = 0
                 self._keeper_last_divergence_usd = ZERO
@@ -6346,117 +6388,47 @@ class LiveExecutionService:
                     available_usdc=str(new_chain),
                 )
                 return True
-            # Divergence check.  Asymmetric semantics: UP-divergence
-            # (chain has MORE than we expected) and DOWN-divergence
-            # (chain has LESS than we expected) have opposite risk
-            # profiles and we handle them differently.
-            #
-            # DOWN-divergence (chain < expected by > tolerance):
-            #   We thought we had more money than the chain actually
-            #   shows.  Either we lost track of spending (a venue
-            #   charged us we didn't reserve) or our bookkeeping is
-            #   buggy.  This is the DANGEROUS case — continuing to
-            #   trade on our model could over-spend at the venue.  We
-            #   freeze the model, increment the streak, and halt at
-            #   the threshold.  Recovery is operator-only via
-            #   ``clear_collateral_halt`` which forces re-bootstrap.
-            #
-            # UP-divergence (chain > expected by > tolerance):
-            #   We thought we had less money than the chain actually
-            #   shows.  This is BENIGN — it indicates a deposit, a
-            #   working-order cancellation we didn't observe (venue
-            #   auto-cancel on resolution, network drop on cancel
-            #   path, etc.), a slippage refund larger than expected,
-            #   or a position settlement returning collateral.  All
-            #   are real-world events that should auto-converge.  The
-            #   keeper accepts the new (higher) chain reading, settles
-            #   the snapshot, and resets the streak.  No halt: the
-            #   worst case is briefly over-conservative reservations
-            #   that auto-correct on the next reconcile.  Halting on
-            #   "you have more money than you thought" would falsely
-            #   block trading on every deposit or venue refund.
-            #
-            # Within-tolerance: clean reconcile path.
-            self._keeper_last_chain_at = _time.monotonic()
+
+            # Observability only: measure how far the chain drifted
+            # from what our reservation model expected.  Large or
+            # persistent drift is logged for the operator but NEVER
+            # blocks trading.
             expected_chain = max(ZERO, (previous_chain or ZERO) - reserved_snapshot)
-            divergence = new_chain - expected_chain  # signed
+            divergence = new_chain - expected_chain  # signed; <0 means chain is lower than expected
             divergence_abs = abs(divergence)
-            if divergence < -_KEEPER_DIVERGENCE_TOLERANCE_USD:
-                # DOWN-divergence — dangerous case.
+            if divergence_abs > _KEEPER_DIVERGENCE_TOLERANCE_USD:
                 self._keeper_divergence_streak += 1
                 self._keeper_last_divergence_usd = divergence_abs
-                if self._keeper_divergence_streak >= _KEEPER_HALT_THRESHOLD and not self._keeper_halted:
-                    reason = (
-                        f"chain-vs-keeper DOWN-divergence ${divergence_abs:.2f} "
-                        f"exceeded tolerance ${_KEEPER_DIVERGENCE_TOLERANCE_USD:.2f} "
-                        f"for {self._keeper_divergence_streak} consecutive reconciles "
-                        f"(expected_chain={expected_chain} actual_chain={new_chain}). "
-                        "Possible cause: spending we did not reserve, or stale bookkeeping."
-                    )
-                    self._keeper_halted = True
-                    self._keeper_halt_reason = reason
-                    self._keeper_halt_at = _time.monotonic()
-                    logger.error(
-                        "Collateral keeper halted on DOWN-divergence",
-                        divergence_usd=str(divergence_abs),
-                        expected_chain_usd=str(expected_chain),
-                        actual_chain_usd=str(new_chain),
-                        streak=self._keeper_divergence_streak,
-                    )
-                else:
-                    logger.warning(
-                        "Collateral keeper DOWN-divergence detected (below halt threshold)",
-                        divergence_usd=str(divergence_abs),
-                        expected_chain_usd=str(expected_chain),
-                        actual_chain_usd=str(new_chain),
-                        streak=self._keeper_divergence_streak,
-                        threshold=_KEEPER_HALT_THRESHOLD,
-                    )
-                # IMPORTANT: do NOT update _keeper_chain_available on
-                # DOWN-divergence.  Updating would silently absorb the
-                # discrepancy and the next cycle would show zero
-                # divergence — losing the streak that is supposed to
-                # fire the halt.
-                return True
-            if divergence > _KEEPER_DIVERGENCE_TOLERANCE_USD:
-                # UP-divergence — benign auto-accept.
-                logger.info(
-                    "Collateral keeper UP-divergence auto-accepted "
-                    "(likely deposit / venue-side cancel refund / settlement)",
+                direction = "DOWN" if divergence < 0 else "UP"
+                logger.warning(
+                    "Collateral keeper %s-divergence (observability only; converging to chain)",
+                    direction,
                     divergence_usd=str(divergence_abs),
                     expected_chain_usd=str(expected_chain),
                     actual_chain_usd=str(new_chain),
-                    prior_streak=self._keeper_divergence_streak,
+                    streak=self._keeper_divergence_streak,
+                    likely_cause=(
+                        "fast-path order / fill price / venue fee not tracked by keeper reserve"
+                        if direction == "DOWN"
+                        else "deposit / venue cancel refund / settlement"
+                    ),
                 )
-                self._keeper_chain_available = new_chain
-                self._keeper_reserved_since_chain = max(
-                    ZERO, self._keeper_reserved_since_chain - reserved_snapshot
-                )
+            else:
+                if self._keeper_divergence_streak > 0:
+                    logger.info(
+                        "Collateral keeper divergence streak cleared",
+                        prior_streak=self._keeper_divergence_streak,
+                    )
                 self._keeper_divergence_streak = 0
                 self._keeper_last_divergence_usd = ZERO
-                return True
-            # Clean reconcile (within tolerance) — accept the chain
-            # reading, settle the reservations the chain has now
-            # applied, and reset the streak.  We do NOT auto-clear the
-            # halt flag; that requires explicit operator action via
-            # ``clear_collateral_halt()``.
-            #
-            # Race-safety: ``reserved_snapshot`` is the value at the
-            # moment we sent the chain query, so the chain reading
-            # reflects exactly those reservations.  Anything reserved
-            # AFTER the snapshot survives as a deduction from the new
-            # chain reading on the next reconcile.
+
+            # ALWAYS converge: the chain is truth.  Accept the new
+            # reading and settle the reservations the chain has now
+            # applied.
             self._keeper_chain_available = new_chain
             self._keeper_reserved_since_chain = max(
                 ZERO, self._keeper_reserved_since_chain - reserved_snapshot
             )
-            if self._keeper_divergence_streak > 0:
-                logger.info(
-                    "Collateral keeper divergence streak cleared",
-                    prior_streak=self._keeper_divergence_streak,
-                )
-            self._keeper_divergence_streak = 0
-            self._keeper_last_divergence_usd = ZERO
             return True
 
     async def _run_keeper_reconciler_loop(self) -> None:
