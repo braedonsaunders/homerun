@@ -22,7 +22,6 @@ trader_orchestrator package with no import cycles.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import statistics
 import time

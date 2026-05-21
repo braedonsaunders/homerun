@@ -23,7 +23,6 @@ hot path depends on:
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -36,7 +35,6 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from config import settings
-import services.live_execution_service as live_execution_module
 from services.live_execution_service import (
     LiveExecutionService,
     OrderSide,

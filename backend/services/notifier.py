@@ -10,7 +10,7 @@ from html import escape as html_escape
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import and_, func, or_, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 
 from config import settings
 from models.database import (

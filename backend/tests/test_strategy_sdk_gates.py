@@ -66,7 +66,7 @@ class _GatedStrategy(BaseStrategy):
     name = "gated"
 
     def get_pre_submit_gates(self):
-        from services.strategy_sdk import Gate, CostClass, GateContext, GateResult
+        from services.strategy_sdk import Gate, CostClass, GateResult
 
         def _pass(_ctx: GateContext) -> GateResult:
             return GateResult(passed=True)
@@ -364,7 +364,7 @@ class _PayloadFlagStrategy(BaseStrategy):
     name = "payload_flag"
 
     def get_pre_submit_gates(self):
-        from services.strategy_sdk import Gate, CostClass, GateContext, GateResult
+        from services.strategy_sdk import Gate, CostClass, GateResult
 
         def predicate(ctx: GateContext) -> GateResult:
             payload = (ctx.extras or {}).get("signal_payload") or {}

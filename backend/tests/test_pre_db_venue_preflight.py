@@ -273,7 +273,8 @@ async def test_preflight_all_spread_reject_skips_projection_commit(monkeypatch):
     monkeypatch.setattr(venue_gates_module, "_resolve_shadow_book_and_tape", _wide)
     # Force the spread gate to reject deterministically regardless of how
     # _compute_book_spread_bps interprets the book shape.
-    _reject = lambda *, book_payload, risk_limits: (True, 9999.0, 100.0)
+    def _reject(*, book_payload, risk_limits):
+        return (True, 9999.0, 100.0)
     monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _reject)
     monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _reject)
     # BUY gate is irrelevant for this test, but stub it as passing.
@@ -408,7 +409,8 @@ async def test_preflight_buy_collateral_fail_marks_leg_skipped(monkeypatch):
     _no_book = AsyncMock(return_value=(None, [], None, "test_no_book", None))
     monkeypatch.setattr(session_engine_module, "_resolve_shadow_book_and_tape", _no_book)
     monkeypatch.setattr(venue_gates_module, "_resolve_shadow_book_and_tape", _no_book)
-    _pass = lambda *, book_payload, risk_limits: (False, None, None)
+    def _pass(*, book_payload, risk_limits):
+        return (False, None, None)
     monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _pass)
     monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _pass)
     # BUY collateral gate REJECTS.

@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import ExecutionSessionEvent, ExecutionSessionLeg, ExecutionSessionOrder, TraderOrder, release_conn
 from services.event_bus import event_bus
 from services.live_execution_adapter import execute_live_order
-from services import live_execution_service as live_execution_service_module
 from services.live_execution_service import live_execution_service
 from services.signal_bus import set_trade_signal_status
 from services.strategy_sdk import StrategySDK
@@ -33,13 +32,9 @@ from services.trader_orchestrator.gate_pipeline import (
     Gate,
     GateContext,
     GatePipeline,
-    GateResult,
 )
 from services.trader_orchestrator.order_manager import (
     LegSubmitResult,
-    _check_max_spread_bps,
-    _resolve_shadow_book_and_tape,
-    _resolve_token_id_for_leg,
     _safe_live_context,
     _safe_signal_payload,
     cancel_live_provider_order,
