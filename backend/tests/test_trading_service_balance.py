@@ -257,6 +257,11 @@ async def test_get_balance_repoints_builder_funder_for_each_signature_probe():
 
 @pytest.mark.asyncio
 async def test_buy_pre_submit_gate_force_probes_signature_types_when_current_bucket_is_short(monkeypatch):
+    # Verifies the legacy chain-probe fallback path (active when the
+    # collateral keeper is disabled or has not yet bootstrapped) still
+    # walks all signature types on a cache-insufficient read.  The
+    # default keeper-backed path is exercised in test_collateral_keeper.
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "0")
     monkeypatch.setattr(settings, "MIN_ACCOUNT_BALANCE_USD", 50.0)
 
     service = LiveExecutionService()
@@ -368,6 +373,11 @@ async def test_sell_pre_submit_gate_rechecks_fresh_snapshot_before_blocking(monk
 
 @pytest.mark.asyncio
 async def test_buy_pre_submit_gate_blocks_when_collateral_insufficient(monkeypatch):
+    # Legacy chain-probe rejection format with signature_type / per-
+    # type funder diagnostics.  The keeper-backed gate emits a
+    # different (keeper-flavored) rejection message — exercised in
+    # test_collateral_keeper.
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "0")
     _install_balance_allowance_modules(monkeypatch)
 
     service = LiveExecutionService()
@@ -508,6 +518,12 @@ async def test_place_buy_order_fails_before_submit_when_pre_submit_gate_fails(mo
 
 @pytest.mark.asyncio
 async def test_buy_pre_submit_gate_auto_recovers_collateral_allowance(monkeypatch):
+    # Legacy chain-probe recovery path: on cache-insufficient the
+    # legacy gate forces a refresh + re-probe.  The keeper-backed gate
+    # explicitly does NOT do this on the hot path — it rejects fast
+    # and lets the background reconciler converge.  This test verifies
+    # the legacy fallback still recovers correctly when invoked.
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "0")
     _install_balance_allowance_modules(monkeypatch)
 
     class _StaleThenFreshClient(_BalanceClient):

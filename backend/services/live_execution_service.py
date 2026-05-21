@@ -113,6 +113,58 @@ _PNL_COUNTERS_TTL_SECONDS = 300.0  # was 30s; cycle 7 of the perf-harness
 # the repeat fetches in normal operation.
 _BALANCE_CACHE_TTL_SECONDS = 30.0
 
+# ---------------------------------------------------------------------------
+# Collateral keeper (position-keeper / pre-trade risk) constants
+# ---------------------------------------------------------------------------
+# The keeper maintains an in-memory view of available collateral so the
+# buy pre-submit gate can decide in O(1) instead of probing the chain on
+# every order.  Architectural notes:
+#
+#   * The chain is the source of truth, but it is too slow to query on
+#     the order hot path (5-15s of update_balance_allowance + get_balance
+#     under contention).  The keeper bootstraps from the chain once,
+#     then maintains the running balance locally as orders are reserved
+#     and released.
+#   * A background reconciler refreshes the chain on a fixed cadence and
+#     compares ``chain_available`` to ``keeper_available + keeper_reserved
+#     _delta``.  Divergence beyond tolerance HALTS new submissions and
+#     emits a trader event for operator review.
+#   * The submit_leg authoritative gate ( inside ``place_order``) remains
+#     the venue-side backstop — the keeper is the cheap pre-DB gate, not
+#     the only line of defence.
+#
+# This is the standard pre-trade risk pattern used by every prop shop,
+# market maker, and CLOB-facing HFT desk: pre-trade gates execute in
+# memory in microseconds, while exchange-side reconciliation runs on its
+# own clock and halts trading on divergence rather than probing inline.
+_KEEPER_RECONCILE_INTERVAL_SECONDS = 5.0
+# Tolerance for chain-vs-keeper divergence before halting new
+# submissions.  $1.00 covers normal slippage refunds on partial fills
+# (limit*size > actual_spend) and rounding in the venue's collateral
+# math.  Anything larger is a real bug — either we missed a reservation
+# or the venue lost ours.
+_KEEPER_DIVERGENCE_TOLERANCE_USD = Decimal("1.00")
+# Three consecutive divergence detections before halt.  A single chain
+# read can race a just-submitted order on the venue side; demanding
+# three consecutive reads at the same drift filters the race.
+_KEEPER_HALT_THRESHOLD = 3
+# Cap on how long the keeper trusts its in-memory snapshot without a
+# successful reconcile.  If the chain stays unreachable longer than
+# this, the keeper falls back to the legacy chain-probe gate (so we
+# don't trade on stale data indefinitely).
+_KEEPER_MAX_STALENESS_SECONDS = 60.0
+# Env-driven feature flag.  Default ON (this is the intended path), but
+# ``HOMERUN_COLLATERAL_KEEPER_ENABLED=0`` reverts to the legacy chain-
+# probe gate as a kill-switch for the rollout.
+_KEEPER_ENABLED_DEFAULT = "1"
+
+
+def _keeper_enabled() -> bool:
+    return os.environ.get(
+        "HOMERUN_COLLATERAL_KEEPER_ENABLED",
+        _KEEPER_ENABLED_DEFAULT,
+    ).strip().lower() not in {"0", "false", "no", "off", ""}
+
 
 def _to_decimal(value) -> Decimal:
     if isinstance(value, Decimal):
@@ -605,6 +657,38 @@ class LiveExecutionService:
         # order submission pipeline (signature refresh + buy gate both call get_balance).
         self._balance_cache: Optional[dict] = None
         self._balance_cache_at: float = 0.0
+        # ---------------------------------------------------------------
+        # Collateral keeper (in-memory pre-trade gate)
+        # ---------------------------------------------------------------
+        # ``_keeper_chain_available`` is the last successful on-chain
+        # reading of available collateral.  ``_keeper_reserved_since_chain``
+        # is the sum of order reservations we have placed locally since
+        # that reading — the venue may not yet have updated its view, so
+        # the keeper deducts them itself to avoid double-spending.
+        # Effective available = max(0, chain - reserved_since_chain).
+        # On reconcile success the chain reading is refreshed AND the
+        # local delta is settled atomically so the chain absorbs the
+        # reservations.  See architectural notes at module top.
+        self._keeper_chain_available: Optional[Decimal] = None
+        self._keeper_reserved_since_chain: Decimal = ZERO
+        self._keeper_initialized: bool = False
+        self._keeper_last_chain_at: float = 0.0
+        self._keeper_lock: Optional[asyncio.Lock] = None
+        # Divergence-detection state: streak counter + last samples.  We
+        # halt only after ``_KEEPER_HALT_THRESHOLD`` consecutive
+        # divergent reads to filter the in-flight-order race where one
+        # chain read can see a stale snapshot.
+        self._keeper_divergence_streak: int = 0
+        self._keeper_last_divergence_usd: Decimal = ZERO
+        # Halt state — when tripped, the keeper-backed gate rejects all
+        # new BUY submissions with a clear message until cleared by
+        # ``clear_collateral_halt()``.  Halts NEVER auto-clear; the
+        # divergence is signalling either our bookkeeping is wrong or
+        # the venue lost a reservation, both of which need a human.
+        self._keeper_halted: bool = False
+        self._keeper_halt_reason: Optional[str] = None
+        self._keeper_halt_at: Optional[float] = None
+        self._keeper_reconciler_task: Optional[asyncio.Task] = None
         # HTTP/2 keepalive task — pings /ok every few seconds so the
         # shared httpx.Client (and the underlying TLS+H2 stream) stays
         # warm.  httpx default ``keepalive_expiry=5.0s`` means a cold-
@@ -1820,6 +1904,45 @@ class LiveExecutionService:
         token_id: str,
         required_notional_usd: Decimal,
     ) -> tuple[bool, Optional[str]]:
+        """Sub-second pre-trade collateral gate.
+
+        Institutional pre-trade-risk pattern: the gate is a pure read-
+        only comparison against the in-memory position keeper.  The
+        keeper bootstraps from the chain ONCE (cold start), then
+        maintains its running view via local reservations and a
+        background reconciler.  No chain call happens on the order
+        hot path under steady state.
+
+        Three failure modes — each handled distinctly:
+
+        1. **Keeper halted by reconciler divergence.**  We reject with
+           the halt reason so the operator (or a downstream halt-
+           recovery service) can resume after investigation.  This is
+           the "venue lost a reservation" / "we missed a fill" case.
+
+        2. **Keeper not initialized AND chain unreachable on bootstrap.**
+           We fall back to the legacy chain-probe semantics (which
+           themselves degrade to ``skip gate / let submit_leg decide``
+           if the chain is also unreachable) so we never block trading
+           on the keeper being cold.
+
+        3. **Keeper initialized but stale** (no successful reconcile in
+           ``_KEEPER_MAX_STALENESS_SECONDS``).  We also fall back to
+           the legacy path; the venue-side gate at submit_leg is the
+           authoritative backstop.
+
+        Otherwise the gate is the in-memory compare —
+        ``effective_available >= required_total_usdc`` — and returns
+        in microseconds.
+
+        Note this gate is READ-ONLY: it does not reserve.  The
+        atomic reservation happens at
+        :meth:`_validate_and_reserve_order` time, under the keeper
+        lock, so two concurrent signals checking the same effective
+        value cannot both succeed if their combined requested notional
+        exceeds the budget.  The gate's role is to fast-reject the
+        clearly-doomed case before we open a DB write.
+        """
         token_key = str(token_id or "").strip()
         required_usdc = max(ZERO, required_notional_usd)
         min_account_balance_usd = max(ZERO, _to_decimal(settings.MIN_ACCOUNT_BALANCE_USD))
@@ -1827,6 +1950,109 @@ class LiveExecutionService:
         if required_usdc <= ZERO:
             return False, "BUY pre-submit gate failed: required notional must be greater than zero."
 
+        if _keeper_enabled():
+            # 1. Halt check — short-circuit before any other work.
+            if self._keeper_halted:
+                reason = self._keeper_halt_reason or "collateral keeper halted by reconciler divergence"
+                error_message = (
+                    f"BUY pre-submit gate failed: {reason}. "
+                    "Resolve via clear_collateral_halt() or operator review."
+                )
+                logger.warning(
+                    "Buy pre-submit gate rejected by keeper halt",
+                    token_id=token_key,
+                    halt_reason=reason,
+                )
+                return False, error_message
+
+            # 2. Bootstrap on first call (one-time chain probe).
+            if not self._keeper_initialized:
+                async with self._get_keeper_lock():
+                    if not self._keeper_initialized:
+                        bootstrapped = await self._keeper_bootstrap_locked()
+                        if not bootstrapped:
+                            # Fall through to legacy chain-probe path
+                            # below — the chain is unreachable, but
+                            # the legacy gate has its own skip-on-error
+                            # behaviour and the submit_leg backstop
+                            # will catch any real issue.
+                            return await self._legacy_buy_pre_submit_gate(
+                                token_key=token_key,
+                                required_usdc=required_usdc,
+                                required_total_usdc=required_total_usdc,
+                                min_account_balance_usd=min_account_balance_usd,
+                            )
+
+            # 3. Stale-data fallback (reconciler hasn't run in a while).
+            if self._keeper_is_stale():
+                logger.warning(
+                    "Buy pre-submit gate falling back to chain probe — keeper stale",
+                    token_id=token_key,
+                    last_chain_at_monotonic=self._keeper_last_chain_at,
+                )
+                return await self._legacy_buy_pre_submit_gate(
+                    token_key=token_key,
+                    required_usdc=required_usdc,
+                    required_total_usdc=required_total_usdc,
+                    min_account_balance_usd=min_account_balance_usd,
+                )
+
+            # 4. The hot path: pure in-memory compare.
+            effective = self._keeper_effective_available()
+            if effective is not None and effective >= required_total_usdc:
+                return True, None
+
+            shortfall = max(ZERO, required_total_usdc - (effective or ZERO))
+            post_trade_available = max(ZERO, (effective or ZERO) - required_usdc)
+            chain_available = self._keeper_chain_available
+            error_message = (
+                "BUY pre-submit gate failed: insufficient effective collateral (keeper). "
+                f"token_id={token_key} "
+                f"required_usdc={required_usdc} required_total_usdc={required_total_usdc} "
+                f"minimum_account_balance_usd={min_account_balance_usd} "
+                f"effective_available_usdc={effective} post_trade_available_usdc={post_trade_available} shortfall_usdc={shortfall} "
+                f"chain_available_usdc={chain_available} "
+                f"reserved_since_chain_usdc={self._keeper_reserved_since_chain}. "
+                "Collateral may be reserved by other open orders; chain reconciler will refresh on next tick."
+            )
+            logger.info(
+                "Buy pre-submit balance gate blocked order (keeper)",
+                token_id=token_key,
+                required_usdc=str(required_usdc),
+                required_total_usdc=str(required_total_usdc),
+                effective_available_usdc=str(effective) if effective is not None else "unknown",
+                post_trade_available_usdc=str(post_trade_available),
+                chain_available_usdc=str(chain_available) if chain_available is not None else "unknown",
+                reserved_since_chain_usdc=str(self._keeper_reserved_since_chain),
+            )
+            return False, error_message
+
+        # Feature flag off — keep the legacy behaviour intact.
+        return await self._legacy_buy_pre_submit_gate(
+            token_key=token_key,
+            required_usdc=required_usdc,
+            required_total_usdc=required_total_usdc,
+            min_account_balance_usd=min_account_balance_usd,
+        )
+
+    async def _legacy_buy_pre_submit_gate(
+        self,
+        *,
+        token_key: str,
+        required_usdc: Decimal,
+        required_total_usdc: Decimal,
+        min_account_balance_usd: Decimal,
+    ) -> tuple[bool, Optional[str]]:
+        """Legacy chain-probe gate.
+
+        Preserved verbatim from the pre-keeper implementation for the
+        fallback paths: feature flag off, keeper bootstrap failure,
+        keeper stale-data window.  Probes the chain twice (cached
+        view, then a forced refresh if the cached view is below the
+        requirement) — see the architectural notes at module top for
+        why this is the wrong shape of risk for the hot path; it is
+        kept only as a backstop when the keeper cannot serve.
+        """
         balance = await self.get_balance()
         if not isinstance(balance, dict):
             logger.warning(
@@ -2419,6 +2645,12 @@ class LiveExecutionService:
                 # loop — the loop's first ping will renew the warm
                 # connection, not establish a cold one.
                 self._start_clob_keepalive_loop()
+                # Spawn the collateral keeper reconciler so the in-
+                # memory pre-trade gate stays converged with the chain
+                # without paying chain round-trips on the order hot
+                # path.  No-op if the feature flag is off or this is
+                # not the trading plane.
+                self._start_keeper_reconciler()
                 return True
 
             except ImportError:
@@ -4315,6 +4547,28 @@ class LiveExecutionService:
         pass
 
         reserved = False
+        # Keeper-side collateral reservation FIRST (before stats lock)
+        # so the locks are never nested.  This is the atomic
+        # check-and-reserve that owns pre-trade risk: if it fails, no
+        # stats reservation happens and the caller sees the keeper's
+        # error message.  BUY-only — SELL orders don't consume
+        # collateral and are gated by share balance at submit_leg.
+        keeper_reserved_amount = ZERO
+        if side == OrderSide.BUY and _keeper_enabled():
+            # Need keeper initialized to reserve — if it's not, fall
+            # through to the stats-only reservation; the pre-submit
+            # gate handles the cold-keeper case by either bootstrapping
+            # or falling back to the legacy chain probe, so reaching
+            # here with an uninitialized keeper means the legacy path
+            # already passed.
+            if self._keeper_initialized and not self._keeper_is_stale() and not self._keeper_halted:
+                min_account_balance_usd = max(ZERO, _to_decimal(settings.MIN_ACCOUNT_BALANCE_USD))
+                required_total = size_usd + min_account_balance_usd
+                ok, reject_reason = await self._keeper_try_reserve(required_total)
+                if not ok:
+                    return False, reject_reason or "BUY pre-submit gate failed (keeper)."
+                keeper_reserved_amount = required_total
+
         stats_lock = self._get_stats_lock()
         async with stats_lock:
             is_valid, error = self._validate_order(
@@ -4324,6 +4578,11 @@ class LiveExecutionService:
                 min_order_size_usd=min_order_size_usd,
             )
             if not is_valid:
+                # Stats reservation failed but the keeper already
+                # claimed the budget.  Roll back the keeper claim so
+                # the next caller sees the correct effective_available.
+                if keeper_reserved_amount > ZERO:
+                    await self._keeper_release(keeper_reserved_amount)
                 return False, error
 
             # Only track BUY volume toward the daily limit — SELL orders
@@ -4371,6 +4630,14 @@ class LiveExecutionService:
             delta = -size_usd if side == OrderSide.BUY else size_usd
             self._apply_market_exposure_delta(token_id, delta)
             self._sync_stats_from_decimals()
+        # Release the matching keeper reservation.  ``_keeper_try_reserve``
+        # claims (size_usd + MIN_ACCOUNT_BALANCE_USD), so release the
+        # same magnitude.  Idempotent — clamps at zero so a double-
+        # release path (e.g. cancel + cleanup) cannot drive the
+        # reserved counter negative.
+        if side == OrderSide.BUY and _keeper_enabled():
+            min_account_balance_usd = max(ZERO, _to_decimal(settings.MIN_ACCOUNT_BALANCE_USD))
+            await self._keeper_release(size_usd + min_account_balance_usd)
         await self._persist_runtime_state()
 
     async def place_order(
@@ -4962,7 +5229,14 @@ class LiveExecutionService:
                         name="persist_runtime_state_inline",
                     )
                     runtime_state_persisted_inline = True
-                    self._invalidate_balance_cache()
+                    # Cache invalidation removed: the in-memory
+                    # collateral keeper already reflects the order's
+                    # reservation (claimed in _validate_and_reserve_
+                    # order under the keeper lock).  The legacy cache
+                    # invalidation here forced the NEXT signal to pay
+                    # a 5-10s chain refresh; the keeper makes that
+                    # round-trip happen in the background reconciler
+                    # instead.  See architectural notes at module top.
                     logger.info(f"Order placed successfully: {order.clob_order_id}")
                     break
 
@@ -5917,6 +6191,333 @@ class LiveExecutionService:
     def _invalidate_balance_cache(self) -> None:
         self._balance_cache = None
         self._balance_cache_at = 0.0
+
+    # ------------------------------------------------------------------
+    # Collateral keeper: in-memory pre-trade risk
+    # ------------------------------------------------------------------
+    def _get_keeper_lock(self) -> asyncio.Lock:
+        if self._keeper_lock is None:
+            self._keeper_lock = asyncio.Lock()
+        return self._keeper_lock
+
+    def _keeper_is_stale(self) -> bool:
+        if not self._keeper_initialized:
+            return True
+        last = self._keeper_last_chain_at
+        if last <= 0.0:
+            return True
+        return (_time.monotonic() - last) > _KEEPER_MAX_STALENESS_SECONDS
+
+    def _keeper_effective_available(self) -> Optional[Decimal]:
+        """Return the in-memory effective available collateral, or None
+        if the keeper has not yet bootstrapped.  Caller MUST hold the
+        keeper lock when interpreting this value for reservation
+        decisions; the un-locked read is safe for diagnostics only.
+        """
+        chain = self._keeper_chain_available
+        if chain is None:
+            return None
+        return max(ZERO, chain - max(ZERO, self._keeper_reserved_since_chain))
+
+    async def _keeper_bootstrap_locked(self) -> bool:
+        """Fetch the chain balance once and seed the keeper state.
+
+        Caller MUST hold ``_keeper_lock``.  This is the only chain call
+        on the keeper's hot path — it happens once at service warm-up
+        and then never again on the order submission flow.  Subsequent
+        chain refreshes happen on the background reconciler.
+
+        Returns True on successful bootstrap, False if the chain call
+        failed (keeper remains uninitialized; the gate falls back to
+        the legacy chain-probe path).
+        """
+        try:
+            balance = await self.get_balance()
+        except Exception as exc:
+            logger.warning("Collateral keeper bootstrap failed", exc_info=exc)
+            return False
+        if not isinstance(balance, dict) or balance.get("error"):
+            return False
+        available_raw = safe_float(balance.get("available"))
+        if available_raw is None:
+            return False
+        self._keeper_chain_available = max(ZERO, _to_decimal(available_raw))
+        self._keeper_reserved_since_chain = ZERO
+        self._keeper_last_chain_at = _time.monotonic()
+        self._keeper_initialized = True
+        self._keeper_divergence_streak = 0
+        self._keeper_last_divergence_usd = ZERO
+        logger.info(
+            "Collateral keeper bootstrapped",
+            available_usdc=str(self._keeper_chain_available),
+        )
+        return True
+
+    async def _keeper_try_reserve(self, amount: Decimal) -> tuple[bool, Optional[str]]:
+        """Atomically reserve ``amount`` of collateral against the keeper.
+
+        Returns (True, None) on success, (False, reason) on rejection.
+
+        The reserve+check is atomic under the keeper lock: two
+        concurrent callers cannot both succeed if their combined
+        requested notional exceeds the effective available.
+        """
+        if amount <= ZERO:
+            return False, "Reserve amount must be greater than zero."
+        async with self._get_keeper_lock():
+            if self._keeper_halted:
+                reason = self._keeper_halt_reason or "collateral keeper halted by reconciler divergence"
+                return False, f"BUY pre-submit gate failed: {reason}"
+            if not self._keeper_initialized:
+                # Caller is responsible for bootstrapping before the
+                # first reserve.  If we hit this path the keeper is
+                # disabled or the bootstrap failed; the legacy gate
+                # path takes over.
+                return False, "Collateral keeper not initialized; falling back to chain probe."
+            effective = self._keeper_effective_available()
+            if effective is None or effective < amount:
+                shortfall = (amount - (effective or ZERO))
+                return False, (
+                    "BUY pre-submit gate failed: insufficient effective collateral. "
+                    f"required_usdc={amount} "
+                    f"effective_available_usdc={effective if effective is not None else 'unknown'} "
+                    f"shortfall_usdc={shortfall} "
+                    f"chain_available_usdc={self._keeper_chain_available} "
+                    f"reserved_since_chain_usdc={self._keeper_reserved_since_chain}."
+                )
+            self._keeper_reserved_since_chain = self._keeper_reserved_since_chain + amount
+            return True, None
+
+    async def _keeper_release(self, amount: Decimal) -> None:
+        """Release a previously-reserved amount back to the keeper.
+
+        Called on order failure / cancel / rejection.  Idempotent and
+        clamps at zero so duplicate calls cannot drive reserved
+        negative.
+        """
+        if amount <= ZERO:
+            return
+        async with self._get_keeper_lock():
+            self._keeper_reserved_since_chain = max(
+                ZERO, self._keeper_reserved_since_chain - amount
+            )
+
+    async def _keeper_reconcile_once(self) -> bool:
+        """Run one cycle of the chain-vs-keeper reconciler.
+
+        Returns True on a successful reconcile (chain reachable),
+        False on transient failure.  On divergence beyond tolerance
+        for ``_KEEPER_HALT_THRESHOLD`` consecutive cycles, halts the
+        keeper and emits an alert event.
+
+        Race-safety: the reserved-since-chain snapshot is taken at the
+        same moment we send the chain query, so any reservation that
+        races the chain HTTP roundtrip lands AFTER the snapshot and
+        survives the settlement step.
+        """
+        async with self._get_keeper_lock():
+            reserved_snapshot = self._keeper_reserved_since_chain
+            previously_initialized = self._keeper_initialized
+            previous_chain = self._keeper_chain_available
+
+        try:
+            balance = await self.get_balance(force_probe_all=False)
+        except Exception as exc:
+            logger.debug("Collateral keeper reconciler chain call raised", exc_info=exc)
+            return False
+        if not isinstance(balance, dict) or balance.get("error"):
+            return False
+        available_raw = safe_float(balance.get("available"))
+        if available_raw is None:
+            return False
+        new_chain = max(ZERO, _to_decimal(available_raw))
+
+        async with self._get_keeper_lock():
+            if not previously_initialized:
+                # Bootstrap path: nothing to settle yet, just seed.
+                self._keeper_chain_available = new_chain
+                self._keeper_reserved_since_chain = ZERO
+                self._keeper_last_chain_at = _time.monotonic()
+                self._keeper_initialized = True
+                self._keeper_divergence_streak = 0
+                self._keeper_last_divergence_usd = ZERO
+                logger.info(
+                    "Collateral keeper initialized via reconciler",
+                    available_usdc=str(new_chain),
+                )
+                return True
+            # Divergence check: what we EXPECTED the chain to be after
+            # settling the snapshot equals (previous_chain - snapshot).
+            # Anything beyond tolerance is real drift.
+            #
+            # Critical semantics: when divergent, we DO NOT update our
+            # chain reading.  Updating it would silently "absorb" the
+            # discrepancy and the next cycle would show zero
+            # divergence — losing the streak that is supposed to fire
+            # the halt.  We only update the chain reading on
+            # AGREEMENT (drift within tolerance).  On halt, the only
+            # way to refresh the chain view is operator action via
+            # ``clear_collateral_halt`` which re-bootstraps.
+            self._keeper_last_chain_at = _time.monotonic()
+            expected_chain = max(ZERO, (previous_chain or ZERO) - reserved_snapshot)
+            divergence = abs(new_chain - expected_chain)
+            if divergence > _KEEPER_DIVERGENCE_TOLERANCE_USD:
+                self._keeper_divergence_streak += 1
+                self._keeper_last_divergence_usd = divergence
+                if self._keeper_divergence_streak >= _KEEPER_HALT_THRESHOLD and not self._keeper_halted:
+                    reason = (
+                        f"chain-vs-keeper divergence ${divergence:.2f} "
+                        f"exceeded tolerance ${_KEEPER_DIVERGENCE_TOLERANCE_USD:.2f} "
+                        f"for {self._keeper_divergence_streak} consecutive reconciles "
+                        f"(expected_chain={expected_chain} actual_chain={new_chain})"
+                    )
+                    self._keeper_halted = True
+                    self._keeper_halt_reason = reason
+                    self._keeper_halt_at = _time.monotonic()
+                    logger.error(
+                        "Collateral keeper halted on divergence",
+                        divergence_usd=str(divergence),
+                        expected_chain_usd=str(expected_chain),
+                        actual_chain_usd=str(new_chain),
+                        streak=self._keeper_divergence_streak,
+                    )
+                else:
+                    logger.warning(
+                        "Collateral keeper divergence detected (below halt threshold)",
+                        divergence_usd=str(divergence),
+                        expected_chain_usd=str(expected_chain),
+                        actual_chain_usd=str(new_chain),
+                        streak=self._keeper_divergence_streak,
+                        threshold=_KEEPER_HALT_THRESHOLD,
+                    )
+                # IMPORTANT: do NOT update _keeper_chain_available here.
+                # We treat our local model as authoritative until either
+                # (a) chain agrees again (streak resets, drift accepted),
+                # or (b) operator clears the halt and we re-bootstrap.
+                return True
+            # Clean reconcile — accept the chain reading, settle the
+            # reservations the chain has now applied, and reset the
+            # streak.  We do NOT auto-clear the halt flag; that
+            # requires explicit operator action via
+            # ``clear_collateral_halt()``.
+            #
+            # Race-safety: ``reserved_snapshot`` is the value at the
+            # moment we sent the chain query, so the chain reading
+            # reflects exactly those reservations.  Anything reserved
+            # AFTER the snapshot survives as a deduction from the new
+            # chain reading on the next reconcile.
+            self._keeper_chain_available = new_chain
+            self._keeper_reserved_since_chain = max(
+                ZERO, self._keeper_reserved_since_chain - reserved_snapshot
+            )
+            if self._keeper_divergence_streak > 0:
+                logger.info(
+                    "Collateral keeper divergence streak cleared",
+                    prior_streak=self._keeper_divergence_streak,
+                )
+            self._keeper_divergence_streak = 0
+            self._keeper_last_divergence_usd = ZERO
+            return True
+
+    async def _run_keeper_reconciler_loop(self) -> None:
+        """Background task: refreshes the keeper from the chain on a
+        fixed cadence.  Started once per service lifetime by
+        ``_start_keeper_reconciler``.
+        """
+        # Tiny initial delay so the bootstrap path (which fires on the
+        # first gate call) gets to set up first.  Belt-and-braces — if
+        # nothing else triggers bootstrap, the reconciler will.
+        await asyncio.sleep(0.5)
+        while True:
+            try:
+                await self._keeper_reconcile_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Collateral keeper reconciler iteration failed", exc_info=exc)
+            try:
+                await asyncio.sleep(_KEEPER_RECONCILE_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                raise
+
+    def _start_keeper_reconciler(self) -> None:
+        """Spawn the reconciler background task if not already running.
+        Safe to call multiple times — duplicates are a no-op.
+        """
+        if not _keeper_enabled():
+            return
+        # Trading-plane only.  The API process doesn't submit orders, so
+        # paying for a chain round-trip every 5s there is pure waste.
+        if os.environ.get("HOMERUN_WORKER_PLANE", "") != "trading":
+            return
+        existing = self._keeper_reconciler_task
+        if existing is not None and not existing.done():
+            return
+        task = self._start_background_task(
+            self._run_keeper_reconciler_loop(),
+            name="collateral_keeper_reconciler",
+        )
+        self._keeper_reconciler_task = task
+
+    def clear_collateral_halt(self, *, reason: Optional[str] = None) -> bool:
+        """Operator override to clear a keeper halt and resume trading.
+
+        Returns True if the halt was cleared, False if no halt was in
+        effect.  The reconciler will re-halt on the next divergent
+        cycle if the underlying issue isn't resolved.
+
+        Side effect: marks the keeper as uninitialized so the next
+        reconcile cycle re-bootstraps from a fresh chain read.  This
+        is the only way to re-sync the in-memory model with reality
+        when the chain has genuinely moved (e.g. external deposit or
+        venue-side correction) — the operator vouching for the new
+        chain reading is the trust event we need to accept it.
+        """
+        if not self._keeper_halted:
+            return False
+        self._keeper_halted = False
+        prior_reason = self._keeper_halt_reason
+        self._keeper_halt_reason = None
+        self._keeper_halt_at = None
+        # Reset divergence state so a real new divergence has to
+        # accumulate again before re-halting.
+        self._keeper_divergence_streak = 0
+        self._keeper_last_divergence_usd = ZERO
+        # Force re-bootstrap so the next reconcile syncs to whatever
+        # the chain currently says (operator-vouched recovery path).
+        self._keeper_initialized = False
+        self._keeper_chain_available = None
+        self._keeper_reserved_since_chain = ZERO
+        logger.warning(
+            "Collateral keeper halt cleared by operator; will re-bootstrap on next reconcile",
+            prior_reason=prior_reason,
+            clear_reason=reason,
+        )
+        return True
+
+    def collateral_halt_status(self) -> dict[str, Any]:
+        """Read-only halt + keeper diagnostics for API surfacing."""
+        return {
+            "enabled": _keeper_enabled(),
+            "initialized": bool(self._keeper_initialized),
+            "halted": bool(self._keeper_halted),
+            "halt_reason": self._keeper_halt_reason,
+            "halt_at_monotonic": self._keeper_halt_at,
+            "divergence_streak": int(self._keeper_divergence_streak),
+            "last_divergence_usd": str(self._keeper_last_divergence_usd),
+            "chain_available_usd": (
+                str(self._keeper_chain_available)
+                if self._keeper_chain_available is not None
+                else None
+            ),
+            "reserved_since_chain_usd": str(self._keeper_reserved_since_chain),
+            "last_chain_at_monotonic": self._keeper_last_chain_at,
+            "is_stale": self._keeper_is_stale(),
+            "stale_after_seconds": _KEEPER_MAX_STALENESS_SECONDS,
+            "reconcile_interval_seconds": _KEEPER_RECONCILE_INTERVAL_SECONDS,
+            "divergence_tolerance_usd": str(_KEEPER_DIVERGENCE_TOLERANCE_USD),
+            "halt_threshold": _KEEPER_HALT_THRESHOLD,
+        }
 
     async def get_balance(self, *, force_probe_all: bool = False) -> dict:
         """Get wallet balance.  Results are cached for a few seconds to avoid
