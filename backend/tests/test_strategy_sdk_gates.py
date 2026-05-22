@@ -441,9 +441,6 @@ async def test_strategy_gate_short_circuits_inside_session_engine(monkeypatch):
         return_value=(None, [], None, "stub_no_book", None)
     )
     monkeypatch.setattr(
-        session_engine_module, "_resolve_shadow_book_and_tape", book_resolver
-    )
-    monkeypatch.setattr(
         venue_gates_module, "_resolve_shadow_book_and_tape", book_resolver
     )
 

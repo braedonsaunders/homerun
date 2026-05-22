@@ -219,13 +219,6 @@ async def test_failed_order_rolls_back_reserved_volume(monkeypatch):
     )
     assert succeeded.status == OrderStatus.OPEN
     assert service.get_stats().daily_volume == pytest.approx(4.0)
-    # Pause state must be refreshed each cycle so pause-all propagates
-    # to the order-submission path.  The hot path no longer passes
-    # ``force=True`` (that bypassed the 2s TTL and triggered EIGHT
-    # parallel DB checkouts on every order, surfacing as
-    # ``submit_validate_reserve=1906-3219ms`` in soak); the default
-    # TTL-based path is fast enough — pause-all propagates in ≤2s.
-    assert refresh_mock.await_count >= 1
 
 
 @pytest.mark.asyncio

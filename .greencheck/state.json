@@ -1,11 +1,11 @@
 {
-  "runId": 1778489167541,
-  "workflowRunId": 25659362275,
+  "runId": 1779406784374,
+  "workflowRunId": 26259162456,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/25659362275",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/26259162456",
   "branch": "main",
-  "headSha": "19a961c658b232b1d7f3e3f2dd1f5e1383ed492d",
+  "headSha": "b88ad2e13f9487bb43d3ac58375b421a58ff17de",
   "prNumber": null,
   "passes": [
     {
@@ -13,91 +13,110 @@
       "cluster": {
         "type": "test-failure",
         "files": [
-          "backend/tests/test_alembic_roundtrip.py"
+          "backend/tests/test_gate_metrics.py"
         ],
         "failures": [
           {
             "type": "test-failure",
-            "file": "backend/tests/test_alembic_roundtrip.py",
+            "file": "backend/tests/test_gate_metrics.py",
             "line": null,
             "column": null,
-            "message": "Failed: alembic replay subprocess exited with 1",
+            "message": "AssertionError: Expected budget-violation warning, got: []",
             "rule": null,
-            "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
+            "rawLog": "FAILED tests/test_gate_metrics.py::test_budget_violation_logs_when_p95_exceeds_2x_budget - AssertionError: Expected budget-violation warning, got: []",
             "confidence": 0.7
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "b8b6f4c45dd91f5e3d9bf31aff60176c0956b04d",
+      "commitSha": "853494a33ae203fc123901b4306708ae44eec66e",
       "filesChanged": [
-        "backend/alembic/versions/202605110300_topic_catalog.py",
-        "backend/alembic/versions/202605110400_topic_rotation.py"
+        "backend/services/trader_orchestrator/gate_pipeline.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 268490
+      "durationMs": 282790
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-11T08:46:07.541Z",
+  "startedAt": "2026-05-21T23:39:44.374Z",
   "result": null,
   "commits": [
-    "b8b6f4c45dd91f5e3d9bf31aff60176c0956b04d"
+    "853494a33ae203fc123901b4306708ae44eec66e"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_alembic_roundtrip.py",
+      "file": "backend/tests/test_gate_metrics.py",
       "line": null,
       "column": null,
-      "message": "Failed: alembic replay subprocess exited with 1",
+      "message": "AssertionError: Expected budget-violation warning, got: []",
       "rule": null,
-      "rawLog": "FAILED tests/test_alembic_roundtrip.py::test_alembic_replay_base_to_head_on_empty_db - Failed: alembic replay subprocess exited with 1",
+      "rawLog": "FAILED tests/test_gate_metrics.py::test_budget_violation_logs_when_p95_exceeds_2x_budget - AssertionError: Expected budget-violation warning, got: []",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_backtest_engine.py",
+      "file": "backend/tests/test_gate_metrics.py",
       "line": null,
       "column": null,
-      "message": "AssertionError: assert 'working' == 'filled'",
+      "message": "AssertionError: Expected exactly 1 warning after first batch, got 0",
       "rule": null,
-      "rawLog": "FAILED tests/test_backtest_engine.py::TestMatchingEngine::test_gtc_rests_then_fills_when_book_moves - AssertionError: assert 'working' == 'filled'",
+      "rawLog": "FAILED tests/test_gate_metrics.py::test_budget_violation_rate_limited_to_once_per_5_minutes - AssertionError: Expected exactly 1 warning after first batch, got 0",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_recorded_event_bus.py",
+      "file": "backend/tests/test_pre_db_venue_preflight.py",
       "line": null,
       "column": null,
-      "message": "sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedTableError'>: relation \"topic_catalog\" does not exist",
+      "message": "AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
       "rule": null,
-      "rawLog": "FAILED tests/test_recorded_event_bus.py::TestCatalog::test_seed_topics_are_registered - sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedTableError'>: relation \"topic_catalog\" does not exist",
+      "rawLog": "FAILED tests/test_pre_db_venue_preflight.py::test_preflight_happy_path_writes_placeholders_and_submits - AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_scanner_market_filter.py",
+      "file": "backend/tests/test_strategy_sdk_gates.py",
       "line": null,
       "column": null,
-      "message": "assert False",
+      "message": "AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
       "rule": null,
-      "rawLog": "FAILED tests/test_scanner_market_filter.py::test_whitelist_zero_match_logs_warning - assert False",
+      "rawLog": "FAILED tests/test_strategy_sdk_gates.py::test_strategy_gate_short_circuits_inside_session_engine - AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_strategy_backtester.py",
+      "file": "backend/tests/test_trader_hot_state_decisions.py",
       "line": null,
       "column": null,
-      "message": "AssertionError: plain-detect() strategy produced 0 opps — regression!",
+      "message": "AssertionError: assert 0 == 1",
       "rule": null,
-      "rawLog": "FAILED tests/test_strategy_backtester.py::test_replay_discover_runs_strategies_that_only_override_detect - AssertionError: plain-detect() strategy produced 0 opps — regression!",
+      "rawLog": "FAILED tests/test_trader_hot_state_decisions.py::test_flush_audit_buffer_requeues_failed_batch_at_front - AssertionError: assert 0 == 1",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_hot_state_decisions.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: assert [_AuditEntry(...etry_count=5)] == []",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_hot_state_decisions.py::test_flush_audit_buffer_drops_entries_that_exhaust_retry_budget - AssertionError: assert [_AuditEntry(...etry_count=5)] == []",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trading_service_safety.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: assert 0 >= 1",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trading_service_safety.py::test_failed_order_rolls_back_reserved_volume - AssertionError: assert 0 >= 1",
       "confidence": 0.7
     }
   ],
   "latestParserUsed": "pytest",
-  "latestLogPath": ".greencheck/logs/workflow-run-25659362275.log"
+  "latestLogPath": ".greencheck/logs/workflow-run-26259162456.log"
 }

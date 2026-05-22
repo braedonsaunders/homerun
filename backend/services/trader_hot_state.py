@@ -1797,6 +1797,11 @@ async def flush_audit_buffer() -> int:
                     "could not connect",
                 )
                 return any(m in msg for m in infra_markers)
+            # TimeoutError is a subclass of OSError in Python 3 but
+            # represents DB/statement/lock timeouts — semantic failures
+            # that should consume the retry budget, not infra failures.
+            if isinstance(exc, TimeoutError):
+                return False
             # OSError covers raw socket-level failures (asyncpg can raise
             # these directly before a SQLAlchemy wrapper kicks in).
             if isinstance(exc, OSError):
