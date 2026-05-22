@@ -297,8 +297,37 @@ _AUDIT_OVERFLOW_LOGGED_AT: float = 0.0
 # Queue's lock/condition cost on the hot path — the only mutation from
 # the producer side is ``list.append``, which is O(1) and GIL-atomic.
 # The pump thread-of-control is a single coroutine; no contention.
+# ---------------------------------------------------------------------------
+# Firehose telemetry routing
+# ---------------------------------------------------------------------------
+# Firehose events (per-market gate evaluations / rejections / emits) are
+# high-volume observability telemetry — NOT system-of-record.  They must
+# never touch the trading OLTP path (Postgres ``trader_events``), where at
+# ~13 rows/sec they bloated the table to 24 GB and drove 5-6s WAL-fsync
+# commit latency that cascaded into trader-cycle stalls (2026-05-21 soak).
+#
+# Correct data-class separation:
+#   * Live feed   → Redis pub/sub  (unchanged; WS bridge → terminal)
+#   * Bounded     → Redis Stream (capped, MAXLEN ~) — reload scrollback
+#     history       without unbounded OLTP growth
+#   * Postgres    → ONLY non-firehose business-of-record events
+#
+# The pub/sub path was already the live source; the Postgres copy was
+# dead weight (the per-trader history query filters trader_id IN (...),
+# which excludes the trader_id=NULL firehose rows — nothing ever read
+# them back).  This routing drops that dead write and adds a genuine
+# bounded-history stream the terminal can replay on reload.
+_FIREHOSE_EVENT_TYPES = frozenset({"firehose_evaluation", "firehose_emit", "firehose_gate"})
+_FIREHOSE_STREAM = "trader_firehose"
+# ~50k events × ~1 KB ≈ 50 MB Redis, capped forever.  Approximate trim
+# (MAXLEN ~) keeps XADD cheap.
+_FIREHOSE_STREAM_MAXLEN = 50_000
+
 _TRADER_EVENT_PUBLISH_QUEUE_MAX = 4096
-_trader_event_publish_queue: list[tuple[str, str]] = []
+# Queue entries: (channel, payload, stream_or_None, stream_maxlen_or_None).
+# When ``stream`` is set the pump ALSO XADDs the payload to that
+# (already-namespaced) stream in the same pipeline round-trip.
+_trader_event_publish_queue: list[tuple[str, str, Optional[str], Optional[int]]] = []
 _trader_event_publish_dropped: int = 0
 _trader_event_publish_task: Optional[asyncio.Task] = None
 _trader_event_publish_wake: Optional[asyncio.Event] = None
@@ -360,8 +389,18 @@ async def _trader_event_publish_pump() -> None:
             # merges into a single raw round-trip.  We don't need
             # atomicity for PUBLISH fan-out.
             async with client.pipeline(transaction=False) as pipe:
-                for channel, payload in batch:
+                for channel, payload, stream, stream_maxlen in batch:
                     pipe.publish(channel, payload)
+                    if stream:
+                        # Bounded history for firehose telemetry — capped
+                        # ring via MAXLEN ~ (approximate trim is cheap).
+                        # ``stream`` is already namespaced by the producer.
+                        pipe.xadd(
+                            stream,
+                            {"data": payload},
+                            maxlen=stream_maxlen if stream_maxlen and stream_maxlen > 0 else None,
+                            approximate=True,
+                        )
                 await pipe.execute()
         except Exception as exc:
             # Failed pipeline — swallow.  Log every 1000th failure so a
@@ -398,12 +437,25 @@ def _ensure_trader_event_publish_pump() -> None:
     _trader_event_publish_task.add_done_callback(lambda _t: None)
 
 
-def _schedule_trader_event_publish(client: Any, channel: str, payload: str) -> None:
-    """Enqueue a Redis publish for the pump to drain.
+def _schedule_trader_event_publish(
+    client: Any,
+    channel: str,
+    payload: str,
+    *,
+    stream: Optional[str] = None,
+    stream_maxlen: Optional[int] = None,
+) -> None:
+    """Enqueue a Redis publish (and optional stream append) for the pump.
 
     The ``client`` argument is kept for API compatibility with the
     Round-6 signature; the pump itself fetches the live client each
     drain so we don't hold a stale reference across reconnects.
+
+    When ``stream`` is provided (already namespaced) the pump also
+    ``XADD``s the same payload to it with a ``MAXLEN ~`` cap — used for
+    bounded firehose history.  Both the publish and the xadd ride the
+    same pipeline round-trip, so the firehose path stays a single
+    fire-and-forget enqueue with no extra latency on the producer.
     """
     global _trader_event_publish_dropped
     if len(_trader_event_publish_queue) >= _TRADER_EVENT_PUBLISH_QUEUE_MAX:
@@ -416,7 +468,7 @@ def _schedule_trader_event_publish(client: Any, channel: str, payload: str) -> N
                 total_dropped=_trader_event_publish_dropped,
             )
         return
-    _trader_event_publish_queue.append((channel, payload))
+    _trader_event_publish_queue.append((channel, payload, stream, stream_maxlen))
     _ensure_trader_event_publish_pump()
     wake = _trader_event_publish_wake
     if wake is not None and not wake.is_set():
@@ -1449,35 +1501,46 @@ async def buffer_trader_event(
     norm_verbosity = str(verbosity).lower() if verbosity else None
     norm_severity = str(severity or "info")
     payload_json = payload or {}
-    entry = _AuditEntry(
-        kind="trader_event",
-        payload={
-            "id": row_id,
-            "trader_id": trader_id,
-            "event_type": str(event_type or ""),
-            "severity": norm_severity,
-            "verbosity": norm_verbosity,
-            "source": source,
-            "operator": operator,
-            "message": message,
-            "trace_id": trace_id,
-            "payload_json": payload_json,
-            "created_at": created_at,
-        },
-    )
-    async with _audit_lock:
-        _audit_buffer_append(entry)
+    norm_event_type = str(event_type or "")
+    is_firehose = norm_event_type in _FIREHOSE_EVENT_TYPES
 
-    # Real-time fan-out: publish to Redis pub/sub the same way
-    # ``create_trader_event`` does, so the WebSocket bridge can deliver
-    # this event to UI clients in <5ms instead of waiting for the next
-    # audit flush (which can lag by 10+ seconds).  Soft fail on Redis
-    # outage — DB persistence still runs via the audit buffer.
+    # Data-class split: firehose telemetry NEVER persists to Postgres.
+    # It lives only in Redis (pub/sub for the live terminal, capped
+    # stream for bounded reload history).  Business-of-record events
+    # (decisions, orders, executions, errors, etc.) still flow through
+    # the durable audit buffer as before.
+    if not is_firehose:
+        entry = _AuditEntry(
+            kind="trader_event",
+            payload={
+                "id": row_id,
+                "trader_id": trader_id,
+                "event_type": norm_event_type,
+                "severity": norm_severity,
+                "verbosity": norm_verbosity,
+                "source": source,
+                "operator": operator,
+                "message": message,
+                "trace_id": trace_id,
+                "payload_json": payload_json,
+                "created_at": created_at,
+            },
+        )
+        async with _audit_lock:
+            _audit_buffer_append(entry)
+
+    # Real-time fan-out: publish to Redis pub/sub so the WebSocket
+    # bridge can deliver this event to UI clients in <5ms instead of
+    # waiting for the next audit flush.  For firehose events we ALSO
+    # XADD to a capped Redis Stream (same pipeline round-trip) so the
+    # terminal can replay recent firehose history on reload — the
+    # bounded-history sink that replaces the unbounded Postgres copy.
+    # Soft fail on Redis outage.
     #
-    # Round 6: the publish is fire-and-forget — we schedule a background
-    # task and return immediately.  Under firehose load (dozens of
-    # concurrent emissions), inline-awaiting the PUBLISH round-trip was
-    # the dominant event-loop stall after Round 5.
+    # Round 6: the publish is fire-and-forget — we enqueue and return
+    # immediately.  Under firehose load (dozens of concurrent
+    # emissions), inline-awaiting the round-trip was the dominant
+    # event-loop stall after Round 5.
     try:
         from services import redis_client  # local import to avoid cycles
         import json as _json
@@ -1487,7 +1550,7 @@ async def buffer_trader_event(
             serialized = {
                 "id": row_id,
                 "trader_id": trader_id,
-                "event_type": str(event_type or ""),
+                "event_type": norm_event_type,
                 "severity": norm_severity,
                 "verbosity": norm_verbosity,
                 "source": source,
@@ -1501,6 +1564,8 @@ async def buffer_trader_event(
                 client,
                 redis_client.namespaced("trader_events"),
                 _json.dumps(serialized, default=str),
+                stream=(redis_client.namespaced(_FIREHOSE_STREAM) if is_firehose else None),
+                stream_maxlen=(_FIREHOSE_STREAM_MAXLEN if is_firehose else None),
             )
     except Exception:
         pass

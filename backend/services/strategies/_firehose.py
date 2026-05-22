@@ -474,6 +474,37 @@ def get_firehose_stats() -> dict[str, int]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Per-gate firehose counters (institutional telemetry).
+#
+# Firehose history is bounded (capped Redis Stream) and loss-tolerant,
+# so it cannot answer "how many times has gate X rejected strategy Y
+# this run?".  These monotonic counters can — they are cheap (one dict
+# bump per emitted event) and bounded in cardinality (a few strategies
+# × a dozen gates × 3 outcomes).  Exposed at ``/metrics`` so the
+# rejection mix is observable without scanning the firehose.  Reset
+# only on process restart.
+_firehose_counters: dict[tuple[str, str, str, str], int] = {}
+
+
+def _bump_counter(event_type: str, strategy: str, gate: str, outcome: str) -> None:
+    key = (
+        str(event_type or "?"),
+        str(strategy or "?").strip().lower() or "?",
+        str(gate or "-"),
+        str(outcome or "-"),
+    )
+    _firehose_counters[key] = _firehose_counters.get(key, 0) + 1
+
+
+def get_firehose_counters() -> dict[str, int]:
+    """Flatten per-gate counters for /metrics.
+
+    Key format: ``event_type|strategy|gate|outcome`` → count.
+    """
+    return {"|".join(k): v for k, v in _firehose_counters.items()}
+
+
 async def emit_gate(
     *,
     strategy_slug: str,
@@ -488,6 +519,7 @@ async def emit_gate(
         return
     market_info = _market_summary(market)
     pass_word = "passed" if gate.passed else ("skipped" if gate.passed is None else "rejected")
+    _bump_counter("firehose_gate", strategy_slug, gate.name, pass_word)
     msg = (
         f"{strategy_slug} • {market_info.get('slug') or market_info.get('market_id') or '?'} • "
         f"{gate.label}: {pass_word}"
@@ -565,8 +597,11 @@ async def emit_evaluation(
         f"{strategy_slug} • {market_info.get('slug') or market_info.get('market_id') or '?'} • "
         f"{outcome.upper()}"
     )
+    failing_gate = "-"
     if outcome == "rejected" and failed:
+        failing_gate = str(failed[0].get("name") or failed[0].get("label") or "-")
         summary += f" at {failed[0].get('label') or failed[0].get('name')}"
+    _bump_counter("firehose_evaluation", strategy_slug, failing_gate, outcome)
     payload: dict[str, Any] = {
         "strategy_slug": strategy_slug,
         "source_key": "crypto",
@@ -623,6 +658,7 @@ async def emit_emit(
     if not should_emit:
         return
     market_info = _market_summary(market)
+    _bump_counter("firehose_emit", strategy_slug, "-", "emitted")
     msg = (
         f"{strategy_slug} • {market_info.get('slug') or market_info.get('market_id') or '?'} • "
         f"OPPORTUNITY EMITTED"

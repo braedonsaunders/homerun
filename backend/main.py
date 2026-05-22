@@ -1701,6 +1701,55 @@ async def metrics():
     api_rate_burst = int(api_rate_status.get("burst") or 0)
     api_rate_clients = int(api_rate_status.get("tracked_clients") or 0)
 
+    # Firehose telemetry counters — queue health + per-gate rejection
+    # mix.  Firehose history lives in a bounded Redis Stream, so these
+    # monotonic counters are the durable, queryable record of how the
+    # gate funnel is performing this run.
+    try:
+        from services.strategies import _firehose as _fh
+
+        fh_stats = _fh.get_firehose_stats()
+        fh_counters = _fh.get_firehose_counters()
+    except Exception:
+        fh_stats = {}
+        fh_counters = {}
+
+    def _prom_label(value: str) -> str:
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", " ")
+        )
+
+    fh_lines: list[str] = [
+        "# HELP polymarket_firehose_emission_queue_depth Firehose emission queue depth",
+        "# TYPE polymarket_firehose_emission_queue_depth gauge",
+        f"polymarket_firehose_emission_queue_depth {int(fh_stats.get('emission_queue_depth', 0))}",
+        "",
+        "# HELP polymarket_firehose_dropped_queue_full_total Firehose emissions dropped (queue full)",
+        "# TYPE polymarket_firehose_dropped_queue_full_total counter",
+        f"polymarket_firehose_dropped_queue_full_total {int(fh_stats.get('dropped_queue_full_total', 0))}",
+        "",
+        "# HELP polymarket_firehose_gate_evaluations_total Firehose gate evaluations by strategy/gate/outcome",
+        "# TYPE polymarket_firehose_gate_evaluations_total counter",
+    ]
+    for key, count in fh_counters.items():
+        parts = str(key).split("|")
+        event_type = parts[0] if len(parts) > 0 else "?"
+        strategy = parts[1] if len(parts) > 1 else "?"
+        gate = parts[2] if len(parts) > 2 else "-"
+        outcome = parts[3] if len(parts) > 3 else "-"
+        fh_lines.append(
+            "polymarket_firehose_gate_evaluations_total{"
+            f'event_type="{_prom_label(event_type)}",'
+            f'strategy="{_prom_label(strategy)}",'
+            f'gate="{_prom_label(gate)}",'
+            f'outcome="{_prom_label(outcome)}"'
+            f"}} {int(count)}"
+        )
+    firehose_metrics_text = "\n".join(fh_lines)
+
     metrics_text = f"""# HELP polymarket_opportunities_total Total detected opportunities
 # TYPE polymarket_opportunities_total gauge
 polymarket_opportunities_total {opp_count}
@@ -1780,6 +1829,8 @@ polymarket_api_rate_limit_burst {api_rate_burst}
 # HELP polymarket_api_rate_limit_tracked_clients Number of active inbound rate-limit buckets
 # TYPE polymarket_api_rate_limit_tracked_clients gauge
 polymarket_api_rate_limit_tracked_clients {api_rate_clients}
+
+{firehose_metrics_text}
 """
 
     return JSONResponse(content=metrics_text, media_type="text/plain")

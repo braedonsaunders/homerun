@@ -1736,6 +1736,18 @@ export const getAllTraderEventsBulk = async (
   return data.events || []
 }
 
+export const getRecentFirehoseEvents = async (
+  params?: { sourceKey?: string; limit?: number }
+): Promise<TraderEvent[]> => {
+  const { data } = await api.get('/traders/firehose/recent', {
+    params: {
+      source_key: params?.sourceKey || undefined,
+      limit: params?.limit ?? 500,
+    },
+  })
+  return data.events || []
+}
+
 export const getTraderMarketHistory = async (
   marketIds: string[],
   limit = 120

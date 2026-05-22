@@ -759,6 +759,55 @@ async def get_all_trader_events_bulk(
     return await _events_all_cache.get_or_load(cache_key, _load)
 
 
+@router.get("/firehose/recent")
+async def get_recent_firehose_events(
+    source_key: Optional[str] = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    """Replay recent firehose telemetry from the capped Redis Stream.
+
+    Firehose events (gate evaluations / rejections / emits) are
+    ephemeral, loss-tolerant telemetry.  They are NOT persisted to
+    Postgres — they live only in Redis: pub/sub for the live terminal
+    feed, plus a capped Stream (``trader_firehose``, MAXLEN ~50k) for
+    bounded reload history.  This endpoint reads that Stream so the
+    terminal can repopulate scrollback after a page reload.
+
+    Each Stream entry stores the same serialized event shape that is
+    PUBLISH'd to the live feed under the ``data`` field.  Returns
+    newest-first, optionally filtered to a single ``source_key``.
+    """
+    import json as _json
+
+    from services import redis_client
+    from services.trader_hot_state import _FIREHOSE_STREAM
+
+    # Over-fetch when filtering so a source_key with sparse traffic can
+    # still return up to ``limit`` matches from the shared stream.
+    fetch_count = min(2000, limit * 4) if source_key else limit
+    raw = await redis_client.safe_xrevrange(_FIREHOSE_STREAM, count=fetch_count)
+
+    wanted_source = str(source_key).strip() if source_key else None
+    events: list[dict[str, Any]] = []
+    for _entry_id, fields in raw:
+        data = fields.get("data")
+        if not data:
+            continue
+        try:
+            parsed = _json.loads(data)
+        except (ValueError, TypeError):
+            continue
+        if wanted_source is not None:
+            payload = parsed.get("payload") or {}
+            if str(payload.get("source_key") or "") != wanted_source:
+                continue
+        events.append(parsed)
+        if len(events) >= limit:
+            break
+
+    return {"events": events}
+
+
 @router.get("/decisions/all")
 async def get_all_trader_decisions_all(
     decision: Optional[str] = Query(default=None),

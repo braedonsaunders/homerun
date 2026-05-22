@@ -42,6 +42,7 @@ import {
   getAllTraderDecisions,
   getAllTraderOrders,
   getAllTraderEventsBulk,
+  getRecentFirehoseEvents,
   getTraderOrders,
   getTraderMarketHistory,
   getTraderDecisionDetail,
@@ -5706,6 +5707,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     queryFn: () => getAllTraderEventsBulk(traderIds, { limit: 500 }),
   })
 
+  // Firehose telemetry (gate evaluations / rejections / emits) is no
+  // longer persisted to Postgres — it lives only in Redis: pub/sub for
+  // the live WS feed, plus a capped Stream for bounded reload history.
+  // The bulk events query above (filtered by trader_id) can never
+  // return firehose rows (they have trader_id=null), so on a fresh
+  // reload the terminal would have zero firehose scrollback until new
+  // live events trickle in.  This query replays the recent firehose
+  // Stream so scrollback survives a page reload, then merges with the
+  // live WS feed below (dedup by id).
+  const firehoseHistoryQuery = useQuery({
+    queryKey: ['trader-firehose-recent'],
+    refetchInterval: isConnected ? 60000 : 30000,
+    queryFn: () => getRecentFirehoseEvents({ limit: 500 }),
+  })
+
   const allOrders = useMemo(
     () => (allOrdersQuery.data || []).filter((order) => {
       if (!traderIdSet.has(String(order.trader_id || ''))) return false
@@ -5812,7 +5828,29 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     [marketHistoryQuery.data, marketModalMarketIds]
   )
   const allDecisions = allDecisionsQuery.data || []
-  const allEvents = allEventsQuery.data || []
+  // Merge persisted/business events (allEventsQuery, filtered by
+  // trader_id) with the Redis firehose Stream replay
+  // (firehoseHistoryQuery, trader_id=null telemetry).  Live WS firehose
+  // events also land in the ['trader-events-all'] cache, so dedup by id
+  // to avoid double-rendering an event present in both sources.
+  const allEvents = useMemo(() => {
+    const base = allEventsQuery.data || []
+    const firehose = firehoseHistoryQuery.data || []
+    if (firehose.length === 0) return base
+    const seen = new Set<string>()
+    for (const ev of base) {
+      const id = String(ev?.id || '').trim()
+      if (id) seen.add(id)
+    }
+    const merged = [...base]
+    for (const ev of firehose) {
+      const id = String(ev?.id || '').trim()
+      if (id && seen.has(id)) continue
+      if (id) seen.add(id)
+      merged.push(ev)
+    }
+    return merged
+  }, [allEventsQuery.data, firehoseHistoryQuery.data])
   const decisionSignalPayloadByDecisionId = useMemo(() => {
     const byDecisionId = new Map<string, Record<string, unknown>>()
     for (const decision of allDecisions) {

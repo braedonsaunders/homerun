@@ -424,6 +424,38 @@ async def safe_xadd(
         return None
 
 
+async def safe_xrevrange(
+    stream: str,
+    *,
+    count: int = 500,
+) -> list[tuple[str, dict[str, Any]]]:
+    """XREVRANGE (newest-first) over a stream; returns ``[(id, fields), ...]``.
+
+    Soft-fails to an empty list on any error or when Redis is
+    unavailable — callers treat "no history" as a benign empty result.
+    Field keys/values are decoded to ``str`` regardless of the client's
+    ``decode_responses`` setting.
+    """
+    client = get_client_or_none()
+    if client is None:
+        return []
+    try:
+        raw = await client.xrevrange(_ns(stream), count=max(1, int(count)))
+    except (RedisError, asyncio.TimeoutError, OSError) as exc:
+        _record_op_failure("xrevrange", exc)
+        return []
+    out: list[tuple[str, dict[str, Any]]] = []
+    for entry_id, fields in raw or []:
+        sid = entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
+        decoded: dict[str, Any] = {}
+        for k, v in (fields or {}).items():
+            key = k.decode() if isinstance(k, bytes) else str(k)
+            val = v.decode() if isinstance(v, bytes) else v
+            decoded[key] = val
+        out.append((sid, decoded))
+    return out
+
+
 def _coerce_field(value: Any) -> Any:
     if isinstance(value, (str, bytes, int, float)):
         return value
