@@ -545,6 +545,17 @@ LIMIT 20
                 "preserve_current_month": bool(preserve_current_month),
             }
 
+    # High-volume "firehose" event types that get the short retention
+    # tier.  These are per-evaluation / per-emit debug-firehose rows the
+    # scanner+orchestrator write at ~13 rows/sec combined — the dominant
+    # source of trader_events growth (2026-05-21: 19.8M of 20.4M rows,
+    # 24 GB table, driving 5-6s WAL-fsync commit latency).  BOTH
+    # ``firehose_evaluation`` AND ``firehose_emit`` belong here; a prior
+    # version only swept ``firehose_evaluation`` so ``firehose_emit``
+    # (9.1M rows) silently fell into the 90-day "other" tier and never
+    # got pruned.
+    FIREHOSE_EVENT_TYPES = ("firehose_evaluation", "firehose_emit")
+
     async def cleanup_trader_events(
         self,
         firehose_older_than_days: int = 7,
@@ -552,8 +563,8 @@ LIMIT 20
     ) -> dict:
         """Delete old trader_events rows with two-tier retention.
 
-        Firehose events (``event_type = 'firehose_evaluation'``) are the
-        bulk of volume and use a shorter retention. All other event types
+        Firehose events (see ``FIREHOSE_EVENT_TYPES``) are the bulk of
+        volume and use a shorter retention.  All other event types
         (decision, order, provider_health, circuit_breaker, etc.) use a
         longer audit-trail retention.
 
@@ -572,6 +583,7 @@ LIMIT 20
         batch_size = 50_000
         firehose_deleted = 0
         other_deleted = 0
+        firehose_types = list(self.FIREHOSE_EVENT_TYPES)
 
         if firehose_older_than_days > 0:
             cutoff = utcnow() - timedelta(days=firehose_older_than_days)
@@ -582,7 +594,7 @@ LIMIT 20
                         await session.execute(
                             select(TraderEvent.id)
                             .where(
-                                TraderEvent.event_type == "firehose_evaluation",
+                                TraderEvent.event_type.in_(firehose_types),
                                 TraderEvent.created_at < cutoff,
                             )
                             .limit(batch_size)
@@ -609,7 +621,7 @@ LIMIT 20
                         await session.execute(
                             select(TraderEvent.id)
                             .where(
-                                TraderEvent.event_type != "firehose_evaluation",
+                                TraderEvent.event_type.not_in(firehose_types),
                                 TraderEvent.created_at < cutoff,
                             )
                             .limit(batch_size)
