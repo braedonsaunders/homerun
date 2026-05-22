@@ -35,6 +35,7 @@ from services.trader_orchestrator.gate_pipeline import (
 )
 from services.trader_orchestrator.order_manager import (
     LegSubmitResult,
+    _check_max_spread_bps,
     _safe_live_context,
     _safe_signal_payload,
     cancel_live_provider_order,
