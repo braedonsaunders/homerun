@@ -273,7 +273,9 @@ async def test_preflight_all_spread_reject_skips_projection_commit(monkeypatch):
     # _compute_book_spread_bps interprets the book shape.
     def _reject(*, book_payload, risk_limits):
         return (True, 9999.0, 100.0)
-    monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _reject)
+    # The Phase 2 gate-pipeline refactor moved _check_max_spread_bps into
+    # order_manager (imported + called by venue_gates); session_engine no
+    # longer defines it, so patch only the venue_gates call site.
     monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _reject)
     # BUY gate is irrelevant for this test, but stub it as passing.
     monkeypatch.setattr(
@@ -344,7 +346,7 @@ async def test_preflight_mixed_only_passing_leg_persists_placeholder(monkeypatch
             return (True, 9999.0, 100.0)
         return (False, None, 100.0)
 
-    monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _fake_spread)
+    # See note above: spread gate now lives in venue_gates' pipeline only.
     monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _fake_spread)
     monkeypatch.setattr(
         session_engine_module.live_execution_service,
@@ -407,7 +409,7 @@ async def test_preflight_buy_collateral_fail_marks_leg_skipped(monkeypatch):
     monkeypatch.setattr(venue_gates_module, "_resolve_shadow_book_and_tape", _no_book)
     def _pass(*, book_payload, risk_limits):
         return (False, None, None)
-    monkeypatch.setattr(session_engine_module, "_check_max_spread_bps", _pass)
+    # See note above: spread gate now lives in venue_gates' pipeline only.
     monkeypatch.setattr(venue_gates_module, "_check_max_spread_bps", _pass)
     # BUY collateral gate REJECTS.
     monkeypatch.setattr(
