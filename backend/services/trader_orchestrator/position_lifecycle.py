@@ -5166,6 +5166,115 @@ async def reconcile_shadow_positions(
     }
 
 
+async def _collect_live_exit_marks(
+    *,
+    token_ids: list[str],
+    session: AsyncSession,
+    allow_rest: bool,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Resolve current marks for open-position tokens on the exit path.
+
+    Returns ``(ws_mid_prices, clob_mid_prices)`` keyed by token_id.
+
+    Pricing waterfall, freshest first:
+
+      1. WS order-book mid from ``feed_manager.cache`` at the strict
+         execution TTL (``WS_EXECUTION_PRICE_STALE_SECONDS``).
+      2. WS mid at the relaxed TTL (``WS_PRICE_STALE_SECONDS``) for any
+         token still unresolved.
+      3. ONE CLOB ``/midpoints`` REST batch for whatever is *still*
+         unresolved — but only when ``allow_rest`` is True.
+
+    Why step 3 is load-bearing (2026-05-22 incident, order ec5d6e23): a
+    live ``buy_no`` position rode 0.90 -> 0 over ~2h while our mark
+    stayed frozen at entry (0.935).  The WS book went stale during the
+    illiquid sell-off so steps 1-2 produced nothing, and the exit
+    evaluator ran on the frozen mark — every stop saw 0.935 and never
+    fired, so the position was held to a full-notional resolution loss.
+    The CLOB midpoint tracked the decline the whole way down; we simply
+    never read it, because the REST-batch result was being discarded by
+    an indentation bug (the merge loop was nested under the ``elif`` that
+    reset ``batch`` to ``{}``).  Exits MUST fail safe: when the WS feed
+    is stale we pay the bounded REST round-trip rather than hold a
+    capital-at-risk position blind.
+
+    The orchestrator hot path passes ``allow_rest=False`` (the no-REST
+    architectural contract — see ``hot_path.py``).  The reconciliation
+    worker runs every ~1s off the hot path, passes ``True``, and is the
+    REST-capable safety net.
+    """
+    ws_mid_prices: dict[str, float] = {}
+    clob_mid_prices: dict[str, float] = {}
+    if not token_ids:
+        return ws_mid_prices, clob_mid_prices
+
+    strict_stale_seconds = max(0.05, float(settings.WS_EXECUTION_PRICE_STALE_SECONDS))
+    relaxed_stale_seconds = max(strict_stale_seconds, float(settings.WS_PRICE_STALE_SECONDS))
+
+    try:
+        from services.ws_feeds import get_feed_manager
+
+        feed_manager = get_feed_manager()
+    except Exception:
+        feed_manager = None
+
+    def _collect_ws_mid_prices(tids: list[str], *, stale_seconds: float) -> dict[str, float]:
+        if feed_manager is None or not getattr(feed_manager, "_started", False):
+            return {}
+        cache = getattr(feed_manager, "cache", None)
+        if cache is None:
+            return {}
+        out: dict[str, float] = {}
+        for token_id in tids:
+            try:
+                mid = safe_float(cache.get_mid_price(token_id))
+                age_s = safe_float(cache.staleness(token_id))
+            except Exception:
+                continue
+            if mid is None or mid < 0:
+                continue
+            if age_s is not None and age_s > stale_seconds:
+                continue
+            out[str(token_id).strip()] = float(mid)
+        return out
+
+    ws_mid_prices.update(_collect_ws_mid_prices(token_ids, stale_seconds=strict_stale_seconds))
+    unresolved_token_ids = [t for t in token_ids if t not in ws_mid_prices]
+    if unresolved_token_ids and relaxed_stale_seconds > strict_stale_seconds + 1e-9:
+        ws_mid_prices.update(
+            _collect_ws_mid_prices(unresolved_token_ids, stale_seconds=relaxed_stale_seconds)
+        )
+        unresolved_token_ids = [t for t in token_ids if t not in ws_mid_prices]
+
+    if unresolved_token_ids and allow_rest:
+        # ONE HTTP request for all unresolved tokens via the CLOB
+        # /midpoints batch endpoint.  SOAK-2026-05-16 P0-4: release the DB
+        # connection while waiting on the venue so reconciliation doesn't
+        # hold the session open across the HTTP round-trip.
+        batch: dict[str, Any] = {}
+        try:
+            async with release_conn(session):
+                batch = await asyncio.wait_for(
+                    polymarket_client.get_midpoints_batch(unresolved_token_ids),
+                    timeout=4.0,
+                )
+        except Exception:
+            batch = {}
+        for token_id, midpoint in (batch or {}).items():
+            parsed = safe_float(midpoint)
+            if parsed is None or parsed < 0:
+                continue
+            clob_mid_prices[str(token_id).strip()] = float(parsed)
+        if clob_mid_prices:
+            logger.info(
+                "live exit marks: REST midpoint fallback re-priced %d stale-WS token(s) %s",
+                len(clob_mid_prices),
+                sorted(clob_mid_prices.keys())[:8],
+            )
+
+    return ws_mid_prices, clob_mid_prices
+
+
 async def reconcile_live_positions(
     session: AsyncSession,
     *,
@@ -6260,8 +6369,6 @@ async def reconcile_live_positions(
             timeout=_MARKET_INFO_LOAD_TIMEOUT_SECONDS,
             fallback=fallback_market_info_by_id,
         )
-        ws_mid_prices: dict[str, float] = {}
-        clob_mid_prices: dict[str, float] = {}
         token_ids_for_prices = sorted(
             {
                 token_id
@@ -6269,73 +6376,19 @@ async def reconcile_live_positions(
                 if token_id
             }
         )
-        if token_ids_for_prices:
-            strict_stale_seconds = max(0.05, float(settings.WS_EXECUTION_PRICE_STALE_SECONDS))
-            relaxed_stale_seconds = max(strict_stale_seconds, float(settings.WS_PRICE_STALE_SECONDS))
-            try:
-                from services.ws_feeds import get_feed_manager
-
-                feed_manager = get_feed_manager()
-            except Exception:
-                feed_manager = None
-
-            def _collect_ws_mid_prices(token_ids: list[str], *, stale_seconds: float) -> dict[str, float]:
-                if feed_manager is None or not getattr(feed_manager, "_started", False):
-                    return {}
-                cache = getattr(feed_manager, "cache", None)
-                if cache is None:
-                    return {}
-                out: dict[str, float] = {}
-                for token_id in token_ids:
-                    try:
-                        mid = safe_float(cache.get_mid_price(token_id))
-                        age_s = safe_float(cache.staleness(token_id))
-                    except Exception:
-                        continue
-                    if mid is None or mid < 0:
-                        continue
-                    if age_s is not None and age_s > stale_seconds:
-                        continue
-                    out[str(token_id).strip()] = float(mid)
-                return out
-
-            ws_mid_prices.update(_collect_ws_mid_prices(token_ids_for_prices, stale_seconds=strict_stale_seconds))
-            unresolved_token_ids = [token_id for token_id in token_ids_for_prices if token_id not in ws_mid_prices]
-            if unresolved_token_ids and relaxed_stale_seconds > strict_stale_seconds + 1e-9:
-                ws_mid_prices.update(
-                    _collect_ws_mid_prices(
-                        unresolved_token_ids,
-                        stale_seconds=relaxed_stale_seconds,
-                    )
-                )
-            unresolved_token_ids = [token_id for token_id in token_ids_for_prices if token_id not in ws_mid_prices]
-            if unresolved_token_ids and allow_polymarket_rest_call("midpoints_batch"):
-                # ONE HTTP request for all unresolved tokens via the
-                # CLOB /midpoints batch endpoint instead of N parallel
-                # single-token GETs.  Skipped on the orchestrator hot
-                # path — the WS feed is supposed to have these
-                # tokens; if it doesn't we use the cached/live midpoint
-                # already in ``ws_mid_prices`` and accept the gap.
-                # SOAK-2026-05-16 P0-4: release the DB connection while
-                # waiting on the venue.  external_io was holding the
-                # session open for 12-18 s during reconciliation,
-                # showing up as ``Long transaction held … uow_dirty=0``
-                # warnings in the soak log.
-                try:
-                    async with release_conn(session):
-                        batch = await asyncio.wait_for(
-                            polymarket_client.get_midpoints_batch(unresolved_token_ids),
-                            timeout=4.0,
-                        )
-                except Exception:
-                    batch = {}
-            elif unresolved_token_ids:
-                batch = {}
-                for token_id, midpoint in batch.items():
-                    parsed = safe_float(midpoint)
-                    if parsed is None or parsed < 0:
-                        continue
-                    clob_mid_prices[str(token_id).strip()] = float(parsed)
+        # Resolve current marks for every open-position token: WS book
+        # (strict then relaxed TTL) with a CLOB /midpoints REST fallback
+        # for anything the WS feed can't price fresh.  ``allow_rest`` is
+        # gated by the hot-path contract — the orchestrator passes False
+        # (no REST on the hot loop); the reconciliation worker passes
+        # True and is the REST-backed safety net that keeps stale-WS
+        # positions marked so their stops can fire.  See
+        # ``_collect_live_exit_marks`` for the full incident rationale.
+        ws_mid_prices, clob_mid_prices = await _collect_live_exit_marks(
+            token_ids=token_ids_for_prices,
+            session=session,
+            allow_rest=allow_polymarket_rest_call("midpoints_batch"),
+        )
 
         # Collect parent + child clob_order_ids that we need provider snapshots
         # for. A laddered exit has no provider id on the parent — the venue
