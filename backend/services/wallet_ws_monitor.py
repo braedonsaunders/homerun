@@ -522,6 +522,18 @@ class WalletWebSocketMonitor:
         # Ankr URL was being entered in the UI but never picked up.
         self._rpc_endpoints_db_reload_at: float = 0.0
         self._rpc_endpoints_db_reload_interval_seconds: float = 60.0
+        # 2026-05-23: the operator-configured primary (AppSettings
+        # polygon_rpc_url) must not stay permanently evicted forever. A
+        # hard 403/auth error (e.g. Ankr "API key disabled" while billing/
+        # credits are sorted out) evicts it permanently; thereafter the
+        # 60s DB reload only revives it if the URL *changes*, so a
+        # re-enabled key never recovers without a restart and the bot
+        # silently runs on free public endpoints. We (1) alert loudly when
+        # the configured primary is evicted, and (2) periodically re-probe
+        # it so it rejoins rotation on its own once it's healthy again.
+        self._configured_primary_rpc_url: str = ""
+        self._configured_primary_reprobe_at: float = 0.0
+        self._configured_primary_reprobe_interval_seconds: float = 300.0
         # Fix SS — per-endpoint consecutive-failure counter.  401/403 already
         # evict immediately (auth required), and the existing
         # ``_rpc_error_requires_auth`` / ``unsupported_logs_query`` heuristics
@@ -600,6 +612,55 @@ class WalletWebSocketMonitor:
         self._rpc_endpoint_consecutive_failures.pop(normalized, None)
         if self._http_rpc_url == normalized:
             self._http_rpc_url = self._rpc_urls[0] if self._rpc_urls else ""
+        # Loud alert: the operator-configured primary going down is an
+        # actionable degrade (we're now on free public endpoints), not the
+        # routine eviction of a free fallback. Surface it at WARNING with
+        # the masked URL so it isn't buried among the per-endpoint failures.
+        if normalized == self._configured_primary_rpc_url:
+            logger.warning(
+                "Wallet monitor: CONFIGURED primary RPC evicted — now running on "
+                "fallback endpoints. Check the provider (key disabled / credits / "
+                "billing). It will be re-probed automatically every %ds.",
+                int(self._configured_primary_reprobe_interval_seconds),
+                primary_rpc_url=_mask_rpc_url(normalized),
+                permanent=permanent,
+            )
+            # Arm the re-probe clock from the eviction moment so the first
+            # retry waits a full interval rather than firing immediately.
+            self._configured_primary_reprobe_at = time.monotonic()
+
+    def _maybe_reprobe_configured_primary(self) -> None:
+        """Periodically re-admit the operator-configured primary RPC.
+
+        Permanent eviction otherwise sticks for the process lifetime, so a
+        re-enabled / re-funded key (e.g. Ankr after billing is sorted)
+        never recovers without a restart.  Every
+        ``_configured_primary_reprobe_interval_seconds`` we clear the
+        eviction + failure counter and restore the primary to position 0
+        so the next request tries it; if it's still dead it simply
+        re-evicts (and re-alerts).
+        """
+        primary = self._configured_primary_rpc_url
+        if not primary:
+            return
+        if primary not in self._evicted_rpc_urls and primary not in self._evicted_rpc_urls_until:
+            return  # already in rotation
+        now = time.monotonic()
+        if (now - self._configured_primary_reprobe_at) < self._configured_primary_reprobe_interval_seconds:
+            return
+        self._configured_primary_reprobe_at = now
+        self._evicted_rpc_urls.discard(primary)
+        self._evicted_rpc_urls_until.pop(primary, None)
+        self._rpc_endpoint_consecutive_failures.pop(primary, None)
+        self._rpc_endpoint_cooldown_until.pop(primary, None)
+        # Restore as primary so _build_rpc_candidates re-includes it at
+        # position 0 (it isn't in the static fallback list).
+        self._http_rpc_url = primary
+        self._refresh_rpc_candidates()
+        logger.info(
+            "Wallet monitor: re-probing configured primary RPC after eviction",
+            primary_rpc_url=_mask_rpc_url(primary),
+        )
 
     def _note_rpc_endpoint_success(self, endpoint: str) -> None:
         normalized = _normalize_rpc_http_url(endpoint)
@@ -926,6 +987,10 @@ class WalletWebSocketMonitor:
 
         if rpc_normalized:
             self._http_rpc_url = rpc_normalized
+            # Remember the operator's configured primary so we can re-probe
+            # it after eviction and alert when it goes down (see
+            # ``_maybe_reprobe_configured_primary`` / ``_evict_rpc_endpoint``).
+            self._configured_primary_rpc_url = rpc_normalized
             # Recompute the failover list so the new primary lands at
             # position 0 (with the public fallbacks still available
             # behind it for resilience if the paid endpoint hiccups).
@@ -1374,6 +1439,9 @@ class WalletWebSocketMonitor:
     ) -> Optional[dict]:
         """Send an HTTP JSON-RPC request with endpoint failover."""
         last_error: Optional[Exception] = None
+        # Periodically re-admit the operator-configured primary so a
+        # re-enabled/re-funded key recovers without a backend restart.
+        self._maybe_reprobe_configured_primary()
         if not self._rpc_urls:
             self._refresh_rpc_candidates()
         if not self._rpc_urls:
