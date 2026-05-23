@@ -75,7 +75,7 @@ async def test_stale_ws_falls_back_to_rest_midpoints(monkeypatch):
         rest_calls=rest_calls,
     )
 
-    ws, clob = await position_lifecycle._collect_live_exit_marks(
+    ws, clob, _books = await position_lifecycle._collect_live_exit_marks(
         token_ids=["tok1", "tok2", "tok3", "tok4"],
         session=object(),
         allow_rest=True,
@@ -97,7 +97,7 @@ async def test_hot_path_gate_blocks_rest(monkeypatch):
         rest_calls=rest_calls,
     )
 
-    ws, clob = await position_lifecycle._collect_live_exit_marks(
+    ws, clob, _books = await position_lifecycle._collect_live_exit_marks(
         token_ids=["tok1"],
         session=object(),
         allow_rest=False,
@@ -118,7 +118,7 @@ async def test_fresh_ws_wins_and_skips_rest(monkeypatch):
         rest_calls=rest_calls,
     )
 
-    ws, clob = await position_lifecycle._collect_live_exit_marks(
+    ws, clob, _books = await position_lifecycle._collect_live_exit_marks(
         token_ids=["tok1"],
         session=object(),
         allow_rest=True,
@@ -127,6 +127,77 @@ async def test_fresh_ws_wins_and_skips_rest(monkeypatch):
     assert ws == {"tok1": 0.91}
     assert clob == {}
     assert rest_calls == []  # WS was fresh, REST never consulted
+
+
+from services.optimization.vwap import OrderBook, OrderBookLevel
+
+
+def _book(bids, asks=None):
+    return OrderBook(
+        bids=[OrderBookLevel(price=p, size=s) for p, s in bids],
+        asks=[OrderBookLevel(price=p, size=s) for p, s in (asks or [])],
+    )
+
+
+def test_liquidation_mark_deep_book_small_size_equals_top_bid():
+    # 11 shares clear entirely at the 0.90 level -> VWAP == 0.90.
+    book = _book(bids=[(0.90, 1000.0)], asks=[(0.92, 1000.0)])
+    mark, source = position_lifecycle._resolve_exit_trigger_mark(
+        book, position_shares=11.0, mid_price=0.91, mode="liquidation_vwap"
+    )
+    assert source == "liquidation_vwap"
+    assert abs(mark - 0.90) < 1e-6
+
+
+def test_liquidation_mark_thin_book_walks_down_with_slippage():
+    # 11 shares across 0.90/0.85/0.80 (5+5+1) -> VWAP ~0.868, below top bid.
+    book = _book(bids=[(0.90, 5.0), (0.85, 5.0), (0.80, 5.0)])
+    mark, source = position_lifecycle._resolve_exit_trigger_mark(
+        book, position_shares=11.0, mid_price=0.91, mode="liquidation_vwap"
+    )
+    assert source == "liquidation_vwap"
+    assert 0.85 < mark < 0.90  # realizable price is worse than top-of-book
+
+
+def test_liquidation_mark_real_crash_is_not_guarded_away():
+    # A genuine collapse to 0.05 with real bids IS the signal -> returned.
+    book = _book(bids=[(0.05, 1000.0)])
+    mark, source = position_lifecycle._resolve_exit_trigger_mark(
+        book, position_shares=11.0, mid_price=0.90, mode="liquidation_vwap"
+    )
+    assert source == "liquidation_vwap"
+    assert abs(mark - 0.05) < 1e-6
+
+
+def test_liquidation_mark_one_sided_book_falls_back_to_mid():
+    # No bids (lone ask) -> never fabricate a 0 mark (F1 Ocon lesson).
+    book = _book(bids=[], asks=[(0.99, 100.0)])
+    mark, source = position_lifecycle._resolve_exit_trigger_mark(
+        book, position_shares=11.0, mid_price=0.50, mode="liquidation_vwap"
+    )
+    assert (mark, source) == (None, None)
+
+
+def test_liquidation_mark_zero_size_uses_best_bid():
+    book = _book(bids=[(0.88, 10.0), (0.80, 100.0)])
+    mark, source = position_lifecycle._resolve_exit_trigger_mark(
+        book, position_shares=0.0, mid_price=0.90, mode="liquidation_vwap"
+    )
+    assert source == "best_bid"
+    assert abs(mark - 0.88) < 1e-6
+
+
+def test_liquidation_mark_mode_mid_opts_out():
+    book = _book(bids=[(0.90, 1000.0)])
+    assert position_lifecycle._resolve_exit_trigger_mark(
+        book, position_shares=11.0, mid_price=0.91, mode="mid"
+    ) == (None, None)
+
+
+def test_liquidation_mark_no_book_falls_back():
+    assert position_lifecycle._resolve_exit_trigger_mark(
+        None, position_shares=11.0, mid_price=0.91, mode="liquidation_vwap"
+    ) == (None, None)
 
 
 @pytest.mark.asyncio
@@ -138,7 +209,7 @@ async def test_empty_token_list_is_noop(monkeypatch):
         batch={},
         rest_calls=rest_calls,
     )
-    ws, clob = await position_lifecycle._collect_live_exit_marks(
+    ws, clob, _books = await position_lifecycle._collect_live_exit_marks(
         token_ids=[], session=object(), allow_rest=True
     )
     assert ws == {} and clob == {}

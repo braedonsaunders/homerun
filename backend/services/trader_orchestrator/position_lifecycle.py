@@ -5166,15 +5166,88 @@ async def reconcile_shadow_positions(
     }
 
 
+_VWAP_CALC: Any = None
+
+
+def _get_vwap_calc() -> Any:
+    """Lazy module-level ``VWAPCalculator`` singleton (cheap to reuse)."""
+    global _VWAP_CALC
+    if _VWAP_CALC is None:
+        from services.optimization.vwap import VWAPCalculator
+
+        _VWAP_CALC = VWAPCalculator()
+    return _VWAP_CALC
+
+
+def _resolve_exit_trigger_mark(
+    book: Any,
+    position_shares: float,
+    mid_price: Optional[float],
+    *,
+    mode: str,
+) -> tuple[Optional[float], Optional[str]]:
+    """Realizable exit-trigger mark for a long position.
+
+    Institutional principle: stops AND take-profits must fire on the
+    price we could ACTUALLY exit at, not an optimistic midpoint.  For a
+    long position the realizable exit is the bid-side VWAP to clear our
+    shares — ``calculate_sell_vwap(book, shares)`` walks real bid depth
+    and prices in slippage.  Marking to mid lets a position look healthy
+    (mid 0.90) while the bid you'd actually hit has collapsed, so the
+    stop fires late or not at all; marking to the liquidation VWAP fires
+    on what you can truly get out at.
+
+    Returns ``(mark, source)``, or ``(None, None)`` to tell the caller to
+    keep the mid-based waterfall.  Falls back to mid when:
+      * ``mode`` is not ``"liquidation_vwap"`` (operator opted out),
+      * there is no fresh book or the bid side is empty/degenerate — the
+        2026-04-28 F1 Ocon incident showed that fabricating a mark from a
+        one-sided book produces phantom valuations (a lone 0.99 ask there
+        implied +1314% P&L); never trust a one-sided book,
+      * the VWAP can't be computed or lands outside ``(0, 1)``.
+
+    A genuinely low VWAP with real bids (e.g. 0.05 during a crash) is
+    NOT degenerate — it is exactly the signal a stop must act on, so it
+    is returned, not guarded away.
+    """
+    if mode != "liquidation_vwap":
+        return None, None
+    if book is None:
+        return None, None
+    bids = getattr(book, "bids", None)
+    if not bids:
+        return None, None
+    shares = float(position_shares or 0.0)
+    if shares <= 0.0:
+        # Unknown/zero size: top-of-book bid is the best realizable proxy.
+        top_bid = safe_float(getattr(bids[0], "price", None))
+        if top_bid is not None and 0.0 < top_bid < 1.0:
+            return float(top_bid), "best_bid"
+        return None, None
+    try:
+        result = _get_vwap_calc().calculate_sell_vwap(book, shares)
+    except Exception:
+        return None, None
+    vwap = safe_float(getattr(result, "vwap", None))
+    fill_prob = safe_float(getattr(result, "fill_probability", None)) or 0.0
+    if vwap is None or not (0.0 < vwap < 1.0) or fill_prob <= 0.0:
+        return None, None
+    return float(vwap), "liquidation_vwap"
+
+
 async def _collect_live_exit_marks(
     *,
     token_ids: list[str],
     session: AsyncSession,
     allow_rest: bool,
-) -> tuple[dict[str, float], dict[str, float]]:
+) -> tuple[dict[str, float], dict[str, float], dict[str, Any]]:
     """Resolve current marks for open-position tokens on the exit path.
 
-    Returns ``(ws_mid_prices, clob_mid_prices)`` keyed by token_id.
+    Returns ``(ws_mid_prices, clob_mid_prices, books_by_token)`` keyed by
+    token_id.  ``books_by_token`` holds the fresh WS order book for each
+    token priced from the WS feed, so the per-position loop can derive a
+    realizable bid-side liquidation mark (see ``_resolve_exit_trigger_mark``)
+    without any extra network I/O.
 
     Pricing waterfall, freshest first:
 
@@ -5205,8 +5278,9 @@ async def _collect_live_exit_marks(
     """
     ws_mid_prices: dict[str, float] = {}
     clob_mid_prices: dict[str, float] = {}
+    books_by_token: dict[str, Any] = {}
     if not token_ids:
-        return ws_mid_prices, clob_mid_prices
+        return ws_mid_prices, clob_mid_prices, books_by_token
 
     strict_stale_seconds = max(0.05, float(settings.WS_EXECUTION_PRICE_STALE_SECONDS))
     relaxed_stale_seconds = max(strict_stale_seconds, float(settings.WS_PRICE_STALE_SECONDS))
@@ -5272,7 +5346,22 @@ async def _collect_live_exit_marks(
                 sorted(clob_mid_prices.keys())[:8],
             )
 
-    return ws_mid_prices, clob_mid_prices
+    # Capture the fresh WS order book for every token the WS feed priced
+    # (i.e. that passed the staleness gate above).  These power the
+    # bid-side liquidation mark in the per-position loop; tokens resolved
+    # only via the REST midpoint fallback have no book and fall back to
+    # mid marking, which is acceptable for that rare stale path.
+    cache = getattr(feed_manager, "cache", None) if feed_manager is not None else None
+    if cache is not None and ws_mid_prices:
+        for token_id in ws_mid_prices:
+            try:
+                book = cache.get_order_book(token_id)
+            except Exception:
+                book = None
+            if book is not None:
+                books_by_token[token_id] = book
+
+    return ws_mid_prices, clob_mid_prices, books_by_token
 
 
 async def reconcile_live_positions(
@@ -6384,7 +6473,7 @@ async def reconcile_live_positions(
         # True and is the REST-backed safety net that keeps stale-WS
         # positions marked so their stops can fire.  See
         # ``_collect_live_exit_marks`` for the full incident rationale.
-        ws_mid_prices, clob_mid_prices = await _collect_live_exit_marks(
+        ws_mid_prices, clob_mid_prices, books_by_token = await _collect_live_exit_marks(
             token_ids=token_ids_for_prices,
             session=session,
             allow_rest=allow_polymarket_rest_call("midpoints_batch"),
@@ -9568,6 +9657,36 @@ async def reconcile_live_positions(
                 )
             )
         )
+
+        # Institutional exit mark: trigger stops/take-profits off the
+        # realizable liquidation price (bid-side VWAP to clear our shares)
+        # rather than the optimistic mid above.  A long marked at mid can
+        # look healthy (0.90) while the bid you'd actually hit has
+        # collapsed — the 2026-05-22 incident.  When a fresh WS book is
+        # available we re-mark to the liquidation VWAP and ALSO seed the
+        # trailing/high-water anchors and displayed mark on that same
+        # realizable basis, so the whole exit decision is internally
+        # consistent.  Falls back to the mid waterfall above when the
+        # book is stale/degenerate or the operator set ``exit_mark_mode``
+        # to "mid" (UI-editable strategy param; default "liquidation_vwap").
+        _exit_cfg = payload.get("strategy_exit_config")
+        if not isinstance(_exit_cfg, dict):
+            _exit_cfg = {}
+        _exit_mark_mode = str(_exit_cfg.get("exit_mark_mode") or "liquidation_vwap").strip().lower()
+        _position_shares = (
+            wallet_position_size
+            if wallet_position_size > _WALLET_SIZE_EPSILON
+            else (notional / entry_price if entry_price and entry_price > 0 else 0.0)
+        )
+        _liq_mark, _liq_source = _resolve_exit_trigger_mark(
+            books_by_token.get(token_id) if token_id else None,
+            _position_shares,
+            current_price,
+            mode=_exit_mark_mode,
+        )
+        if _liq_mark is not None:
+            current_price = _state_price_floor(_liq_mark)
+            current_price_source = _liq_source
 
         age_anchor = row.executed_at or row.updated_at or row.created_at
         age_minutes = None

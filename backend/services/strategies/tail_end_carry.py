@@ -259,6 +259,11 @@ class TailEndCarryStrategy(BaseStrategy):
         "resolution_hold_minutes": 360.0,
         "sports_resolution_hold_minutes": 150.0,
         "resolution_hold_max_loss_pct": 25.0,
+        # Exit-trigger mark basis.  "liquidation_vwap" (default) prices
+        # stops/take-profits off the realizable bid-side VWAP to clear the
+        # position's shares — what we could ACTUALLY exit at — instead of
+        # the optimistic mid.  Set to "mid" to revert to midpoint marking.
+        "exit_mark_mode": "liquidation_vwap",
         "max_hold_minutes": 1440.0,
         "price_policy": "taker_limit",
         "time_in_force": "IOC",
