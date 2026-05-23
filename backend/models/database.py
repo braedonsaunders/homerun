@@ -3352,6 +3352,16 @@ class TradeSignalEmission(Base):
     __table_args__ = (
         Index("idx_trade_signal_emissions_source_created", "source", "created_at"),
         Index("idx_trade_signal_emissions_signal_created", "signal_id", "created_at"),
+        # UNLOGGED: this is immutable, append-only telemetry/history with
+        # no live-trading reader (only the offline backtester / simulator
+        # consume it).  Keeping it out of the WAL removes the single
+        # largest WAL producer (~1.3M rows/cycle) from the commit critical
+        # path.  Tradeoff: the table is truncated on crash recovery, which
+        # is acceptable given the relaxed durability posture and that the
+        # history re-accumulates.  Matched by migration 202605220001 for
+        # existing databases.  ``prefixes`` makes ``create_all`` emit
+        # ``CREATE UNLOGGED TABLE``.
+        {"prefixes": ["UNLOGGED"]},
     )
 
 

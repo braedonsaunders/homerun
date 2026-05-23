@@ -3425,6 +3425,21 @@ class IntentRuntime:
                 if not updated_rows:
                     await session.rollback()
                     continue
+                # Commit the trade_signals UPDATE FIRST so its row locks
+                # release immediately.  The emission history INSERT used to
+                # ride this same transaction, holding the trade_signals
+                # locks across the history write — the 2026-05-22 soak
+                # showed that as the #1 ``Long transaction held
+                # origin=intent-runtime-projection`` source (156 holds,
+                # up to 2s each) and ``LOCK CONTENTION ... UPDATE
+                # trade_signals``.  Emissions are immutable append-only
+                # history with no FK to trade_signals and no live-trading
+                # reader (only the offline backtester / simulator), so
+                # writing them in a separate follow-up transaction is
+                # correctness-neutral and shortens the hot lock window.
+                # ``updated_rows`` is already materialized, so it survives
+                # the commit.
+                await session.commit()
                 emissions = [
                     {
                         "id": uuid.uuid4().hex,
@@ -3450,8 +3465,21 @@ class IntentRuntime:
                     }
                     for row in updated_rows
                 ]
-                await session.execute(TradeSignalEmission.__table__.insert(), emissions)
-                await session.commit()
+                # Emission history is loss-tolerant (UNLOGGED, no live
+                # reader).  A failure here must NOT bubble up and trigger a
+                # projection retry of the already-committed status UPDATE.
+                try:
+                    await session.execute(TradeSignalEmission.__table__.insert(), emissions)
+                    await session.commit()
+                except Exception as exc:
+                    await session.rollback()
+                    logger.warning(
+                        "intent_runtime: trade_signal_emissions history write failed "
+                        "(status UPDATE already committed; emissions are loss-tolerant)",
+                        emission_count=len(emissions),
+                        error_type=type(exc).__name__,
+                        exc_info=exc,
+                    )
 
 
 _intent_runtime: IntentRuntime | None = None
