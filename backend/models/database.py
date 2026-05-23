@@ -1330,6 +1330,7 @@ class MarketTagSeen(Base):
 
     __table_args__ = (
         Index("idx_market_tags_seen_last_seen", "last_seen"),
+        {"prefixes": ["UNLOGGED"]},  # derived cache; see migration 202605230001
     )
 
 
@@ -2676,6 +2677,7 @@ class DiscoveredWallet(Base):
         Index("idx_discovered_in_pool", "in_top_pool"),
         Index("idx_discovered_last_trade", "last_trade_at"),
         Index("idx_discovered_insider_score", "insider_score"),
+        {"prefixes": ["UNLOGGED"]},  # discovery cache; see migration 202605230001
     )
 
 
@@ -2814,6 +2816,7 @@ class MarketConfluenceSignal(Base):
         Index("idx_confluence_detected", "detected_at"),
         Index("idx_confluence_tier", "tier"),
         Index("idx_confluence_last_seen", "last_seen_at"),
+        {"prefixes": ["UNLOGGED"]},  # derived signals; see migration 202605230001
     )
 
 
@@ -2841,6 +2844,7 @@ class WalletActivityRollup(Base):
         Index("idx_war_source_time", "source", "traded_at"),
         Index("idx_war_traded_wallet_market", "traded_at", "wallet_address", "market_id"),
         Index("idx_war_market_traded", "market_id", "traded_at"),
+        {"prefixes": ["UNLOGGED"]},  # derived rollups; see migration 202605230001
     )
 
 
@@ -3027,6 +3031,7 @@ class OpportunityState(Base):
         Index("idx_opportunity_state_last_seen", "last_seen_at"),
         Index("idx_opportunity_state_last_updated", "last_updated_at"),
         Index("idx_opportunity_state_last_run", "last_run_id"),
+        {"prefixes": ["UNLOGGED"]},  # scanner runtime state; see migration 202605230001
     )
 
 
@@ -3072,6 +3077,7 @@ class ScannerSnapshot(Base):
 
 class ScannerMarketHistory(Base):
     __tablename__ = "scanner_market_history"
+    __table_args__ = {"prefixes": ["UNLOGGED"]}  # derived price history; see migration 202605230001
 
     market_id = Column(String, primary_key=True)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -3499,6 +3505,7 @@ class BookDeltaEvent(Base):
     __table_args__ = (
         Index("idx_bde_token_observed", "token_id", "observed_at"),
         Index("idx_bde_token_type_observed", "token_id", "event_type", "observed_at"),
+        {"prefixes": ["UNLOGGED"]},  # replayable market-data deltas; see migration 202605230001
     )
 
 

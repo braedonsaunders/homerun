@@ -54,6 +54,7 @@ class SearchIndex(Base):
         Index("idx_search_index_entity_type", "entity_type"),
         Index("idx_search_index_recency", "recency"),
         Index("idx_search_index_updated_at", "updated_at"),
+        {"prefixes": ["UNLOGGED"]},  # rebuildable search index; see migration 202605230001
     )
 
 

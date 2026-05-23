@@ -76,6 +76,7 @@ class CachedMarket(Base):
     __table_args__ = (
         Index("idx_cm_category", "category"),
         Index("idx_cm_cached_at", "cached_at"),
+        {"prefixes": ["UNLOGGED"]},  # market cache; see migration 202605230001
     )
 
 
