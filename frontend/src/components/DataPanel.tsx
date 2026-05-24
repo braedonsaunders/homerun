@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Database, Globe2, Newspaper, Radio } from 'lucide-react'
+import { Database, FlaskConical, Globe2, Newspaper, Radio } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '../lib/utils'
@@ -13,8 +13,9 @@ import ErrorBoundary from './ErrorBoundary'
 import { Button } from './ui/button'
 
 const WorldMap = lazy(() => import('./WorldMap'))
+const DataLab = lazy(() => import('./DataLab'))
 
-export type DataView = 'map' | 'events' | 'stories' | 'sources'
+export type DataView = 'map' | 'events' | 'stories' | 'sources' | 'lab'
 
 interface DataPanelProps {
   isConnected: boolean
@@ -130,6 +131,21 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
             </span>
           )}
         </Button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onViewChange('lab')}
+          className={cn(
+            'gap-1.5 text-xs h-8',
+            view === 'lab'
+              ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30 hover:text-indigo-400'
+              : 'bg-card text-muted-foreground hover:text-foreground border-border'
+          )}
+        >
+          <FlaskConical className="w-3.5 h-3.5" />
+          {t('dataTab.lab')}
+        </Button>
       </div>
 
       {view === 'map' && (
@@ -160,6 +176,16 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
         <div className="flex-1 min-h-0 overflow-hidden px-6 py-4">
           <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">Sources view crashed.</div>}>
             <DataSourcesManager onOpenCopilot={onOpenCopilot} />
+          </ErrorBoundary>
+        </div>
+      )}
+
+      {view === 'lab' && (
+        <div className="flex-1 min-h-0 overflow-hidden px-6 py-4">
+          <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">Data Lab view crashed.</div>}>
+            <Suspense fallback={<div className="h-full w-full" />}>
+              <DataLab />
+            </Suspense>
           </ErrorBoundary>
         </div>
       )}

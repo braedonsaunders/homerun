@@ -27,7 +27,8 @@
     "map": "Map",
     "events": "Events",
     "stories": "Stories",
-    "sources": "Sources"
+    "sources": "Sources",
+    "lab": "Data Lab"
   },
   "strategiesTab": {
     "strategies": "Strategies",

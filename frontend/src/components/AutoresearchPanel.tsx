@@ -25,7 +25,6 @@ import {
   AlertTriangle,
   Check,
   Code2,
-  Database,
   FlaskConical,
   Loader2,
   Play,
@@ -49,7 +48,6 @@ import {
 } from '../services/apiIntelligence'
 
 import BacktestStudio from './BacktestStudio'
-import DataLab from './DataLab'
 import StrategyReverseEngineer from './StrategyReverseEngineer'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -58,7 +56,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { cn } from '../lib/utils'
 
 
-type InnerTab = 'code' | 'studio' | 'data' | 'reverse'
+type InnerTab = 'code' | 'studio' | 'reverse'
 
 
 export default function AutoresearchPanel() {
@@ -87,7 +85,6 @@ export default function AutoresearchPanel() {
         if (
           requested === 'code'
           || requested === 'studio'
-          || requested === 'data'
           || requested === 'reverse'
         ) {
           return requested
@@ -189,18 +186,6 @@ export default function AutoresearchPanel() {
           </button>
           <button
             type="button"
-            onClick={() => setInnerTab('data')}
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border-b-2 -mb-px transition-colors',
-              innerTab === 'data'
-                ? 'border-violet-500 text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <Database className="w-3 h-3" /> {t('autoresearch.tabData')}
-          </button>
-          <button
-            type="button"
             onClick={() => setInnerTab('reverse')}
             className={cn(
               'flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium border-b-2 -mb-px transition-colors',
@@ -230,8 +215,6 @@ export default function AutoresearchPanel() {
           ) : (
             <PanelEmpty message={t('autoresearch.pickStrategyForCode')} />
           )
-        ) : innerTab === 'data' ? (
-          <DataLab />
         ) : innerTab === 'reverse' ? (
           <StrategyReverseEngineer
             initialWalletAddress={(() => {
