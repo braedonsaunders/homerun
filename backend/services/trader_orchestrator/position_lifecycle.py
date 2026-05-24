@@ -5953,6 +5953,145 @@ async def execute_position_exit(
     return {"status": exit_record.get("status"), "submitted": exit_record.get("status") == "submitted", "exit_record": exit_record}
 
 
+async def summarize_live_exit_fills(
+    session: AsyncSession,
+    *,
+    token_id: str,
+    since: Optional[datetime],
+    wallet_address: Optional[str] = None,
+) -> tuple[float, float]:
+    """Sum filled SELL size + proceeds for ``token_id`` from the live-execution
+    ledger (``live_trading_orders`` — the on-chain fill source of truth).
+
+    Used to recognize that a position has been fully liquidated by our own
+    exit orders even when the slow reconcile loop hasn't terminalized the
+    orchestrator row yet (the 2026-05 ghost-position gap: the fast exit loop
+    sold the shares but the ``trader_orders`` row stayed ``executed`` for
+    20+ min while starved reconcile lagged).
+
+    Returns ``(total_filled_size, total_proceeds_usd)``. Bounded to fills at or
+    after ``since`` (the position's entry time) so a later re-use of the same
+    token by a different position is not double-counted.
+    """
+    if not token_id:
+        return 0.0, 0.0
+    conds = [
+        LiveTradingOrder.token_id == str(token_id),
+        func.upper(LiveTradingOrder.side) == "SELL",
+        LiveTradingOrder.filled_size > 0,
+    ]
+    if since is not None:
+        since_naive = since.astimezone(timezone.utc).replace(tzinfo=None) if since.tzinfo else since
+        conds.append(LiveTradingOrder.created_at >= since_naive)
+    if wallet_address:
+        conds.append(func.lower(LiveTradingOrder.wallet_address) == str(wallet_address).lower())
+    rows = (await session.execute(select(LiveTradingOrder).where(*conds))).scalars().all()
+    total_size = 0.0
+    total_proceeds = 0.0
+    for r in rows:
+        fs = float(getattr(r, "filled_size", 0.0) or 0.0)
+        px = float(getattr(r, "average_fill_price", 0.0) or 0.0)
+        if fs <= 0.0:
+            continue
+        total_size += fs
+        total_proceeds += fs * px
+    return total_size, total_proceeds
+
+
+async def terminalize_filled_exit(
+    *,
+    session: AsyncSession,
+    row: TraderOrder,
+    payload: dict[str, Any],
+    now: datetime,
+    close_price: float,
+    realized_pnl: float,
+    filled_size: float,
+    close_trigger: str,
+    price_source: str,
+    reason: str,
+    exit_instance: Any = None,
+    market_info: Optional[dict[str, Any]] = None,
+    signal_payload: Optional[dict[str, Any]] = None,
+) -> str:
+    """Shared terminalization for a live exit confirmed filled.
+
+    Single source of truth for "the position's shares are gone via our own
+    sell — close the orchestrator row": sets the terminal status + realized
+    P&L, writes ``position_close``, records the strategy trade outcome, arms
+    any pending reverse-entry, and updates hot-state. Both the fast exit-risk
+    loop (immediately when its own exit fills) and ``reconcile_live_positions``
+    (as a backstop) call this so the close record is identical regardless of
+    which loop observes the fill first. Mutates ``row`` and ``payload`` and
+    returns the new status. Caller owns the commit.
+    """
+    next_status = _status_for_close(pnl=realized_pnl, close_trigger=close_trigger)
+    row.status = next_status
+    row.actual_profit = realized_pnl
+    row.updated_at = now
+
+    pe = payload.get("pending_live_exit")
+    if isinstance(pe, dict):
+        pe["status"] = "filled"
+        pe["closed_at"] = _iso_utc(now)
+        payload["pending_live_exit"] = pe
+
+    payload["position_close"] = {
+        "close_price": float(close_price),
+        "price_source": price_source,
+        "close_trigger": close_trigger,
+        "realized_pnl": float(realized_pnl),
+        "filled_size": float(filled_size),
+        "closed_at": _iso_utc(now),
+        "reason": reason,
+    }
+
+    if exit_instance is not None and hasattr(exit_instance, "record_trade_outcome"):
+        try:
+            exit_instance.record_trade_outcome(won=next_status in {"closed_win", "resolved_win"})
+        except Exception:
+            pass
+
+    try:
+        await _emit_armed_reverse_signal(
+            session,
+            row=row,
+            payload=payload,
+            signal_payload=signal_payload or {},
+            market_info=market_info,
+            close_trigger=close_trigger,
+            realized_pnl=realized_pnl,
+            now=now,
+        )
+    except Exception:
+        pass
+
+    row.payload_json = payload
+    if reason:
+        if row.reason:
+            row.reason = f"{row.reason} | {reason}:{close_trigger}"
+        else:
+            row.reason = f"{reason}:{close_trigger}"
+
+    try:
+        hot_state.record_order_resolved(
+            trader_id=str(row.trader_id or ""),
+            mode=str(row.mode or ""),
+            order_id=str(row.id or ""),
+            market_id=str(row.market_id or ""),
+            direction=str(row.direction or ""),
+            source=str(row.source or ""),
+            status=next_status,
+            actual_profit=realized_pnl,
+            payload=payload,
+            copy_source_wallet=_extract_copy_source_wallet_from_payload(payload),
+        )
+    except Exception:
+        pass
+
+    return next_status
+
+
 async def reconcile_live_positions(
     session: AsyncSession,
     *,

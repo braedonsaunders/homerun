@@ -34,6 +34,8 @@ def _row(payload):
         id="ord-1", trader_id="trader-1", mode="live", status="executed",
         direction="buy_no", market_id="m1", effective_price=0.90, entry_price=0.90,
         notional_usd=10.0, payload_json=payload, updated_at=now,
+        executed_at=now, created_at=now, source="strategy", reason=None,
+        actual_profit=None,
     )
 
 
@@ -52,6 +54,12 @@ def _patch_derivations(monkeypatch, *, decision):
     async def _no_instance(session, slug):  # noqa: ARG001
         return None
     monkeypatch.setattr(pl, "_strategy_exit_instance", _no_instance)
+
+    # Default: no prior exit fills (so the ghost-terminalization fast-path is
+    # inert). Tests that exercise terminalization override this.
+    async def _no_fills(session, *, token_id, since, wallet_address=None):  # noqa: ARG001
+        return (0.0, 0.0)
+    monkeypatch.setattr(pl, "summarize_live_exit_fills", _no_fills)
 
     async def _fake_eval(**kwargs):  # noqa: ARG001
         return decision
@@ -184,6 +192,83 @@ async def test_any_pending_exit_is_skipped(monkeypatch, pending_status):
         "pending_live_exit": {"status": pending_status},
     })
     assert calls == [] and eval_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ghost_position_terminalized_when_fully_sold(monkeypatch):
+    # The fast loop sold the whole position but starved reconcile never closed
+    # the row (the 2026-05 ghost). When the wallet is flat AND our own exit
+    # fills account for the full entry size, the loop must terminalize via the
+    # shared helper — not evaluate/fire another doomed exit.
+    _patch_derivations(monkeypatch, decision=_close_decision())
+
+    # Entry was 11.06 shares @ 0.911 ($10.08). Our exit fills sold all 11.06
+    # for $8.47 proceeds (~16% loss), matching the real incident.
+    monkeypatch.setattr(pl, "_extract_live_fill_metrics", lambda p: (10.078, 11.06, 0.911))
+    monkeypatch.setattr(pl, "_extract_wallet_position_size", lambda wp: 0.0)  # wallet flat
+
+    async def _fills(session, *, token_id, since, wallet_address=None):  # noqa: ARG001
+        return (11.06, 8.47)
+    monkeypatch.setattr(pl, "summarize_live_exit_fills", _fills)
+
+    captured = {}
+
+    async def _fake_terminalize(**kwargs):
+        captured.update(kwargs)
+        kwargs["row"].status = "closed_loss"
+        return "closed_loss"
+    monkeypatch.setattr(pl, "terminalize_filled_exit", _fake_terminalize)
+
+    eval_calls = []
+
+    async def _spy_eval(**kwargs):  # noqa: ARG001
+        eval_calls.append(1)
+        return _close_decision()
+    monkeypatch.setattr(pl, "evaluate_position_exit", _spy_eval)
+
+    exec_calls = []
+
+    async def _fake_exec(**kwargs):
+        exec_calls.append(kwargs)
+        return {}
+    monkeypatch.setattr(pl, "execute_position_exit", _fake_exec)
+
+    loop = erl.ExitRiskLoop()
+    # wallet flat (wallet_by_token empty) + full sell fills -> terminalize
+    await _process(loop, monkeypatch, {"token_id": "tok-1", "strategy_type": "tail_end_carry"})
+
+    assert captured, "terminalize_filled_exit must be called"
+    assert eval_calls == [] and exec_calls == []  # no eval/fire once fully sold
+    assert abs(captured["realized_pnl"] - (8.47 - 10.078)) < 1e-6
+    assert abs(captured["close_price"] - (8.47 / 11.06)) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_partial_sell_does_not_terminalize(monkeypatch):
+    # Only part of the position sold -> NOT flat -> must keep managing it,
+    # never terminalize on a partial exit.
+    _patch_derivations(monkeypatch, decision=_close_decision())
+    monkeypatch.setattr(pl, "_extract_live_fill_metrics", lambda p: (10.078, 11.06, 0.911))
+    monkeypatch.setattr(pl, "_extract_wallet_position_size", lambda wp: 0.0)  # wallet flat
+
+    async def _fills(session, *, token_id, since, wallet_address=None):  # noqa: ARG001
+        return (4.58, 3.47)  # only ~41% sold
+    monkeypatch.setattr(pl, "summarize_live_exit_fills", _fills)
+
+    term_calls = []
+
+    async def _fake_terminalize(**kwargs):
+        term_calls.append(kwargs)
+        return "closed_loss"
+    monkeypatch.setattr(pl, "terminalize_filled_exit", _fake_terminalize)
+
+    async def _fake_exec(**kwargs):
+        return {"status": "submitted", "submitted": True}
+    monkeypatch.setattr(pl, "execute_position_exit", _fake_exec)
+
+    loop = erl.ExitRiskLoop()
+    await _process(loop, monkeypatch, {"token_id": "tok-1", "strategy_type": "tail_end_carry"})
+    assert term_calls == []  # partial fill must not terminalize
 
 
 @pytest.mark.asyncio

@@ -227,6 +227,58 @@ class ExitRiskLoop:
         submissions: list[int],
     ) -> None:
         payload = dict(row.payload_json or {})
+
+        token_id = pl._extract_live_token_id(payload)
+        filled_notional, filled_size, avg_px = pl._extract_live_fill_metrics(payload)
+        entry_price = safe_float(avg_px) or safe_float(row.effective_price) or safe_float(row.entry_price) or 0.0
+        if entry_price <= 0.0:
+            return
+        notional = filled_notional if filled_notional > 0.0 else (safe_float(row.notional_usd) or 0.0)
+        if notional <= 0.0:
+            return
+        entry_size = filled_size if filled_size > 0.0 else (notional / entry_price)
+
+        market_info = market_info_by_id.get(str(row.market_id or ""))
+        wallet_pos = wallet_by_token.get(token_id) if token_id else None
+        wallet_size = pl._extract_wallet_position_size(wallet_pos)
+
+        # ── Ghost-position terminalization (fast-path) ────────────────────
+        # The fast loop sells in seconds, but the orchestrator row is closed
+        # by the SLOW reconcile loop (starved: 9-16s cycles in the soak). So a
+        # fully-liquidated position can stay ``executed`` for 20+ min, and the
+        # loop keeps firing doomed sells against a now-empty wallet. When the
+        # wallet shows flat AND our own exit fills (live_trading_orders, the
+        # on-chain fill source of truth) account for the whole entry size, we
+        # terminalize HERE via the shared ``terminalize_filled_exit`` so the
+        # close record is identical to reconcile's (single source of truth).
+        # Gated on wallet-flat so it's not a per-sweep query for healthy
+        # positions, and never closes a position still holding shares.
+        if token_id and entry_size > 0.0 and wallet_size <= pl._WALLET_SIZE_EPSILON:
+            sold_size, sold_proceeds = await pl.summarize_live_exit_fills(
+                session, token_id=token_id, since=(row.executed_at or row.created_at),
+            )
+            if sold_proceeds > 0.0 and sold_size >= entry_size - max(0.5, entry_size * 0.02):
+                vwap = sold_proceeds / sold_size if sold_size > 0 else 0.0
+                realized = sold_proceeds - notional
+                pe0 = payload.get("pending_live_exit")
+                trig = (pe0.get("close_trigger") if isinstance(pe0, dict) else None) or "exit_fill_confirmed"
+                exit_instance = (
+                    await pl._strategy_exit_instance(session, (payload.get("strategy_type") or "").strip().lower())
+                    if payload.get("strategy_type") else None
+                )
+                ns = await pl.terminalize_filled_exit(
+                    session=session, row=row, payload=payload, now=now,
+                    close_price=vwap, realized_pnl=realized, filled_size=sold_size,
+                    close_trigger=str(trig), price_source="live_exit_fill_vwap",
+                    reason="exit_risk_loop", exit_instance=exit_instance, market_info=market_info,
+                )
+                await session.commit()
+                logger.warning(
+                    "exit_risk_loop TERMINALIZED order=%s -> %s sold=%.2f/%.2f vwap=%.4f realized_pnl=%.2f",
+                    row.id, ns, sold_size, entry_size, vwap, realized,
+                )
+                return
+
         pe = payload.get("pending_live_exit")
         # Mutex / single-owner handoff: the loop fires only the FIRST exit for
         # a position. Once ANY ``pending_live_exit`` exists (in-flight OR a
@@ -241,22 +293,10 @@ class ExitRiskLoop:
         if isinstance(pe, dict) and str(pe.get("status") or "").strip():
             return  # an exit attempt exists — its lifecycle belongs to reconcile
 
-        token_id = pl._extract_live_token_id(payload)
-        filled_notional, filled_size, avg_px = pl._extract_live_fill_metrics(payload)
-        entry_price = safe_float(avg_px) or safe_float(row.effective_price) or safe_float(row.entry_price) or 0.0
-        if entry_price <= 0.0:
-            return
-        notional = filled_notional if filled_notional > 0.0 else (safe_float(row.notional_usd) or 0.0)
-        if notional <= 0.0:
-            return
-
-        market_info = market_info_by_id.get(str(row.market_id or ""))
         outcome_idx = pl._direction_outcome_index(row.direction, market_info=market_info, token_id=token_id)
         if outcome_idx is None:
             return
         market_tradable = polymarket_client.is_market_tradable(market_info, now=now)
-        wallet_pos = wallet_by_token.get(token_id) if token_id else None
-        wallet_size = pl._extract_wallet_position_size(wallet_pos)
         wallet_mark = pl._extract_wallet_mark_price(wallet_pos)
         market_side_price = pl._extract_market_side_price(market_info, outcome_idx)
 
