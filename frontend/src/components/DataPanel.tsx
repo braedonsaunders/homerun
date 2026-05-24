@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Database, FlaskConical, Globe2, Newspaper, Radio } from 'lucide-react'
+import { Database, Globe2, HardDrive, Newspaper, Radio } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '../lib/utils'
@@ -15,7 +15,7 @@ import { Button } from './ui/button'
 const WorldMap = lazy(() => import('./WorldMap'))
 const DataLab = lazy(() => import('./DataLab'))
 
-export type DataView = 'map' | 'events' | 'stories' | 'sources' | 'lab'
+export type DataView = 'map' | 'events' | 'stories' | 'sources' | 'datasets'
 
 interface DataPanelProps {
   isConnected: boolean
@@ -57,6 +57,41 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
   return (
     <div className="flex-1 overflow-hidden flex flex-col section-enter">
       <div className="shrink-0 px-6 pt-4 pb-0 flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onViewChange('datasets')}
+          className={cn(
+            'gap-1.5 text-xs h-8',
+            view === 'datasets'
+              ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30 hover:text-indigo-400'
+              : 'bg-card text-muted-foreground hover:text-foreground border-border'
+          )}
+        >
+          <HardDrive className="w-3.5 h-3.5" />
+          {t('dataTab.datasets')}
+        </Button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onViewChange('sources')}
+          className={cn(
+            'gap-1.5 text-xs h-8',
+            view === 'sources'
+              ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
+              : 'bg-card text-muted-foreground hover:text-foreground border-border'
+          )}
+        >
+          <Database className="w-3.5 h-3.5" />
+          {t('dataTab.sources')}
+          {sourceCount > 0 && (
+            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 text-[10px] font-data">
+              {sourceCount}
+            </span>
+          )}
+        </Button>
+
         <Button
           variant="outline"
           size="sm"
@@ -111,41 +146,6 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
             </span>
           )}
         </Button>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onViewChange('sources')}
-          className={cn(
-            'gap-1.5 text-xs h-8',
-            view === 'sources'
-              ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/30 hover:text-cyan-400'
-              : 'bg-card text-muted-foreground hover:text-foreground border-border'
-          )}
-        >
-          <Database className="w-3.5 h-3.5" />
-          {t('dataTab.sources')}
-          {sourceCount > 0 && (
-            <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-400 text-[10px] font-data">
-              {sourceCount}
-            </span>
-          )}
-        </Button>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onViewChange('lab')}
-          className={cn(
-            'gap-1.5 text-xs h-8',
-            view === 'lab'
-              ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30 hover:text-indigo-400'
-              : 'bg-card text-muted-foreground hover:text-foreground border-border'
-          )}
-        >
-          <FlaskConical className="w-3.5 h-3.5" />
-          {t('dataTab.lab')}
-        </Button>
       </div>
 
       {view === 'map' && (
@@ -180,9 +180,9 @@ export default function DataPanel({ isConnected, view, onViewChange, onOpenCopil
         </div>
       )}
 
-      {view === 'lab' && (
+      {view === 'datasets' && (
         <div className="flex-1 min-h-0 overflow-hidden px-6 py-4">
-          <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">Data Lab view crashed.</div>}>
+          <ErrorBoundary fallback={<div className="m-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">Datasets view crashed.</div>}>
             <Suspense fallback={<div className="h-full w-full" />}>
               <DataLab />
             </Suspense>
