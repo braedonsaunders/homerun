@@ -5686,6 +5686,273 @@ async def evaluate_position_exit(
     return result
 
 
+async def execute_position_exit(
+    *,
+    session: AsyncSession,
+    row: TraderOrder,
+    payload: dict[str, Any],
+    now: datetime,
+    close_price: float,
+    close_trigger: str,
+    price_source: Optional[str],
+    pnl: Optional[float],
+    market_tradable: bool,
+    age_minutes: Optional[float],
+    filled_size: float,
+    quantity: float,
+    wallet_position_size: float,
+    pending_exit: Any,
+    exit_instance: Any,
+    strategy_exit: Any,
+    params: dict[str, Any],
+    reason: Optional[str],
+    submissions_this_pass: list[int],
+) -> dict[str, Any]:
+    """Submit / track the ``pending_live_exit`` for a tradable-market close.
+
+    Extracted verbatim from the inline submit orchestration in
+    ``reconcile_live_positions`` so the slow reconcile and the fast exit-
+    risk loop place exits through ONE path. Reuses the canonical primitives
+    (``exit_executor.run_exit_pass`` for laddered policies, ``execute_live_order``
+    for the simple path, ``_apply_failed_exit_state`` for failures).
+
+    Side effects: sets ``payload['pending_live_exit']`` (and, on a TP-limit
+    override, ``payload['superseded_take_profit_exit']``). Does NOT touch the
+    caller's accumulators (``details``/``would_close``/``held``/``state_updates``),
+    persist the row, or drive control flow — the caller owns those.
+    ``submissions_this_pass`` is the shared per-pass submission budget
+    (mutable ``[int]``); the reconcile loop passes its loop-wide counter, the
+    risk loop passes its own.
+
+    Returns a small result dict ``{'status', 'submitted', 'exit_record'}``.
+    """
+    existing_tp_limit = (
+        pending_exit
+        if isinstance(pending_exit, dict)
+        and str(pending_exit.get("kind") or "").strip().lower() == "take_profit_limit"
+        and str(pending_exit.get("status") or "").strip().lower() in {"submitted", "pending"}
+        else None
+    )
+    if existing_tp_limit is not None:
+        cancel_target = _pending_exit_provider_clob_id(existing_tp_limit)
+        if not cancel_target:
+            cancel_target = str(existing_tp_limit.get("exit_order_id") or "").strip()
+        cancel_success = False
+        if cancel_target:
+            try:
+                async with release_conn(session):
+                    cancel_success = bool(await live_execution_service.cancel_order(cancel_target))
+            except Exception:
+                cancel_success = False
+        existing_tp_limit["cancelled_for_override_at"] = _iso_utc(now)
+        existing_tp_limit["override_cancel_target"] = cancel_target
+        existing_tp_limit["override_cancel_success"] = cancel_success
+        if cancel_success:
+            existing_tp_limit["status"] = "cancelled"
+        payload["superseded_take_profit_exit"] = existing_tp_limit
+
+    exit_record: dict[str, Any] = {
+        "triggered_at": _iso_utc(now),
+        "close_trigger": close_trigger,
+        "close_price": close_price,
+        "price_source": price_source,
+        "market_tradable": market_tradable,
+        "hypothetical_pnl": pnl,
+        "age_minutes": age_minutes,
+        "reason": reason,
+        "retry_count": 0,
+        "status": "pending",
+    }
+
+    token_id = _extract_live_token_id(payload)
+    exit_size = filled_size if filled_size > 0.0 else quantity
+    if exit_size > 0.0:
+        exit_record["exit_size"] = float(exit_size)
+    wallet_exit_size_cap = wallet_position_size if wallet_position_size > _WALLET_SIZE_EPSILON else 0.0
+    if wallet_exit_size_cap > 0.0:
+        if exit_size <= 0.0:
+            exit_size = wallet_exit_size_cap
+        else:
+            exit_size = min(exit_size, wallet_exit_size_cap)
+        exit_record["exit_size"] = float(exit_size)
+    base_min_order_size_usd = _resolve_position_min_order_size_usd(
+        trader_params=params, payload=payload, mode="live"
+    )
+    min_order_size_usd = _effective_exit_min_order_size_usd(base_min_order_size_usd, close_trigger)
+    rapid_close_exit = _is_rapid_close_trigger(close_trigger)
+
+    # ── Advanced (laddered) exit policy ────────────────────────────────
+    _resolved_policy = None
+    if exit_instance is not None and hasattr(exit_instance, "resolve_exit_policy"):
+        try:
+            _resolved_policy = exit_instance.resolve_exit_policy(strategy_exit, str(close_trigger or ""))
+        except Exception as _policy_exc:
+            logger.warning(
+                "Strategy resolve_exit_policy() error for %s: %s",
+                payload.get("strategy_type"),
+                _policy_exc,
+            )
+            _resolved_policy = None
+
+    if _resolved_policy is not None and token_id and exit_size > 0:
+        _exit_id, _children_records = exit_executor.build_initial_children(
+            target_size=float(exit_size),
+            trigger_price=float(close_price) if close_price else 0.0,
+            side="SELL",
+            policy=_resolved_policy,
+            tick_size=exit_executor.DEFAULT_TICK_SIZE,
+        )
+        if _children_records:
+            _entry_filled_not, _entry_filled_sz, _entry_filled_px = _extract_live_fill_metrics(payload)
+            exit_record["exit_id"] = _exit_id
+            exit_record["children"] = _children_records
+            exit_record["policy"] = exit_executor.serialize_policy(_resolved_policy)
+            exit_record["target_size"] = float(exit_size)
+            exit_record["trigger_price"] = float(close_price or 0.0)
+            exit_record["entry_notional_usd"] = float(_entry_filled_not)
+            exit_record["entry_filled_size"] = float(_entry_filled_sz)
+            exit_record["status"] = "submitted"
+            exit_record["last_attempt_at"] = _iso_utc(now)
+            _initial_budget_room = max(0, _live_exit_submission_cap() - submissions_this_pass[0])
+            if _initial_budget_room > 0:
+                from services.live_execution_adapter import execute_live_order as _ladder_first_place_order
+
+                async def _ladder_first_cancel(_clob_id: str) -> bool:
+                    async with release_conn(session):
+                        try:
+                            return bool(await live_execution_service.cancel_order(_clob_id))
+                        except Exception:
+                            return False
+
+                try:
+                    async with release_conn(session):
+                        await _prepare_sell_allowance_bounded(token_id)
+                        _first_report = await exit_executor.run_exit_pass(
+                            pending_exit=exit_record,
+                            token_id=token_id,
+                            side="SELL",
+                            min_order_size_usd=min_order_size_usd,
+                            place_order=_ladder_first_place_order,
+                            cancel_fn=_ladder_first_cancel,
+                            current_mid=close_price,
+                            tick_size=exit_executor.DEFAULT_TICK_SIZE,
+                            budget=exit_executor.PassBudget(
+                                submits=_initial_budget_room,
+                                escalations=_initial_budget_room,
+                                reprices=_initial_budget_room,
+                            ),
+                            now=now,
+                        )
+                    submissions_this_pass[0] += int(
+                        _first_report.get("submitted", 0)
+                        + _first_report.get("escalated", 0)
+                        + _first_report.get("repriced", 0)
+                    )
+                    logger.info(
+                        "Laddered exit initialized for order=%s trigger=%s children=%d submitted=%d",
+                        row.id,
+                        close_trigger,
+                        len(_children_records),
+                        int(_first_report.get("submitted", 0) or 0),
+                    )
+                except Exception as _first_exc:
+                    exit_record["last_error"] = _format_exit_error(_first_exc)
+                    logger.warning(
+                        "Laddered exit initial pass exception for order=%s: %s",
+                        row.id,
+                        _format_exit_error(_first_exc),
+                        exc_info=_first_exc,
+                    )
+            payload["pending_live_exit"] = exit_record
+            return {"status": exit_record.get("status"), "submitted": True, "exit_record": exit_record}
+
+    if token_id and exit_size > 0:
+        exit_size = _remaining_exit_size(
+            required_exit_size=exit_size,
+            pending_exit=exit_record,
+            wallet_position_size=wallet_exit_size_cap,
+        )
+        if exit_size > 0.0:
+            exit_record["remaining_size"] = float(exit_size)
+        exit_notional_estimate = float(exit_size) * float(max(close_price, 0.0))
+        if exit_notional_estimate + 1e-9 < min_order_size_usd:
+            exit_record["status"] = "blocked_min_notional"
+            exit_record["retry_count"] = 1
+            exit_record["exhausted_at"] = _iso_utc(now)
+            exit_record["last_error"] = (
+                f"exit_notional_below_min:{exit_notional_estimate:.4f}<{min_order_size_usd:.4f}"
+            )
+            exit_record["last_attempt_at"] = _iso_utc(now)
+            exit_record["next_retry_at"] = None
+            payload["pending_live_exit"] = exit_record
+            return {"status": "blocked_min_notional", "submitted": False, "exit_record": exit_record}
+        if submissions_this_pass[0] >= _live_exit_submission_cap():
+            exit_record["status"] = "failed"
+            exit_record["retry_count"] = 0
+            exit_record["last_error"] = "deferred_per_pass_cap"
+            exit_record["next_retry_at"] = None
+            payload["pending_live_exit"] = exit_record
+            return {"status": "failed", "submitted": False, "exit_record": exit_record}
+        submissions_this_pass[0] += 1
+        try:
+            from services.live_execution_adapter import execute_live_order
+
+            async with release_conn(session):
+                await _prepare_sell_allowance_bounded(token_id)
+                exec_result = await asyncio.wait_for(
+                    execute_live_order(
+                        token_id=token_id,
+                        side="SELL",
+                        size=exit_size,
+                        fallback_price=close_price,
+                        min_order_size_usd=min_order_size_usd,
+                        time_in_force="IOC" if rapid_close_exit else "GTC",
+                        resolve_live_price=rapid_close_exit,
+                        enforce_fallback_bound=not rapid_close_exit,
+                    ),
+                    timeout=_LIVE_EXIT_ORDER_TIMEOUT_SECONDS,
+                )
+            if exec_result.status in {"executed", "open", "submitted"}:
+                exit_record["status"] = "submitted"
+                exit_record["exit_order_id"] = exec_result.order_id
+                exit_record["provider_clob_order_id"] = str((exec_result.payload or {}).get("clob_order_id") or "")
+                exit_record["last_attempt_at"] = _iso_utc(now)
+                logger.info(
+                    "Exit order placed for order=%s trigger=%s status=%s",
+                    row.id,
+                    close_trigger,
+                    exec_result.status,
+                )
+            else:
+                _apply_failed_exit_state(exit_record, error=exec_result.error_message, now=now, retry_count=1)
+                logger.warning(
+                    "Exit order failed for order=%s trigger=%s error=%s",
+                    row.id,
+                    close_trigger,
+                    exec_result.error_message,
+                )
+        except Exception as exc:
+            _apply_failed_exit_state(exit_record, error=exc, now=now, retry_count=1)
+            logger.warning(
+                "Exit order exception for order=%s trigger=%s: %s: %s",
+                row.id,
+                close_trigger,
+                type(exc).__name__,
+                str(exc) or "<no message>",
+                exc_info=exc,
+            )
+    else:
+        exit_record["status"] = "failed"
+        exit_record["last_error"] = "missing token_id or fill_size"
+        exit_record["retry_count"] = 1
+        exit_record["next_retry_at"] = _iso_utc(
+            now + timedelta(seconds=_failed_exit_retry_delay_seconds(exit_record["last_error"]))
+        )
+
+    payload["pending_live_exit"] = exit_record
+    return {"status": exit_record.get("status"), "submitted": exit_record.get("status") == "submitted", "exit_record": exit_record}
+
+
 async def reconcile_live_positions(
     session: AsyncSession,
     *,
