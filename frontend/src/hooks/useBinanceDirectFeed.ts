@@ -12,8 +12,15 @@ import { useEffect, useRef } from 'react'
 // Backend continues to maintain its own connection (services/binance_feed.py)
 // for orchestrator/strategy execution gates that read from snapshot data.
 
+// NOTE: use the US endpoint (stream.binance.us), NOT the global
+// stream.binance.com.  From US-region networks binance.com does NOT hard-block
+// the market-data socket — it *degrades*: it keeps flooding bookTicker messages
+// (so the displayed age stays ~0s) but the top-of-book PRICE is frozen (only
+// quantities churn).  Verified 2026-05: binance.com → 125 msgs/15s but 1
+// distinct price; binance.us → 47 msgs/15s, 35 distinct prices (live).  Both
+// are public/keyless; binance.us serves the same btc/eth/sol/xrp usdt pairs.
 const BINANCE_STREAM_URL =
-  'wss://stream.binance.com:9443/stream?streams=' +
+  'wss://stream.binance.us:9443/stream?streams=' +
   'btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker/xrpusdt@bookTicker'
 
 const SYMBOL_TO_ASSET: Record<string, string> = {

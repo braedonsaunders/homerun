@@ -58,7 +58,15 @@ class Settings(BaseSettings):
     # immediately after `/ws/` and silently drops anything concatenated
     # after it, which is why oracle ages spiked to 4–20s with the old URL.
     # https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#websocket-streams-endpoint-for-symbols
-    BINANCE_WS_URL: str = "wss://stream.binance.com:9443/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker/xrpusdt@bookTicker"
+    # Use the US endpoint (stream.binance.us): from US-region networks the
+    # global stream.binance.com does NOT block — it DEGRADES, flooding
+    # bookTicker messages while the top-of-book PRICE stays frozen (only
+    # quantities churn).  The 8s stale-timeout below can't catch it because
+    # messages keep arriving, so binance_direct would feed strategy/execution
+    # gates a frozen price it believes is fresh.  Verified 2026-05 same-host:
+    # binance.com 125 msgs/15s → 1 distinct price; binance.us 47 msgs/15s → 35
+    # distinct (live) across btc/eth/sol/xrp.  Public/keyless, same pairs.
+    BINANCE_WS_URL: str = "wss://stream.binance.us:9443/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker/xrpusdt@bookTicker"
     # Force a reconnect if the binance bookTicker stream delivers no
     # message within this many seconds.  ping/pong covers TCP liveness
     # only — Binance's edge has been observed to stop pushing data while
