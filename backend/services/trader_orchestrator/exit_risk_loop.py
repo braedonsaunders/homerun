@@ -49,6 +49,31 @@ from utils.utcnow import utcnow
 logger = logging.getLogger("exit_risk_loop")
 
 _SWEEP_INTERVAL_SECONDS = 2.0
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """True for connection-churn errors that a fresh-session retry can clear.
+
+    Under DB pressure the fast pool's connection can die MID-sweep (the DB
+    drops it, or a statement-timeout cancellation invalidates it), surfacing
+    as asyncpg ``InterfaceError: connection is closed`` / ``InternalClientError``
+    or a ``TimeoutError``. ``pool_pre_ping`` only validates at checkout, so it
+    can't catch a mid-sweep death — hence one immediate retry with a new
+    session before falling back to the next ~2s tick (this is a risk loop, so
+    we don't want a dropped sweep to delay a stop a whole cycle).
+    """
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+    name = type(exc).__name__
+    if name in {"InterfaceError", "InternalClientError", "ResourceClosedError", "OperationalError"}:
+        return True
+    text = f"{exc}".lower()
+    return (
+        "connection is closed" in text
+        or "connection was closed" in text
+        or "another operation is in progress" in text
+        or "rvf5" in text
+    )
+
+
 # Per-order fire cooldown. The pending_live_exit dict is the primary mutex,
 # but reconcile can legitimately pop/supersede it (wallet-flat / fallback-
 # manual / terminalization paths) while a position is still selectable for a
@@ -108,7 +133,23 @@ class ExitRiskLoop:
                 self._running = False
                 raise
             except Exception as exc:
-                logger.warning("Exit-risk sweep failed: %s", exc, exc_info=exc)
+                # Risk-loop resilience: if the sweep died on transient
+                # connection churn (conn closed mid-sweep / timeout), retry
+                # ONCE immediately with a fresh session rather than waiting the
+                # full interval — a dropped sweep must not delay a stop a whole
+                # cycle. A non-transient error (or a second failure) falls
+                # through to the next tick.
+                if _is_transient_db_error(exc):
+                    logger.warning("Exit-risk sweep transient failure (%s) — retrying once", type(exc).__name__)
+                    try:
+                        await self._sweep()
+                    except asyncio.CancelledError:
+                        self._running = False
+                        raise
+                    except Exception as exc2:
+                        logger.warning("Exit-risk sweep retry failed: %s", exc2, exc_info=exc2)
+                else:
+                    logger.warning("Exit-risk sweep failed: %s", exc, exc_info=exc)
 
     def stop(self) -> None:
         self._running = False

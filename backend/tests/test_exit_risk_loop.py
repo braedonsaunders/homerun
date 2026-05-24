@@ -8,6 +8,7 @@ dispatch from a close decision to execute_position_exit.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -288,3 +289,57 @@ async def test_hold_decision_no_execute(monkeypatch):
     loop = erl.ExitRiskLoop()
     await _process(loop, monkeypatch, {"token_id": "tok-1", "strategy_type": "tail_end_carry"})
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "exc,expected",
+    [
+        (TimeoutError("x"), True),
+        (asyncio.TimeoutError(), True),
+        (ConnectionError("connection is closed"), True),
+        (RuntimeError("another operation is in progress"), True),
+        (ValueError("bad value"), False),
+        (KeyError("nope"), False),
+    ],
+)
+def test_is_transient_db_error(exc, expected):
+    assert erl._is_transient_db_error(exc) is expected
+
+
+@pytest.mark.asyncio
+async def test_sweep_retries_once_on_transient_error(monkeypatch):
+    # A connection that dies mid-sweep must trigger ONE immediate fresh-session
+    # retry rather than dropping the whole 2s cycle (risk-loop resilience).
+    loop = erl.ExitRiskLoop()
+    monkeypatch.setattr(loop, "_register_callback", lambda: None)
+    loop._wake.set()  # make the interval wait return immediately
+    calls = []
+
+    async def _flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("connection is closed")  # transient -> retry
+        loop._running = False  # retry succeeds, stop the loop
+
+    monkeypatch.setattr(loop, "_sweep", _flaky)
+    await asyncio.wait_for(loop.run_forever(), timeout=5)
+    assert len(calls) == 2  # original + one retry
+
+
+@pytest.mark.asyncio
+async def test_sweep_not_retried_on_nontransient_error(monkeypatch):
+    # A non-transient error must NOT retry within the cycle (avoid masking a
+    # real outage); it falls through to the next tick.
+    loop = erl.ExitRiskLoop()
+    monkeypatch.setattr(loop, "_register_callback", lambda: None)
+    loop._wake.set()
+    calls = []
+
+    async def _boom():
+        calls.append(1)
+        loop._running = False  # stop after this one call
+        raise ValueError("boom")  # non-transient -> no retry
+
+    monkeypatch.setattr(loop, "_sweep", _boom)
+    await asyncio.wait_for(loop.run_forever(), timeout=5)
+    assert len(calls) == 1  # no retry
