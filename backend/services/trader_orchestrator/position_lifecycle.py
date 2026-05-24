@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time_mod
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -5362,6 +5363,327 @@ async def _collect_live_exit_marks(
                 books_by_token[token_id] = book
 
     return ws_mid_prices, clob_mid_prices, books_by_token
+
+
+@dataclass(slots=True)
+class PositionExitDecision:
+    """Result of evaluating one open live position's tradable-market exits.
+
+    Decision-only: contains the recomputed mark/anchors (to persist) and
+    what to do (hold / close / reduce) with the trigger + price. Execution
+    is a separate concern. Shared by ``reconcile_live_positions`` and the
+    isolated exit-risk loop so the stop logic can never diverge.
+    """
+
+    # Recomputed mark + anchors (persist to position_state regardless of action)
+    current_price: Optional[float]
+    current_price_source: Optional[str]
+    highest_price: Optional[float]
+    lowest_price: Optional[float]
+    next_state: dict[str, Any]
+    age_minutes: Optional[float]
+    min_hold_passed: bool
+    pnl_pct: Optional[float]
+    # Decision
+    action: str  # "hold" | "close" | "reduce"
+    close_price: Optional[float] = None
+    close_trigger: Optional[str] = None
+    price_source: Optional[str] = None
+    trailing_trigger_price: Optional[float] = None
+    strategy_exit: Any = None  # raw strategy ExitDecision (reduce_fraction / policy for execution)
+    hold_blocks_default: bool = False
+
+
+async def evaluate_position_exit(
+    *,
+    session: AsyncSession,
+    row: TraderOrder,
+    payload: dict[str, Any],
+    now: datetime,
+    now_naive: datetime,
+    ws_side_price: Optional[float],
+    clob_side_price: Optional[float],
+    market_side_price: Optional[float],
+    wallet_mark_price: Optional[float],
+    book: Any,
+    entry_price: float,
+    notional: float,
+    filled_size: float,
+    wallet_position_size: float,
+    outcome_idx: Optional[int],
+    market_info: Any,
+    market_tradable: bool,
+    market_seconds_left: Optional[float],
+    market_end_time: Optional[str],
+    take_profit_pct: Optional[float],
+    stop_loss_pct: Optional[float],
+    trailing_stop_pct: Optional[float],
+    max_hold_minutes: Optional[float],
+    min_hold_minutes: float,
+    resolve_only: bool,
+    close_on_inactive_market: bool,
+    pending_exit: Any,
+    params: dict[str, Any],
+    mark_touch_interval_seconds: float,
+) -> PositionExitDecision:
+    """Evaluate tradable-market exit gates for one open live position.
+
+    Pure decision (no order placement, no DB writes, no loop-accumulator
+    mutation): recompute the realizable mark + trailing anchors, run the
+    strategy's ``should_exit`` and the default SL/TP/trailing/max-hold/
+    inactive gates, and return a :class:`PositionExitDecision`. Resolution/
+    wallet-settlement detection stays with the caller (reconcile) — this
+    function only decides live, tradable exits, which is exactly what the
+    fast exit-risk loop needs. Behaviour mirrors the former inline block in
+    ``reconcile_live_positions`` line-for-line so the two paths agree.
+
+    NOTE: ``_arm_reverse_entry_from_exit`` mutates ``payload`` (arming a
+    reverse entry) as a deliberate side effect of an exit decision — it is
+    preserved here so reconcile parity holds; the caller persists payload.
+    """
+    token_id = _extract_live_token_id(payload)
+
+    # ── Mark waterfall (mid) then realizable liquidation override ──────
+    current_price = (
+        ws_side_price
+        if ws_side_price is not None
+        else (
+            clob_side_price
+            if clob_side_price is not None
+            else (market_side_price if market_side_price is not None else wallet_mark_price)
+        )
+    )
+    current_price = _state_price_floor(current_price)
+    current_price_source = (
+        "ws_mid"
+        if ws_side_price is not None
+        else (
+            "clob_midpoint"
+            if clob_side_price is not None
+            else (
+                "market_mark"
+                if market_side_price is not None
+                else ("wallet_mark" if wallet_mark_price is not None else None)
+            )
+        )
+    )
+    _exit_cfg = payload.get("strategy_exit_config")
+    if not isinstance(_exit_cfg, dict):
+        _exit_cfg = {}
+    _exit_mark_mode = str(_exit_cfg.get("exit_mark_mode") or "liquidation_vwap").strip().lower()
+    _position_shares = (
+        wallet_position_size
+        if wallet_position_size > _WALLET_SIZE_EPSILON
+        else (notional / entry_price if entry_price and entry_price > 0 else 0.0)
+    )
+    _liq_mark, _liq_source = _resolve_exit_trigger_mark(
+        book, _position_shares, current_price, mode=_exit_mark_mode
+    )
+    if _liq_mark is not None:
+        current_price = _state_price_floor(_liq_mark)
+        current_price_source = _liq_source
+
+    age_anchor = row.executed_at or row.updated_at or row.created_at
+    age_minutes: Optional[float] = None
+    if age_anchor is not None:
+        age_minutes = max(0.0, (now - age_anchor).total_seconds() / 60.0)
+    min_hold_passed = age_minutes is None or age_minutes >= min_hold_minutes
+
+    position_state = _extract_position_state(payload)
+    prev_high = safe_float(position_state.get("highest_price"))
+    prev_low = safe_float(position_state.get("lowest_price"))
+    prev_last_mark = safe_float(position_state.get("last_mark_price"))
+    prev_mark_source = str(position_state.get("last_mark_source") or "")
+    prev_marked_at = _parse_iso_utc_naive(position_state.get("last_marked_at"))
+
+    # Seed anchors from entry on first observation (trailing-stop anchor
+    # must be the price we actually paid — see 2026-05-20 incident).
+    highest_price = prev_high
+    lowest_price = prev_low
+    if highest_price is None and entry_price > 0.0:
+        highest_price = entry_price
+    if lowest_price is None and entry_price > 0.0:
+        lowest_price = entry_price
+    if current_price is not None:
+        highest_price = current_price if highest_price is None else max(highest_price, current_price)
+        lowest_price = current_price if lowest_price is None else min(lowest_price, current_price)
+
+    mark_updated_at_value = (
+        _iso_utc(now)
+        if current_price is not None
+        else (_iso_utc(prev_marked_at.replace(tzinfo=timezone.utc)) if prev_marked_at is not None else "")
+    )
+    next_state = {
+        "highest_price": _state_price_floor(highest_price),
+        "lowest_price": _state_price_floor(lowest_price),
+        "last_mark_price": current_price if current_price is not None else _state_price_floor(prev_last_mark),
+        "last_mark_source": str(current_price_source or prev_mark_source),
+        "last_marked_at": mark_updated_at_value,
+        "last_exit_evaluated_at": _iso_utc(now),
+    }
+    prev_mark_age_seconds = (
+        max(0.0, (now_naive - prev_marked_at).total_seconds()) if prev_marked_at is not None else None
+    )
+    fallback_mark_fresh = bool(
+        prev_last_mark is not None
+        and prev_mark_age_seconds is not None
+        and prev_mark_age_seconds <= _MAX_LIVE_EXIT_FALLBACK_MARK_AGE_SECONDS
+    )
+    if current_price is not None:
+        exit_eval_price = current_price
+        exit_eval_price_source = current_price_source
+    elif fallback_mark_fresh:
+        exit_eval_price = _state_price_floor(prev_last_mark)
+        exit_eval_price_source = "position_state_mark"
+    else:
+        exit_eval_price = None
+        exit_eval_price_source = None
+
+    pnl_pct: Optional[float] = None
+    if exit_eval_price is not None and entry_price > 0:
+        pnl_pct = ((exit_eval_price - entry_price) / entry_price) * 100.0
+
+    result = PositionExitDecision(
+        current_price=current_price,
+        current_price_source=current_price_source,
+        highest_price=highest_price,
+        lowest_price=lowest_price,
+        next_state=next_state,
+        age_minutes=age_minutes,
+        min_hold_passed=min_hold_passed,
+        pnl_pct=pnl_pct,
+        action="hold",
+    )
+
+    close_price: Optional[float] = None
+    close_trigger: Optional[str] = None
+    price_source: Optional[str] = None
+    trailing_trigger_price: Optional[float] = None
+    strategy_exit = None
+
+    # ── Strategy should_exit() ─────────────────────────────────────────
+    strategy_slug = (payload.get("strategy_type") or "").strip().lower()
+    _exit_instance = await _strategy_exit_instance(session, strategy_slug) if strategy_slug else None
+    if _exit_instance is not None:
+        try:
+            class _LivePositionView:
+                pass
+
+            pos_view = _LivePositionView()
+            pos_view.entry_price = entry_price
+            pos_view.current_price = exit_eval_price
+            pos_view.highest_price = highest_price
+            pos_view.lowest_price = lowest_price
+            pos_view.age_minutes = age_minutes
+            pos_view.pnl_percent = pnl_pct
+            pos_view.filled_size = filled_size if filled_size > 0.0 else (notional / entry_price if entry_price > 0 else 0.0)
+            pos_view.notional_usd = notional
+            if "strategy_context" not in payload:
+                payload["strategy_context"] = {}
+            strategy_context_payload = payload["strategy_context"] if isinstance(payload.get("strategy_context"), dict) else {}
+            pos_view.strategy_context = payload["strategy_context"]
+            pos_view.config = payload.get("strategy_exit_config", {})
+            pos_view.outcome_idx = outcome_idx
+
+            min_order_size_usd = _resolve_position_min_order_size_usd(trader_params=params, payload=payload, mode="live")
+            market_state_dict = {
+                "current_price": exit_eval_price,
+                "market_tradable": market_tradable,
+                "is_resolved": False,
+                "winning_outcome": None,
+                "seconds_left": market_seconds_left,
+                "end_time": market_end_time,
+                "token_id": token_id,
+                "mark_source": exit_eval_price_source,
+                "min_order_size_usd": min_order_size_usd,
+                "notional_usd": notional,
+                "oracle_price": strategy_context_payload.get("oracle_price"),
+                "price_to_beat": strategy_context_payload.get("price_to_beat"),
+                "oracle_age_seconds": strategy_context_payload.get("oracle_age_seconds"),
+                "confirmed_stage_triggered": strategy_context_payload.get("confirmed_stage_triggered"),
+                "strategy_stage": strategy_context_payload.get("stage"),
+            }
+            exit_decision = _exit_instance.should_exit(pos_view, market_state_dict)
+            exit_action = getattr(exit_decision, "action", None) if exit_decision is not None else None
+            if exit_action in {"close", "reduce"} or _strategy_hold_blocks_default_exit(exit_decision):
+                strategy_exit = exit_decision
+        except Exception as exc:
+            logger.warning("Strategy should_exit() error for %s: %s", strategy_slug, exc)
+
+    if strategy_exit is not None and getattr(strategy_exit, "action", None) == "reduce":
+        result.action = "reduce"
+        result.strategy_exit = strategy_exit
+        result.close_price = strategy_exit.close_price if strategy_exit.close_price is not None else exit_eval_price
+        result.price_source = exit_eval_price_source
+        return result
+
+    if _strategy_hold_blocks_default_exit(strategy_exit):
+        result.hold_blocks_default = True
+        result.strategy_exit = strategy_exit
+        return result
+
+    if strategy_exit is not None and getattr(strategy_exit, "action", None) in {"close", "reduce"} and not market_tradable:
+        # Strategy wants out but market isn't tradable — caller records the
+        # suppression; treat as hold here.
+        result.strategy_exit = strategy_exit
+        result.hold_blocks_default = True
+        return result
+
+    active_take_profit_limit = (
+        isinstance(pending_exit, dict)
+        and str(pending_exit.get("kind") or "").strip().lower() == "take_profit_limit"
+        and str(pending_exit.get("status") or "").strip().lower() in {"submitted", "pending"}
+    )
+    if strategy_exit is not None:
+        _arm_reverse_entry_from_exit(
+            row=row,
+            payload=payload,
+            strategy_exit=strategy_exit,
+            market_info=market_info,
+            market_seconds_left=market_seconds_left,
+            current_price=exit_eval_price,
+            now=now,
+        )
+        close_price = strategy_exit.close_price if strategy_exit.close_price is not None else exit_eval_price
+        close_trigger = f"strategy:{strategy_exit.reason}"
+        price_source = exit_eval_price_source
+    elif (
+        not resolve_only and take_profit_pct is not None and pnl_pct is not None and market_tradable
+        and min_hold_passed and not active_take_profit_limit and pnl_pct >= take_profit_pct
+    ):
+        close_price, close_trigger, price_source = exit_eval_price, "take_profit", exit_eval_price_source
+    elif (
+        not resolve_only and stop_loss_pct is not None and pnl_pct is not None and market_tradable
+        and min_hold_passed and pnl_pct <= -abs(stop_loss_pct)
+    ):
+        close_price, close_trigger, price_source = exit_eval_price, "stop_loss", exit_eval_price_source
+    elif (
+        not resolve_only and trailing_stop_pct is not None and trailing_stop_pct > 0
+        and exit_eval_price is not None and highest_price is not None and market_tradable and min_hold_passed
+    ):
+        trailing_trigger_price = highest_price * (1.0 - (trailing_stop_pct / 100.0))
+        if highest_price > entry_price and exit_eval_price <= trailing_trigger_price:
+            close_price, close_trigger, price_source = exit_eval_price, "trailing_stop", exit_eval_price_source
+    elif (
+        not resolve_only and max_hold_minutes is not None and age_minutes is not None
+        and market_tradable and age_minutes >= max_hold_minutes
+    ):
+        if exit_eval_price is not None:
+            close_price, close_trigger, price_source = exit_eval_price, "max_hold", exit_eval_price_source
+    elif (
+        not resolve_only and close_on_inactive_market and not market_tradable
+        and exit_eval_price is not None and min_hold_passed
+    ):
+        close_price, close_trigger, price_source = exit_eval_price, "market_inactive", exit_eval_price_source
+
+    result.trailing_trigger_price = trailing_trigger_price
+    if close_price is not None:
+        result.action = "close"
+        result.close_price = close_price
+        result.close_trigger = close_trigger
+        result.price_source = price_source
+        result.strategy_exit = strategy_exit
+    return result
 
 
 async def reconcile_live_positions(
