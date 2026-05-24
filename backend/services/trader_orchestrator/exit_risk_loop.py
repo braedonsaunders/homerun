@@ -76,25 +76,38 @@ class ExitRiskLoop:
             if not self._wake.is_set():
                 self._wake.set()
 
-    async def start(self) -> None:
+    async def run_forever(self) -> None:
+        """Long-running entry point. The worker host owns the task lifecycle
+        (``workers/exit_risk_worker.py`` calls this from ``start_loop``)."""
         if self._running:
             return
         self._running = True
         self._register_callback()
-        self._task = asyncio.create_task(self._run(), name="exit-risk-loop")
-        self._task.add_done_callback(lambda _t: None)
         logger.info("Exit-risk loop started (sweep=%.1fs)", _SWEEP_INTERVAL_SECONDS)
+        while self._running:
+            # Re-attempt callback registration until the feed manager exists.
+            if not self._callback_registered:
+                self._register_callback()
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=_SWEEP_INTERVAL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            except asyncio.CancelledError:
+                self._running = False
+                raise
+            self._wake.clear()
+            self._tick_tokens.clear()  # the sweep covers everything; ticks just wake us
+            try:
+                await self._sweep()
+            except asyncio.CancelledError:
+                self._running = False
+                raise
+            except Exception as exc:
+                logger.warning("Exit-risk sweep failed: %s", exc, exc_info=exc)
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         self._running = False
         self._wake.set()
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._task = None
 
     def _register_callback(self) -> None:
         if self._callback_registered:
@@ -109,26 +122,6 @@ class ExitRiskLoop:
                 self._callback_registered = True
         except Exception as exc:
             logger.debug("Exit-risk loop: WS callback registration deferred: %s", exc)
-
-    async def _run(self) -> None:
-        while self._running:
-            # Re-attempt callback registration until the feed manager exists.
-            if not self._callback_registered:
-                self._register_callback()
-            try:
-                await asyncio.wait_for(self._wake.wait(), timeout=_SWEEP_INTERVAL_SECONDS)
-            except asyncio.TimeoutError:
-                pass
-            except asyncio.CancelledError:
-                raise
-            self._wake.clear()
-            self._tick_tokens.clear()  # the sweep covers everything; ticks just wake us
-            try:
-                await self._sweep()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("Exit-risk sweep failed: %s", exc, exc_info=exc)
 
     async def _sweep(self) -> None:
         """Evaluate (and exit if triggered) every open live position."""

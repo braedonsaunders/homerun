@@ -1278,7 +1278,13 @@ class TailEndCarryStrategy(BaseStrategy):
         key = str(token_id or "_unknown")
         history = bucket.get(key)
         if not isinstance(history, deque):
-            history = deque(maxlen=64)
+            # maxlen sized to cover the velocity window (default 300s) at the
+            # throttled ~1.5s sample spacing (see _velocity_check) with margin,
+            # so the lookback anchor is bounded by the time cutoff, not by the
+            # deque size — robust to high-frequency exit evaluation (the
+            # exit-risk loop evaluates every ~2s + on WS ticks, far more often
+            # than reconcile, which would otherwise evict the window's anchor).
+            history = deque(maxlen=256)
             bucket[key] = history
         return history
 
@@ -1304,7 +1310,13 @@ class TailEndCarryStrategy(BaseStrategy):
 
         now_ts = time.time()
         history = self._velocity_history(token_id)
-        history.append((now_ts, float(current_price)))
+        # Throttle sampling to a fixed cadence so the velocity window is
+        # frequency-independent: reconcile (~5-15s), the exit-risk loop
+        # (~2s), and WS-tick-driven sweeps all collapse to one sample per
+        # ~1.5s, keeping the drop-over-window comparison identical regardless
+        # of how often should_exit() is invoked.
+        if not history or (now_ts - history[-1][0]) >= 1.5:
+            history.append((now_ts, float(current_price)))
 
         active_minutes = max(0.0, safe_float(config.get("velocity_active_minutes_left"), 60.0))
         if seconds_left is None or (seconds_left / 60.0) > active_minutes:

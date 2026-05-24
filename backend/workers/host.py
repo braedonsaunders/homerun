@@ -124,6 +124,11 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             "workers.events_worker",
             "workers.trader_reconciliation_worker",
             "workers.fast_trader_runtime",
+            # Isolated fast stop-loss / exit-risk loop (own fast DB pool +
+            # WS-tick + 2s sweep). First-class risk control that can't be
+            # starved by the heavyweight reconcile — the fix for the
+            # 2026-05 full-notional soak losses.
+            "workers.exit_risk_worker",
             "workers.redeemer_worker",
             # Keep the in-process latency / empirical-constants / Cox-
             # model caches warm so the order hot path never blocks on

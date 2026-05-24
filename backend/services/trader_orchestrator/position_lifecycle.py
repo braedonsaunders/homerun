@@ -10222,6 +10222,13 @@ async def reconcile_live_positions(
         close_trigger: Optional[str] = None
         price_source: Optional[str] = None
         trailing_trigger_price: Optional[float] = None
+        # Strategy-exit handles are no longer populated by reconcile's
+        # tradable-exit gate (that path now lives in the isolated
+        # exit-risk loop).  Initialize them so the downstream
+        # resolution-close ``record_trade_outcome`` block and the
+        # ``locals().get(...)`` policy lookup remain safe.
+        _exit_instance = None
+        strategy_exit = None
 
         current_price = (
             ws_side_price
@@ -10426,213 +10433,18 @@ async def reconcile_live_positions(
                             "price_source": price_source,
                         }
                 else:
-                    # ── Strategy-based exit check ──────────────────────────
-                    # If the strategy that opened this position has a
-                    # should_exit() method, call it first and respect its
-                    # decision before falling through to default TP/SL/etc.
-                    strategy_slug = (payload.get("strategy_type") or "").strip().lower()
-                    strategy_exit = None
-                    _exit_instance = await _strategy_exit_instance(session, strategy_slug) if strategy_slug else None
-                    if _exit_instance is not None:
-                        try:
-
-                            class _LivePositionView:
-                                pass
-
-                            pos_view = _LivePositionView()
-                            pos_view.entry_price = entry_price
-                            pos_view.current_price = exit_eval_price
-                            pos_view.highest_price = highest_price
-                            pos_view.lowest_price = lowest_price
-                            pos_view.age_minutes = age_minutes
-                            pos_view.pnl_percent = pnl_pct
-                            pos_view.filled_size = (
-                                filled_size
-                                if filled_size > 0.0
-                                else (notional / entry_price if entry_price > 0 else 0.0)
-                            )
-                            pos_view.notional_usd = notional
-                            if "strategy_context" not in payload:
-                                payload["strategy_context"] = {}
-                            strategy_context_payload = (
-                                payload["strategy_context"] if isinstance(payload.get("strategy_context"), dict) else {}
-                            )
-                            pos_view.strategy_context = payload["strategy_context"]
-                            pos_view.config = payload.get("strategy_exit_config", {})
-                            pos_view.outcome_idx = outcome_idx
-
-                            min_order_size_usd = _resolve_position_min_order_size_usd(
-                                trader_params=params,
-                                payload=payload,
-                                mode="live",
-                            )
-                            market_state_dict = {
-                                "current_price": exit_eval_price,
-                                "market_tradable": market_tradable,
-                                "is_resolved": False,
-                                "winning_outcome": None,
-                                "seconds_left": market_seconds_left,
-                                "end_time": market_end_time,
-                                "token_id": token_id,
-                                "mark_source": exit_eval_price_source,
-                                "min_order_size_usd": min_order_size_usd,
-                                "notional_usd": notional,
-                                "oracle_price": strategy_context_payload.get("oracle_price"),
-                                "price_to_beat": strategy_context_payload.get("price_to_beat"),
-                                "oracle_age_seconds": strategy_context_payload.get("oracle_age_seconds"),
-                                "confirmed_stage_triggered": strategy_context_payload.get("confirmed_stage_triggered"),
-                                "strategy_stage": strategy_context_payload.get("stage"),
-                            }
-
-                            exit_decision = _exit_instance.should_exit(pos_view, market_state_dict)
-                            exit_action = getattr(exit_decision, "action", None) if exit_decision is not None else None
-                            if exit_action == "close":
-                                strategy_exit = exit_decision
-                            elif exit_action == "reduce":
-                                strategy_exit = exit_decision
-                            elif _strategy_hold_blocks_default_exit(exit_decision):
-                                strategy_exit = exit_decision
-                        except Exception as exc:
-                            logger.warning(
-                                "Strategy should_exit() error for %s: %s",
-                                strategy_slug,
-                                exc,
-                            )
-
-                    if strategy_exit is not None and getattr(strategy_exit, "action", None) == "reduce":
-                        # SDK contract: ``reduce`` means submit a partial sell
-                        # sized by reduce_fraction and keep the position open.
-                        # An invalid/missing fraction silently no-ops (we
-                        # treat the synthetic floor / next-tick guards as
-                        # the safety net).
-                        if not dry_run:
-                            await _submit_live_partial_exit(
-                                session=session,
-                                row=row,
-                                payload=payload,
-                                decision=strategy_exit,
-                                close_price=exit_eval_price,
-                                price_source=exit_eval_price_source,
-                                filled_size=filled_size,
-                                notional_usd=notional,
-                                entry_price=entry_price,
-                                params=params,
-                                now=now,
-                            )
-                            payload["position_state"] = next_state
-                            row.payload_json = payload
-                            row.updated_at = now
-                            state_updates += 1
-                        held += 1
-                        continue
-
-                    if _strategy_hold_blocks_default_exit(strategy_exit):
-                        if not dry_run:
-                            payload["position_state"] = next_state
-                            row.payload_json = payload
-                            row.updated_at = now
-                            state_updates += 1
-                        held += 1
-                        continue
-
-                    if (
-                        strategy_exit is not None
-                        and getattr(strategy_exit, "action", None) in {"close", "reduce"}
-                        and not market_tradable
-                    ):
-                        if not dry_run:
-                            payload["position_state"] = next_state
-                            payload["nontradable_strategy_exit_suppressed"] = {
-                                "reason": str(getattr(strategy_exit, "reason", "") or ""),
-                                "action": str(getattr(strategy_exit, "action", "") or ""),
-                                "suppressed_at": _iso_utc(now),
-                                "mark_price": exit_eval_price,
-                                "mark_source": exit_eval_price_source,
-                            }
-                            row.payload_json = payload
-                            row.updated_at = now
-                            state_updates += 1
-                        held += 1
-                        continue
-
-                    active_take_profit_limit = (
-                        isinstance(pending_exit, dict)
-                        and str(pending_exit.get("kind") or "").strip().lower() == "take_profit_limit"
-                        and str(pending_exit.get("status") or "").strip().lower() in {"submitted", "pending"}
-                    )
-                    if strategy_exit is not None:
-                        _arm_reverse_entry_from_exit(
-                            row=row,
-                            payload=payload,
-                            strategy_exit=strategy_exit,
-                            market_info=market_info,
-                            market_seconds_left=market_seconds_left,
-                            current_price=exit_eval_price,
-                            now=now,
-                        )
-                        close_price = (
-                            strategy_exit.close_price if strategy_exit.close_price is not None else exit_eval_price
-                        )
-                        close_trigger = f"strategy:{strategy_exit.reason}"
-                        price_source = exit_eval_price_source
-                    elif (
-                        not resolve_only
-                        and take_profit_pct is not None
-                        and pnl_pct is not None
-                        and market_tradable
-                        and min_hold_passed
-                        and not active_take_profit_limit
-                        and pnl_pct >= take_profit_pct
-                    ):
-                        close_price = exit_eval_price
-                        close_trigger = "take_profit"
-                        price_source = exit_eval_price_source
-                    elif (
-                        not resolve_only
-                        and stop_loss_pct is not None
-                        and pnl_pct is not None
-                        and market_tradable
-                        and min_hold_passed
-                        and pnl_pct <= -abs(stop_loss_pct)
-                    ):
-                        close_price = exit_eval_price
-                        close_trigger = "stop_loss"
-                        price_source = exit_eval_price_source
-                    elif (
-                        not resolve_only
-                        and trailing_stop_pct is not None
-                        and trailing_stop_pct > 0
-                        and exit_eval_price is not None
-                        and highest_price is not None
-                        and market_tradable
-                        and min_hold_passed
-                    ):
-                        trailing_trigger_price = highest_price * (1.0 - (trailing_stop_pct / 100.0))
-                        if highest_price > entry_price and exit_eval_price <= trailing_trigger_price:
-                            close_price = exit_eval_price
-                            close_trigger = "trailing_stop"
-                            price_source = exit_eval_price_source
-                    elif (
-                        not resolve_only
-                        and max_hold_minutes is not None
-                        and age_minutes is not None
-                        and market_tradable
-                        and age_minutes >= max_hold_minutes
-                    ):
-                        if exit_eval_price is not None:
-                            close_price = exit_eval_price
-                            close_trigger = "max_hold"
-                            price_source = exit_eval_price_source
-                    elif (
-                        not resolve_only
-                        and close_on_inactive_market
-                        and not market_tradable
-                        and exit_eval_price is not None
-                        and min_hold_passed
-                    ):
-                        close_price = exit_eval_price
-                        close_trigger = "market_inactive"
-                        price_source = exit_eval_price_source
+                    # Tradable-market stop/take-profit/trailing/strategy exits
+                    # are owned by the isolated exit-risk loop (see
+                    # services/trader_orchestrator/exit_risk_loop.py): a
+                    # first-class, fast, always-running control loop on its own
+                    # DB pool that cannot be starved by this heavyweight
+                    # reconcile -- the root cause of the 2026-05 full-notional
+                    # losses (stops never evaluated during multi-hour declines).
+                    # Removing the gate eval here also gives should_exit() a
+                    # single caller. reconcile still owns resolution/settlement
+                    # (above), force-MTM + position-cap (above), the
+                    # pending_live_exit retry path, and grouped-exit (below).
+                    pass
 
         close_is_resolution = close_trigger in {"resolution", "resolution_inferred", "resolution_extreme_mark"}
 
