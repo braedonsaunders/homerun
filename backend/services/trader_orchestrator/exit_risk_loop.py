@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -48,13 +49,16 @@ from utils.utcnow import utcnow
 logger = logging.getLogger("exit_risk_loop")
 
 _SWEEP_INTERVAL_SECONDS = 2.0
-# pending_live_exit states that mean "an exit is already being handled" —
-# skip so we never double-submit (shared mutex with reconcile).
-_EXIT_IN_FLIGHT_STATES = {
-    "pending", "submitted", "filled",
-    "blocked_min_notional", "blocked_retry_exhausted",
-    "blocked_retry_exhausted_hard", "superseded_resolution",
-}
+# Per-order fire cooldown. The pending_live_exit dict is the primary mutex,
+# but reconcile can legitimately pop/supersede it (wallet-flat / fallback-
+# manual / terminalization paths) while a position is still selectable for a
+# few cycles — e.g. an already-settled phantom on an inactive market. Without
+# a cooldown the loop re-submits a (doomed) exit every sweep during that
+# window. This in-memory cooldown caps re-submission to once per window PER
+# ORDER, with no dependency on the (boot-cold-unsafe) wallet cache, so it can
+# never disable stops. Long enough to let reconcile's retry/terminalization
+# act; short enough to re-attempt a genuinely-stuck real exit.
+_FIRE_COOLDOWN_SECONDS = 30.0
 
 
 class ExitRiskLoop:
@@ -67,6 +71,7 @@ class ExitRiskLoop:
         self._tick_tokens: set[str] = set()      # held tokens that moved, pending eval
         self._held_tokens: set[str] = set()       # current held-token index (tick filter)
         self._callback_registered = False
+        self._last_fire_at: dict[str, float] = {}  # order_id -> monotonic ts of last exit submit
 
     # ── WS price-change callback (sub-second tick path) ────────────────
     def on_price_change(self, token_id: str, old_mid: float, new_mid: float) -> None:
@@ -143,7 +148,16 @@ class ExitRiskLoop:
             )
             if not rows:
                 self._held_tokens = set()
+                self._last_fire_at.clear()
                 return
+
+            # Prune the fire-cooldown map to currently-open orders so it can't
+            # grow unbounded across a long soak (closed orders drop out).
+            open_ids = {str(r.id) for r in rows}
+            if self._last_fire_at:
+                self._last_fire_at = {
+                    oid: ts for oid, ts in self._last_fire_at.items() if oid in open_ids
+                }
 
             # Refresh held-token index for the tick path.
             token_ids: list[str] = []
@@ -214,8 +228,18 @@ class ExitRiskLoop:
     ) -> None:
         payload = dict(row.payload_json or {})
         pe = payload.get("pending_live_exit")
-        if isinstance(pe, dict) and str(pe.get("status") or "").strip().lower() in _EXIT_IN_FLIGHT_STATES:
-            return  # exit already in flight — mutex with reconcile / prior cycle
+        # Mutex / single-owner handoff: the loop fires only the FIRST exit for
+        # a position. Once ANY ``pending_live_exit`` exists (in-flight OR a
+        # failed/blocked retry state), the full retry lifecycle — backoff via
+        # ``next_retry_at``, escalation to ``blocked_retry_exhausted[_hard]``,
+        # the soft-bypass — is owned by ``reconcile_live_positions`` (a single
+        # stateful path, no divergence). Re-evaluating here would ignore that
+        # backoff and hammer a resubmit every ~2s (observed on a phantom
+        # zero-share position: market_inactive re-fired every sweep). So skip
+        # whenever a pending_live_exit dict is present, not just the narrow
+        # in-flight subset.
+        if isinstance(pe, dict) and str(pe.get("status") or "").strip():
+            return  # an exit attempt exists — its lifecycle belongs to reconcile
 
         token_id = pl._extract_live_token_id(payload)
         filled_notional, filled_size, avg_px = pl._extract_live_fill_metrics(payload)
@@ -275,6 +299,19 @@ class ExitRiskLoop:
 
         payload["position_state"] = decision.next_state
         if decision.action == "close" and decision.close_price is not None:
+            # Per-order cooldown: don't re-submit an exit for the same order
+            # within the window even if the pending_live_exit mutex was cleared
+            # by reconcile (wallet-flat / terminalization). Persist anchors and
+            # bail. Resolution-class closes still flow through reconcile.
+            order_id = str(row.id)
+            last_fire = self._last_fire_at.get(order_id)
+            now_mono = time.monotonic()
+            if last_fire is not None and (now_mono - last_fire) < _FIRE_COOLDOWN_SECONDS:
+                row.payload_json = payload
+                row.updated_at = now
+                await session.commit()
+                return None
+            self._last_fire_at[order_id] = now_mono
             exit_instance = (
                 await pl._strategy_exit_instance(session, (payload.get("strategy_type") or "").strip().lower())
                 if payload.get("strategy_type")

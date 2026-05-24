@@ -99,6 +99,34 @@ async def test_close_decision_dispatches_execute(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fire_cooldown_suppresses_rapid_resubmit(monkeypatch):
+    # Regression: reconcile can pop/supersede pending_live_exit (wallet-flat /
+    # terminalization) while a phantom is still selectable, so the mutex can't
+    # always catch a re-fire. The per-order cooldown must suppress a second
+    # submit for the SAME order within the window even with no pending_live_exit.
+    _patch_derivations(monkeypatch, decision=_close_decision())
+    calls = []
+
+    async def _fake_exec(**kwargs):
+        calls.append(kwargs)
+        return {"status": "submitted", "submitted": True}
+    monkeypatch.setattr(pl, "execute_position_exit", _fake_exec)
+
+    loop = erl.ExitRiskLoop()
+    payload = {"token_id": "tok-1", "strategy_type": "tail_end_carry"}
+    # Two back-to-back sweeps with NO pending_live_exit set (simulating
+    # reconcile having cleared it between cycles).
+    await _process(loop, monkeypatch, dict(payload))
+    await _process(loop, monkeypatch, dict(payload))
+    assert len(calls) == 1  # second fire suppressed by cooldown
+
+    # After the cooldown elapses, a re-fire is allowed again.
+    loop._last_fire_at["ord-1"] -= (erl._FIRE_COOLDOWN_SECONDS + 1.0)
+    await _process(loop, monkeypatch, dict(payload))
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_inflight_pending_exit_is_skipped(monkeypatch):
     _patch_derivations(monkeypatch, decision=_close_decision())
     calls = []
@@ -121,6 +149,40 @@ async def test_inflight_pending_exit_is_skipped(monkeypatch):
         "pending_live_exit": {"status": "submitted"},
     })
     # mutex: neither evaluate nor execute should run for an in-flight exit
+    assert calls == [] and eval_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pending_status",
+    ["submitted", "failed", "blocked_min_notional", "blocked_retry_exhausted"],
+)
+async def test_any_pending_exit_is_skipped(monkeypatch, pending_status):
+    # Regression: a phantom zero-share position re-fired market_inactive every
+    # 2s sweep because the loop only skipped the in-flight subset of states.
+    # The loop now fires only the FIRST exit; once any pending_live_exit exists
+    # (including failed/blocked retry states), the retry lifecycle is owned by
+    # reconcile, so the loop must skip — neither evaluate nor execute may run.
+    _patch_derivations(monkeypatch, decision=_close_decision())
+    calls = []
+
+    async def _fake_exec(**kwargs):
+        calls.append(kwargs)
+        return {}
+    monkeypatch.setattr(pl, "execute_position_exit", _fake_exec)
+
+    eval_calls = []
+
+    async def _spy_eval(**kwargs):  # noqa: ARG001
+        eval_calls.append(1)
+        return _close_decision()
+    monkeypatch.setattr(pl, "evaluate_position_exit", _spy_eval)
+
+    loop = erl.ExitRiskLoop()
+    await _process(loop, monkeypatch, {
+        "token_id": "tok-1", "strategy_type": "tail_end_carry",
+        "pending_live_exit": {"status": pending_status},
+    })
     assert calls == [] and eval_calls == []
 
 
