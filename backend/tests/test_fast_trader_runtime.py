@@ -29,6 +29,32 @@ from utils.utcnow import utcnow  # noqa: E402
 from workers import fast_trader_runtime  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolated_intent_journal(tmp_path):
+    """Point the process-wide intent journal at a per-test temp file.
+
+    The journal is a module singleton backed by an on-disk file; without
+    this every test would share state (and pollute the real
+    ``.runtime`` journal).  A fresh tmp-backed instance per test gives
+    full isolation, and the three journal-aware tests below read it back
+    through the yielded handle.
+    """
+    from services.trader_orchestrator.intent_journal import (
+        IntentJournal,
+        reset_intent_journal_for_tests,
+    )
+
+    journal = IntentJournal(tmp_path / "fast_intent.log")
+    journal.open()
+    journal.load()
+    reset_intent_journal_for_tests(journal)
+    try:
+        yield journal
+    finally:
+        journal.close()
+        reset_intent_journal_for_tests(None)
+
+
 def _fast_trader_config() -> dict:
     return {
         "id": "fast-trader",
@@ -516,25 +542,26 @@ async def test_list_fast_traders_excludes_disabled_and_paused_traders():
 
 
 @pytest.mark.asyncio
-async def test_execute_fast_signal_pre_submits_skeleton_before_clob(monkeypatch):
-    """The skeleton TraderOrder row must exist in the DB by the time the
-    CLOB call runs — that's what makes the idempotency lock crash-safe.
-    Verified by inspecting the DB from the mock submit_execution_leg, which
-    fires while the fast path is mid-submit."""
-    engine, session_factory = await build_postgres_session_factory(Base, "fast_submit_pre_submit_skeleton")
+async def test_execute_fast_signal_journals_intent_before_clob_and_persists_after(
+    monkeypatch, _isolated_intent_journal
+):
+    """Journal-first cutover: NO TraderOrder row exists when the CLOB call
+    fires (the DB is off the pre-wire path) — the durable record is an
+    OPEN journal intent.  After the venue returns, exactly one row is
+    written with the final state, and the intent is closed."""
+    engine, session_factory = await build_postgres_session_factory(Base, "fast_submit_journal_intent")
 
-    skeleton_observed = {"row": None}
+    observed = {"row_count": None, "intent_open": None}
 
     async def fake_submit_execution_leg(**_kwargs):
-        # The pre-submit row must already be visible to a fresh session at
-        # this point — i.e. it was committed before the CLOB call started.
+        # Pre-wire the DB must be empty; the journal intent must be open.
         async with session_factory() as probe_session:
-            row = (
+            observed["row_count"] = (
                 await probe_session.execute(
-                    select(TraderOrder).where(TraderOrder.signal_id == "signal-skeleton")
+                    select(func.count(TraderOrder.id)).where(TraderOrder.signal_id == "signal-journal")
                 )
-            ).scalar_one_or_none()
-            skeleton_observed["row"] = row
+            ).scalar_one()
+        observed["intent_open"] = _isolated_intent_journal.is_open("fast-trader", "signal-journal")
         return LegSubmitResult(
             leg_id="leg-1",
             status="executed",
@@ -551,8 +578,8 @@ async def test_execute_fast_signal_pre_submits_skeleton_before_clob(monkeypatch)
 
     try:
         async with session_factory() as session:
-            await _seed_trader_and_signal(session, "signal-skeleton")
-            signal = await session.get(TradeSignal, "signal-skeleton")
+            await _seed_trader_and_signal(session, "signal-journal")
+            signal = await session.get(TradeSignal, "signal-journal")
             result = await fast_submit.execute_fast_signal(
                 session,
                 trader_id="fast-trader",
@@ -564,41 +591,45 @@ async def test_execute_fast_signal_pre_submits_skeleton_before_clob(monkeypatch)
                 strategy_params={},
                 mode="live",
                 size_usd=3.0,
-                reason="skeleton test",
+                reason="journal test",
             )
-            await session.commit()
+            # execute_fast_signal commits the final row itself, post-wire.
 
-        # The skeleton observed mid-CLOB had the in-flight marker.
-        assert skeleton_observed["row"] is not None
-        assert skeleton_observed["row"].payload_json.get("fast_submission_state") == "in_flight"
-        assert skeleton_observed["row"].status == "submitted"
+        # No DB row existed before the wire; the intent was open mid-CLOB.
+        assert observed["row_count"] == 0
+        assert observed["intent_open"] is True
 
-        # After CLOB returned, the same row was UPDATED in place — there's
-        # exactly one TraderOrder, with the final state and provider IDs.
+        # After the wire: exactly one row, final state, provider IDs, and
+        # the completed marker — written by a single post-wire INSERT.
         async with session_factory() as session:
             rows = (
                 await session.execute(
-                    select(TraderOrder).where(TraderOrder.signal_id == "signal-skeleton")
+                    select(TraderOrder).where(TraderOrder.signal_id == "signal-journal")
                 )
             ).scalars().all()
 
         assert len(rows) == 1
-        assert rows[0].id == skeleton_observed["row"].id
         assert rows[0].status == "executed"
         assert rows[0].provider_order_id == "provider-skel-1"
         assert rows[0].payload_json.get("fast_submission_state") == "completed"
         assert result.status == "executed"
         assert result.orders_written == 1
+        # Intent closed after the durable persist, but dedup still holds.
+        assert not _isolated_intent_journal.is_open("fast-trader", "signal-journal")
+        assert _isolated_intent_journal.has_intent("fast-trader", "signal-journal")
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_execute_fast_signal_keeps_lock_when_clob_raises_after_pre_submit(monkeypatch):
-    """If the CLOB call raises after the pre-submit row was committed, the
-    row stays so the duplicate-check guard blocks any retry. Marker flips
-    to clob_exception so the reconcile sweep knows what to do with it."""
-    engine, session_factory = await build_postgres_session_factory(Base, "fast_submit_clob_exception_lock")
+async def test_execute_fast_signal_leaves_intent_open_when_clob_raises(
+    monkeypatch, _isolated_intent_journal
+):
+    """On an ambiguous CLOB failure the venue may hold the order, so we
+    write NO terminal record: no DB row, and the journal intent stays OPEN
+    for the orphan-reconcile sweep to resolve against the venue.  The
+    per-trader lock is released so the next signal can proceed."""
+    engine, session_factory = await build_postgres_session_factory(Base, "fast_submit_clob_raise_intent_open")
 
     async def fake_submit_execution_leg(**_kwargs):
         raise RuntimeError("transport error mid-call")
@@ -624,19 +655,23 @@ async def test_execute_fast_signal_keeps_lock_when_clob_raises_after_pre_submit(
             )
             await session.commit()
 
+        # No order row is written on the ambiguous failure.
         async with session_factory() as session:
-            row = (
+            count = (
                 await session.execute(
-                    select(TraderOrder).where(TraderOrder.signal_id == "signal-clob-raise")
+                    select(func.count(TraderOrder.id)).where(TraderOrder.signal_id == "signal-clob-raise")
                 )
             ).scalar_one()
 
-        assert row.status == "failed"
-        assert row.payload_json.get("fast_submission_state") == "clob_exception"
-        assert "transport error mid-call" in (row.payload_json.get("exception_message") or "")
+        assert count == 0
         assert result.status == "failed"
-        assert result.orders_written == 1  # row remains as the lock
-        assert result.payload.get("trader_order_id") == row.id
+        assert result.orders_written == 0
+        assert result.payload.get("reason") == "submit_exception"
+        assert result.payload.get("intent_open_for_reconcile") is True
+        # Intent remains OPEN for the reconcile sweep.
+        assert _isolated_intent_journal.is_open("fast-trader", "signal-clob-raise")
+        # The per-trader lock was released before/after the wire.
+        assert not fast_submit._get_per_trader_submit_lock("fast-trader").locked()
     finally:
         await engine.dispose()
 
@@ -843,10 +878,14 @@ async def test_execute_fast_signal_links_deferred_decision_to_order(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_execute_fast_signal_refuses_duplicate_when_existing_order_for_signal(monkeypatch):
-    """If a TraderOrder already exists for (trader_id, signal_id), the fast
-    path must refuse to submit again — this is the recovery guard for the
-    'cursor advance silently failed' case described in the audit."""
+async def test_execute_fast_signal_refuses_duplicate_via_journal_intent(
+    monkeypatch, _isolated_intent_journal
+):
+    """Dedup is answered by the journal (in-memory, durable across restart
+    via its on-boot load), not a DB query.  A signal that already has a
+    journal intent — open or resolved — must not be re-fired, and the CLOB
+    must never be touched.  This is the recovery guard for the 'cursor
+    advance silently failed' / crash-restart case."""
     engine, session_factory = await build_postgres_session_factory(Base, "fast_submit_duplicate_guard")
 
     submit_calls = {"count": 0}
@@ -864,26 +903,17 @@ async def test_execute_fast_signal_refuses_duplicate_when_existing_order_for_sig
 
     monkeypatch.setattr(fast_submit, "submit_execution_leg", fake_submit_execution_leg)
 
+    # A prior attempt already journalled this signal (e.g. the process
+    # crashed after the venue call but before the cursor advanced).
+    _isolated_intent_journal.record_intent(
+        trader_id="fast-trader",
+        signal_id="signal-dup",
+        key="0x" + ("a" * 64),
+    )
+
     try:
         async with session_factory() as session:
             await _seed_trader_and_signal(session, "signal-dup")
-            # Pre-populate a TraderOrder for this signal as if the previous
-            # submission attempt had succeeded but the cursor advance failed.
-            session.add(
-                TraderOrder(
-                    id="prev-order-1",
-                    trader_id="fast-trader",
-                    signal_id="signal-dup",
-                    source="generic-source",
-                    market_id="market-signal-dup",
-                    mode="live",
-                    status="executed",
-                    notional_usd=3.0,
-                    payload_json={"fast_tier": True},
-                )
-            )
-            await session.commit()
-
             signal = await session.get(TradeSignal, "signal-dup")
             result = await fast_submit.execute_fast_signal(
                 session,
@@ -901,9 +931,92 @@ async def test_execute_fast_signal_refuses_duplicate_when_existing_order_for_sig
 
         assert result.status == "skipped"
         assert result.orders_written == 0
-        assert result.payload.get("reason") == "duplicate_signal_existing_order"
-        assert result.payload.get("existing_trader_order_id") == "prev-order-1"
+        assert result.payload.get("reason") == "duplicate_signal_existing_intent"
         assert submit_calls["count"] == 0  # CLOB was NOT touched
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_recover_open_intents_materializes_row_and_closes_intent(_isolated_intent_journal):
+    """A live open intent with no DB row (crash on the ambiguous wire
+    window) gets a recovery placing-row the orphan sweep can resolve by
+    key, and the journal intent is closed — still deduped, no longer open."""
+    engine, session_factory = await build_postgres_session_factory(Base, "fast_recover_open_intents")
+    key = "0x" + ("b" * 64)
+    _isolated_intent_journal.record_intent(
+        trader_id="fast-trader",
+        signal_id="signal-orphan",
+        key=key,
+        token_id="tok",
+        side="buy",
+        size_usd=3.0,
+        market_id="market-x",
+        mode="live",
+    )
+    try:
+        async with session_factory() as session:
+            result = await fast_submit.recover_open_intents(session, journal=_isolated_intent_journal)
+
+        assert result["materialized"] == 1
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(TraderOrder).where(TraderOrder.signal_id == "signal-orphan")
+                )
+            ).scalar_one()
+        assert row.mode == "live"
+        assert row.provider_clob_order_id is None
+        assert row.payload_json["fast_submission_state"] == "in_flight"
+        assert row.payload_json["fast_idempotency_key"] == key
+        # Intent closed (not open) but still deduped.
+        assert not _isolated_intent_journal.is_open("fast-trader", "signal-orphan")
+        assert _isolated_intent_journal.has_intent("fast-trader", "signal-orphan")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_recover_open_intents_closes_when_row_already_persisted(_isolated_intent_journal):
+    """If the post-wire persist landed before the crash, recovery just
+    closes the intent — no duplicate recovery row is materialized."""
+    engine, session_factory = await build_postgres_session_factory(Base, "fast_recover_existing_row")
+    _isolated_intent_journal.record_intent(
+        trader_id="fast-trader",
+        signal_id="signal-have-row",
+        key="0x" + ("c" * 64),
+        mode="live",
+    )
+    try:
+        async with session_factory() as session:
+            session.add(
+                TraderOrder(
+                    id="real-order-1",
+                    trader_id="fast-trader",
+                    signal_id="signal-have-row",
+                    source="generic-source",
+                    market_id="market-y",
+                    mode="live",
+                    status="executed",
+                    notional_usd=3.0,
+                    provider_clob_order_id="clob-real-1",
+                    payload_json={"fast_tier": True},
+                )
+            )
+            await session.commit()
+
+            result = await fast_submit.recover_open_intents(session, journal=_isolated_intent_journal)
+
+        assert result["closed_existing"] == 1
+        assert result["materialized"] == 0
+        async with session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(TraderOrder).where(TraderOrder.signal_id == "signal-have-row")
+                )
+            ).scalars().all()
+        assert len(rows) == 1  # no duplicate recovery row
+        assert not _isolated_intent_journal.is_open("fast-trader", "signal-have-row")
     finally:
         await engine.dispose()
 

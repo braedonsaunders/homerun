@@ -5,19 +5,33 @@
 for ``latency_class='fast'`` traders that trade one leg on one market at
 a time (sub-second crypto binaries are the canonical use case).
 
-Key differences vs. SessionEngine:
+Journal-first durability (2026-05 cutover)
+------------------------------------------
+There is **no database write before the wire**.  The durable "about to
+fire signal X" record that prevents a crash-restart double-submit is an
+``fsync``'d append to the local :mod:`intent_journal` (tens of
+microseconds), not a networked Postgres commit (whose tail spiked to
+seconds under pool contention).  Dedup and the ``max_open_orders`` cap
+are answered entirely in-memory (journal index + ``trader_hot_state``).
+The ``TraderOrder`` row is written **after** the venue round-trip, so DB
+latency never extends time-to-market.
 
-* No ``execution_sessions`` / ``execution_session_orders`` /
-  ``execution_session_legs`` / ``execution_session_events`` rows.
-* No pre-submit placeholder with a 45s ack timeout.
-* No leg-wave / reprice orchestration — one attempt, one result.
-* A single short DB transaction writes one ``TraderOrder`` row and its
-  verification event; inventory rebuilds are left to the slower workers.
+Crash-recovery contract:
 
-The low-level submission to the provider still flows through the
-well-tested ``submit_execution_leg`` primitive in ``order_manager``, so
-every token-resolution, buy pre-submit gate, shadow-mode microstructure-fill and
-live-provider submission path remains identical to the orchestrated one.
+* ``record_intent`` (fsync) happens before the CLOB call.
+* On a *definite* venue outcome we persist the order row, commit, then
+  ``record_result`` to close the intent.
+* On an *ambiguous* failure (timeout / cancel / raised — the venue may or
+  may not have the order) we deliberately leave the intent OPEN and write
+  no result.  Startup / periodic reconcile then queries the venue by the
+  deterministic ``clob_idempotency_key`` and either backfills the row or
+  closes the intent as failed.
+
+Single-process ownership invariant: one fast-worker process owns a
+disjoint set of traders, so the in-memory dedup index + per-trader
+``asyncio.Lock`` are a complete guard.  Two processes owning one trader
+is not a supported topology (the pre-cutover DB row didn't truly guard
+that case either — the race was always closed by the in-process lock).
 
 A fast trader *must* be single-leg single-market.  If the signal has no
 ``positions_to_take`` or multiple positions, we refuse and return a
@@ -30,7 +44,7 @@ import asyncio as _asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +57,7 @@ from services.trader_order_verification import (
     append_trader_order_verification_event,
 )
 from services.trader_orchestrator.fast_idempotency import derive_fast_idempotency_key
+from services.trader_orchestrator.intent_journal import get_intent_journal
 from services.trader_orchestrator.order_manager import LegSubmitResult, submit_execution_leg
 from services.signal_bus import set_trade_signal_status
 from services.trader_orchestrator_state import (
@@ -58,44 +73,29 @@ from utils.logger import get_logger
 from utils.signal_helpers import normalize_position_side
 from utils.utcnow import utcnow
 
-# Marker key + values stored in TraderOrder.payload_json so we don't need a
-# new status enum value (which would ripple through every status filter in
-# trader_orchestrator_state). Reading these values is the cleanup-sweep /
-# reconcile job's responsibility — the in-flight skeleton looks like a
-# normal "submitted" row to existing code.
+# Marker key + values stored in TraderOrder.payload_json so existing
+# status filters / reconcile sweeps can reason about a fast order's
+# submission state without a dedicated status enum value.
 _SUBMISSION_STATE_KEY = "fast_submission_state"
-_SUBMISSION_STATE_IN_FLIGHT = "in_flight"
 _SUBMISSION_STATE_COMPLETED = "completed"
-_SUBMISSION_STATE_CLOB_RAISED = "clob_exception"
-_SUBMISSION_STATE_POST_UPDATE_FAILED = "post_update_failed"
+_SUBMISSION_STATE_POST_PERSIST_FAILED = "post_persist_failed"
 
-# Hard ceiling on the CLOB submit roundtrip from the fast tier.  Fix NN:
-# the underlying ``py_clob_client_v2`` retries internally on ``Server
-# disconnected`` errors, which under degraded CLOB health pushed the
-# direct ``submit_execution_leg`` call to 30-47s — well past the fast
-# trader's 3s hard cycle budget AND the 30s stale-task watchdog.  The
-# multi-leg ``submit_execution_wave`` already wraps the call in
-# ``asyncio.wait_for(..., 35s)``; the fast (single-leg) path was
-# unbounded.  5s is conservative: typical successful submits land in
-# 300-700ms; a 5s budget catches degraded paths fast enough that the
-# cycle fits inside its budget and the cap unwinds promptly.  On
-# timeout we fall through the same ``clob_exception`` path as a raised
-# exception, so the orphan reconcile (running every 60s) checks the
-# venue and reconciles or marks-failed as appropriate.
+# Hard ceiling on the CLOB submit roundtrip from the fast tier.  The
+# underlying client retries internally on transient disconnects, which
+# under degraded CLOB health pushed the call to 30-47s — well past the
+# fast trader's 3s hard cycle budget.  5s is conservative: typical
+# successful submits land in 300-700ms; on timeout we fall through to
+# the ambiguous-failure path (intent left open) and the orphan reconcile
+# resolves it against the venue.
 _FAST_LEG_SUBMIT_TIMEOUT_SECONDS = 5.0
 
 
-# Per-trader async lock for the cap-check + pre-submit-row-insert
-# critical section.  Without this, several concurrent ``execute_fast_
-# signal`` calls for the same trader can race: each reads the open-
-# order COUNT(*) before any of them has committed its pre-submit
-# row, so they all observe ``count == cap-1`` and all proceed to
-# insert.  Result: ``cap+N`` open orders for a 2-cap trader (user-
-# observed: 5 open vs 2 cap).  Lock is per-trader so unrelated
-# traders don't serialise.  Held only across the cap check + DB
-# commit of the pre-submit row — released BEFORE the CLOB call so
-# the cap-bound serialisation doesn't extend over the network
-# round-trip.
+# Per-trader async lock for the dedup-check + cap-check + intent-record
+# critical section.  Without it, concurrent ``execute_fast_signal`` calls
+# for the same trader can race the cap check.  The lock is per-trader so
+# unrelated traders don't serialise, and it is RELEASED before the CLOB
+# network call so the cap-bound serialisation doesn't extend over the
+# wire round-trip.
 _per_trader_submit_locks: dict[str, _asyncio.Lock] = {}
 
 
@@ -115,6 +115,7 @@ def _parse_iso(value: str | None) -> datetime | None:
     except Exception:
         return None
     return parsed
+
 
 logger = get_logger(__name__)
 
@@ -160,15 +161,10 @@ def _extract_single_position(signal: Any) -> tuple[dict[str, Any] | None, str | 
 def _leg_from_position(position: dict[str, Any], signal: Any) -> dict[str, Any]:
     """Build the ``leg`` dict that ``submit_execution_leg`` expects.
 
-    Round 4: ``price_policy`` / ``time_in_force`` / ``post_only`` are now
-    driven by the strategy's position payload, falling back to fast-tier
-    defaults (taker_limit / FAK / not post-only) only when the strategy
-    didn't specify.  Pre-Round-4 these were hardcoded — which forced
-    every fast-lane trader onto aggressive cross-the-book behaviour even
-    when the strategy wanted to rest a post-only limit or hold a GTC.
-    Letting the strategy override unlocks the fast lane for a wider
-    class of strategies without giving up the single-leg / no-session-
-    tables / no-45s-ack wins.
+    ``price_policy`` / ``time_in_force`` / ``post_only`` are driven by the
+    strategy's position payload, falling back to fast-tier defaults
+    (taker_limit / FAK / not post-only) only when the strategy didn't
+    specify.
     """
     action = str(position.get("action") or position.get("side") or "").strip()
     side = normalize_position_side(action)
@@ -256,6 +252,41 @@ def _result_payload_for_trader_order(
     return base_payload
 
 
+def _resolve_open_order_cap(
+    strategy_params: dict[str, Any] | None,
+    risk_limits: dict[str, Any] | None,
+) -> int | None:
+    """Resolve ``max_open_orders`` from in-memory config only (no DB).
+
+    The runtime passes the trader's ``risk_limits`` in-memory, so the
+    pre-cutover ``session.get(Trader, ...)`` DB fallback is gone — the cap
+    check stays entirely off the wire.
+    """
+    raw = None
+    if isinstance(strategy_params, dict):
+        raw = strategy_params.get("max_open_orders")
+    if raw is None and isinstance(risk_limits, dict):
+        raw = risk_limits.get("max_open_orders")
+    try:
+        return int(raw) if raw is not None else None
+    except Exception:
+        return None
+
+
+def _skip_result(reason: str, *, error_message: str | None = None, extra: dict[str, Any] | None = None) -> FastSubmitResult:
+    payload: dict[str, Any] = {"fast_tier": True, "reason": reason}
+    if extra:
+        payload.update(extra)
+    return FastSubmitResult(
+        session_id="",
+        status="skipped",
+        effective_price=None,
+        error_message=error_message,
+        orders_written=0,
+        payload=payload,
+    )
+
+
 async def execute_fast_signal(
     session: AsyncSession,
     *,
@@ -271,87 +302,49 @@ async def execute_fast_signal(
     reason: str | None,
     risk_limits: dict[str, Any] | None = None,
 ) -> FastSubmitResult:
-    """Fast-tier single-leg direct submit.
+    """Fast-tier single-leg direct submit (journal-first, DB after the wire).
 
-    Writes exactly one ``TraderOrder`` row plus its verification event.
-    It deliberately bypasses ``create_trader_order`` because that general
-    helper performs a full inventory rebuild, which is too expensive for
-    the fast-tier pool.
+    Pre-wire: dedup + cap (in-memory) → durable intent (fsync).  Wire:
+    one ``submit_execution_leg`` attempt under a 5s ceiling.  Post-wire:
+    one ``TraderOrder`` INSERT + commit, then close the journal intent.
     """
     now = _now()
     now_iso = now.isoformat()
 
     mode_key = str(mode or "").strip().lower() or "shadow"
     notional = float(max(0.0, safe_float(size_usd, 0.0) or 0.0))
+    signal_id = str(getattr(signal, "id", "") or "").strip()
+    journal = get_intent_journal()
 
-    # ----- Idempotency guard --------------------------------------------------
-    # If a TraderOrder already exists for this (trader_id, signal_id), the
-    # signal was previously submitted — typically a crash/retry where the
-    # cursor advance silently failed (advance_fast_trader_cursor swallows
-    # errors so a stale cursor doesn't block future trades). Refusing here
-    # blocks the "DB row exists but cursor wasn't advanced" duplicate case.
-    #
-    # NOTE: this check does NOT protect against the rarer "CLOB order
-    # placed but DB row never written" case (process killed between
-    # submit_execution_leg succeeding and session.flush()). Closing that
-    # gap requires a deterministic provider client_order_id derived from
-    # the signal so a restart can reconcile against the provider; tracked
-    # as a follow-up — see ``docs/fast-lane-idempotency.md``.
-    # ----- Fast-tier risk cap ------------------------------------------------
-    # Fix JJ: the fast tier was bypassing the risk_manager entirely, so a
-    # configured ``max_open_orders`` cap (visible in the trader-config
-    # UI) had ZERO effect on this code path.  Apply a single-row count
-    # check here using the trader's persisted risk_limits.
-    #
-    # Fix JJ.2: serialise the cap-check + pre-submit-INSERT under a
-    # per-trader async lock.  Pre-fix, several concurrent
-    # ``execute_fast_signal`` calls for the same trader could each
-    # observe ``COUNT(*) < cap`` BEFORE any of them committed its
-    # pre-submit row, so all of them passed the gate and all of them
-    # inserted — user-observed 5 open orders against a 2-cap.  The
-    # lock is HELD only across the cap check + the pre-submit
-    # commit; it's RELEASED before the CLOB network call so we don't
-    # serialise the venue roundtrip across the trader's open-order
-    # window.  Idempotency, the cap check, and the pre-submit row
-    # write all happen inside the lock together.
-    if isinstance(strategy_params, dict):
-        # ``strategy_params`` is the per-source config passed in by the
-        # fast trader runtime; it carries whatever risk overrides the
-        # operator put on the source-config row.  Fall through to the
-        # trader-wide risk_limits otherwise.
-        risk_open_cap = strategy_params.get("max_open_orders")
-    else:
-        risk_open_cap = None
-    if risk_open_cap is None:
-        # Pull from the trader's risk_limits_json, lazy-fetched once
-        # per call — small cost on the few-ms scale.
-        try:
-            from models.database import Trader
-            trader_row = await session.get(Trader, trader_id)
-            if trader_row is not None:
-                trader_risk = getattr(trader_row, "risk_limits_json", None) or {}
-                if isinstance(trader_risk, str):
-                    import json as _json
-                    try:
-                        trader_risk = _json.loads(trader_risk)
-                    except Exception:
-                        trader_risk = {}
-                risk_open_cap = trader_risk.get("max_open_orders") if isinstance(trader_risk, dict) else None
-        except Exception:
-            risk_open_cap = None
-    try:
-        risk_open_cap_int = int(risk_open_cap) if risk_open_cap is not None else None
-    except Exception:
-        risk_open_cap_int = None
+    # ----- Parse the single leg (needed before recording intent) -------------
+    position, parse_error = _extract_single_position(signal)
+    if parse_error is not None or position is None:
+        return FastSubmitResult(
+            session_id="",
+            status="failed",
+            effective_price=None,
+            error_message=parse_error,
+            orders_written=0,
+            payload={"fast_tier": True, "reason": "bad_signal_shape"},
+        )
 
-    # Acquire the per-trader serialisation lock.  Released after
-    # the pre-submit row commit (see below) — NOT held across the
-    # CLOB call.  The whole locked section sits inside try/finally
-    # so a ``CancelledError`` from a stale-cycle teardown (raised
-    # by ``task.cancel()`` in fast_trader_runtime when a cycle
-    # exceeds the hard budget) cannot leak the lock — a leaked
-    # lock here deadlocks every subsequent cycle for this trader,
-    # which is the exact 30-46s-cycle pattern we hit in production.
+    leg = _leg_from_position(position, signal)
+
+    # ----- Deterministic idempotency key -------------------------------------
+    # Derived from (trader_id, signal_id) so a retry produces the same key.
+    # Stamped into the venue's order metadata so the orphan-reconcile sweep
+    # can match a venue order back to its intent when a post-wire DB write
+    # is lost.
+    idempotency_key = derive_fast_idempotency_key(trader_id=trader_id, signal_id=signal_id)
+    if mode_key == "live" and idempotency_key:
+        leg = {**leg, "clob_idempotency_key": idempotency_key}
+
+    risk_open_cap_int = _resolve_open_order_cap(strategy_params, risk_limits)
+
+    # ----- Critical section: dedup + cap + durable intent (NO DB) ------------
+    # The per-trader lock serialises dedup+cap+intent so concurrent signals
+    # for the same trader can't both pass the cap.  It is released BEFORE
+    # the wire so the network round-trip is never serialised.
     _submit_lock = _get_per_trader_submit_lock(trader_id)
     await _submit_lock.acquire()
     _lock_released = False
@@ -364,22 +357,32 @@ async def execute_fast_signal(
         try:
             _submit_lock.release()
         except RuntimeError:
-            # Defensive: lock not held / already released.  Should
-            # not happen with current code paths, but better to
-            # swallow than mask a real exception during teardown.
             pass
 
     try:
+        # Dedup: the journal is the authority (durable across restart via
+        # its on-boot ``load``).  Any prior record for this signal — open
+        # or resolved — blocks a re-fire.
+        if signal_id and journal.has_intent(trader_id, signal_id):
+            logger.info(
+                "Fast-tier refusing duplicate submission",
+                trader_id=trader_id,
+                signal_id=signal_id,
+            )
+            return _skip_result(
+                "duplicate_signal_existing_intent",
+                error_message=f"intent already journalled for signal {signal_id}",
+            )
+
+        # Cap: in-flight intents (journal) + open orders (hot_state).  This
+        # reproduces the pre-cutover behaviour where the committed
+        # ``placing`` skeleton counted against the cap, but without a DB
+        # round-trip.
         if risk_open_cap_int is not None and risk_open_cap_int > 0:
-            from sqlalchemy import func as _sa_func
-            active_statuses = ("submitted", "open", "partial", "pending", "working")
             open_count = (
-                await session.execute(
-                    select(_sa_func.count(TraderOrder.id))
-                    .where(TraderOrder.trader_id == trader_id)
-                    .where(TraderOrder.status.in_(active_statuses))
-                )
-            ).scalar_one() or 0
+                hot_state.get_open_order_count(trader_id, mode_key)
+                + journal.open_intent_count(trader_id)
+            )
             if open_count >= risk_open_cap_int:
                 logger.info(
                     "Fast-tier blocking submission: trader at max_open_orders cap",
@@ -387,196 +390,33 @@ async def execute_fast_signal(
                     open_count=open_count,
                     max_open_orders=risk_open_cap_int,
                 )
-                return FastSubmitResult(
-                    session_id="",
-                    status="skipped",
-                    effective_price=None,
+                return _skip_result(
+                    "max_open_orders_cap",
                     error_message=f"max_open_orders cap reached ({open_count}/{risk_open_cap_int})",
-                    orders_written=0,
-                    payload={
-                        "fast_tier": True,
-                        "reason": "max_open_orders_cap",
-                        "open_count": open_count,
-                        "cap": risk_open_cap_int,
-                    },
+                    extra={"open_count": open_count, "cap": risk_open_cap_int},
                 )
 
-        signal_id = str(getattr(signal, "id", "") or "").strip()
+        # Durable pre-wire intent (fsync).  This is the single hot-path
+        # stable-storage write and the crash-recovery anchor.
         if signal_id:
-            existing_id = (
-                await session.execute(
-                    select(TraderOrder.id)
-                    .where(TraderOrder.trader_id == trader_id)
-                    .where(TraderOrder.signal_id == signal_id)
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if existing_id:
-                logger.info(
-                    "Fast-tier refusing duplicate submission",
-                    trader_id=trader_id,
-                    signal_id=signal_id,
-                    existing_order_id=str(existing_id),
-                )
-                return FastSubmitResult(
-                    session_id="",
-                    status="skipped",
-                    effective_price=None,
-                    error_message=f"trader_order already exists for signal {signal_id}",
-                    orders_written=0,
-                    payload={
-                        "fast_tier": True,
-                        "reason": "duplicate_signal_existing_order",
-                        "existing_trader_order_id": str(existing_id),
-                    },
-                )
-
-        position, parse_error = _extract_single_position(signal)
-        if parse_error is not None or position is None:
-            return FastSubmitResult(
-                session_id="",
-                status="failed",
-                effective_price=None,
-                error_message=parse_error,
-                orders_written=0,
-                payload={"fast_tier": True, "reason": "bad_signal_shape"},
-            )
-
-        leg = _leg_from_position(position, signal)
-
-        # ----- Deterministic idempotency key ----------------------------------
-        # Derived from (trader_id, signal_id) so a retry produces the same key.
-        # Stamped into the venue's order metadata field AND onto the skeleton
-        # row's payload_json so the orphan-reconcile sweep can match a venue
-        # order back to its TraderOrder when the post-submit flush is lost.
-        #
-        # Note on the field name: we set ``leg["clob_idempotency_key"]`` rather
-        # than overloading ``leg["metadata"]`` (which is the
-        # ExecutionPlan-bookkeeping dict consumed by readers like
-        # ``order_manager._resolve_execution_price_bounds``). Conflating those
-        # two meanings is what produced the production hex-error pattern; the
-        # dedicated field ends that overload for good.
-        idempotency_key = derive_fast_idempotency_key(
-            trader_id=trader_id,
-            signal_id=signal_id,
-        )
-        if mode_key == "live" and idempotency_key:
-            leg = {**leg, "clob_idempotency_key": idempotency_key}
-
-        # ----- Pre-submit skeleton row (idempotency lock) ---------------------
-        # Write a TraderOrder row marked in-flight BEFORE the CLOB submission
-        # so that if the process dies between CLOB success and the post-submit
-        # DB update, the next runtime cycle's duplicate-check guard sees this
-        # row and refuses to re-submit. The row is mutated to its final state
-        # on CLOB return — we never INSERT twice. The marker lives in
-        # payload_json so existing status filters (UNFILLED_ORDER_STATUSES,
-        # cleanup sweeps) continue to work unchanged.
-        pre_submit_payload: dict[str, Any] = {
-            "fast_tier": True,
-            _SUBMISSION_STATE_KEY: _SUBMISSION_STATE_IN_FLIGHT,
-            "pre_submit_at_iso": now_iso,
-            "fast_idempotency_key": idempotency_key,
-        }
-        # Persist the runtime strategy_params so the UI's per-bot performance
-        # view can attribute historical orders to the exact configuration that
-        # produced them (rather than falling back to the trader's *current*
-        # config, which would drift after every retune).  The session_engine
-        # path persists this under ``payload["strategy_params"]``; mirror that
-        # here so fast-tier orders show up the same way.
-        if strategy_params:
-            pre_submit_payload["strategy_params"] = dict(strategy_params)
-        try:
-            if decision_audit is not None and decision_id:
-                await create_trader_decision(
-                    session,
-                    decision_id=decision_id,
-                    trader_id=trader_id,
-                    signal=signal,
-                    strategy_key=strategy_key or str(getattr(signal, "strategy_type", "") or ""),
-                    strategy_version=strategy_version,
-                    decision=str(decision_audit.get("decision") or "selected"),
-                    reason=decision_audit.get("reason"),
-                    score=decision_audit.get("score"),
-                    checks_summary=decision_audit.get("checks_summary"),
-                    risk_snapshot=decision_audit.get("risk_snapshot"),
-                    payload=decision_audit.get("payload"),
-                    trace_id=decision_audit.get("trace_id"),
-                    commit=False,
-                )
-            order = build_trader_order_row(
+            journal.record_intent(
                 trader_id=trader_id,
-                signal=signal,
-                decision_id=decision_id,
-                strategy_key=strategy_key,
-                strategy_version=strategy_version,
+                signal_id=signal_id,
+                key=idempotency_key,
+                token_id=str(leg.get("token_id") or "") or None,
+                side=str(leg.get("side") or "") or None,
+                size_usd=notional,
+                market_id=str(leg.get("market_id") or "") or None,
                 mode=mode_key,
-                status="submitted",
-                notional_usd=notional,
-                effective_price=None,
-                reason=reason,
-                payload=pre_submit_payload,
             )
-            session.add(order)
-            # Commit the skeleton so the lock is durable across the CLOB call.
-            # ``release_conn`` (used below to free the pool slot during the
-            # network I/O) calls ``session.reset()`` which would otherwise drop
-            # any unflushed/uncommitted state. Committing here is the price of
-            # crash-survivability — without it, a process kill mid-CLOB leaves
-            # the venue with an order and our DB with nothing, defeating the
-            # idempotency guard.
-            await session.commit()
-        except Exception as exc:
-            try:
-                await session.rollback()
-            except Exception as rollback_exc:
-                logger.debug("Fast-tier pre-submit rollback failed", trader_id=trader_id, exc_info=rollback_exc)
-            logger.error("Fast-tier pre-submit row write failed", trader_id=trader_id, exc_info=exc)
-            return FastSubmitResult(
-                session_id="",
-                status="failed",
-                effective_price=None,
-                error_message=f"fast pre-submit raised: {type(exc).__name__}: {exc}",
-                orders_written=0,
-                payload={"fast_tier": True, "reason": "pre_submit_persist_failed"},
-            )
-        pre_submit_order_id = str(order.id)
-        # Pre-submit row is durably committed; the next concurrent
-        # cap-check for this trader will see it in the COUNT(*).  Drop
-        # the per-trader lock so the CLOB network call doesn't extend
-        # the trader's serialisation window across the wire roundtrip.
-        _release_submit_lock_if_held()
     finally:
-        # Safety net: catches CancelledError (stale-cycle teardown), any
-        # unhandled exception in the cap-check / idempotency / parse
-        # paths above, and the no-op case where the explicit early
-        # release already ran.
+        # Release before the wire (and as a safety net for any raise above).
         _release_submit_lock_if_held()
 
-    # ----- CLOB submission ----------------------------------------------------
-    # Release the DB connection (if the session has one checked out)
-    # while the external CLOB submission is in flight.  The submission
-    # is pure network IO and does not touch ``session``; holding a
-    # fast-tier pool slot across a 300-500ms upstream roundtrip both
-    # starves the pool and creates a window in which an outer
-    # cancellation can tear the asyncpg extended-protocol state in
-    # half (the ``cannot switch to state X; another operation in
-    # progress`` pattern).  ``release_conn`` is a no-op when the
-    # session is still lazy.
+    # ----- CLOB submission ---------------------------------------------------
+    # ``release_conn`` frees the DB pool slot during the network round-trip
+    # (the submission touches no DB).  No pre-submit row exists to lose.
     submit_started_at = utcnow()
-    # Handle Exception AND CancelledError around the CLOB submit.
-    # Pre-fix MM the bare ``except Exception`` left CancelledError to
-    # propagate with the pre-submit row stuck at status='submitted',
-    # ``fast_submission_state='in_flight'`` — that row counted toward
-    # ``max_open_orders`` indefinitely and silently broke the cap on
-    # the next signal.  Now: for either failure mode we re-attach the
-    # ORM row, mark it status='failed' with ``clob_exception`` so the
-    # cap unwinds, do a best-effort flush, then re-raise the
-    # CancelledError when applicable so the runtime's cycle teardown
-    # still observes the cancellation.  The orphan reconcile (which
-    # now runs periodically — see fast_trader_runtime) consults the
-    # venue afterward to determine whether the order actually went
-    # through; if so, ``provider_clob_order_id`` is patched and the
-    # row picks up real fill data.
     try:
         async with release_conn(session):
             leg_result = await _asyncio.wait_for(
@@ -594,178 +434,64 @@ async def execute_fast_signal(
     except (Exception, _asyncio.CancelledError) as exc:
         is_cancelled = isinstance(exc, _asyncio.CancelledError)
         is_timeout = isinstance(exc, _asyncio.TimeoutError)
+        # AMBIGUOUS outcome — the venue may or may not hold the order.  We
+        # deliberately leave the journal intent OPEN (write no result) so
+        # the orphan-reconcile sweep queries the venue by the deterministic
+        # key and either backfills the order row or closes the intent as
+        # failed.  This preserves the exact crash-safety the pre-submit DB
+        # row provided, anchored on the journal instead.
         if is_cancelled:
             logger.warning(
-                "Fast-tier leg submit cancelled mid-flight",
+                "Fast-tier leg submit cancelled mid-flight (intent left open for reconcile)",
                 trader_id=trader_id,
-                pre_submit_order_id=pre_submit_order_id,
+                signal_id=signal_id,
             )
-        elif is_timeout:
-            # Surface as warning (not error) — under degraded CLOB
-            # health this is the expected failure mode and operators
-            # should see it, but it's not unexpected enough to log a
-            # full traceback every time.
+            raise
+        if is_timeout:
             logger.warning(
-                "Fast-tier leg submit exceeded CLOB timeout",
+                "Fast-tier leg submit exceeded CLOB timeout (intent left open for reconcile)",
                 trader_id=trader_id,
-                pre_submit_order_id=pre_submit_order_id,
+                signal_id=signal_id,
                 timeout_seconds=_FAST_LEG_SUBMIT_TIMEOUT_SECONDS,
             )
         else:
             logger.warning(
-                "Fast-tier leg submit raised",
+                "Fast-tier leg submit raised (intent left open for reconcile)",
                 trader_id=trader_id,
-                pre_submit_order_id=pre_submit_order_id,
+                signal_id=signal_id,
                 exc_info=exc,
             )
-        # CLOB call raised / cancelled / timed out — we don't know if
-        # the venue accepted the order.  Mark the skeleton row as
-        # failed-with-clob-exception so (a) the cap unwinds immediately
-        # ("failed" is not in active_statuses), (b) the orphan
-        # reconcile sweep can match it against any orders the venue
-        # actually has, and (c) the duplicate-check guard still blocks
-        # re-submission of the same signal.
-        try:
-            # ``release_conn`` detached the pre-submit ``order`` ORM object;
-            # re-attach it before mutating so the UPDATE actually flushes.
-            refetched_after_raise = await session.get(TraderOrder, pre_submit_order_id)
-            target = refetched_after_raise if refetched_after_raise is not None else order
-            target.status = "failed"
-            if is_cancelled:
-                target.error_message = "submit_execution_leg cancelled (cycle teardown)"
-            elif is_timeout:
-                target.error_message = (
-                    f"submit_execution_leg timed out after "
-                    f"{_FAST_LEG_SUBMIT_TIMEOUT_SECONDS}s (CLOB degraded)"
-                )
-            else:
-                target.error_message = f"submit_execution_leg raised: {type(exc).__name__}: {exc}"
-            target.payload_json = {
-                **(target.payload_json or {}),
-                _SUBMISSION_STATE_KEY: _SUBMISSION_STATE_CLOB_RAISED,
-                "exception_type": type(exc).__name__,
-                "exception_message": (
-                    "cancelled"
-                    if is_cancelled
-                    else (f"timeout_{_FAST_LEG_SUBMIT_TIMEOUT_SECONDS}s" if is_timeout else str(exc))
-                ),
-                "cancelled_mid_flight": is_cancelled,
-                "timed_out": is_timeout,
-                "timeout_seconds": _FAST_LEG_SUBMIT_TIMEOUT_SECONDS if is_timeout else None,
-            }
-            await session.flush()
-        except (Exception, _asyncio.CancelledError) as flush_exc:
-            # Best-effort: even if the flush fails, we've at least
-            # attempted to clear the cap.  The startup orphan reconcile
-            # is the durable backstop.
-            logger.debug(
-                "Fast-tier flush of clob-exception marker failed",
-                trader_id=trader_id,
-                exc_info=flush_exc if not isinstance(flush_exc, _asyncio.CancelledError) else None,
-            )
-            # Fix PP — clear PendingRollback state from the failed flush.
-            # The pre-submit row is already durably committed (line 505);
-            # this rollback only undoes the in-flight UPDATE attempt, so
-            # the session is usable by the runtime caller afterwards
-            # (otherwise the next session.execute() raises
-            # PendingRollbackError and we get the cluster of errors seen
-            # in the post-Fix-NN soak).
-            try:
-                await session.rollback()
-            except Exception:
-                pass
-        if is_cancelled:
-            # Re-raise so the runtime's cycle teardown completes
-            # (otherwise the task wouldn't be detected as cancelled).
-            raise
         return FastSubmitResult(
             session_id="",
             status="failed",
             effective_price=None,
-            error_message=f"submit_execution_leg raised: {type(exc).__name__}: {exc}",
-            orders_written=1,
+            error_message=(
+                f"submit_execution_leg timed out after {_FAST_LEG_SUBMIT_TIMEOUT_SECONDS}s (CLOB degraded)"
+                if is_timeout
+                else f"submit_execution_leg raised: {type(exc).__name__}: {exc}"
+            ),
+            orders_written=0,
             payload={
                 "fast_tier": True,
-                "reason": "submit_exception",
-                "trader_order_id": pre_submit_order_id,
+                "reason": "submit_timeout" if is_timeout else "submit_exception",
+                "intent_open_for_reconcile": True,
+                "fast_idempotency_key": idempotency_key,
             },
-            created_orders=[{"id": pre_submit_order_id}],
         )
     submit_completed_at = utcnow()
 
-    # ``release_conn`` resets the session, which detaches the pre-submit
-    # ``order`` ORM object. Re-attach by fetching it back so subsequent
-    # attribute mutations propagate to an UPDATE on flush.
-    #
-    # The refetch can race with pool saturation under burst load (the
-    # CLOB call held no DB connection but other consumers may have
-    # filled the fast pool while we were on the wire).  If the get
-    # raises a pool / asyncpg-state error the session is unusable for
-    # the rest of this function, so we rollback and fall back to
-    # building a transient row that mirrors the pre-submit state — the
-    # CLOB-side trade is durable already (covered by the pre-submit
-    # row's idempotency lock); this just keeps the post-submit update
-    # path running rather than crashing the trader.
-    try:
-        refetched = await session.get(TraderOrder, pre_submit_order_id)
-    except Exception as _refetch_exc:
-        logger.warning(
-            "Fast-tier post-submit refetch failed; will skip ORM update",
-            trader_id=trader_id,
-            pre_submit_order_id=pre_submit_order_id,
-            exc_info=_refetch_exc,
-        )
-        try:
-            await session.rollback()
-        except Exception:
-            pass
-        refetched = None
-    if refetched is not None:
-        order = refetched
-
-    # Map leg result status onto trader_order status.  submit_execution_leg
-    # returns: executed | failed | skipped | cancelled.  "skipped" is a
-    # pre-submit gate rejection (e.g. buy gate) and produces no order.
     leg_status = str(leg_result.status or "").strip().lower()
+
+    # ----- Pre-submit gate rejection: venue never received the order ---------
     if leg_status == "skipped":
-        # The CLOB never received an order — the buy-gate (or similar) rejected
-        # before submission. Repurpose the skeleton row to reflect that so we
-        # don't leave a "submitted" ghost; cancelled is the closest taxonomy.
-        try:
-            order.status = "cancelled"
-            order.error_message = leg_result.error_message
-            order.payload_json = {
-                **(order.payload_json or {}),
-                _SUBMISSION_STATE_KEY: _SUBMISSION_STATE_COMPLETED,
-                "reason": "pre_submit_gate",
-                "leg": leg_result.payload,
-            }
-            await session.flush()
-        except Exception as flush_exc:
-            logger.debug(
-                "Fast-tier flush of pre-submit-gate marker failed",
-                trader_id=trader_id,
-                exc_info=flush_exc,
-            )
-            # Fix PP — drop PendingRollback before returning so the
-            # runtime's downstream session.execute() calls don't trip.
-            try:
-                await session.rollback()
-            except Exception:
-                pass
-        return FastSubmitResult(
-            session_id="",
-            status="skipped",
-            effective_price=leg_result.effective_price,
+        # Terminal + no order row: the buy/spread gate rejected before
+        # submission, so the venue holds nothing.  Close the intent.
+        if signal_id:
+            journal.record_result(trader_id=trader_id, signal_id=signal_id, status="skipped")
+        return _skip_result(
+            "pre_submit_gate",
             error_message=leg_result.error_message,
-            orders_written=1,
-            payload={
-                "fast_tier": True,
-                "reason": "pre_submit_gate",
-                "leg": leg_result.payload,
-                "trader_order_id": pre_submit_order_id,
-            },
-            created_orders=[{"id": pre_submit_order_id}],
+            extra={"leg": leg_result.payload},
         )
 
     order_status = {
@@ -774,38 +500,67 @@ async def execute_fast_signal(
         "cancelled": "cancelled",
     }.get(leg_status, "failed")
 
+    # ----- Post-wire persistence (off the time-to-market path) ---------------
+    # One INSERT of the FINAL state — no skeleton, no second UPDATE.  We
+    # commit here (after the wire) so the row is durable BEFORE we close
+    # the journal intent; if this commit fails or the process dies first,
+    # the intent stays open and the orphan reconcile backfills the row
+    # from the venue snapshot.
     order_payload = _result_payload_for_trader_order(leg_result=leg_result, now_iso=now_iso)
     order_payload[_SUBMISSION_STATE_KEY] = _SUBMISSION_STATE_COMPLETED
     order_payload["fast_tier"] = True
     order_payload["fast_idempotency_key"] = idempotency_key
-    # Carry the runtime strategy_params forward into the post-submit row.
-    # The post-submit update overwrites payload_json wholesale, so without
-    # this the params we stamped onto the pre-submit row would be lost.
     if strategy_params:
         order_payload["strategy_params"] = dict(strategy_params)
     submit_completed_iso = submit_completed_at.isoformat()
     order_payload.setdefault("submit_started_at_iso", submit_started_at.isoformat())
     order_payload.setdefault("submit_completed_at_iso", submit_completed_iso)
 
-    # ----- Post-submit update -------------------------------------------------
-    # Mutate the same skeleton row in place (no second INSERT) so the
-    # idempotency lock survives even if this update fails. Critically, we
-    # do *not* roll back on failure — the CLOB has already executed, and
-    # rolling back the lock would let the next runtime cycle re-submit.
+    order_id: str | None = None
+    persisted = False
     try:
-        order.status = order_status
-        order.notional_usd = leg_result.notional_usd if leg_result.notional_usd is not None else notional
-        order.effective_price = leg_result.effective_price
-        order.error_message = leg_result.error_message
-        order.payload_json = order_payload
+        if decision_audit is not None and decision_id:
+            await create_trader_decision(
+                session,
+                decision_id=decision_id,
+                trader_id=trader_id,
+                signal=signal,
+                strategy_key=strategy_key or str(getattr(signal, "strategy_type", "") or ""),
+                strategy_version=strategy_version,
+                decision=str(decision_audit.get("decision") or "selected"),
+                reason=decision_audit.get("reason"),
+                score=decision_audit.get("score"),
+                checks_summary=decision_audit.get("checks_summary"),
+                risk_snapshot=decision_audit.get("risk_snapshot"),
+                payload=decision_audit.get("payload"),
+                trace_id=decision_audit.get("trace_id"),
+                commit=False,
+            )
+        order = build_trader_order_row(
+            trader_id=trader_id,
+            signal=signal,
+            decision_id=decision_id,
+            strategy_key=strategy_key,
+            strategy_version=strategy_version,
+            mode=mode_key,
+            status=order_status,
+            notional_usd=leg_result.notional_usd if leg_result.notional_usd is not None else notional,
+            effective_price=leg_result.effective_price,
+            reason=reason,
+            payload=order_payload,
+        )
         order.provider_order_id = leg_result.provider_order_id or order.provider_order_id
         order.provider_clob_order_id = leg_result.provider_clob_order_id or order.provider_clob_order_id
+        order.error_message = leg_result.error_message
+        session.add(order)
+        await session.flush()
+        order_id = str(order.id)
 
         event_payload = dict(order.payload_json or {})
         event_payload.update({"status": str(order.status or ""), "mode": str(order.mode or "")})
         append_trader_order_verification_event(
             session,
-            trader_order_id=pre_submit_order_id,
+            trader_order_id=order_id,
             verification_status=str(order.verification_status or TRADER_ORDER_VERIFICATION_LOCAL),
             source=order.verification_source,
             event_type="order_created",
@@ -818,159 +573,130 @@ async def execute_fast_signal(
             created_at=now,
         )
         await session.flush()
-        if _is_active_order_status(mode_key, order_status):
-            hot_state.upsert_active_order(
-                trader_id=trader_id,
-                mode=mode_key,
-                order_id=pre_submit_order_id,
-                status=order_status,
-                market_id=str(order.market_id or ""),
-                direction=str(order.direction or ""),
-                source=str(order.source or ""),
-                notional_usd=safe_float(leg_result.notional_usd, notional) or 0.0,
-                entry_price=safe_float(leg_result.effective_price, safe_float(order.entry_price, 0.0)) or 0.0,
-                token_id=str(leg.get("token_id") or ""),
-                filled_shares=safe_float(leg_result.shares, 0.0) or 0.0,
-                payload=order_payload,
-            )
-            # Wire the fresh order into PositionMarkState so the WS
-            # ``position_marks_update`` push channel updates U-P&L on
-            # the very next price tick (≤ 100 ms typically) instead
-            # of waiting for the trader_reconciliation_worker to
-            # register it on its 30 s cycle.  The slow orchestrator's
-            # position-monitor loop normally does this; the fast tier
-            # had to wait, leaving fresh fast-tier fills with $0
-            # marks in the UI for up to half a minute.  Live mode
-            # only — shadow trades have no real position to track.
-            if mode_key == "live" and order_status == "executed":
-                try:
-                    fill_token_id = str(leg.get("token_id") or "").strip()
-                    fill_price = (
-                        safe_float(leg_result.effective_price, None)
-                        or safe_float(order.entry_price, None)
-                    )
-                    fill_notional = safe_float(leg_result.notional_usd, notional) or 0.0
-                    if fill_token_id and fill_price and fill_price > 0 and fill_notional > 0:
-                        from services.position_mark_state import get_position_mark_state
-                        from services.ws_feeds import get_feed_manager
-
-                        pms = get_position_mark_state()
-                        pms.register_position(
-                            order_id=pre_submit_order_id,
-                            market_id=str(order.market_id or ""),
-                            token_id=fill_token_id,
-                            direction=str(order.direction or "yes").strip().lower(),
-                            entry_price=float(fill_price),
-                            notional=float(fill_notional),
-                            edge_percent=safe_float(order.edge_percent, 0.0) or 0.0,
-                        )
-                        # Subscribe the WS feed for this token if it
-                        # isn't already subscribed — without this the
-                        # PriceCache.on_update callbacks that drive
-                        # ``pms.on_price_update`` never fire for the
-                        # new token, so U-P&L stays at the initial
-                        # entry-price-equals-mark (0 P&L) state.
-                        try:
-                            feed_manager = get_feed_manager()
-                            if getattr(feed_manager, "_started", False):
-                                # Fire-and-forget — subscribe is fast
-                                # but we don't want to block the
-                                # post-submit hot path on any WS
-                                # network jitter.
-                                _asyncio.create_task(
-                                    feed_manager.polymarket_feed.subscribe([fill_token_id]),
-                                    name=f"fast-submit-ws-subscribe-{fill_token_id[:12]}",
-                                )
-                        except Exception as _sub_exc:
-                            logger.debug(
-                                "Fast-tier WS subscribe after fill failed (non-fatal)",
-                                token_id=fill_token_id,
-                                exc_info=_sub_exc,
-                            )
-                except Exception as _pms_exc:
-                    logger.debug(
-                        "Fast-tier PositionMarkState registration failed (non-fatal)",
-                        order_id=pre_submit_order_id,
-                        exc_info=_pms_exc,
-                    )
+        # Commit post-wire so the row is durable before we close the
+        # intent.  Shielded so a cycle-budget cancellation can't tear a
+        # write-back for an order the venue already executed.
+        await _asyncio.shield(session.commit())
+        persisted = True
     except (Exception, _asyncio.CancelledError) as exc:
         is_cancelled = isinstance(exc, _asyncio.CancelledError)
-        # CLOB has already executed — DO NOT rollback. Mark the row so the
-        # reconcile sweep knows post-update is incomplete and can repair
-        # the missing fields against the venue snapshot.  CancelledError is
-        # caught alongside Exception (Fix MM): a stale-cycle teardown
-        # mid-update used to leak the row at status='submitted' /
-        # ``in_flight``, occupying the cap permanently.  We mark
-        # status='failed' (the leg already executed at the venue, so the
-        # cap should NOT continue to hold open) and stamp
-        # ``post_update_failed`` so the orphan reconcile patches in the
-        # missing ``provider_clob_order_id`` from the venue snapshot.
-        # CancelledError is re-raised so the runtime's cycle teardown
-        # observes the cancellation.
+        # The venue already acted but our DB write failed.  Do NOT close
+        # the journal intent — leave it open so the orphan reconcile
+        # patches the row in from the venue snapshot (matched by the
+        # deterministic key).  Roll back the half-written transaction.
         if is_cancelled:
             logger.warning(
-                "Fast-tier trader_order post-submit update cancelled mid-flight",
+                "Fast-tier post-wire persist cancelled (intent left open for reconcile)",
                 trader_id=trader_id,
-                pre_submit_order_id=pre_submit_order_id,
+                signal_id=signal_id,
             )
         else:
             logger.error(
-                "Fast-tier trader_order post-submit update failed",
+                "Fast-tier post-wire persist failed (intent left open for reconcile)",
                 trader_id=trader_id,
-                pre_submit_order_id=pre_submit_order_id,
+                signal_id=signal_id,
                 exc_info=exc,
             )
         try:
-            order.status = "failed"
-            order.error_message = (
-                "post_update cancelled (cycle teardown)"
-                if is_cancelled
-                else f"fast order post-update raised: {type(exc).__name__}: {exc}"
-            )
-            order.payload_json = {
-                **(order.payload_json or {}),
-                _SUBMISSION_STATE_KEY: _SUBMISSION_STATE_POST_UPDATE_FAILED,
-                "post_update_error_type": type(exc).__name__,
-                "post_update_error_message": "cancelled" if is_cancelled else str(exc),
-                "cancelled_mid_update": is_cancelled,
-            }
-            await session.flush()
-        except (Exception, _asyncio.CancelledError) as flush_exc:
-            logger.debug(
-                "Fast-tier flush of post-update marker failed",
-                trader_id=trader_id,
-                exc_info=flush_exc if not isinstance(flush_exc, _asyncio.CancelledError) else None,
-            )
-            # Fix PP — clear PendingRollback so the runtime caller can
-            # still use this session (record_signal_event, cursor
-            # advance) after this function returns.  Pre-submit row is
-            # durably committed; this only drops in-memory mutation
-            # attempts that already failed.
-            try:
-                await session.rollback()
-            except Exception:
-                pass
+            await session.rollback()
+        except Exception:
+            pass
         if is_cancelled:
             raise
         return FastSubmitResult(
             session_id="",
-            status="failed",
+            status=order_status,
             effective_price=leg_result.effective_price,
-            error_message=f"fast order post-update raised: {type(exc).__name__}: {exc}",
-            orders_written=1,
+            error_message=f"fast post-wire persist raised: {type(exc).__name__}: {exc}",
+            orders_written=0,
             payload={
                 "fast_tier": True,
-                "reason": "post_update_failed",
-                "trader_order_id": pre_submit_order_id,
+                "reason": "post_persist_failed",
+                "intent_open_for_reconcile": True,
+                "fast_idempotency_key": idempotency_key,
             },
-            created_orders=[{"id": pre_submit_order_id}],
         )
 
-    # ----- Latency telemetry --------------------------------------------------
-    # Hook into the existing execution_latency_metrics buffer so the fast
-    # path shows up in the same SLO dashboard as the orchestrated slow
-    # tier. We populate the stage keys this path can actually measure;
-    # the slow-tier-only stages (wake_to_context_ready_ms etc.) stay None.
+    # ----- Update in-memory state, THEN close the intent ---------------------
+    # hot_state is upserted before ``record_result`` so the cap never
+    # transiently under-counts an order during the index hand-off (an
+    # over-count by one is the fail-safe direction for a risk cap).
+    if persisted and _is_active_order_status(mode_key, order_status):
+        hot_state.upsert_active_order(
+            trader_id=trader_id,
+            mode=mode_key,
+            order_id=order_id,
+            status=order_status,
+            market_id=str(order.market_id or ""),
+            direction=str(order.direction or ""),
+            source=str(order.source or ""),
+            notional_usd=safe_float(leg_result.notional_usd, notional) or 0.0,
+            entry_price=safe_float(leg_result.effective_price, safe_float(order.entry_price, 0.0)) or 0.0,
+            token_id=str(leg.get("token_id") or ""),
+            filled_shares=safe_float(leg_result.shares, 0.0) or 0.0,
+            payload=order_payload,
+        )
+        # Wire the fresh order into PositionMarkState so the WS
+        # ``position_marks_update`` push channel updates U-P&L on the next
+        # price tick instead of waiting for the reconciliation worker.
+        if mode_key == "live" and order_status == "executed":
+            try:
+                fill_token_id = str(leg.get("token_id") or "").strip()
+                fill_price = (
+                    safe_float(leg_result.effective_price, None)
+                    or safe_float(order.entry_price, None)
+                )
+                fill_notional = safe_float(leg_result.notional_usd, notional) or 0.0
+                if fill_token_id and fill_price and fill_price > 0 and fill_notional > 0:
+                    from services.position_mark_state import get_position_mark_state
+                    from services.ws_feeds import get_feed_manager
+
+                    pms = get_position_mark_state()
+                    pms.register_position(
+                        order_id=order_id,
+                        market_id=str(order.market_id or ""),
+                        token_id=fill_token_id,
+                        direction=str(order.direction or "yes").strip().lower(),
+                        entry_price=float(fill_price),
+                        notional=float(fill_notional),
+                        edge_percent=safe_float(order.edge_percent, 0.0) or 0.0,
+                    )
+                    try:
+                        feed_manager = get_feed_manager()
+                        if getattr(feed_manager, "_started", False):
+                            _asyncio.create_task(
+                                feed_manager.polymarket_feed.subscribe([fill_token_id]),
+                                name=f"fast-submit-ws-subscribe-{fill_token_id[:12]}",
+                            )
+                    except Exception as _sub_exc:
+                        logger.debug(
+                            "Fast-tier WS subscribe after fill failed (non-fatal)",
+                            token_id=fill_token_id,
+                            exc_info=_sub_exc,
+                        )
+            except Exception as _pms_exc:
+                logger.debug(
+                    "Fast-tier PositionMarkState registration failed (non-fatal)",
+                    order_id=order_id,
+                    exc_info=_pms_exc,
+                )
+
+    # Close the journal intent now that the order row is durable.
+    if signal_id:
+        try:
+            journal.record_result(
+                trader_id=trader_id,
+                signal_id=signal_id,
+                status=order_status,
+                provider_clob_order_id=leg_result.provider_clob_order_id,
+                provider_order_id=leg_result.provider_order_id,
+            )
+        except Exception as _jr_exc:
+            # A lost result record is safe (replay re-reconciles), so never
+            # let it fail a completed trade.
+            logger.debug("Fast-tier journal result record failed", trader_id=trader_id, exc_info=_jr_exc)
+
+    # ----- Latency telemetry -------------------------------------------------
     try:
         signal_payload_dict = getattr(signal, "payload_json", None)
         signal_payload_dict = signal_payload_dict if isinstance(signal_payload_dict, dict) else {}
@@ -1001,8 +727,6 @@ async def execute_fast_signal(
             payload=latency_payload,
         )
     except Exception as exc:
-        # Telemetry is best-effort; never let a metric failure roll back a
-        # successful trade.
         logger.debug("Fast-tier latency record failed", trader_id=trader_id, exc_info=exc)
 
     return FastSubmitResult(
@@ -1013,14 +737,14 @@ async def execute_fast_signal(
         orders_written=1,
         payload={
             "fast_tier": True,
-            "trader_order_id": pre_submit_order_id,
+            "trader_order_id": order_id,
             "leg": leg_result.payload,
             "mode": mode_key,
             "submitted_at": now_iso,
             "submit_started_at_iso": submit_started_at.isoformat(),
             "submit_completed_at_iso": submit_completed_iso,
         },
-        created_orders=[{"id": pre_submit_order_id}],
+        created_orders=[{"id": order_id}],
     )
 
 
@@ -1039,7 +763,7 @@ async def advance_fast_trader_cursor(
     the signal is not re-evaluated on the next cycle.  Any DB error here
     is logged but swallowed — leaving the cursor stale is a recoverable
     annoyance, not a money-losing bug (duplicate submission is already
-    gated by the occupancy check).
+    gated by the journal dedup check).
     """
     signal_id = str(getattr(signal, "id", "") or "").strip()
     if not signal_id:
@@ -1081,3 +805,122 @@ async def advance_fast_trader_cursor(
         )
     except Exception as exc:
         logger.debug("Fast-tier upsert_trader_signal_cursor failed", exc_info=exc)
+
+
+def _recovery_created_at(rec: dict[str, Any]) -> datetime:
+    """Naive-UTC ``created_at`` for a recovery row, backdated to the intent.
+
+    Backdating to the original intent timestamp makes the row immediately
+    eligible for ``reconcile_orphaned_fast_submissions`` (which skips rows
+    younger than its ``min_age_seconds``), so a crash orphan resolves on
+    the first sweep after restart instead of waiting a full cycle.
+    """
+    ts = rec.get("ts")
+    try:
+        if ts is not None:
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc).replace(tzinfo=None)
+    except Exception:
+        pass
+    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=120)
+
+
+async def recover_open_intents(
+    session: AsyncSession,
+    *,
+    journal: Any = None,
+) -> dict[str, Any]:
+    """Bridge crash-orphaned journal intents into the DB reconcile path.
+
+    Run at fast-worker startup and on the periodic orphan sweep.  For every
+    OPEN journal intent — an ambiguous wire failure, or a crash before the
+    post-wire persist — ensure there is a ``TraderOrder`` recovery row the
+    tested ``reconcile_orphaned_fast_submissions`` sweep can resolve against
+    the venue by the deterministic key.  Intents that already have a
+    persisted row, or that are shadow / keyless (no venue to reconcile),
+    are simply closed.  Closing records a terminal ``recovered`` result so
+    the signal stays deduped but is never re-processed.
+    """
+    from services.trader_orchestrator.fast_idempotency import is_fast_idempotency_key
+
+    j = journal if journal is not None else get_intent_journal()
+    intents = j.open_intents()
+    materialized = 0
+    closed_existing = 0
+    closed_noop = 0
+
+    for rec in intents:
+        trader_id = str(rec.get("tr") or "").strip()
+        signal_id = str(rec.get("sig") or "").strip()
+        if not trader_id or not signal_id:
+            continue
+        mode_key = str(rec.get("md") or "").strip().lower() or "shadow"
+        key = str(rec.get("key") or "").strip()
+
+        # Shadow / keyless intents have no venue counterpart to reconcile.
+        if mode_key != "live" or not is_fast_idempotency_key(key):
+            j.record_result(trader_id=trader_id, signal_id=signal_id, status="recovered")
+            closed_noop += 1
+            continue
+
+        existing = (
+            await session.execute(
+                select(TraderOrder)
+                .where(TraderOrder.trader_id == trader_id)
+                .where(TraderOrder.signal_id == signal_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            # The post-wire persist landed before the crash — the DB row and
+            # the existing reconcile/lifecycle own it now.
+            j.record_result(
+                trader_id=trader_id,
+                signal_id=signal_id,
+                status="recovered",
+                provider_clob_order_id=existing.provider_clob_order_id,
+            )
+            closed_existing += 1
+            continue
+
+        # No row — the crash hit the ambiguous wire window.  Materialize a
+        # recovery row the orphan sweep will resolve by key, then hand it
+        # ownership and close the intent.
+        recovery_payload = {
+            "fast_tier": True,
+            _SUBMISSION_STATE_KEY: "in_flight",
+            "fast_idempotency_key": key,
+            "recovered_from_journal": True,
+        }
+        await session.merge(
+            TraderOrder(
+                id=f"fastjrnl-{trader_id}-{signal_id}",
+                trader_id=trader_id,
+                signal_id=signal_id,
+                source=str(rec.get("src") or "fast"),
+                market_id=str(rec.get("mkt") or ""),
+                mode="live",
+                status="placing",
+                notional_usd=safe_float(rec.get("usd"), 0.0) or 0.0,
+                payload_json=recovery_payload,
+                created_at=_recovery_created_at(rec),
+            )
+        )
+        j.record_result(trader_id=trader_id, signal_id=signal_id, status="recovered")
+        materialized += 1
+
+    if materialized or closed_existing or closed_noop:
+        try:
+            await session.commit()
+        except Exception:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+            raise
+
+    return {
+        "open_intents": len(intents),
+        "materialized": materialized,
+        "closed_existing": closed_existing,
+        "closed_noop": closed_noop,
+    }

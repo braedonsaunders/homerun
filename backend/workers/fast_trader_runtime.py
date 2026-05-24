@@ -48,6 +48,7 @@ from services.trader_orchestrator.hot_path import hot_path_no_rest
 from services.wallet_state_cache import get_wallet_state_cache
 from services.trader_orchestrator.fast_submit import (
     execute_fast_signal,
+    recover_open_intents,
 )
 from services.trader_orchestrator_state import (
     fetch_recent_consumed_signal_ids,
@@ -81,11 +82,11 @@ _HEARTBEAT_INTERVAL_SECONDS = 5.0
 _TRADER_REFRESH_INTERVAL_SECONDS = 15.0
 _FAST_TASK_STALE_SECONDS = 30.0
 # Periodic orphan-reconcile sweep cadence.  The startup sweep runs once
-# right after bootstrap; this re-runs it on a fixed cadence so any
-# in_flight / clob_exception / post_update_failed rows produced by a
-# cycle teardown (CancelledError, process kill, network blip) get
-# resolved within minutes instead of waiting for the next worker
-# restart.  60s strikes a balance: well below the operator-visible
+# right after bootstrap; this re-runs it on a fixed cadence so any open
+# intent-journal entries left by an ambiguous wire failure or a crash
+# (process kill / network blip) get materialised into recovery rows and
+# resolved against the venue within minutes instead of waiting for the
+# next worker restart.  60s strikes a balance: well below the operator-visible
 # threshold for "the cap is stuck at N/N" and well above the venue's
 # per-call rate limits (one wallet-snapshot fetch per fast trader per
 # 60s is trivial).
@@ -1622,6 +1623,29 @@ class _FastRuntime:
         """
         if self._stopping:
             return
+        # Bridge crash-orphaned journal intents into the DB reconcile path
+        # before the per-trader sweep runs, so a materialized recovery row
+        # is resolved against the venue in the same pass.
+        try:
+            async with AsyncSessionLocal() as session:
+                recovery = await recover_open_intents(session)
+            if recovery.get("materialized") or recovery.get("closed_existing"):
+                logger.info(
+                    "Fast-tier journal recovery",
+                    label=label,
+                    open_intents=recovery.get("open_intents"),
+                    materialized=recovery.get("materialized"),
+                    closed_existing=recovery.get("closed_existing"),
+                    closed_noop=recovery.get("closed_noop"),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Fast-tier journal recovery failed",
+                label=label,
+                exc_info=exc,
+            )
         try:
             async with AsyncSessionLocal() as session:
                 fast_trader_rows = list(await list_fast_traders(session))
@@ -1774,9 +1798,10 @@ class _FastRuntime:
             await hot_state.seed()
         except Exception as exc:
             logger.warning("Fast-tier runtime hot-state seed failed", exc_info=exc)
-        # Startup orphan-reconcile sweep.  Catches any ``in_flight`` /
-        # ``clob_exception`` / ``post_update_failed`` skeleton rows from
-        # a prior crash and matches them against the venue by their
+        # Startup recovery + orphan-reconcile sweep.  First replays the
+        # intent journal: any intent left open by a prior crash or an
+        # ambiguous wire failure is materialised into a recovery
+        # ``TraderOrder`` row, then matched against the venue by its
         # deterministic fast_idempotency_key.  The same sweep runs
         # periodically (see ``_ORPHAN_RECONCILE_INTERVAL_SECONDS`` and
         # the call inside the supervisor loop) so orphans produced
