@@ -2225,6 +2225,34 @@ class LiveExecutionService:
         funder_wallet = str(
             self._funder_for_signature_type(signature_value) or self._execution_wallet_address() or ""
         ).strip()
+
+        # ── Fail-OPEN on confirmed on-chain holdings ──────────────────────
+        # The CLOB ``get_balance_allowance`` endpoint has been observed to
+        # under-report (return balance=0) for conditional tokens we PROVABLY
+        # hold at the proxy.  2026-05 incident: 11.51 shares held on-chain,
+        # the gate read 0, and BLOCKED 70 exit attempts — the position rode to
+        # a full-notional resolution loss.  A pre-submit gate must NEVER block
+        # a sell we can actually fulfill: selling doesn't cost collateral, and
+        # Polymarket's own gate remains the final authority.  So when the
+        # chain-seeded wallet cache shows we hold >= the required shares, allow
+        # the order through and force a balance/allowance resync so the CLOB
+        # view self-heals.
+        held_onchain = self._held_shares_for_token(token_key)
+        if required_raw > ZERO and held_onchain >= required_raw:
+            logger.warning(
+                "Sell pre-submit gate FAIL-OPEN: CLOB balance under-reported "
+                "(balance=%s available=%s) but wallet holds %s shares on-chain "
+                ">= required %s; allowing sell and forcing resync. "
+                "token_id=%s signature_type=%s funder=%s",
+                balance_raw, available_raw, held_onchain, required_raw,
+                token_key, signature_value, funder_wallet or "unknown",
+            )
+            try:
+                await self.refresh_conditional_balance_allowance(token_key)
+            except Exception:
+                pass
+            return True, None
+
         shortfall = max(ZERO, required_raw - available_raw)
         error_message = (
             "SELL pre-submit gate failed: not enough conditional token balance/allowance. "
@@ -6196,6 +6224,30 @@ class LiveExecutionService:
     def get_positions(self) -> list[Position]:
         """Get current positions"""
         return list(self._positions.values())
+
+    def _held_shares_for_token(self, token_id: str) -> Decimal:
+        """Authoritative held-share count from the chain-seeded wallet
+        positions cache (WalletStateCache).  Used by the SELL pre-submit gate
+        to refuse to BLOCK a sell of shares we provably hold when the CLOB
+        ``get_balance_allowance`` endpoint under-reports (returns 0) for a
+        conditional token — the 2026-05 incident where 11.51 shares were held
+        on-chain at the proxy, the gate read balance=0, and blocked 70 exit
+        attempts so the position rode to a full-notional resolution loss.
+        """
+        key = str(token_id or "").strip()
+        if not key:
+            return ZERO
+        best = ZERO
+        try:
+            for pos in self._positions.values():
+                if str(getattr(pos, "token_id", "") or "").strip() != key:
+                    continue
+                sz = _to_decimal(getattr(pos, "size", 0.0))
+                if sz > best:
+                    best = sz
+        except Exception:
+            return ZERO
+        return max(ZERO, best)
 
     def _invalidate_balance_cache(self) -> None:
         self._balance_cache = None

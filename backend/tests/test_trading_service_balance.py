@@ -573,3 +573,66 @@ async def test_prepare_sell_balance_allowance_refreshes_clob_cache_only(monkeypa
     assert refreshed is True
     service._select_signature_type_for_conditional_token.assert_awaited_once_with("token-123")
     service.refresh_conditional_balance_allowance.assert_awaited_once_with("token-123")
+
+
+# ── SELL pre-submit gate: fail-open on confirmed on-chain holdings ──────────
+# Regression for the 2026-05 "not enough conditional token balance/allowance"
+# bane: CLOB get_balance_allowance returned balance=0 for a token we held
+# 11.51 shares of on-chain at the proxy, blocking 70 exit attempts so the
+# position rode to a full-notional resolution loss.
+
+def _gate_service(monkeypatch, *, held_size: float, snap_available):
+    from services.live_execution_service import ZERO
+    service = LiveExecutionService()
+    service._initialized = True
+    service._wallet_address = "0x" + "ab" * 20
+    service._proxy_funder_address = service._wallet_address
+    service._client = object()  # is_ready() = _initialized and _client is not None
+    service._positions = {}
+    if held_size > 0:
+        service._positions["tok"] = Position(
+            token_id="tok", market_id="m", market_question="q",
+            outcome="YES", size=held_size, average_cost=0.9,
+        )
+
+    async def _sel(token_id):
+        return 1
+    monkeypatch.setattr(service, "_select_signature_type_for_conditional_token", _sel)
+
+    async def _snap(token_id, sig, *, refresh):
+        return {"signature_type": 1, "balance_raw": ZERO,
+                "allowance_raw": ZERO, "available_raw": Decimal(str(snap_available))}
+    monkeypatch.setattr(service, "_fetch_conditional_balance_snapshot", _snap)
+
+    refreshed = {"n": 0}
+    async def _refresh(token_id):
+        refreshed["n"] += 1
+        return True
+    monkeypatch.setattr(service, "refresh_conditional_balance_allowance", _refresh)
+    return service, refreshed
+
+
+@pytest.mark.asyncio
+async def test_sell_gate_fail_open_when_held_onchain(monkeypatch):
+    # CLOB reports 0 available, but we hold 11.51 shares on-chain -> ALLOW.
+    service, refreshed = _gate_service(monkeypatch, held_size=11.51, snap_available=0)
+    ok, err = await service._enforce_sell_pre_submit_gate(token_id="tok", size=5.0)
+    assert ok is True and err is None
+    assert refreshed["n"] >= 1  # forced a balance/allowance resync
+
+
+@pytest.mark.asyncio
+async def test_sell_gate_blocks_true_ghost(monkeypatch):
+    # No on-chain holding and CLOB shows 0 -> genuine ghost, still blocks.
+    service, _ = _gate_service(monkeypatch, held_size=0.0, snap_available=0)
+    ok, err = await service._enforce_sell_pre_submit_gate(token_id="tok", size=5.0)
+    assert ok is False
+    assert "not enough conditional token balance/allowance" in err
+
+
+@pytest.mark.asyncio
+async def test_sell_gate_passes_when_clob_balance_sufficient(monkeypatch):
+    # Normal path: CLOB reports enough available -> pass without fail-open.
+    service, _ = _gate_service(monkeypatch, held_size=0.0, snap_available=10)
+    ok, err = await service._enforce_sell_pre_submit_gate(token_id="tok", size=5.0)
+    assert ok is True and err is None
