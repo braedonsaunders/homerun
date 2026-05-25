@@ -169,6 +169,13 @@ def _get_wallet_activity_lock() -> asyncio.Lock:
 _WALLET_SIZE_EPSILON = 1e-9
 _MARK_TOUCH_INTERVAL_SECONDS = 0.5
 _MAX_LIVE_EXIT_FALLBACK_MARK_AGE_SECONDS = 120.0
+# Defense-in-depth: reconcile evaluates tradable stops as a BACKSTOP only when
+# the fast exit-risk loop has not stamped a decision on the position within
+# this window (i.e. the loop is down/starved). When the loop is healthy this
+# is a no-op so should_exit keeps a single effective caller; when the loop is
+# absent, reconcile is the slow safety net so stops are never a single point
+# of failure (the 2026-05 loop-not-effective incident rode positions to -$10).
+_EXIT_LOOP_STALE_BACKSTOP_SECONDS = 30.0
 _POST_END_EXTREME_MARK_GRACE_SECONDS = 900.0
 _TERMINAL_EXTREME_MARK_THRESHOLD = 0.001
 # Per-attempt budget for SELL submissions on the slow path.  This is
@@ -10573,17 +10580,58 @@ async def reconcile_live_positions(
                         }
                 else:
                     # Tradable-market stop/take-profit/trailing/strategy exits
-                    # are owned by the isolated exit-risk loop (see
-                    # services/trader_orchestrator/exit_risk_loop.py): a
-                    # first-class, fast, always-running control loop on its own
-                    # DB pool that cannot be starved by this heavyweight
-                    # reconcile -- the root cause of the 2026-05 full-notional
-                    # losses (stops never evaluated during multi-hour declines).
-                    # Removing the gate eval here also gives should_exit() a
-                    # single caller. reconcile still owns resolution/settlement
-                    # (above), force-MTM + position-cap (above), the
-                    # pending_live_exit retry path, and grouped-exit (below).
-                    pass
+                    # are owned by the isolated exit-risk loop (fast, on its own
+                    # DB pool). reconcile here is a BACKSTOP (defense in depth):
+                    # it evaluates the SAME shared decision ONLY when the fast
+                    # loop has not stamped a decision on this position recently
+                    # — i.e. the loop is down/starved. When the loop is healthy
+                    # this is a no-op (single effective caller); when it is
+                    # absent, reconcile still fires stops so risk control is
+                    # never a single point of failure. Wrapped so a backstop
+                    # error can NEVER break the primary reconcile pass.
+                    try:
+                        _led = position_state.get("last_exit_decision") if isinstance(position_state, dict) else None
+                        _led_at = _parse_iso_utc_naive((_led or {}).get("at"))
+                        _loop_recent = (
+                            _led_at is not None
+                            and (now_naive - _led_at).total_seconds() <= _EXIT_LOOP_STALE_BACKSTOP_SECONDS
+                        )
+                        _pending_active = isinstance(pending_exit, dict) and bool(
+                            str(pending_exit.get("status") or "").strip()
+                        )
+                        if (not _loop_recent) and market_tradable and not dry_run and not _pending_active:
+                            _bs = await evaluate_position_exit(
+                                session=session, row=row, payload=payload, now=now, now_naive=now_naive,
+                                ws_side_price=ws_side_price, clob_side_price=clob_side_price,
+                                market_side_price=market_side_price, wallet_mark_price=wallet_mark_price,
+                                book=books_by_token.get(token_id) if token_id else None,
+                                entry_price=entry_price, notional=notional, filled_size=filled_size,
+                                wallet_position_size=wallet_position_size, outcome_idx=outcome_idx,
+                                market_info=market_info, market_tradable=market_tradable,
+                                market_seconds_left=market_seconds_left, market_end_time=market_end_time,
+                                take_profit_pct=safe_float(_payload_exit_param(payload, prefix_key="live", name="take_profit_pct")),
+                                stop_loss_pct=safe_float(_payload_exit_param(payload, prefix_key="live", name="stop_loss_pct")),
+                                trailing_stop_pct=safe_float(_payload_exit_param(payload, prefix_key="live", name="trailing_stop_pct")),
+                                max_hold_minutes=safe_float(_payload_exit_param(payload, prefix_key="live", name="max_hold_minutes")),
+                                min_hold_minutes=max(0.0, safe_float(_payload_exit_param(payload, prefix_key="live", name="min_hold_minutes")) or 0.0),
+                                resolve_only=_safe_bool(_payload_exit_param(payload, prefix_key="live", name="resolve_only"), False),
+                                close_on_inactive_market=_safe_bool(_payload_exit_param(payload, prefix_key="live", name="close_on_inactive_market"), True),
+                                pending_exit=pending_exit, params=params,
+                                mark_touch_interval_seconds=mark_touch_interval_seconds,
+                            )
+                            if _bs.action == "close" and _bs.close_price is not None:
+                                close_price = _bs.close_price
+                                close_trigger = _bs.close_trigger
+                                price_source = _bs.price_source
+                                payload["position_state"] = _bs.next_state
+                                logger.warning(
+                                    "reconcile STOP BACKSTOP fired (exit-risk loop stale >%.0fs) "
+                                    "order=%s trigger=%s @%.4f pnl_pct=%s",
+                                    _EXIT_LOOP_STALE_BACKSTOP_SECONDS, row.id, _bs.close_trigger,
+                                    _bs.close_price, None if _bs.pnl_pct is None else round(_bs.pnl_pct, 1),
+                                )
+                    except Exception as _bs_exc:
+                        logger.debug("reconcile stop-backstop skipped (non-fatal): %s", _bs_exc)
 
         close_is_resolution = close_trigger in {"resolution", "resolution_inferred", "resolution_extreme_mark"}
 
