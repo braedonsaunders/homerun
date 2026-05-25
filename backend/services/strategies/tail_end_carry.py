@@ -259,6 +259,16 @@ class TailEndCarryStrategy(BaseStrategy):
         "resolution_hold_minutes": 360.0,
         "sports_resolution_hold_minutes": 150.0,
         "resolution_hold_max_loss_pct": 25.0,
+        # Pre-resolution structural exit (gap cap).  Carrying a ~0.9 favorite
+        # all the way INTO resolution exposes the full notional to a binary
+        # gap (0.9 -> 0 in one step, no price for a stop to catch).  When > 0,
+        # force a CLOSE while still tradable once the market is within this
+        # many minutes of resolution — capturing ~all of the carry while
+        # NEVER holding through the resolution instant.  0 = disabled (pure
+        # carry-to-resolution; default, to preserve existing edge until the
+        # operator opts in).  Sports markets use the sports value when set.
+        "pre_resolution_force_exit_minutes": 0.0,
+        "sports_pre_resolution_force_exit_minutes": 0.0,
         # Exit-trigger mark basis.  "liquidation_vwap" (default) prices
         # stops/take-profits off the realizable bid-side VWAP to clear the
         # position's shares — what we could ACTUALLY exit at — instead of
@@ -1490,6 +1500,30 @@ class TailEndCarryStrategy(BaseStrategy):
             safe_float(config.get("resolution_hold_max_loss_pct"), 25.0), 5.0, 80.0
         )
         minutes_left = seconds_left / 60.0 if seconds_left is not None else None
+
+        # ── Pre-resolution structural exit (gap cap) ──────────────────────
+        # Carrying a favorite INTO resolution exposes the full notional to a
+        # binary gap (price holds ~0.9 then snaps to 0 the instant the event
+        # resolves — no declining price for a stop to catch).  When enabled,
+        # close while still tradable once we are within the configured window
+        # of resolution, capturing ~all of the carry without ever holding
+        # through the resolution instant.  Checked BEFORE the resolution hold
+        # so it overrides the hold.  0 = disabled.
+        if is_sports:
+            pre_res_minutes = safe_float(config.get("sports_pre_resolution_force_exit_minutes"), 0.0) or 0.0
+        else:
+            pre_res_minutes = safe_float(config.get("pre_resolution_force_exit_minutes"), 0.0) or 0.0
+        if pre_res_minutes > 0.0 and minutes_left is not None and minutes_left <= pre_res_minutes:
+            return ExitDecision(
+                "close",
+                (
+                    f"Pre-resolution structural exit ({minutes_left:.1f}m left <= "
+                    f"{pre_res_minutes:.0f}m gap cap; price={current_price:.4f}, "
+                    f"entry={entry_price:.4f}, category={category})"
+                ),
+                close_price=current_price,
+            )
+
         in_resolution_hold = (
             _is_bool_true(config.get("resolution_hold_enabled", True))
             and minutes_left is not None
