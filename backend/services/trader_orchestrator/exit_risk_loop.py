@@ -49,6 +49,19 @@ from utils.utcnow import utcnow
 logger = logging.getLogger("exit_risk_loop")
 
 _SWEEP_INTERVAL_SECONDS = 2.0
+def _is_fresh_mark_source(src: Any) -> bool:
+    """A mark source is 'fresh' (realizable now) if it came from the live WS
+    book, a CLOB midpoint, or the liquidation VWAP — NOT from the Gamma
+    market cache (``market_mark``), a wallet snapshot (``wallet_mark``), or
+    nothing.  Holding a capital-at-risk position on a non-fresh mark is how
+    London rode 0.94->0 with the mark frozen near entry.
+    """
+    s = str(src or "").strip().lower()
+    if not s or s in ("market_mark", "wallet_mark"):
+        return False
+    return "ws" in s or "clob" in s or "liquidation" in s or "vwap" in s
+
+
 def _is_transient_db_error(exc: BaseException) -> bool:
     """True for connection-churn errors that a fresh-session retry can clear.
 
@@ -154,6 +167,20 @@ class ExitRiskLoop:
     def stop(self) -> None:
         self._running = False
         self._wake.set()
+
+    async def _force_fresh_clob_mid(self, token_id: str) -> Optional[float]:
+        """One bounded direct CLOB midpoint read for the held token, used by
+        the fail-safe path when the sweep's mark came back stale.  Returns the
+        midpoint of the held outcome token (that IS the side price), or None.
+        """
+        try:
+            mid = await asyncio.wait_for(polymarket_client.get_midpoint(str(token_id)), timeout=3.0)
+        except Exception:
+            return None
+        m = safe_float(mid)
+        if m is None or m <= 0.0:
+            return None
+        return float(m)
 
     def _register_callback(self) -> None:
         if self._callback_registered:
@@ -344,39 +371,92 @@ class ExitRiskLoop:
         min_hold_minutes = max(
             0.0, safe_float(pl._payload_exit_param(payload, prefix_key="live", name="min_hold_minutes")) or 0.0
         )
-        decision = await pl.evaluate_position_exit(
-            session=session,
-            row=row,
-            payload=payload,
-            now=now,
-            now_naive=now_naive,
-            ws_side_price=ws_mid.get(token_id) if token_id else None,
-            clob_side_price=clob_mid.get(token_id) if token_id else None,
-            market_side_price=market_side_price,
-            wallet_mark_price=wallet_mark,
-            book=books.get(token_id) if token_id else None,
-            entry_price=entry_price,
-            notional=notional,
-            filled_size=filled_size,
-            wallet_position_size=wallet_size,
-            outcome_idx=outcome_idx,
-            market_info=market_info,
-            market_tradable=market_tradable,
-            market_seconds_left=pl._market_seconds_left(market_info, now),
-            market_end_time=pl._market_end_time_iso(market_info),
-            take_profit_pct=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="take_profit_pct")),
-            stop_loss_pct=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="stop_loss_pct")),
-            trailing_stop_pct=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="trailing_stop_pct")),
-            max_hold_minutes=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="max_hold_minutes")),
-            min_hold_minutes=min_hold_minutes,
-            resolve_only=pl._safe_bool(pl._payload_exit_param(payload, prefix_key="live", name="resolve_only"), False),
-            close_on_inactive_market=pl._safe_bool(
-                pl._payload_exit_param(payload, prefix_key="live", name="close_on_inactive_market"), True
-            ),
-            pending_exit=pe,
-            params=params,
-            mark_touch_interval_seconds=10.0,
-        )
+
+        async def _evaluate(clob_override: Optional[float]):
+            return await pl.evaluate_position_exit(
+                session=session,
+                row=row,
+                payload=payload,
+                now=now,
+                now_naive=now_naive,
+                ws_side_price=ws_mid.get(token_id) if token_id else None,
+                clob_side_price=clob_override if clob_override is not None else (clob_mid.get(token_id) if token_id else None),
+                market_side_price=market_side_price,
+                wallet_mark_price=wallet_mark,
+                book=books.get(token_id) if token_id else None,
+                entry_price=entry_price,
+                notional=notional,
+                filled_size=filled_size,
+                wallet_position_size=wallet_size,
+                outcome_idx=outcome_idx,
+                market_info=market_info,
+                market_tradable=market_tradable,
+                market_seconds_left=pl._market_seconds_left(market_info, now),
+                market_end_time=pl._market_end_time_iso(market_info),
+                take_profit_pct=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="take_profit_pct")),
+                stop_loss_pct=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="stop_loss_pct")),
+                trailing_stop_pct=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="trailing_stop_pct")),
+                max_hold_minutes=safe_float(pl._payload_exit_param(payload, prefix_key="live", name="max_hold_minutes")),
+                min_hold_minutes=min_hold_minutes,
+                resolve_only=pl._safe_bool(pl._payload_exit_param(payload, prefix_key="live", name="resolve_only"), False),
+                close_on_inactive_market=pl._safe_bool(
+                    pl._payload_exit_param(payload, prefix_key="live", name="close_on_inactive_market"), True
+                ),
+                pending_exit=pe,
+                params=params,
+                mark_touch_interval_seconds=10.0,
+            )
+
+        decision = await _evaluate(None)
+
+        # ── Fail-safe marking: never HOLD a capital-at-risk position on a
+        # stale mark.  London (0.94->0 over 3h) rode to a full loss because
+        # the evaluated mark stayed near entry (loss read ~0 -> held).  When
+        # the loop is about to HOLD a tradable position on a non-fresh mark,
+        # force ONE direct CLOB midpoint read and re-evaluate with the
+        # strategy's own thresholds.  Only fires on stale-hold (rare if WS/
+        # REST marking is healthy), so it adds no steady-state load.
+        if (
+            decision.action == "hold"
+            and market_tradable
+            and token_id
+            and not _is_fresh_mark_source(decision.current_price_source)
+        ):
+            fresh = await self._force_fresh_clob_mid(token_id)
+            if fresh is not None:
+                prev = decision.current_price
+                if prev is None or abs(fresh - prev) > 0.01:
+                    logger.warning(
+                        "exit_risk_loop FORCED-FRESH re-eval order=%s stale_mark=%s(src=%s) fresh_clob=%.4f",
+                        row.id, prev, decision.current_price_source, fresh,
+                    )
+                    decision = await _evaluate(fresh)
+
+        # ── Exit-decision telemetry: record what the loop SAW and DECIDED
+        # for every open position each sweep, so a no-fire on a losing
+        # position (Bug B) is self-evident in the DB rather than requiring
+        # log archaeology.  Stamped into position_state so it persists.
+        next_state = decision.next_state if isinstance(decision.next_state, dict) else {}
+        mark_src = str(decision.current_price_source or "")
+        mark_stale = decision.current_price is None or not _is_fresh_mark_source(mark_src)
+        next_state["last_exit_decision"] = {
+            "at": pl._iso_utc(now),
+            "mark": decision.current_price,
+            "mark_source": mark_src or None,
+            "mark_stale": bool(mark_stale),
+            "pnl_pct": None if decision.pnl_pct is None else round(decision.pnl_pct, 2),
+            "action": decision.action,
+            "close_trigger": decision.close_trigger,
+            "market_tradable": bool(market_tradable),
+        }
+        decision.next_state = next_state
+        if decision.action == "hold" and mark_stale and market_tradable:
+            logger.warning(
+                "exit_risk_loop STALE-MARK HOLD order=%s mark=%s src=%s pnl_pct=%s "
+                "— capital-at-risk held on a non-fresh mark",
+                row.id, decision.current_price, mark_src or "none",
+                None if decision.pnl_pct is None else round(decision.pnl_pct, 1),
+            )
 
         payload["position_state"] = decision.next_state
         if decision.action == "close" and decision.close_price is not None:
