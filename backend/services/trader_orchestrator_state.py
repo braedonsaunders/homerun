@@ -10963,21 +10963,13 @@ async def get_trader_orders_summary(
         by_trader_query = by_trader_query.where(func.lower(TraderOrder.mode) == mode.strip().lower())
     trader_rows = (await session.execute(by_trader_query)).all()
 
-    # Defer the large ``payload_json`` (TOASTed) column: this materializes
-    # EVERY visible order for trade-bundling, and at ~26k live orders the
-    # payload fetch + 26k JSON deserializations were a 7.8s seq-scan that
-    # blocked the event loop (94s total across the dashboard's polling
-    # misses).  The only consumers — ``_grouped_trade_counts`` (reads
-    # signal_id/status/trader_id and ``_visible_trader_order_row`` which
-    # checks only ``verification_status``) and the signal_id gather — never
-    # touch ``payload_json``, so deferring it is transparent and drops the
-    # miss cost to ~200ms.  (Verified 2026-05; do NOT add a payload_json read
-    # to these consumers without removing this defer — async lazy-load raises.)
-    all_orders_query = (
-        select(TraderOrder)
-        .options(defer(TraderOrder.payload_json))
-        .where(_visible_trader_order_query_clause())
-    )
+    # NOTE: do NOT defer(payload_json) here — _grouped_trade_counts ->
+    # _trade_group_key_for_summary -> _build_trade_bundle reads row.payload_json
+    # to detect multi-leg bundles, so a deferred column triggers an async
+    # lazy-load (greenlet_spawn/await_only 500) in that sync path. payload_json
+    # is required. (The 94s full-scan this caused needs a different fix —
+    # e.g. precompute leg_count into a column — not a column defer.)
+    all_orders_query = select(TraderOrder).where(_visible_trader_order_query_clause())
     if mode:
         all_orders_query = all_orders_query.where(func.lower(TraderOrder.mode) == mode.strip().lower())
     all_order_rows = list((await session.execute(all_orders_query)).scalars().all())
