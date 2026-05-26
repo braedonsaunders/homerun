@@ -56,18 +56,26 @@ _GDELT_QUERIES: tuple[str, ...] = (
     "bitcoin etf",
 )
 
+# Retention right-sized to ACTUAL consumption (verified 2026-05): nothing on
+# the trading/backtest path reads data_source_records — the only readers are
+# the data-source admin UI (recent-N, no historical window) and an AI tool
+# (recent-only).  Ingested signal/news/events data is near-useless once it
+# has passed, so we keep ~2 weeks (covers every observed display window with
+# buffer) instead of up to a year.  This shrinks the steady-state store ~10x
+# and ships sane defaults in-repo.  Raise per-source via the source's
+# retention_policy override if a future strategy needs deeper history.
 _DEFAULT_RETENTION_BY_KIND: dict[str, dict[str, int]] = {
-    "python": {"max_records": 25_000, "max_age_days": 180},
-    "rss": {"max_records": 7_500, "max_age_days": 30},
-    "rest_api": {"max_records": 15_000, "max_age_days": 45},
-    "twitter": {"max_records": 10_000, "max_age_days": 14},
+    "python": {"max_records": 5_000, "max_age_days": 14},
+    "rss": {"max_records": 5_000, "max_age_days": 14},
+    "rest_api": {"max_records": 5_000, "max_age_days": 14},
+    "twitter": {"max_records": 5_000, "max_age_days": 14},
 }
 
-_EVENTS_RETENTION_POLICY: dict[str, int] = {"max_records": 50_000, "max_age_days": 365}
-_EVENTS_ALL_RETENTION_POLICY: dict[str, int] = {"max_records": 100_000, "max_age_days": 365}
-_STORIES_RSS_RETENTION_POLICY: dict[str, int] = {"max_records": 7_500, "max_age_days": 30}
-_STORIES_REST_RETENTION_POLICY: dict[str, int] = {"max_records": 15_000, "max_age_days": 45}
-_FALLBACK_RETENTION_POLICY: dict[str, int] = {"max_records": 10_000, "max_age_days": 90}
+_EVENTS_RETENTION_POLICY: dict[str, int] = {"max_records": 5_000, "max_age_days": 14}
+_EVENTS_ALL_RETENTION_POLICY: dict[str, int] = {"max_records": 10_000, "max_age_days": 14}
+_STORIES_RSS_RETENTION_POLICY: dict[str, int] = {"max_records": 5_000, "max_age_days": 14}
+_STORIES_REST_RETENTION_POLICY: dict[str, int] = {"max_records": 5_000, "max_age_days": 14}
+_FALLBACK_RETENTION_POLICY: dict[str, int] = {"max_records": 5_000, "max_age_days": 14}
 
 
 @dataclass(frozen=True)
