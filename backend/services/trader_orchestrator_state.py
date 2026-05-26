@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Optional
 from config import settings
 from services.execution_latency_metrics import execution_latency_metrics, snapshot_from_events as _latency_snapshot_from_events
 from sqlalchemy import and_, case, desc, func, or_, select, text as sa_text, update as sa_update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
@@ -10953,6 +10953,7 @@ async def get_trader_orders_summary(
         func.count().label("orders"),
         func.count().filter(is_open).label("open"),
         func.count().filter(is_resolved).label("resolved"),
+        func.count().filter(is_failed).label("failed"),
         func.sum(verified_profit_col).filter(is_resolved).label("pnl"),
         func.sum(func.abs(func.coalesce(TraderOrder.notional_usd, 0.0))).label("notional"),
         func.count().filter(is_resolved & is_pnl_verified & (profit_col > 0)).label("wins"),
@@ -10963,28 +10964,174 @@ async def get_trader_orders_summary(
         by_trader_query = by_trader_query.where(func.lower(TraderOrder.mode) == mode.strip().lower())
     trader_rows = (await session.execute(by_trader_query)).all()
 
-    # NOTE: do NOT defer(payload_json) here — _grouped_trade_counts ->
-    # _trade_group_key_for_summary -> _build_trade_bundle reads row.payload_json
-    # to detect multi-leg bundles, so a deferred column triggers an async
-    # lazy-load (greenlet_spawn/await_only 500) in that sync path. payload_json
-    # is required. (The 94s full-scan this caused needs a different fix —
-    # e.g. precompute leg_count into a column — not a column defer.)
-    all_orders_query = select(TraderOrder).where(_visible_trader_order_query_clause())
-    if mode:
-        all_orders_query = all_orders_query.where(func.lower(TraderOrder.mode) == mode.strip().lower())
-    all_order_rows = list((await session.execute(all_orders_query)).scalars().all())
-    signal_ids = sorted({str(order.signal_id).strip() for order in all_order_rows if str(order.signal_id or "").strip()})
-    signals_by_id: dict[str, TradeSignal] = {}
-    if signal_ids:
-        signal_rows = (await session.execute(select(TradeSignal).where(TradeSignal.id.in_(signal_ids)))).scalars().all()
-        signals_by_id = {str(signal.id).strip(): signal for signal in signal_rows}
-    trade_totals, trade_counts_by_trader = _grouped_trade_counts(
-        all_order_rows,
-        signals_by_id,
-        open_statuses=open_statuses,
-        resolved_statuses=resolved_statuses,
-        failed_statuses=failed_statuses,
+    # ── Trade (bundle) counts ─────────────────────────────────────────────
+    # The order-count aggregates above are pure SQL (no rows loaded).  The
+    # ONLY thing that ever required materializing every order was collapsing
+    # multi-leg bundle LEGS into a single "trade".  A row can only ever be a
+    # bundle leg if its EFFECTIVE payload (see _trade_bundle_payload: the row
+    # payload OVERRIDES the signal when the row has execution shape) resolves
+    # to >1 leg or >1 position.  That effective payload comes from either:
+    #   * the ROW's own payload (execution_plan.legs / positions_to_take,
+    #     incl. the strategy_context fallback), OR
+    #   * the SIGNAL's payload (only when the row has no execution shape).
+    # So the set of orders that could POSSIBLY bundle is bounded by a cheap
+    # superset predicate: "signal is multi-leg OR row payload is multi-leg".
+    # Every such order shares its signal_id with its bundle siblings, so we:
+    #   1. find the (tiny) set S of signal_ids that match the superset,
+    #   2. load ONLY the visible orders under those signals (+ their signals)
+    #      and run the ORIGINAL grouping on that subset (byte-identical),
+    #   3. for every other order — provably a 1-order trade — fold in the SQL
+    #      aggregates we already computed (no rows loaded).
+    # This removes the 26k-row, multi-second scan from the dashboard path
+    # while keeping the displayed trade counts exactly identical.
+    def _jsonb_array_len(json_expr):
+        # jsonb_array_length() raises on non-array jsonb, so guard with a
+        # typeof check and treat anything that is not an array as length 0.
+        jb = func.cast(json_expr, JSONB)
+        return func.coalesce(
+            case((func.jsonb_typeof(jb) == "array", func.jsonb_array_length(jb)), else_=0),
+            0,
+        )
+
+    sig_legs = _jsonb_array_len(TradeSignal.payload_json["execution_plan"]["legs"])
+    sig_positions = _jsonb_array_len(TradeSignal.payload_json["positions_to_take"])
+    # Row-level multi-leg superset: check the row's own execution_plan.legs and
+    # positions_to_take, including the strategy_context fallback that
+    # _trade_bundle_payload honours.  Loose on purpose — a false positive only
+    # loads a few extra rows that then group correctly as singletons.
+    row_legs = func.greatest(
+        _jsonb_array_len(TraderOrder.payload_json["execution_plan"]["legs"]),
+        _jsonb_array_len(TraderOrder.payload_json["strategy_context"]["execution_plan"]["legs"]),
     )
+    row_positions = func.greatest(
+        _jsonb_array_len(TraderOrder.payload_json["positions_to_take"]),
+        _jsonb_array_len(TraderOrder.payload_json["strategy_context"]["positions_to_take"]),
+    )
+    candidate_signal_query = (
+        select(TraderOrder.signal_id)
+        .join(TradeSignal, TradeSignal.id == TraderOrder.signal_id)
+        .where(_visible_trader_order_query_clause())
+        .where(
+            (sig_legs > 1)
+            | (sig_positions > 1)
+            | (row_legs > 1)
+            | (row_positions > 1)
+        )
+        .distinct()
+    )
+    if mode:
+        candidate_signal_query = candidate_signal_query.where(
+            func.lower(TraderOrder.mode) == mode.strip().lower()
+        )
+    candidate_signal_ids = [
+        str(sid).strip()
+        for (sid,) in (await session.execute(candidate_signal_query)).all()
+        if str(sid or "").strip()
+    ]
+
+    if not candidate_signal_ids:
+        # Common path: nothing can bundle -> every order is its own trade, so
+        # the trade counts EQUAL the order-count aggregates already computed.
+        trade_totals = {
+            "total_trades": int(row.total_count or 0),
+            "open_trades": int(row.open or 0),
+            "resolved_trades": int(row.resolved or 0),
+            "failed_trades": int(row.failed or 0),
+            "partial_open_bundles": 0,
+        }
+        trade_counts_by_trader = {
+            str(tr.trader_id or ""): {
+                "trade_count": int(tr.orders or 0),
+                "open_trades": int(tr.open or 0),
+                "resolved_trades": int(tr.resolved or 0),
+                "failed_trades": int(tr.failed or 0),
+                "partial_open_bundles": 0,
+            }
+            for tr in trader_rows
+        }
+    else:
+        # Bundle-capable signals exist: materialize ONLY their orders, run the
+        # exact original grouping on that subset, then fold the remaining
+        # (provably singleton) orders in from the aggregates.
+        subset_query = (
+            select(TraderOrder)
+            .where(_visible_trader_order_query_clause())
+            .where(TraderOrder.signal_id.in_(candidate_signal_ids))
+        )
+        if mode:
+            subset_query = subset_query.where(func.lower(TraderOrder.mode) == mode.strip().lower())
+        subset_rows = list((await session.execute(subset_query)).scalars().all())
+        signals_by_id: dict[str, TradeSignal] = {}
+        if candidate_signal_ids:
+            signal_rows = (
+                await session.execute(
+                    select(TradeSignal).where(TradeSignal.id.in_(candidate_signal_ids))
+                )
+            ).scalars().all()
+            signals_by_id = {str(sig.id).strip(): sig for sig in signal_rows}
+        subset_totals, subset_by_trader = _grouped_trade_counts(
+            subset_rows,
+            signals_by_id,
+            open_statuses=open_statuses,
+            resolved_statuses=resolved_statuses,
+            failed_statuses=failed_statuses,
+        )
+
+        # Per-ORDER aggregate over the subset (matching the SQL aggregates'
+        # independent, disjoint-set counting) so we can subtract it from the
+        # whole-population aggregates to isolate the singleton remainder.
+        open_set = set(open_statuses)
+        resolved_set = set(resolved_statuses)
+        failed_set = set(failed_statuses)
+        subset_agg_total = {"orders": 0, "open": 0, "resolved": 0, "failed": 0}
+        subset_agg_by_trader: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"orders": 0, "open": 0, "resolved": 0, "failed": 0}
+        )
+        for r in subset_rows:
+            if not _visible_trader_order_row(r):
+                continue
+            st = str(getattr(r, "status", None) or "").strip().lower()
+            tkey = str(getattr(r, "trader_id", None) or "").strip()
+            subset_agg_total["orders"] += 1
+            subset_agg_by_trader[tkey]["orders"] += 1
+            if st in open_set:
+                subset_agg_total["open"] += 1
+                subset_agg_by_trader[tkey]["open"] += 1
+            if st in resolved_set:
+                subset_agg_total["resolved"] += 1
+                subset_agg_by_trader[tkey]["resolved"] += 1
+            if st in failed_set:
+                subset_agg_total["failed"] += 1
+                subset_agg_by_trader[tkey]["failed"] += 1
+
+        # final = grouped(subset) + [aggregate(all) - aggregate(subset)]
+        trade_totals = {
+            "total_trades": int(row.total_count or 0) - subset_agg_total["orders"] + subset_totals["total_trades"],
+            "open_trades": int(row.open or 0) - subset_agg_total["open"] + subset_totals["open_trades"],
+            "resolved_trades": int(row.resolved or 0) - subset_agg_total["resolved"] + subset_totals["resolved_trades"],
+            "failed_trades": int(row.failed or 0) - subset_agg_total["failed"] + subset_totals["failed_trades"],
+            "partial_open_bundles": subset_totals["partial_open_bundles"],
+        }
+        trade_counts_by_trader = {}
+        for tr in trader_rows:
+            tkey = str(tr.trader_id or "")
+            sub_agg = subset_agg_by_trader.get(tkey, {"orders": 0, "open": 0, "resolved": 0, "failed": 0})
+            sub_grp = subset_by_trader.get(tkey, {
+                "trade_count": 0, "open_trades": 0, "resolved_trades": 0,
+                "failed_trades": 0, "partial_open_bundles": 0,
+            })
+            trade_counts_by_trader[tkey] = {
+                "trade_count": int(tr.orders or 0) - sub_agg["orders"] + sub_grp["trade_count"],
+                "open_trades": int(tr.open or 0) - sub_agg["open"] + sub_grp["open_trades"],
+                "resolved_trades": int(tr.resolved or 0) - sub_agg["resolved"] + sub_grp["resolved_trades"],
+                "failed_trades": int(tr.failed or 0) - sub_agg["failed"] + sub_grp["failed_trades"],
+                "partial_open_bundles": sub_grp["partial_open_bundles"],
+            }
+        # Traders that appear ONLY in the subset grouping (no aggregate row —
+        # impossible in practice, but keep the union exact).
+        for tkey, sub_grp in subset_by_trader.items():
+            if tkey not in trade_counts_by_trader:
+                trade_counts_by_trader[tkey] = dict(sub_grp)
     active_position_query = (
         select(TraderPosition.trader_id, func.count().label("open_trades"))
         .where(func.lower(func.coalesce(TraderPosition.status, "")) == ACTIVE_POSITION_STATUS)
