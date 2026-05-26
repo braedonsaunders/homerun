@@ -696,6 +696,8 @@ def _build_trade_bundle(
     row: TraderOrder,
     sibling_rows: list[TraderOrder] | None = None,
 ) -> dict[str, Any] | None:
+    if signal is None:
+        return None
     signal_payload = _trade_bundle_payload(signal, row)
     execution_plan = signal_payload.get("execution_plan")
     execution_plan = execution_plan if isinstance(execution_plan, dict) else {}
