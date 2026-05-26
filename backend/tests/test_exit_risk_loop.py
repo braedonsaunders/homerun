@@ -350,7 +350,9 @@ async def test_telemetry_records_decision(monkeypatch):
     # Every sweep must stamp last_exit_decision so a no-fire on a losing
     # position is visible in the DB (no log archaeology).
     hold = _close_decision()
-    hold.action = "hold"; hold.close_price = None; hold.close_trigger = None
+    hold.action = "hold"
+    hold.close_price = None
+    hold.close_trigger = None
     hold.current_price_source = "liquidation_vwap"  # fresh
     _patch_derivations(monkeypatch, decision=hold)
     loop = erl.ExitRiskLoop()
@@ -374,13 +376,16 @@ async def test_failsafe_forces_fresh_clob_on_stale_hold(monkeypatch):
     # A tradable HOLD on a non-fresh mark must force a direct CLOB read and
     # re-evaluate (the London 0.94->0 fix).
     hold = _close_decision()
-    hold.action = "hold"; hold.close_price = None; hold.close_trigger = None
+    hold.action = "hold"
+    hold.close_price = None
+    hold.close_trigger = None
     hold.current_price_source = "market_mark"  # STALE/weak source
     _patch_derivations(monkeypatch, decision=hold)
     loop = erl.ExitRiskLoop()
     called = []
     async def _fresh(tok):
-        called.append(tok); return 0.40
+        called.append(tok)
+        return 0.40
     monkeypatch.setattr(loop, "_force_fresh_clob_mid", _fresh)
     row = _row({"token_id": "tok-1", "strategy_type": "tail_end_carry"})
     now = datetime.now(timezone.utc)
