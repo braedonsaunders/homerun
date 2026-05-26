@@ -10961,7 +10961,21 @@ async def get_trader_orders_summary(
         by_trader_query = by_trader_query.where(func.lower(TraderOrder.mode) == mode.strip().lower())
     trader_rows = (await session.execute(by_trader_query)).all()
 
-    all_orders_query = select(TraderOrder).where(_visible_trader_order_query_clause())
+    # Defer the large ``payload_json`` (TOASTed) column: this materializes
+    # EVERY visible order for trade-bundling, and at ~26k live orders the
+    # payload fetch + 26k JSON deserializations were a 7.8s seq-scan that
+    # blocked the event loop (94s total across the dashboard's polling
+    # misses).  The only consumers — ``_grouped_trade_counts`` (reads
+    # signal_id/status/trader_id and ``_visible_trader_order_row`` which
+    # checks only ``verification_status``) and the signal_id gather — never
+    # touch ``payload_json``, so deferring it is transparent and drops the
+    # miss cost to ~200ms.  (Verified 2026-05; do NOT add a payload_json read
+    # to these consumers without removing this defer — async lazy-load raises.)
+    all_orders_query = (
+        select(TraderOrder)
+        .options(defer(TraderOrder.payload_json))
+        .where(_visible_trader_order_query_clause())
+    )
     if mode:
         all_orders_query = all_orders_query.where(func.lower(TraderOrder.mode) == mode.strip().lower())
     all_order_rows = list((await session.execute(all_orders_query)).scalars().all())
