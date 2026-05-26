@@ -46,6 +46,14 @@ class MaintenanceService:
     DEFAULT_TRADE_SIGNAL_UPDATE_AGE = 3  # Delete upsert_update emissions older than 3 days
     DEFAULT_TRADE_SIGNAL_AGE = 30  # Delete trade signal rows older than 30 days
     DEFAULT_WALLET_ACTIVITY_ROLLUP_AGE = 60  # Delete wallet activity rollups older than 60 days
+    # 2026-05-26: retention for previously-unbounded high-volume tables that
+    # filled the disk (see migration 202605260001).  0 disables a sweep.
+    DEFAULT_MARKET_MICROSTRUCTURE_AGE = 7
+    DEFAULT_BOOK_DELTA_EVENTS_AGE = 7
+    DEFAULT_WALLET_MONITOR_EVENTS_AGE = 14
+    DEFAULT_TRADER_DECISION_CHECKS_AGE = 14
+    DEFAULT_TRADER_DECISIONS_AGE = 30
+    DEFAULT_OPPORTUNITY_HISTORY_AGE = 30
 
     async def _market_cache_hygiene_settings(self) -> dict:
         config = {
@@ -1073,6 +1081,171 @@ RETURNING target.id
             "cutoff_date": cutoff.isoformat(),
         }
 
+    # ------------------------------------------------------------------
+    # Retention for previously-unbounded high-volume tables (2026-05-26).
+    # These had NO DELETE retention and grew until the host disk filled,
+    # which stalled WAL fsync (5-6s commits).  All are ephemeral
+    # microstructure / per-decision audit / wallet-event tables with no
+    # inbound FKs (verified) EXCEPT trader_decisions, which is pruned only
+    # when not referenced by orders/sessions so the trade->decision audit
+    # link is never severed.
+    # ------------------------------------------------------------------
+    async def _prune_table_by_age(
+        self,
+        table: str,
+        time_column: str,
+        older_than_days: int,
+        *,
+        batch_size: int = 5000,
+        extra_where: str = "",
+    ) -> dict:
+        """Batched, lock-light age prune for an id-keyed table.
+
+        ``table``/``time_column``/``extra_where`` come exclusively from the
+        fixed internal call sites below (never user input), so the f-string
+        composition carries no injection risk.  Deletes in keyset batches,
+        committing each batch, so it never holds a long lock on the
+        high-churn table.  Returns a per-table result dict.
+        """
+        result_key = f"{table}_deleted"
+        if older_than_days <= 0:
+            return {"status": "disabled", result_key: 0, "older_than_days": int(older_than_days)}
+
+        cutoff = utcnow() - timedelta(days=older_than_days)
+        where = f"{time_column} < :cutoff"
+        if extra_where:
+            where = f"{where} AND {extra_where}"
+        stmt = text(
+            f"DELETE FROM {table} WHERE id IN "
+            f"(SELECT id FROM {table} WHERE {where} LIMIT :batch)"
+        )
+        deleted = 0
+        while True:
+            async with AsyncSessionLocal() as session:
+                await session.execute(text("SET LOCAL statement_timeout = 0"))
+                res = await session.execute(stmt, {"cutoff": cutoff, "batch": int(batch_size)})
+                await session.commit()
+            n = int(res.rowcount or 0)
+            deleted += n
+            if n < batch_size:
+                break
+            await asyncio.sleep(0.05)
+        if deleted:
+            logger.info(
+                "Pruned table by age",
+                table=table,
+                deleted=deleted,
+                older_than_days=older_than_days,
+            )
+        return {
+            "status": "success",
+            result_key: deleted,
+            "cutoff_date": cutoff.isoformat(),
+            "older_than_days": int(older_than_days),
+        }
+
+    async def cleanup_market_microstructure_snapshots(
+        self, older_than_days: int = DEFAULT_MARKET_MICROSTRUCTURE_AGE
+    ) -> dict:
+        """Delete L2 microstructure snapshots older than the window."""
+        return await self._prune_table_by_age(
+            "market_microstructure_snapshots", "observed_at", older_than_days
+        )
+
+    async def cleanup_book_delta_events(
+        self, older_than_days: int = DEFAULT_BOOK_DELTA_EVENTS_AGE
+    ) -> dict:
+        """Delete tick-by-tick book delta events older than the window."""
+        return await self._prune_table_by_age(
+            "book_delta_events", "observed_at", older_than_days
+        )
+
+    async def cleanup_wallet_monitor_events(
+        self, older_than_days: int = DEFAULT_WALLET_MONITOR_EVENTS_AGE
+    ) -> dict:
+        """Delete smart-money wallet monitor events older than the window."""
+        return await self._prune_table_by_age(
+            "wallet_monitor_events", "detected_at", older_than_days
+        )
+
+    async def cleanup_trader_decision_checks(
+        self, older_than_days: int = DEFAULT_TRADER_DECISION_CHECKS_AGE
+    ) -> dict:
+        """Delete per-decision gate-audit rows older than the window.
+
+        Independent of ``cleanup_trader_decisions`` — checks carry their own
+        ``created_at`` and a CASCADE FK to trader_decisions, so deleting a
+        check never affects its parent decision.
+        """
+        return await self._prune_table_by_age(
+            "trader_decision_checks", "created_at", older_than_days, batch_size=10000
+        )
+
+    async def cleanup_trader_decisions(
+        self, older_than_days: int = DEFAULT_TRADER_DECISIONS_AGE
+    ) -> dict:
+        """Delete decision records older than the window — but ONLY those not
+        referenced by a real trade artifact (trader_orders / execution_sessions
+        / trader_signal_consumption / strategy_experiment_assignments), all of
+        which FK to trader_decisions with ON DELETE SET NULL.  Pruning a
+        referenced decision would NULL the order->decision audit link, so we
+        skip those rows entirely and keep the trade audit trail intact.
+        """
+        guard = (
+            "NOT EXISTS (SELECT 1 FROM trader_orders o WHERE o.decision_id = trader_decisions.id) "
+            "AND NOT EXISTS (SELECT 1 FROM execution_sessions e WHERE e.decision_id = trader_decisions.id) "
+            "AND NOT EXISTS (SELECT 1 FROM trader_signal_consumption c WHERE c.decision_id = trader_decisions.id) "
+            "AND NOT EXISTS (SELECT 1 FROM strategy_experiment_assignments a WHERE a.decision_id = trader_decisions.id)"
+        )
+        return await self._prune_table_by_age(
+            "trader_decisions", "created_at", older_than_days, batch_size=2000, extra_where=guard
+        )
+
+    async def cleanup_opportunity_history(
+        self, older_than_days: int = DEFAULT_OPPORTUNITY_HISTORY_AGE
+    ) -> dict:
+        """Delete opportunity history snapshots older than the window."""
+        return await self._prune_table_by_age(
+            "opportunity_history", "detected_at", older_than_days
+        )
+
+    async def _extended_retention_settings(self) -> dict:
+        """Read the unbounded-table retention windows from AppSettings,
+        falling back to the conservative defaults.  Mirrors the existing
+        ``_high_volume_cleanup_settings`` / ``_trader_events_retention_settings``
+        pattern so every window is operator-overridable from the Settings UI.
+        """
+        config = {
+            "market_microstructure_days": self.DEFAULT_MARKET_MICROSTRUCTURE_AGE,
+            "book_delta_events_days": self.DEFAULT_BOOK_DELTA_EVENTS_AGE,
+            "wallet_monitor_events_days": self.DEFAULT_WALLET_MONITOR_EVENTS_AGE,
+            "trader_decision_checks_days": self.DEFAULT_TRADER_DECISION_CHECKS_AGE,
+            "trader_decisions_days": self.DEFAULT_TRADER_DECISIONS_AGE,
+            "opportunity_history_days": self.DEFAULT_OPPORTUNITY_HISTORY_AGE,
+        }
+        try:
+            async with AsyncSessionLocal() as session:
+                row = (
+                    await session.execute(select(AppSettings).where(AppSettings.id == "default"))
+                ).scalar_one_or_none()
+                if row is None:
+                    return config
+                if getattr(row, "cleanup_market_microstructure_days", None) is not None:
+                    config["market_microstructure_days"] = max(0, int(row.cleanup_market_microstructure_days))
+                if getattr(row, "cleanup_book_delta_events_days", None) is not None:
+                    config["book_delta_events_days"] = max(0, int(row.cleanup_book_delta_events_days))
+                if getattr(row, "cleanup_wallet_monitor_events_days", None) is not None:
+                    config["wallet_monitor_events_days"] = max(0, int(row.cleanup_wallet_monitor_events_days))
+                if getattr(row, "cleanup_trader_decision_checks_days", None) is not None:
+                    config["trader_decision_checks_days"] = max(0, int(row.cleanup_trader_decision_checks_days))
+                if getattr(row, "cleanup_trader_decisions_days", None) is not None:
+                    config["trader_decisions_days"] = max(0, int(row.cleanup_trader_decisions_days))
+                if getattr(row, "cleanup_opportunity_history_days", None) is not None:
+                    config["opportunity_history_days"] = max(0, int(row.cleanup_opportunity_history_days))
+        except Exception as e:
+            logger.warning("Failed to read extended retention settings", error=str(e))
+        return config
+
     async def delete_all_trades(self, account_id: Optional[str] = None, confirm: bool = False) -> dict:
         """
         Delete ALL trades (nuclear option).
@@ -1203,6 +1376,11 @@ RETURNING target.id
         "cached_markets",
         "scanner_snapshots",
         "data_source_records",
+        # 2026-05-26: newly-retained high-volume tables — vacuum them so the
+        # space freed by the new DELETE sweeps is reclaimed/reused.
+        "market_microstructure_snapshots",
+        "book_delta_events",
+        "wallet_monitor_events",
     ]
 
     async def vacuum_analyze(
@@ -1475,6 +1653,31 @@ RETURNING target.id
         except Exception as e:
             logger.warning("Trader events cleanup failed during full maintenance run", error=str(e))
             results["trader_events"] = {"status": "error", "error": str(e)}
+
+        # 5c. Prune the previously-unbounded high-volume tables (2026-05-26).
+        # These had no DELETE retention and were the actual disk-fill driver
+        # behind the WAL-fsync stall incident.  Each runs independently so one
+        # failure doesn't abort the rest.
+        try:
+            ext_cfg = await self._extended_retention_settings()
+            ext_results: dict = {}
+            for label, fn, days in (
+                ("market_microstructure_snapshots", self.cleanup_market_microstructure_snapshots, ext_cfg["market_microstructure_days"]),
+                ("book_delta_events", self.cleanup_book_delta_events, ext_cfg["book_delta_events_days"]),
+                ("wallet_monitor_events", self.cleanup_wallet_monitor_events, ext_cfg["wallet_monitor_events_days"]),
+                ("trader_decision_checks", self.cleanup_trader_decision_checks, ext_cfg["trader_decision_checks_days"]),
+                ("trader_decisions", self.cleanup_trader_decisions, ext_cfg["trader_decisions_days"]),
+                ("opportunity_history", self.cleanup_opportunity_history, ext_cfg["opportunity_history_days"]),
+            ):
+                try:
+                    ext_results[label] = await fn(older_than_days=int(days))
+                except Exception as inner:
+                    logger.warning("Extended retention sweep failed", table=label, error=str(inner))
+                    ext_results[label] = {"status": "error", "error": str(inner)}
+            results["extended_retention"] = ext_results
+        except Exception as e:
+            logger.warning("Extended retention cleanup failed during full maintenance run", error=str(e))
+            results["extended_retention"] = {"status": "error", "error": str(e)}
 
         # 6. Prune noisy upsert updates while preserving meaningful transitions.
         try:

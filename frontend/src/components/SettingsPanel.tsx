@@ -274,6 +274,12 @@ export default function SettingsPanel({
     llm_usage_retention_days: 30,
     trader_events_firehose_retention_days: 7,
     trader_events_other_retention_days: 90,
+    cleanup_market_microstructure_days: 7,
+    cleanup_book_delta_events_days: 7,
+    cleanup_wallet_monitor_events_days: 14,
+    cleanup_trader_decision_checks_days: 14,
+    cleanup_trader_decisions_days: 30,
+    cleanup_opportunity_history_days: 30,
     market_cache_hygiene_enabled: true,
     market_cache_hygiene_interval_hours: 6,
     market_cache_retention_days: 120,
@@ -465,6 +471,12 @@ export default function SettingsPanel({
         llm_usage_retention_days: settings.maintenance?.llm_usage_retention_days ?? 30,
         trader_events_firehose_retention_days: settings.maintenance?.trader_events_firehose_retention_days ?? 7,
         trader_events_other_retention_days: settings.maintenance?.trader_events_other_retention_days ?? 90,
+        cleanup_market_microstructure_days: settings.maintenance?.cleanup_market_microstructure_days ?? 7,
+        cleanup_book_delta_events_days: settings.maintenance?.cleanup_book_delta_events_days ?? 7,
+        cleanup_wallet_monitor_events_days: settings.maintenance?.cleanup_wallet_monitor_events_days ?? 14,
+        cleanup_trader_decision_checks_days: settings.maintenance?.cleanup_trader_decision_checks_days ?? 14,
+        cleanup_trader_decisions_days: settings.maintenance?.cleanup_trader_decisions_days ?? 30,
+        cleanup_opportunity_history_days: settings.maintenance?.cleanup_opportunity_history_days ?? 30,
         market_cache_hygiene_enabled: settings.maintenance?.market_cache_hygiene_enabled ?? true,
         market_cache_hygiene_interval_hours: settings.maintenance?.market_cache_hygiene_interval_hours ?? 6,
         market_cache_retention_days: settings.maintenance?.market_cache_retention_days ?? 120,
@@ -2544,6 +2556,98 @@ export default function SettingsPanel({
                                 setMaintenanceForm(p => ({ ...p, trader_events_other_retention_days: Number.isNaN(value) ? 90 : value }))
                               }}
                               min={1}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Microstructure Snapshots Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_market_microstructure_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, cleanup_market_microstructure_days: Number.isNaN(value) ? 7 : value }))
+                              }}
+                              min={0}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Book Delta Events Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_book_delta_events_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, cleanup_book_delta_events_days: Number.isNaN(value) ? 7 : value }))
+                              }}
+                              min={0}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Wallet Monitor Events Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_wallet_monitor_events_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, cleanup_wallet_monitor_events_days: Number.isNaN(value) ? 14 : value }))
+                              }}
+                              min={0}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Decision Checks Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_trader_decision_checks_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, cleanup_trader_decision_checks_days: Number.isNaN(value) ? 14 : value }))
+                              }}
+                              min={0}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Decisions Retention (days, unreferenced only)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_trader_decisions_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, cleanup_trader_decisions_days: Number.isNaN(value) ? 30 : value }))
+                              }}
+                              min={0}
+                              max={3650}
+                              className="mt-1 text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs text-muted-foreground">Opportunity History Retention (days)</Label>
+                            <Input
+                              type="number"
+                              value={maintenanceForm.cleanup_opportunity_history_days}
+                              onChange={(e) => {
+                                const value = Number.parseInt(e.target.value, 10)
+                                setMaintenanceForm(p => ({ ...p, cleanup_opportunity_history_days: Number.isNaN(value) ? 30 : value }))
+                              }}
+                              min={0}
                               max={3650}
                               className="mt-1 text-sm"
                             />

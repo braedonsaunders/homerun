@@ -1660,6 +1660,16 @@ class AppSettings(Base):
     llm_usage_retention_days = Column(Integer, default=30)
     trader_events_firehose_retention_days = Column(Integer, default=7)
     trader_events_other_retention_days = Column(Integer, default=90)
+    # 2026-05-26: retention for previously-unbounded high-volume tables
+    # that were filling the disk (no prior DELETE retention).  These are
+    # ephemeral microstructure / per-decision audit / wallet-event tables;
+    # 0 disables the corresponding sweep.  See services/maintenance.py.
+    cleanup_market_microstructure_days = Column(Integer, default=7)
+    cleanup_book_delta_events_days = Column(Integer, default=7)
+    cleanup_wallet_monitor_events_days = Column(Integer, default=14)
+    cleanup_trader_decision_checks_days = Column(Integer, default=14)
+    cleanup_trader_decisions_days = Column(Integer, default=30)
+    cleanup_opportunity_history_days = Column(Integer, default=30)
     market_cache_hygiene_enabled = Column(Boolean, default=True)
     market_cache_hygiene_interval_hours = Column(Integer, default=6)
     market_cache_retention_days = Column(Integer, default=120)

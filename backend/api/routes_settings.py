@@ -634,6 +634,42 @@ class MaintenanceSettings(BaseModel):
         le=3650,
         description="Delete non-firehose trader_events older than this many days",
     )
+    cleanup_market_microstructure_days: int = Field(
+        default=7,
+        ge=0,
+        le=3650,
+        description="Delete market_microstructure_snapshots older than this many days (0 disables)",
+    )
+    cleanup_book_delta_events_days: int = Field(
+        default=7,
+        ge=0,
+        le=3650,
+        description="Delete book_delta_events older than this many days (0 disables)",
+    )
+    cleanup_wallet_monitor_events_days: int = Field(
+        default=14,
+        ge=0,
+        le=3650,
+        description="Delete wallet_monitor_events older than this many days (0 disables)",
+    )
+    cleanup_trader_decision_checks_days: int = Field(
+        default=14,
+        ge=0,
+        le=3650,
+        description="Delete trader_decision_checks (per-decision gate audit) older than this many days (0 disables)",
+    )
+    cleanup_trader_decisions_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        description="Delete unreferenced trader_decisions older than this many days (0 disables; referenced decisions are kept)",
+    )
+    cleanup_opportunity_history_days: int = Field(
+        default=30,
+        ge=0,
+        le=3650,
+        description="Delete opportunity_history older than this many days (0 disables)",
+    )
     market_cache_hygiene_enabled: bool = Field(
         default=True,
         description="Enable automatic market metadata hygiene cleanup",
