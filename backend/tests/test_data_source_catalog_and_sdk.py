@@ -172,6 +172,7 @@ async def test_data_source_runner_serializes_datetime_payloads(tmp_path, monkeyp
         source_key="events",
         source_kind="python",
         source_code=source_code,
+        retention={"max_age_days": 3650},
         enabled=True,
     )
     assert created.get("slug") == "datetime_payload_source"
@@ -256,7 +257,7 @@ async def test_data_source_sdk_applies_default_retention_by_source_family(tmp_pa
         source_code=events_source_code,
         enabled=False,
     )
-    assert events_source.get("retention") == {"max_records": 50000, "max_age_days": 365}
+    assert events_source.get("retention") == {"max_records": 5000, "max_age_days": 14}
 
     stories_rss_source = await DataSourceSDK.create_source(
         slug="stories_rss_retention_default_source",
@@ -267,7 +268,7 @@ async def test_data_source_sdk_applies_default_retention_by_source_family(tmp_pa
         config={"url": "https://example.com/feed.xml"},
         enabled=False,
     )
-    assert stories_rss_source.get("retention") == {"max_records": 7500, "max_age_days": 30}
+    assert stories_rss_source.get("retention") == {"max_records": 5000, "max_age_days": 14}
 
     stories_rest_source = await DataSourceSDK.create_source(
         slug="stories_rest_retention_default_source",
@@ -278,7 +279,7 @@ async def test_data_source_sdk_applies_default_retention_by_source_family(tmp_pa
         config={"url": "https://example.com/api/articles", "json_path": "$.articles[*]"},
         enabled=False,
     )
-    assert stories_rest_source.get("retention") == {"max_records": 15000, "max_age_days": 45}
+    assert stories_rest_source.get("retention") == {"max_records": 5000, "max_age_days": 14}
 
     await engine.dispose()
 
@@ -316,7 +317,7 @@ async def test_data_source_sdk_applies_max_records_retention(tmp_path, monkeypat
         source_key="events",
         source_kind="python",
         source_code=source_code,
-        retention={"max_records": 3},
+        retention={"max_records": 3, "max_age_days": 3650},
         enabled=True,
     )
     created_retention = created.get("retention") or {}
@@ -365,7 +366,7 @@ async def test_data_source_sdk_retention_handles_loaded_existing_datetime_rows(t
         source_key="events",
         source_kind="python",
         source_code=source_code,
-        retention={"max_records": 3},
+        retention={"max_records": 3, "max_age_days": 3650},
         enabled=True,
     )
 
@@ -476,12 +477,12 @@ def test_seed_sources_define_retention_policies():
         assert int(seed.retention.get("max_age_days") or 0) > 0
 
     events_seed = next(seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.slug == "events_acled")
-    assert events_seed.retention == {"max_records": 50000, "max_age_days": 365}
+    assert events_seed.retention == {"max_records": 5000, "max_age_days": 14}
 
     stories_google_seed = next(
         seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.slug.startswith("stories_google_")
     )
-    assert stories_google_seed.retention == {"max_records": 7500, "max_age_days": 30}
+    assert stories_google_seed.retention == {"max_records": 5000, "max_age_days": 14}
 
     stories_gdelt_seed = next(seed for seed in BASE_SYSTEM_DATA_SOURCE_SEEDS if seed.slug.startswith("stories_gdelt_"))
-    assert stories_gdelt_seed.retention == {"max_records": 15000, "max_age_days": 45}
+    assert stories_gdelt_seed.retention == {"max_records": 5000, "max_age_days": 14}
