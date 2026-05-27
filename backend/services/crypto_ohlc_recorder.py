@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -312,28 +313,83 @@ class CryptoOHLCRecorder:
             logger.exception("CryptoOHLCRecorder: catalog rescan failed")
 
 
-# ── module-level manager (one recorder per process) ──────────────────
+# ── module-level manager — runs on a DEDICATED thread + event loop ────
+#
+# Critical: when started from inside a worker (e.g. the trading plane),
+# the recorder must NOT share that worker's asyncio loop.  The trading
+# loop is saturated by the hot path, so the recorder's WS-recv coroutines
+# get starved — they wake rarely and drain a backlog of buffered frames in
+# one slice (observed: dozens of ticks at an identical microsecond, then a
+# long stall).  Running the feeds + flush on a dedicated thread with its
+# own loop gives the recorder its own scheduling budget and yields steady,
+# dense capture regardless of how busy the host process is.
 _recorder: Optional[CryptoOHLCRecorder] = None
+_rec_thread: Optional[threading.Thread] = None
+_rec_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 def get_recorder() -> Optional[CryptoOHLCRecorder]:
     return _recorder
 
 
-async def start_recorder(**kwargs) -> CryptoOHLCRecorder:
-    global _recorder
-    if _recorder is not None and _recorder.started:
+def _thread_main(kwargs: dict, ready: threading.Event) -> None:
+    global _rec_loop, _recorder
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _rec_loop = loop
+    rec = CryptoOHLCRecorder(**kwargs)
+    _recorder = rec
+    try:
+        loop.run_until_complete(rec.start())
+    except Exception:
+        logger.exception("CryptoOHLCRecorder: thread start failed")
+    finally:
+        ready.set()
+    try:
+        loop.run_forever()
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+        _rec_loop = None
+        _recorder = None
+
+
+async def start_recorder(**kwargs) -> Optional[CryptoOHLCRecorder]:
+    """Start the recorder on its own thread + loop (idempotent)."""
+    global _rec_thread
+    if _rec_thread is not None and _rec_thread.is_alive():
         return _recorder
-    _recorder = CryptoOHLCRecorder(**kwargs)
-    await _recorder.start()
+    ready = threading.Event()
+    _rec_thread = threading.Thread(
+        target=_thread_main, args=(dict(kwargs), ready), daemon=True, name="crypto-ohlc-recorder"
+    )
+    _rec_thread.start()
+    await asyncio.to_thread(ready.wait, 15.0)
     return _recorder
 
 
 async def stop_recorder() -> None:
-    global _recorder
-    if _recorder is not None:
-        await _recorder.stop()
-        _recorder = None
+    """Stop the recorder thread: final flush + catalog on its loop, then halt."""
+    global _rec_thread
+    loop = _rec_loop
+    rec = _recorder
+    if loop is not None and rec is not None:
+        def _shutdown() -> None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(rec.stop(), loop)
+                fut.result(timeout=25.0)
+            except Exception:
+                pass
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+        await asyncio.to_thread(_shutdown)
+    if _rec_thread is not None:
+        await asyncio.to_thread(_rec_thread.join, 10.0)
+    _rec_thread = None
 
 
 # ── standalone runner (for validation / one-off captures) ─────────────
