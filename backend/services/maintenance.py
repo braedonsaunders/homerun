@@ -1098,6 +1098,7 @@ RETURNING target.id
         *,
         batch_size: int = 5000,
         extra_where: str = "",
+        max_batches: int = 200,
     ) -> dict:
         """Batched, lock-light age prune for an id-keyed table.
 
@@ -1105,7 +1106,15 @@ RETURNING target.id
         fixed internal call sites below (never user input), so the f-string
         composition carries no injection risk.  Deletes in keyset batches,
         committing each batch, so it never holds a long lock on the
-        high-churn table.  Returns a per-table result dict.
+        high-churn table.
+
+        ``max_batches`` bounds a single run so the daily sweep stays gentle
+        on the live DB even when a large historical backlog exists (these
+        tables can hold millions of rows on first prune).  Hitting the cap
+        leaves ``capped=True``; the next scheduled run continues where this
+        left off.  steady-state daily volume is far below the cap, so once
+        the backlog is worked down each run clears everything and stops
+        early on ``rowcount < batch_size``.  Returns a per-table result dict.
         """
         result_key = f"{table}_deleted"
         if older_than_days <= 0:
@@ -1120,13 +1129,19 @@ RETURNING target.id
             f"(SELECT id FROM {table} WHERE {where} LIMIT :batch)"
         )
         deleted = 0
+        batches = 0
+        capped = False
         while True:
+            if max_batches and batches >= max_batches:
+                capped = True
+                break
             async with AsyncSessionLocal() as session:
                 await session.execute(text("SET LOCAL statement_timeout = 0"))
                 res = await session.execute(stmt, {"cutoff": cutoff, "batch": int(batch_size)})
                 await session.commit()
             n = int(res.rowcount or 0)
             deleted += n
+            batches += 1
             if n < batch_size:
                 break
             await asyncio.sleep(0.05)
@@ -1135,11 +1150,15 @@ RETURNING target.id
                 "Pruned table by age",
                 table=table,
                 deleted=deleted,
+                batches=batches,
+                capped=capped,
                 older_than_days=older_than_days,
             )
         return {
             "status": "success",
             result_key: deleted,
+            "batches": batches,
+            "capped": capped,
             "cutoff_date": cutoff.isoformat(),
             "older_than_days": int(older_than_days),
         }
