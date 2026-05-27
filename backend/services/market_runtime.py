@@ -1418,9 +1418,15 @@ class MarketRuntime:
 
     async def _supervise_crypto_recorder(self, should_record: bool) -> None:
         """Start/stop the parquet crypto-OHLC recorder to track the
-        ``is_recording`` toggle.  Integrated mode — taps the shared
-        ReferenceRuntime feeds (no duplicate WS connections).  Idempotent:
-        only acts on the start→running / running→stop edges.
+        ``is_recording`` toggle.  Idempotent: only acts on the
+        start→running / running→stop edges.
+
+        Uses DEDICATED feeds (standalone mode) rather than tapping the
+        shared ReferenceRuntime.  ``BinanceFeed``/``ChainlinkFeed`` expose a
+        single ``on_update`` callback slot; in the worker other consumers
+        contend for it, so a shared-feed tap receives notifies at a tiny
+        fraction of the true tick rate (observed ~1 row/5min vs ~6/s).
+        Two extra WS connections are negligible and guarantee dense capture.
         """
         from services.crypto_ohlc_recorder import (
             get_recorder,
@@ -1431,7 +1437,7 @@ class MarketRuntime:
         rec = get_recorder()
         if should_record:
             if rec is None or not rec.started:
-                await start_recorder(reference_runtime=self._reference_runtime)
+                await start_recorder()  # standalone: dedicated feeds → dense capture
         else:
             if rec is not None and rec.started:
                 await stop_recorder()
