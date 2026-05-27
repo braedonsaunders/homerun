@@ -32,7 +32,7 @@ from typing import Any, Iterable
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel as _PydBaseModel
+from pydantic import BaseModel as _PydBaseModel, Field
 from sqlalchemy import and_, bindparam, func, select, text
 
 from models.database import (
@@ -1001,6 +1001,52 @@ async def storage_summary() -> dict[str, Any]:
         "total_rows": total_rows,
         "total_bytes": total_bytes,
     }
+
+
+# ── Parquet data-plane retention / pruning ──────────────────────────────
+#
+# All recorded/imported market data lives in parquet (Postgres is the
+# control plane only).  These endpoints power the Data Lab "Storage"
+# retention controls: enable + set max age and/or max total size, preview
+# what would be freed, and prune on demand.  Pruning deletes whole parquet
+# window directories oldest-first and removes orphaned catalog rows.
+
+@router.get("/storage/retention")
+async def get_retention_config() -> dict[str, Any]:
+    from services.external_data import parquet_retention as _ret
+    cfg = _ret.get_config()
+    # Lightweight on-disk summary so the UI can show current usage vs cap.
+    preview = await _ret.preview_prune()
+    return {
+        "config": cfg,
+        "windows_total": preview.get("windows_total", 0),
+        "bytes_total": preview.get("bytes_total", 0),
+    }
+
+
+class RetentionConfigUpdate(_PydBaseModel):
+    enabled: bool | None = None
+    max_age_days: int | None = Field(default=None, ge=1, le=3650)
+    max_total_gb: float | None = Field(default=None, ge=0.1, le=100000.0)
+    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+
+
+@router.put("/storage/retention")
+async def update_retention_config(body: RetentionConfigUpdate) -> dict[str, Any]:
+    from services.external_data import parquet_retention as _ret
+    return {"config": _ret.set_config(body.model_dump(exclude_unset=True))}
+
+
+@router.post("/storage/prune")
+async def prune_parquet_storage(
+    execute: bool = Query(default=False, description="false=preview, true=delete"),
+    max_age_days: int | None = Query(default=None, ge=1, le=3650),
+    max_total_gb: float | None = Query(default=None, ge=0.1, le=100000.0),
+) -> dict[str, Any]:
+    from services.external_data import parquet_retention as _ret
+    if execute:
+        return await _ret.prune(max_age_days=max_age_days, max_total_gb=max_total_gb)
+    return await _ret.preview_prune(max_age_days=max_age_days, max_total_gb=max_total_gb)
 
 
 @router.get("/{name}/distinct/{column}")
