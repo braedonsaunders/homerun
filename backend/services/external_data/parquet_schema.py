@@ -73,27 +73,6 @@ SNAPSHOT_SCHEMA: pa.Schema = pa.schema(
     ]
 )
 
-# Reference kind: one row per underlying-asset price tick (Chainlink
-# oracle or Binance direct).  This is NOT order-book data — it is the
-# underlying spot/oracle signal a crypto strategy consults (price-to-beat,
-# momentum, oracle-lag).  Deliberately kept OUT of the book-replay path:
-# ``parquet_scanner.find_parquet_coverage`` only ever resolves
-# ``snapshots__*`` files, so reference datasets are cataloged + browsable
-# but never fed to the fill simulator (which would be semantically wrong).
-# ``token_id`` is a synthetic series id, e.g. ``ref:btc:chainlink``.
-REFERENCE_SCHEMA: pa.Schema = pa.schema(
-    [
-        ("token_id", pa.string()),
-        ("observed_at_us", pa.int64()),  # local receive epoch micros (sortable)
-        ("asset", pa.string()),  # 'BTC' | 'ETH' | ...
-        ("source", pa.string()),  # 'chainlink' | 'binance_direct'
-        ("price", pa.float64()),  # tick price (mid for binance bookTicker)
-        ("bid", pa.float64()),  # nullable
-        ("ask", pa.float64()),  # nullable
-        ("source_ts_ms", pa.int64()),  # source-claimed epoch ms (oracle/exchange clock)
-    ]
-)
-
 # Delta kind: one row per book-level change.  Same shape as
 # ``BookDeltaEvent`` — kept compact for high-frequency events.
 DELTA_SCHEMA: pa.Schema = pa.schema(
@@ -265,10 +244,8 @@ def parquet_path_for(
     token, window, kind) tuple.  Pure function — does not create
     directories or touch the filesystem.
     """
-    if kind not in {"snapshots", "deltas", "reference"}:
-        raise ValueError(
-            f"unknown parquet kind: {kind!r} (expected 'snapshots', 'deltas', or 'reference')"
-        )
+    if kind not in {"snapshots", "deltas"}:
+        raise ValueError(f"unknown parquet kind: {kind!r} (expected 'snapshots' or 'deltas')")
     base = (root or parquet_root()).resolve()
     window_slug = f"{_iso_slug(start)}__{_iso_slug(end)}"
     window_dir = base / _safe_segment(provider) / _safe_segment(coin or "_") / window_slug
@@ -291,15 +268,12 @@ def schema_for(kind: str) -> pa.Schema:
         return SNAPSHOT_SCHEMA
     if kind == "deltas":
         return DELTA_SCHEMA
-    if kind == "reference":
-        return REFERENCE_SCHEMA
     raise ValueError(f"unknown parquet kind: {kind!r}")
 
 
 __all__ = [
     "SNAPSHOT_SCHEMA",
     "DELTA_SCHEMA",
-    "REFERENCE_SCHEMA",
     "SCHEMA_VERSION",
     "ParquetPath",
     "parquet_root",

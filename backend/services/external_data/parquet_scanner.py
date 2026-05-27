@@ -39,7 +39,6 @@ from typing import Any, Iterable
 
 from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
-    REFERENCE_SCHEMA,
     SNAPSHOT_SCHEMA,
     parquet_roots,
 )
@@ -53,7 +52,7 @@ _WINDOW_DIR_RE = re.compile(
     r"^(?P<start>\d{8}T\d{6})__(?P<end>\d{8}T\d{6})$"
 )
 _FILE_RE = re.compile(
-    r"^(?P<kind>snapshots|deltas|reference)__(?P<token_id>[A-Za-z0-9_\-]+)\.parquet$"
+    r"^(?P<kind>snapshots|deltas)__(?P<token_id>[A-Za-z0-9_\-]+)\.parquet$"
 )
 
 
@@ -92,7 +91,6 @@ class _DatasetGroup:
     end: datetime
     snapshot_files: dict[str, Path] = field(default_factory=dict)  # token_id -> path
     delta_files: dict[str, Path] = field(default_factory=dict)
-    reference_files: dict[str, Path] = field(default_factory=dict)  # synthetic series id -> path
 
 
 # ── Filesystem walk ──────────────────────────────────────────────────
@@ -146,8 +144,6 @@ def _walk_parquet_root(root: Path) -> list[_DatasetGroup]:
                         group.snapshot_files[token_id] = f
                     elif kind == "deltas":
                         group.delta_files[token_id] = f
-                    elif kind == "reference":
-                        group.reference_files[token_id] = f
     return list(groups.values())
 
 
@@ -164,11 +160,7 @@ def _validate_schema(file_path: Path, kind: str) -> tuple[bool, str | None]:
         meta = pq.read_metadata(str(file_path))
     except Exception as exc:
         return False, f"unreadable: {str(exc)[:120]}"
-    expected = {
-        "snapshots": SNAPSHOT_SCHEMA,
-        "deltas": DELTA_SCHEMA,
-        "reference": REFERENCE_SCHEMA,
-    }.get(kind, SNAPSHOT_SCHEMA)
+    expected = SNAPSHOT_SCHEMA if kind == "snapshots" else DELTA_SCHEMA
     file_schema_arrow = pq.read_schema(str(file_path))
     expected_names = set(expected.names)
     file_names = set(file_schema_arrow.names)
@@ -193,11 +185,9 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
 
     valid_snap_tokens: list[str] = []
     valid_delta_tokens: list[str] = []
-    valid_reference_tokens: list[str] = []
     errors: list[str] = []
     snapshot_count = 0
     trade_count = 0
-    reference_count = 0
     import pyarrow.parquet as pq
 
     for token_id, fp in group.snapshot_files.items():
@@ -220,18 +210,8 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
             trade_count += pq.read_metadata(str(fp)).num_rows
         except Exception:
             pass
-    for token_id, fp in group.reference_files.items():
-        ok, reason = _validate_schema(fp, "reference")
-        if not ok:
-            errors.append(f"{fp.name}: {reason}")
-            continue
-        valid_reference_tokens.append(token_id)
-        try:
-            reference_count += pq.read_metadata(str(fp)).num_rows
-        except Exception:
-            pass
 
-    if not valid_snap_tokens and not valid_delta_tokens and not valid_reference_tokens:
+    if not valid_snap_tokens and not valid_delta_tokens:
         return {
             "provider": group.provider,
             "coin": group.coin,
@@ -249,22 +229,7 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
     ext_id = "parquet:" + hashlib.sha1(ext_id_raw.encode()).hexdigest()[:16]
     row_id = ext_id  # use external_id as the primary key for parquet rows
     storage_uri = group.window_dir.resolve().as_uri()
-    union_tokens = sorted(
-        set(valid_snap_tokens) | set(valid_delta_tokens) | set(valid_reference_tokens)
-    )
-
-    # Reference (underlying price-series) groups are tagged distinctly so
-    # they're never confused with order-book ('spot'/'prediction') datasets.
-    # The backtest coverage lookup only ever resolves ``snapshots__*`` files,
-    # so reference datasets are cataloged + browsable but never replayed as
-    # a fillable book.
-    is_reference_only = bool(valid_reference_tokens) and not valid_snap_tokens and not valid_delta_tokens
-    if is_reference_only:
-        asset_class = "reference"
-    elif group.coin in {"btc", "eth", "sol", "xrp"}:
-        asset_class = "spot"
-    else:
-        asset_class = "prediction"
+    union_tokens = sorted(set(valid_snap_tokens) | set(valid_delta_tokens))
 
     values = {
         "id": row_id,
@@ -276,18 +241,16 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
             f"{group.provider}/{group.coin} "
             f"{group.start.strftime('%Y-%m-%d')} to {group.end.strftime('%Y-%m-%d')}"
         ),
-        "asset_class": asset_class,
+        "asset_class": "spot" if group.coin in {"btc", "eth", "sol", "xrp"} else "prediction",
         "token_ids_json": union_tokens,
         "start_ts": group.start.replace(tzinfo=None),
         "end_ts": group.end.replace(tzinfo=None),
-        "snapshot_count": snapshot_count + reference_count,
+        "snapshot_count": snapshot_count,
         "trade_count": trade_count,
         "last_imported_at": datetime.now(timezone.utc).replace(tzinfo=None),
         "payload_json": {
             "snapshot_token_count": len(valid_snap_tokens),
             "delta_token_count": len(valid_delta_tokens),
-            "reference_token_count": len(valid_reference_tokens),
-            "reference_rows": reference_count,
             "errors": errors[:20],  # cap so a corrupt-files dir doesn't bloat the row
         },
         "storage_type": "parquet",
@@ -325,10 +288,8 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
         "tokens": len(union_tokens),
         "snapshot_files": len(valid_snap_tokens),
         "delta_files": len(valid_delta_tokens),
-        "reference_files": len(valid_reference_tokens),
         "snapshot_rows": snapshot_count,
         "delta_rows": trade_count,
-        "reference_rows": reference_count,
         "errors": errors[:20],
     }
 
@@ -526,70 +487,6 @@ async def find_parquet_coverage(
     return out
 
 
-async def find_reference_coverage(
-    *,
-    assets: Iterable[str] | None,
-    start: datetime,
-    end: datetime,
-) -> dict[str, list[str]]:
-    """Reference-series sibling of :func:`find_parquet_coverage`.
-
-    Returns ``{series_id -> [file_path, ...]}`` for every reference
-    (underlying price) parquet whose ``[start_ts, end_ts]`` overlaps the
-    requested window.  ``series_id`` is the synthetic id stored in
-    ``token_ids_json`` (e.g. ``ref_btc_chainlink``).  When ``assets`` is
-    given, only series whose coin matches are returned.
-
-    Deliberately separate from ``find_parquet_coverage`` (which only ever
-    resolves ``snapshots__*`` book files): reference data is a SIGNAL feed,
-    never a fillable book, so it must never enter the matching engine.
-    The backtest's reference-replay shim consumes THIS, annotating
-    ``oracle_prices_by_source`` onto discovery rows exactly like the live
-    ``market_runtime`` does from ``ReferenceRuntime``.
-    """
-    from sqlalchemy import select
-    from models.database import AsyncSessionLocal, ProviderDataset
-
-    wanted_coins = {str(a).strip().lower() for a in (assets or []) if str(a).strip()}
-    if start.tzinfo is not None:
-        start = start.astimezone(timezone.utc).replace(tzinfo=None)
-    if end.tzinfo is not None:
-        end = end.astimezone(timezone.utc).replace(tzinfo=None)
-
-    async with AsyncSessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(ProviderDataset).where(
-                    ProviderDataset.storage_type == "parquet",
-                    ProviderDataset.asset_class == "reference",
-                    ProviderDataset.start_ts <= end,
-                    ProviderDataset.end_ts >= start,
-                )
-            )
-        ).scalars().all()
-
-    out: dict[str, list[str]] = {}
-    for r in rows:
-        if wanted_coins and str(r.coin or "").strip().lower() not in wanted_coins:
-            continue
-        if not r.storage_uri or not r.storage_uri.startswith("file://"):
-            continue
-        try:
-            window_dir = Path(_uri_to_path(r.storage_uri))
-        except Exception:
-            continue
-        for sid in (r.token_ids_json or []):
-            from services.external_data.parquet_schema import _safe_segment
-            safe = _safe_segment(str(sid))
-            for cand in (window_dir / f"reference__{safe}.parquet", window_dir / f"reference__{sid}.parquet"):
-                if cand.exists():
-                    out.setdefault(str(sid), [])
-                    if str(cand) not in out[str(sid)]:
-                        out[str(sid)].append(str(cand))
-                    break
-    return out
-
-
 def _uri_to_path(uri: str) -> Path:
     """file:///C:/foo → C:/foo on Windows; file:///foo/bar → /foo/bar
     on POSIX.  Cross-platform via ``urllib.parse``.
@@ -608,5 +505,4 @@ __all__ = [
     "ensure_recent_scan",
     "list_parquet_datasets",
     "find_parquet_coverage",
-    "find_reference_coverage",
 ]

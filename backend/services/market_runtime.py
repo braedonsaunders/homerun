@@ -761,13 +761,6 @@ class MarketRuntime:
                 await self._main_task
             except asyncio.CancelledError:
                 pass
-        # Stop the parquet crypto-OHLC recorder before tearing down the
-        # reference runtime it taps (final flush + catalog happen here).
-        try:
-            from services.crypto_ohlc_recorder import stop_recorder
-            await stop_recorder()
-        except Exception:
-            logger.debug("crypto OHLC recorder stop failed", exc_info=True)
         self._reference_runtime.remove_on_update(self._on_reference_update)
         await self._reference_runtime.stop()
         self._started = False
@@ -1370,16 +1363,9 @@ class MarketRuntime:
             if not cache_fresh:
                 self._schedule_ml_runtime_state_refresh()
             runtime_state = self._cached_ml_runtime_state(allow_record=allow_record)
-            should_record = bool(runtime_state.get("recording_enabled")) if allow_record else False
-            # Supervise the parquet crypto-OHLC recorder (start/stop with the
-            # same is_recording toggle).  Runs on the "off" path too so the
-            # recorder is stopped when recording is disabled.
-            try:
-                await self._supervise_crypto_recorder(should_record)
-            except Exception:
-                logger.debug("crypto OHLC recorder supervise failed", exc_info=True)
             if not runtime_state.get("recording_enabled") and not runtime_state.get("deployment_active"):
                 return
+            should_record = bool(runtime_state.get("recording_enabled")) if allow_record else False
             is_active = bool(runtime_state.get("deployment_active"))
             sdk = get_machine_learning_sdk()
 
@@ -1415,26 +1401,6 @@ class MarketRuntime:
                 self._last_ml_prune_mono = now_mono
             except Exception as exc:
                 logger.warning("Failed to prune ML training snapshots", exc_info=exc)
-
-    async def _supervise_crypto_recorder(self, should_record: bool) -> None:
-        """Start/stop the parquet crypto-OHLC recorder to track the
-        ``is_recording`` toggle.  Integrated mode — taps the shared
-        ReferenceRuntime feeds (no duplicate WS connections).  Idempotent:
-        only acts on the start→running / running→stop edges.
-        """
-        from services.crypto_ohlc_recorder import (
-            get_recorder,
-            start_recorder,
-            stop_recorder,
-        )
-
-        rec = get_recorder()
-        if should_record:
-            if rec is None or not rec.started:
-                await start_recorder(reference_runtime=self._reference_runtime)
-        else:
-            if rec is not None and rec.started:
-                await stop_recorder()
 
     async def _queue_ml_pipeline_refresh(self, payload: list[dict[str, Any]], *, allow_record: bool) -> None:
         async with self._pending_ml_lock:
