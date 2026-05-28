@@ -371,7 +371,7 @@ class CryptoDistanceEdgeStrategy(BaseStrategy):
             return []
 
         opportunities: list[Opportunity] = []
-        now_ms = int(time.time() * 1000)
+        now_ms = self.now_ms()
         for market in markets:
             if not isinstance(market, dict):
                 continue

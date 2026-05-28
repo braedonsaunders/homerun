@@ -12,6 +12,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from models import Market, Opportunity
 from services.data_events import DataEvent, EventType
 from services.quality_filter import QualityFilterOverrides
@@ -164,7 +165,7 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
         end_date = parse_datetime_utc(row.get("end_time"))
         seconds_left = float("inf")
         if end_date is not None:
-            seconds_left = max(0.0, (end_date - datetime.now(timezone.utc)).total_seconds())
+            seconds_left = max(0.0, (end_date - utcnow()).total_seconds())
         configured_min_secs = cfg.get("min_seconds_left_for_entry")
         min_seconds_left = (
             float(configured_min_secs)
@@ -760,7 +761,7 @@ class CryptoEntropyMakerStrategy(BaseStrategy):
             )
         self._filter_diagnostics = {
             "strategy_key": self.strategy_type,
-            "scanned_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "scanned_at": utcnow().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "markets_scanned": len(rows),
             "signals_emitted": len(candidates),
             "rejections": rejection_counts,

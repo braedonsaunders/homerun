@@ -34,6 +34,7 @@ from services.data_events import DataEvent, EventType
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig
 from services.quality_filter import QualityFilterOverrides
 from utils.converters import to_float
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -286,7 +287,7 @@ class DependencyAccuracyTracker:
                 "dep_key": dep_key,
                 "correct": None,  # Unknown until resolution
                 "acted_on": acted_on,
-                "timestamp": time.time(),
+                "timestamp": utcnow().timestamp(),
             }
         )
         # Cap in-memory records to prevent unbounded growth

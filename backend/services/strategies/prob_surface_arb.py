@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import re
 import time
+
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -59,7 +61,7 @@ def _market_days_to_resolution(market: Market) -> float | None:
         resolved_end_date = end_date.replace(tzinfo=timezone.utc)
     else:
         resolved_end_date = end_date.astimezone(timezone.utc)
-    return (resolved_end_date - datetime.now(timezone.utc)).total_seconds() / 86400.0
+    return (resolved_end_date - utcnow()).total_seconds() / 86400.0
 
 
 def _parse_threshold(question: str) -> Optional[float]:
@@ -343,7 +345,7 @@ class ProbSurfaceArbStrategy(BaseStrategy):
         spread_multiple = float(cfg.get("min_deviation_spread_multiple", 1.2))
 
         # Use self.state to cache families; invalidate every 5 minutes
-        now = time.time()
+        now = utcnow().timestamp()
         family_cache_time = self.state.get("family_cache_time", 0.0)
         if now - family_cache_time > 300:
             self.state["cached_families"] = None

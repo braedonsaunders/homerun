@@ -1318,7 +1318,7 @@ class TailEndCarryStrategy(BaseStrategy):
         if current_price <= 0.0:
             return None
 
-        now_ts = time.time()
+        now_ts = utcnow().timestamp()
         history = self._velocity_history(token_id)
         # Throttle sampling to a fixed cadence so the velocity window is
         # frequency-independent: reconcile (~5-15s), the exit-risk loop

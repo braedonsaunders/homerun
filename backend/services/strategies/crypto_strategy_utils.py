@@ -7,6 +7,7 @@ from typing import Any
 from models import Market
 from utils.converters import clamp, safe_float
 from utils.kelly import polymarket_taker_fee_pct
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 
 
 def parse_datetime_utc(value: Any) -> datetime | None:
@@ -81,7 +82,7 @@ def seconds_left_from_row(row: dict[str, Any], *, fallback_seconds: float | None
     end_time = parse_datetime_utc(row.get("end_time"))
     if end_time is None:
         return fallback_seconds
-    return max(0.0, (end_time - datetime.now(timezone.utc)).total_seconds())
+    return max(0.0, (end_time - utcnow()).total_seconds())
 
 
 def spread_pct_from_row(row: dict[str, Any]) -> float:

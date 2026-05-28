@@ -24,6 +24,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
+
 from models import Event, Market, Opportunity
 from .base import BaseStrategy, DecisionCheck, ExitDecision, ScoringWeights, SizingConfig, make_aware, utcnow
 from services.quality_filter import QualityFilterOverrides
@@ -241,7 +243,7 @@ class CertaintyShockStrategy(BaseStrategy):
         price_history = self.state.setdefault("price_history", {})
         opportunities: list[Opportunity] = []
         now = utcnow()
-        scan_time = time.time()
+        scan_time = utcnow().timestamp()
 
         for market in markets:
             if len(market.outcome_prices) != 2:

@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from models import Market, Opportunity
 from services.data_events import DataEvent, EventType
 from services.quality_filter import QualityFilterOverrides
@@ -205,7 +206,7 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         seconds_left = float("inf")
         elapsed_ratio = 0.5  # default mid-window
         if end_date is not None:
-            seconds_left = max(0.0, (end_date - datetime.now(timezone.utc)).total_seconds())
+            seconds_left = max(0.0, (end_date - utcnow()).total_seconds())
             elapsed_ratio = clamp(1.0 - (seconds_left / max(1, tf_seconds)), 0.0, 1.0)
 
         configured_min_secs = cfg.get("min_seconds_left_for_entry")
@@ -538,7 +539,7 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
         end_date = parse_datetime_utc(row.get("end_time"))
         elapsed_ratio = 0.5
         if end_date is not None:
-            seconds_left = max(0.0, (end_date - datetime.now(timezone.utc)).total_seconds())
+            seconds_left = max(0.0, (end_date - utcnow()).total_seconds())
             elapsed_ratio = clamp(1.0 - (seconds_left / 300.0), 0.0, 1.0)
         confidence = clamp(
             0.50
@@ -633,7 +634,7 @@ class CryptoSpikeReversionStrategy(BaseStrategy):
             )
         self._filter_diagnostics = {
             "strategy_key": self.strategy_type,
-            "scanned_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "scanned_at": utcnow().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "markets_scanned": len(rows),
             "signals_emitted": len(candidates),
             "rejections": rejection_counts,

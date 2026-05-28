@@ -680,6 +680,44 @@ class BaseStrategy(ABC):
         # methods.  The orchestrator reads it via get_filter_diagnostics()
         # to display heartbeat messages in the terminal.
         self._filter_diagnostics: dict = {}
+        # Replay clock (UTC microseconds).  Set by the backtester before
+        # each detect call so the strategy reads SIMULATED event time;
+        # None in live trading → now() falls back to the wall clock.  The
+        # instance attribute is the thread-safe path (covers sync detect
+        # running in an executor where the utcnow ContextVar wouldn't
+        # propagate); free-function utcnow() callers are covered by the
+        # ContextVar the backtester also sets.
+        self._replay_now_us: Optional[int] = None
+
+    def set_replay_clock(self, now_us: Optional[int]) -> None:
+        """Backtester hook — pin the strategy's clock to the current
+        tick's as-of time (UTC microseconds), or None to clear."""
+        self._replay_now_us = now_us
+
+    def now(self) -> datetime:
+        """The strategy clock.  ALWAYS use this (and ``now_ms``/``now_us``)
+        instead of ``datetime.now()``/``utcnow()``/``time.time()`` so
+        decisions are a pure function of recorded inputs and replay is
+        deterministic.  Live: wall clock.  Replay: simulated tick time."""
+        if self._replay_now_us is not None:
+            return datetime.fromtimestamp(self._replay_now_us / 1_000_000, tz=timezone.utc)
+        from utils.utcnow import replay_clock_us as _rc
+        us = _rc()
+        if us is not None:
+            return datetime.fromtimestamp(us / 1_000_000, tz=timezone.utc)
+        return datetime.now(timezone.utc)
+
+    def now_ms(self) -> int:
+        """Strategy clock in epoch milliseconds (see ``now``)."""
+        if self._replay_now_us is not None:
+            return self._replay_now_us // 1000
+        return int(self.now().timestamp() * 1000)
+
+    def now_us(self) -> int:
+        """Strategy clock in epoch microseconds (see ``now``)."""
+        if self._replay_now_us is not None:
+            return self._replay_now_us
+        return int(self.now().timestamp() * 1_000_000)
 
     def get_filter_diagnostics(self) -> dict[str, Any] | None:
         """Return the most recent detection-cycle diagnostics, if any.

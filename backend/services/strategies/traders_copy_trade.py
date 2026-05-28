@@ -5,6 +5,8 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
+
 from models import Event, Market, Opportunity
 from services.strategies.base import BaseStrategy, DecisionCheck, ExitDecision, StrategyDecision, _trader_size_limits
 from services.strategy_sdk import StrategySDK
@@ -368,7 +370,7 @@ class TradersCopyTradeStrategy(BaseStrategy):
             or source_trade.get("detected_at")
             or copy_event.get("timestamp")
             or source_trade.get("timestamp")
-        ) or datetime.now(timezone.utc)
+        ) or utcnow()
 
         source_item_id = str(payload.get("source_item_id") or "").strip()
         if not source_item_id:
@@ -625,7 +627,7 @@ class TradersCopyTradeStrategy(BaseStrategy):
         max_signal_age_seconds = min(hard_ceiling, requested_max_signal_age_seconds)
         age_seconds = max_signal_age_seconds + 1.0
         if detected_at is not None:
-            age_seconds = max(0.0, (datetime.now(timezone.utc) - detected_at).total_seconds())
+            age_seconds = max(0.0, (utcnow() - detected_at).total_seconds())
 
         scope_passed = True
         scope_payload: dict[str, Any] = {}

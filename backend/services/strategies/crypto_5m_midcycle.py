@@ -33,6 +33,7 @@ import re
 import time
 from typing import Any, Optional
 
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from models import Market, Opportunity
 from services.data_events import DataEvent
 from services.strategies._firehose import (
@@ -330,7 +331,7 @@ class Crypto5mMidcycleStrategy(BaseStrategy):
             return []
 
         opportunities: list[Opportunity] = []
-        now_ms = int(time.time() * 1000)
+        now_ms = int(utcnow().timestamp() * 1000)
         for market in markets:
             if not isinstance(market, dict):
                 continue

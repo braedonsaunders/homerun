@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import math
+
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -291,7 +293,7 @@ class NewsEdgeStrategy(BaseStrategy):
         if explicit_age is not None and explicit_age >= 0:
             return float(explicit_age)
 
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         for key in (
             "article_published_at",
             "published_at",

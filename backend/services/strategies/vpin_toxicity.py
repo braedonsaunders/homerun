@@ -19,6 +19,8 @@ import asyncio
 import time
 from typing import Any, Optional
 
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
+
 from models import Market, Event, Opportunity
 from .base import (
     BaseStrategy,
@@ -230,7 +232,7 @@ class VPINToxicityStrategy(BaseStrategy):
             vpin_hist = self.state.setdefault("vpin_values", {})
             if token_id not in vpin_hist:
                 vpin_hist[token_id] = []
-            vpin_hist[token_id].append((time.time(), vpin))
+            vpin_hist[token_id].append((utcnow().timestamp(), vpin))
             if len(vpin_hist[token_id]) > 100:
                 vpin_hist[token_id] = vpin_hist[token_id][-100:]
 

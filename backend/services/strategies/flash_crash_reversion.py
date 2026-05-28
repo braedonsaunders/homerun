@@ -12,6 +12,8 @@ import time
 from collections import deque
 from typing import Any, Optional
 
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
+
 from config import settings
 from models import Opportunity, Event, Market
 from models.opportunity import MispricingType
@@ -304,7 +306,7 @@ class FlashCrashReversionStrategy(BaseStrategy):
             for event_market in event.markets:
                 event_by_market[event_market.id] = event
 
-        now = time.time()
+        now = utcnow().timestamp()
         candidates: list[tuple[float, Opportunity]] = []
 
         for market in markets:

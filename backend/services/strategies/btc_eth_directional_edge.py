@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from typing import Any, Callable, Optional
 
 import math
@@ -544,7 +546,7 @@ class _CryptoMarketFetcher:
         This mirrors the reference bot's ``pickLatestLiveMarket`` logic but
         returns multiple events so we can show upcoming opportunities too.
         """
-        now_ms = time.time() * 1000
+        now_ms = utcnow().timestamp() * 1000
         live: list[dict] = []
         upcoming: list[dict] = []
 
@@ -599,7 +601,7 @@ class _CryptoMarketFetcher:
 
         try:
             series = _get_crypto_series()
-            now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            now_iso = utcnow().replace(microsecond=0).isoformat().replace("+00:00", "Z")
             if self._shared_client is None or self._shared_client.is_closed:
                 self._shared_client = httpx.Client(timeout=10.0, follow_redirects=True)
             client = self._shared_client
@@ -1293,7 +1295,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
             )
 
         # Check oracle freshness (must be <60 seconds old)
-        age_ms = (time.time() * 1000) - (oracle.updated_at_ms or 0)
+        age_ms = (utcnow().timestamp() * 1000) - (oracle.updated_at_ms or 0)
         if age_ms > 60_000:
             return SubStrategyScore(
                 strategy=SubStrategy.DIRECTIONAL_EDGE,
@@ -1320,7 +1322,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
                 else:
                     end_str = str(c.market.end_date)
                     end_ts = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp()
-                remaining_secs = max(0.0, end_ts - time.time())
+                remaining_secs = max(0.0, end_ts - utcnow().timestamp())
                 start_ts = end_ts - float(timeframe_seconds)
             except (ValueError, AttributeError):
                 pass
@@ -1481,7 +1483,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
                 else:
                     end_str = str(c.market.end_date)
                     end_ts = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp()
-                return max(0.0, end_ts - time.time())
+                return max(0.0, end_ts - utcnow().timestamp())
             except (ValueError, AttributeError):
                 pass
         return None
@@ -2128,7 +2130,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
         if signal_is_live is None and signal_end_time:
             try:
                 parsed_end = datetime.fromisoformat(signal_end_time.replace("Z", "+00:00"))
-                signal_is_live = parsed_end.timestamp() > time.time()
+                signal_is_live = parsed_end.timestamp() > utcnow().timestamp()
             except Exception:
                 signal_is_live = None
         if signal_is_live is None and signal_seconds_left >= 0:
@@ -2156,7 +2158,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
         if live_context_fetched_at is not None:
             live_context_age_seconds = max(
                 0.0,
-                (datetime.now(timezone.utc) - live_context_fetched_at.astimezone(timezone.utc)).total_seconds(),
+                (utcnow() - live_context_fetched_at.astimezone(timezone.utc)).total_seconds(),
             )
         live_context_fresh_ok = (
             live_context_age_seconds is None or live_context_age_seconds <= max_live_context_age_seconds
@@ -2185,7 +2187,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
             )
             signal_age_seconds = max(
                 0.0,
-                (datetime.now(timezone.utc) - signal_ts_utc.astimezone(timezone.utc)).total_seconds(),
+                (utcnow() - signal_ts_utc.astimezone(timezone.utc)).total_seconds(),
             )
         max_signal_age_seconds_cfg = self._float(
             _timeframe_override(params, "max_signal_age_seconds", signal_timeframe)
@@ -2224,7 +2226,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
             if observed_at is not None:
                 market_data_age_ms = max(
                     0.0,
-                    (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
+                    (utcnow() - observed_at.astimezone(timezone.utc)).total_seconds() * 1000.0,
                 )
         max_market_data_age_ms_cfg = self._float(
             _timeframe_override(params, "max_market_data_age_ms", signal_timeframe)
@@ -2612,7 +2614,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
         model_prob_no = max(0.0, min(1.0, to_float(payload.get("model_prob_no"), 0.5)))
         up_price = max(0.0, min(1.0, to_float(payload.get("up_price"), 0.5)))
         down_price = max(0.0, min(1.0, to_float(payload.get("down_price"), 0.5)))
-        now_epoch_ms = int(time.time() * 1000.0)
+        now_epoch_ms = int(utcnow().timestamp() * 1000.0)
         oracle_status = _extract_oracle_status(
             live_market=live_market,
             payload=payload,
@@ -2991,7 +2993,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
 
         # --- Adaptive edge gating ---
         edge_for_gate = min(edge, mode_edge) if mode_edge > 0.0 else edge
-        now_ms = int(time.time() * 1000.0)
+        now_ms = int(utcnow().timestamp() * 1000.0)
         market_id = str(getattr(signal, "market_id", "") or "").strip()
         edge_tracker_key = f"{market_id}|{direction}|{active_mode}" if market_id else ""
         min_edge_persistence_ms = max(
@@ -4854,7 +4856,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
                     1.0,
                     to_float(defaults.get("consecutive_loss_pause_minutes"), 15.0),
                 )
-                self._paused_until_ms = int(time.time() * 1000.0) + int(pause_minutes * 60_000)
+                self._paused_until_ms = int(utcnow().timestamp() * 1000.0) + int(pause_minutes * 60_000)
                 logger.warning(
                     "%s: circuit breaker tripped — %d consecutive losses, pausing %.0f min",
                     self.name,
@@ -4868,7 +4870,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
             return False
         if self._paused_until_ms <= 0:
             return False
-        now_ms = int(time.time() * 1000.0)
+        now_ms = int(utcnow().timestamp() * 1000.0)
         if now_ms >= self._paused_until_ms:
             self._paused_until_ms = 0
             self._consecutive_losses = 0
@@ -5236,7 +5238,7 @@ class BtcEthDirectionalEdgeStrategy(BaseStrategy):
         max_threshold = max(thresholds_percent.values(), default=0.0)
         self._filter_diagnostics = {
             "strategy_key": self.strategy_type,
-            "scanned_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "scanned_at": utcnow().replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "markets_scanned": len(markets),
             "signals_emitted": len(opportunities),
             "rejections": rejections,

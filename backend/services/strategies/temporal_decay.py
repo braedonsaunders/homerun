@@ -23,6 +23,8 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
+
+from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from typing import Any, Optional
 
 from models import Event, Market, Opportunity
@@ -227,7 +229,7 @@ class TemporalDecayStrategy(BaseStrategy):
         market_baselines = self.state.setdefault("market_baselines", {})
         opportunities: list[Opportunity] = []
         now = utcnow()
-        scan_time = time.time()
+        scan_time = utcnow().timestamp()
 
         for market in markets:
             if len(market.outcome_prices) != 2:
