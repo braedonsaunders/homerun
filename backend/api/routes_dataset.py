@@ -22,6 +22,7 @@ so a 100k-row download doesn't blow up Python heap.
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -424,16 +425,51 @@ def _serialize_filters(spec: DatasetSpec) -> list[dict[str, Any]]:
 # ── Routes ──────────────────────────────────────────────────────────────
 
 
+# Tables small enough that an exact COUNT(*) is cheap are counted live so the
+# UI badge increases on every refresh. Anything past this threshold (per the
+# planner estimate) falls back to the estimate to avoid a multi-million-row
+# seq-scan tripping statement_timeout. The live count is itself wrapped in a
+# short SET LOCAL statement_timeout so a surprise large table can't stall the
+# whole listing.
+_LIVE_COUNT_MAX_ESTIMATE = 2_000_000
+_LIVE_COUNT_TIMEOUT_MS = 1500
+
+
+async def _live_row_count(table_name: str) -> int | None:
+    """Exact COUNT(*) for one table, guarded by a per-statement timeout.
+
+    Returns the count on success, or ``None`` if it timed out / errored so the
+    caller can fall back to the planner estimate. Runs in its own transaction
+    that is always rolled back, so a timeout never poisons later queries.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            try:
+                await session.execute(
+                    text(f"SET LOCAL statement_timeout = {int(_LIVE_COUNT_TIMEOUT_MS)}")
+                )
+                # ident already validated: table_name comes from ORM metadata.
+                result = await session.execute(
+                    text(f'SELECT COUNT(*) AS n FROM "{table_name}"')
+                )
+                return int(result.scalar_one())
+            finally:
+                await session.rollback()
+    except Exception:
+        # Timeout (QueryCanceled) or any other error -> signal fallback.
+        return None
+
+
 @router.get("")
 async def list_datasets() -> dict[str, Any]:
     """List every available dataset with its row count and metadata.
 
-    ``row_count`` is the planner estimate from ``pg_class.reltuples``,
-    falling back to ``pg_stat_user_tables.n_live_tup``. Both are O(1)
-    metadata lookups -- an exact ``COUNT(*)`` on a multi-million-row
-    table (e.g. market_microstructure_snapshots) seq-scans the heap
-    and routinely trips the connection statement_timeout, leaving the
-    UI badge stuck at zero.
+    ``row_count`` is an exact ``COUNT(*)`` for tables whose planner estimate is
+    under ``_LIVE_COUNT_MAX_ESTIMATE`` (so actively-written datasets' counts
+    increase on refresh), falling back to the planner estimate from
+    ``pg_class.reltuples`` / ``pg_stat_user_tables.n_live_tup`` for very large
+    tables (e.g. market_microstructure_snapshots) where an exact count would
+    seq-scan the heap and trip the statement_timeout.
     """
     table_names = [spec.model.__tablename__ for spec in _DATASETS.values()]
     estimates: dict[str, int] = {}
@@ -458,13 +494,31 @@ async def list_datasets() -> dict[str, Any]:
         except Exception:
             logger.exception("dataset.list: failed to read row estimates")
 
+    # Live-count the small/medium tables concurrently; fall back to estimate.
+    live_targets = [
+        t for t in table_names
+        if estimates.get(t, 0) <= _LIVE_COUNT_MAX_ESTIMATE
+    ]
+    live_counts: dict[str, int] = {}
+    if live_targets:
+        results = await asyncio.gather(
+            *(_live_row_count(t) for t in live_targets),
+            return_exceptions=True,
+        )
+        for table_name, res in zip(live_targets, results):
+            if isinstance(res, int):
+                live_counts[table_name] = res
+
     out: list[dict[str, Any]] = []
     for spec in _DATASETS.values():
+        table_name = spec.model.__tablename__
+        row_count = live_counts.get(table_name, estimates.get(table_name, 0))
         out.append({
             "name": spec.name,
             "label": spec.label,
             "description": spec.description,
-            "row_count": estimates.get(spec.model.__tablename__, 0),
+            "row_count": row_count,
+            "row_count_exact": table_name in live_counts,
             "default_sort": spec.default_sort,
             "default_sort_dir": spec.default_sort_dir,
             "columns": _serialize_columns(spec),
