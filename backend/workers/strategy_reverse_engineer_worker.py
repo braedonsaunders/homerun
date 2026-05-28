@@ -34,6 +34,25 @@ async def start_loop() -> None:
     interval = _poll_interval_seconds()
     logger.info("Strategy reverse-engineer worker starting (poll=%.1fs)", interval)
 
+    # Initialise the AI subsystem the agent loop relies on.  Without this
+    # ``run_job`` fails immediately with ``AI subsystem not initialized``.
+    # Mirrors the news_worker init pattern; treat failure as recoverable
+    # (the next job will surface the same error to the operator).
+    try:
+        from services.ai import initialize_ai
+
+        llm_manager = await initialize_ai()
+        logger.info(
+            "AI initialized in reverse-engineer worker (available=%s)",
+            llm_manager.is_available(),
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive; job loop reports per-job
+        logger.warning(
+            "AI init in reverse-engineer worker failed (jobs will fail until "
+            "configured): %s",
+            exc,
+        )
+
     while True:
         try:
             job = await claim_next_queued_job()
