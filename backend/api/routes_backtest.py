@@ -87,6 +87,11 @@ class UnifiedBacktestRequest(BaseModel):
     # Studio's "Run backtest" button leaves this at 1 (no penalty).
     # Studio's "Iterate params" loop passes the iteration count.
     n_trials: int = Field(default=1, ge=1, le=10_000)
+    # Cap on the number of fills returned in ``execution.fills_sample``.
+    # Default 200 is fine for UI rendering; reverse-engineer scoring needs
+    # full coverage so the wallet-match overlap isn't measured against a
+    # sample.  Cap at 100k so a pathological run can't blow up the JSON.
+    fills_sample_size: int = Field(default=200, ge=10, le=100_000)
 
 
 @router.post("/run")
@@ -162,6 +167,7 @@ async def run_backtest(req: UnifiedBacktestRequest):
             maker_rebate_bps=req.maker_rebate_bps,
             maker_rebate_max_spread_bps=req.maker_rebate_max_spread_bps,
             n_trials=req.n_trials,
+            fills_sample_size=req.fills_sample_size,
         )
     except Exception as exc:
         logger.exception("Unified backtest failed")

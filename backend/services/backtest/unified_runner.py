@@ -953,6 +953,10 @@ async def run_unified_backtest(
     # iteration count so the BEST run's DSR reflects the search size.
     # Hardcoded =1 default keeps legacy callers working unchanged.
     n_trials: int = 1,
+    # Cap on returned fills_sample.  Default 200 is fine for UI rendering;
+    # reverse-engineer scoring needs full coverage.  Capped at 100k by the
+    # route-level validator so a pathological run can't blow up the JSON.
+    fills_sample_size: int | None = None,
     # Async-job-queue path: when the dedicated backtest worker process
     # invokes this function, it passes a pre-allocated ``run_id`` (so
     # the operator's polling already has a stable pointer) and a
@@ -1048,6 +1052,8 @@ async def run_unified_backtest(
     # where the long wall-clock lives.
     if progress_callback is not None:
         exec_kwargs["progress_callback"] = progress_callback
+    if fills_sample_size is not None:
+        exec_kwargs["fills_sample_size"] = int(fills_sample_size)
     exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
     exec_dict = exec_result.to_dict()
 
