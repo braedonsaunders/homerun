@@ -1043,10 +1043,52 @@ async def storage_summary() -> dict[str, Any]:
 
     total_rows = sum(r["row_count"] for r in out)
     total_bytes = sum((r["size_bytes"] or 0) for r in out) if all(r["size_bytes"] is not None for r in out) else None
+
+    # Parquet data plane — the storage that moved OFF Postgres.  Without
+    # this the Storage view (SQL tables only) diverges from the Topics
+    # view (parquet bytes).  Walk every configured parquet root and group
+    # bytes by top-level provider so the operator sees one reconciled
+    # picture: SQL tables + parquet providers + a grand total.
+    parquet_providers: list[dict[str, Any]] = []
+    parquet_total_bytes = 0
+    try:
+        from services.external_data.parquet_schema import parquet_roots
+        seen: set[str] = set()
+        for root in parquet_roots():
+            if not root.exists():
+                continue
+            for prov_dir in sorted(root.iterdir()):
+                if not prov_dir.is_dir() or prov_dir.name in seen:
+                    continue
+                seen.add(prov_dir.name)
+                pb = 0
+                pf = 0
+                for fp in prov_dir.rglob("*.parquet"):
+                    try:
+                        pb += fp.stat().st_size
+                        pf += 1
+                    except OSError:
+                        continue
+                parquet_total_bytes += pb
+                parquet_providers.append({
+                    "provider": prov_dir.name,
+                    "size_bytes": pb,
+                    "file_count": pf,
+                })
+    except Exception as exc:
+        logger.warning("storage_summary: parquet enumeration failed: %s", exc)
+
+    parquet_providers.sort(key=lambda p: p["size_bytes"], reverse=True)
+    grand_total_bytes = (total_bytes or 0) + parquet_total_bytes
     return {
         "tables": out,
         "total_rows": total_rows,
         "total_bytes": total_bytes,
+        "parquet": {
+            "providers": parquet_providers,
+            "total_bytes": parquet_total_bytes,
+        },
+        "grand_total_bytes": grand_total_bytes,
     }
 
 

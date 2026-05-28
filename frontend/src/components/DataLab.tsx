@@ -1848,12 +1848,15 @@ function OnDemandSessionsSection() {
   )
 }
 
-type RecordTab = 'microstructure' | 'coverage' | 'crypto' | 'sessions'
+type RecordTab = 'microstructure' | 'coverage' | 'sessions'
 
+// NOTE: the former 'crypto' subtab drove the retired SQL ml_training_snapshots
+// recorder. That recorder is gone — crypto market state is now archived by the
+// recorded-event-bus (Topics → crypto.update.dispatch) and books by the
+// live_ingestor parquet (Providers). So the subtab was removed.
 const RECORD_TABS: { key: RecordTab; labelKey: string; icon: typeof Layers3 }[] = [
   { key: 'microstructure', labelKey: 'subTabMicrostructure', icon: Layers3 },
   { key: 'coverage', labelKey: 'subTabCoverage', icon: Layers3 },
-  { key: 'crypto', labelKey: 'subTabCrypto', icon: Clock },
   { key: 'sessions', labelKey: 'subTabSessions', icon: PlayCircle },
 ]
 
@@ -1894,7 +1897,6 @@ function RecordView() {
       </div>
       {tab === 'microstructure' ? <MicrostructureRecorderSection /> : null}
       {tab === 'coverage' ? <ProactiveCoverageSection /> : null}
-      {tab === 'crypto' ? <CryptoOhlcRecorderSection /> : null}
       {tab === 'sessions' ? <OnDemandSessionsSection /> : null}
     </div>
   )
