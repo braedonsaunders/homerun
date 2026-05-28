@@ -545,19 +545,26 @@ SEED_TOPICS: tuple[dict[str, Any], ...] = (
             "subscribe to this one topic regardless of which storage "
             "the bytes happen to live in."
         ),
-        # Primary-backing badge for the operator UI.  The actual
-        # dispatch reads ``sources`` below; this field is informational
-        # ("this topic is primarily backed by sql_table data, with
-        # external_parquet supplementing").
-        "storage_kind": "sql_table",
+        # Primary-backing badge for the operator UI.  Live book recording
+        # now writes COLUMNAR PARQUET (``live_ingestor`` provider, off
+        # Postgres) — so the primary backing is external_parquet.  The
+        # legacy ``market_microstructure_snapshots`` SQL table is kept as a
+        # source so historical (pre-cutover) data still replays, unioned by
+        # observed_at with the live parquet + operator imports.
+        "storage_kind": "external_parquet",
         "storage_uri": _sources(
             {
+                # Live book recording (off Postgres) — the canonical
+                # snapshots__/deltas__ columnar layout this sink writes.
+                "kind": "external_parquet",
+                "uri": r"C:\homerun\data\parquet\live_ingestor",
+            },
+            {
+                # Legacy / historical: pre-cutover live data + polybacktest
+                # backfill still live in the SQL table.
                 "kind": "sql_table",
                 "adapter": "MarketMicrostructureSnapshot",
                 "table": "market_microstructure_snapshots",
-                # No provider filter — every importer that writes to
-                # this table contributes to this topic.  Provider
-                # identity is surfaced per-envelope in the payload.
             },
             {
                 "kind": "external_parquet",

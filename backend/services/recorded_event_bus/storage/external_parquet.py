@@ -81,6 +81,10 @@ async def external_parquet_replayer(
     if not base.exists():
         return
 
+    # The parquet "kind" this topic projects.  ``*.delta`` topics read
+    # ``deltas__`` files; every other book topic reads ``snapshots__``.
+    expected_kind = "deltas" if spec.slug.endswith(".delta") else "snapshots"
+
     # Entity (token_id) filter from the window.
     entity_set: Optional[frozenset[str]] = None
     if window.entity_filter is not None:
@@ -111,7 +115,14 @@ async def external_parquet_replayer(
             m = _FILENAME_RE.match(fp.name)
             if m is None:
                 continue
-            _kind, token = m.groups()
+            file_kind, token = m.groups()
+            # Kind filter — a window dir can hold BOTH ``snapshots__`` and
+            # ``deltas__`` files (the live ingestor writes both side by
+            # side).  Only read the kind this topic projects, or we'd try
+            # to parse delta files as SNAPSHOT_SCHEMA.  ``*.delta`` topics
+            # read ``deltas``; everything else reads ``snapshots``.
+            if file_kind != expected_kind:
+                continue
             if entity_set is not None and token not in entity_set:
                 continue
             files.append((fp, token))
