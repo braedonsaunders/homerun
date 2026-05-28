@@ -27,7 +27,6 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  Clock,
   Database,
   Download,
   Filter,
@@ -38,7 +37,6 @@ import {
   RefreshCw,
   Search,
   Table as TableIcon,
-  Trash2,
   X,
 } from 'lucide-react'
 
@@ -47,7 +45,6 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { ScrollArea } from './ui/scroll-area'
-import { Switch } from './ui/switch'
 import { cn } from '../lib/utils'
 import DataLabProviders from './DataLabProviders'
 import DataLabTopics from './DataLabTopics'
@@ -76,14 +73,6 @@ import {
   startRecordingSession,
   stopRecordingSession,
 } from '../services/apiDataset'
-import {
-  deleteMLData,
-  getMLDataStats,
-  getMLRecorderConfig,
-  pruneMLData,
-  updateMLRecorderConfig,
-  type MLRecorderConfig,
-} from '../services/apiMachineLearning'
 
 const PER_PAGE_OPTIONS = [50, 100, 250, 500] as const
 
@@ -1061,248 +1050,6 @@ function ProactiveCoverageSection() {
       ) : null}
 
       <div className="border-t border-border/30 px-3 py-2 text-[10px] text-muted-foreground" dangerouslySetInnerHTML={{ __html: t('dataLab.proactiveFootnote', { interval: s?.loop_interval_seconds ?? 60, cap: s?.max_tokens ?? 8000, floor: s?.min_liquidity_usd ?? 10 }) }} />
-    </div>
-  )
-}
-
-
-
-
-function CryptoOhlcRecorderSection() {
-  const { t } = useTranslation()
-  const queryClient = useQueryClient()
-  const cfgQuery = useQuery({
-    queryKey: ['data-lab', 'recorder-config'],
-    queryFn: getMLRecorderConfig,
-    refetchInterval: 30_000,
-  })
-  const statsQuery = useQuery({
-    queryKey: ['data-lab', 'recorder-stats'],
-    queryFn: getMLDataStats,
-    refetchInterval: 30_000,
-  })
-  const updateMutation = useMutation({
-    mutationFn: updateMLRecorderConfig,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['data-lab', 'recorder-config'] }),
-  })
-  const pruneMutation = useMutation({
-    mutationFn: () => pruneMLData(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['data-lab', 'recorder-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['data-lab', 'storage'] })
-    },
-  })
-  const deleteMutation = useMutation({
-    mutationFn: deleteMLData,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['data-lab', 'recorder-stats'] })
-      queryClient.invalidateQueries({ queryKey: ['data-lab', 'storage'] })
-    },
-  })
-
-  const cfg = cfgQuery.data?.config
-  const [intervalSeconds, setIntervalSeconds] = useState('60')
-  const [retentionDays, setRetentionDays] = useState('90')
-  const [assets, setAssets] = useState('')
-  const [timeframes, setTimeframes] = useState('')
-
-  useEffect(() => {
-    if (cfg) {
-      setIntervalSeconds(String(cfg.interval_seconds))
-      setRetentionDays(String(cfg.retention_days))
-      setAssets((cfg.assets ?? []).join(', '))
-      setTimeframes((cfg.timeframes ?? []).join(', '))
-    }
-  }, [cfg?.interval_seconds, cfg?.retention_days, (cfg?.assets ?? []).join('|'), (cfg?.timeframes ?? []).join('|')])
-
-  const isRecording = Boolean(cfg?.is_recording)
-
-  const parseList = (s: string): string[] =>
-    s.split(',').map((x) => x.trim()).filter(Boolean)
-
-  const updateField = (patch: Partial<MLRecorderConfig>) => updateMutation.mutate(patch)
-
-  const stats = statsQuery.data
-  return (
-    <div className="rounded-md border border-border/40 bg-card/30">
-      <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
-        <div className="flex items-center gap-2">
-          <Clock className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
-          <span className="text-xs font-semibold">{t('dataLab.cryptoOhlcTitle')}</span>
-          <span className="text-[10px] text-muted-foreground">
-            {t('dataLab.cryptoOhlcSub')}
-          </span>
-          <Badge
-            variant="outline"
-            className={cn(
-              'text-[9px]',
-              isRecording
-                ? 'border-emerald-500/40 text-emerald-300'
-                : 'border-border/40 text-muted-foreground',
-            )}
-          >
-            {isRecording ? t('dataLab.recording') : t('dataLab.idle')}
-          </Badge>
-        </div>
-        <Switch
-          checked={isRecording}
-          onCheckedChange={(checked) => updateField({ is_recording: checked })}
-          disabled={updateMutation.isPending}
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-4">
-        <div className="space-y-1">
-          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            {t('dataLab.tickInterval')}
-          </Label>
-          <div className="flex gap-1">
-            <Input
-              type="number"
-              min={5}
-              max={3600}
-              value={intervalSeconds}
-              onChange={(e) => setIntervalSeconds(e.target.value)}
-              className="h-7 text-[11px]"
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-[10px]"
-              onClick={() => updateField({ interval_seconds: Number(intervalSeconds) })}
-              disabled={updateMutation.isPending}
-            >
-              {t('dataLab.set')}
-            </Button>
-          </div>
-        </div>
-        <div className="space-y-1">
-          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            {t('dataLab.retentionDays')}
-          </Label>
-          <div className="flex gap-1">
-            <Input
-              type="number"
-              min={1}
-              max={365}
-              value={retentionDays}
-              onChange={(e) => setRetentionDays(e.target.value)}
-              className="h-7 text-[11px]"
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-[10px]"
-              onClick={() => updateField({ retention_days: Number(retentionDays) })}
-              disabled={updateMutation.isPending}
-            >
-              {t('dataLab.set')}
-            </Button>
-          </div>
-        </div>
-        <div className="space-y-1">
-          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            {t('dataLab.assetsCsv')}
-          </Label>
-          <div className="flex gap-1">
-            <Input
-              value={assets}
-              onChange={(e) => setAssets(e.target.value)}
-              className="h-7 text-[11px]"
-              placeholder="BTC, ETH"
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-[10px]"
-              onClick={() => updateField({ assets: parseList(assets) })}
-              disabled={updateMutation.isPending}
-            >
-              {t('dataLab.set')}
-            </Button>
-          </div>
-        </div>
-        <div className="space-y-1">
-          <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
-            {t('dataLab.timeframesCsv')}
-          </Label>
-          <div className="flex gap-1">
-            <Input
-              value={timeframes}
-              onChange={(e) => setTimeframes(e.target.value)}
-              className="h-7 text-[11px]"
-              placeholder="1m, 5m, 15m"
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-[10px]"
-              onClick={() => updateField({ timeframes: parseList(timeframes) })}
-              disabled={updateMutation.isPending}
-            >
-              {t('dataLab.set')}
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {stats && stats.groups && stats.groups.length > 0 ? (
-        <div className="border-t border-border/30 px-3 py-2">
-          <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-            {t('dataLab.recordedScope')}
-          </div>
-          <div className="grid gap-1 md:grid-cols-2 xl:grid-cols-4">
-            {stats.groups.map((g) => (
-              <div
-                key={`${g.task_key}-${g.asset}-${g.timeframe}`}
-                className="rounded-sm border border-border/30 bg-background/40 px-2 py-1 text-[10px]"
-              >
-                <div className="font-medium uppercase">
-                  {g.asset}/{g.timeframe}
-                </div>
-                <div className="font-mono tabular-nums text-muted-foreground">
-                  {t('dataLab.snapshotsCount', { n: g.count.toLocaleString() })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="flex items-center gap-2 border-t border-border/30 px-3 py-2">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 gap-1 text-[10px]"
-          onClick={() => pruneMutation.mutate()}
-          disabled={pruneMutation.isPending}
-        >
-          {pruneMutation.isPending ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <Trash2 className="h-3 w-3" />
-          )}
-          {t('dataLab.pruneOlderThanRetention')}
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 gap-1 text-[10px] text-rose-300 hover:bg-rose-500/10"
-          onClick={() => {
-            if (confirm(t('dataLab.confirmDeleteAllMlData'))) {
-              deleteMutation.mutate()
-            }
-          }}
-          disabled={deleteMutation.isPending}
-        >
-          {deleteMutation.isPending ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <Trash2 className="h-3 w-3" />
-          )}
-          {t('dataLab.deleteAll')}
-        </Button>
-      </div>
     </div>
   )
 }
