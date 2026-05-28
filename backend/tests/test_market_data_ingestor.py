@@ -30,7 +30,6 @@ from services.market_data_ingestor import (
 def _disable_global_pressure(monkeypatch):
     monkeypatch.setattr("services.market_data_ingestor.current_backpressure_level", lambda: 0.0)
     monkeypatch.setattr("services.market_data_ingestor.is_db_pressure_active", lambda: False)
-    monkeypatch.setattr("services.market_data_ingestor.maybe_mark_db_pressure", lambda *args, **kwargs: False)
     monkeypatch.setattr("services.market_data_ingestor.publish_backpressure", lambda *args, **kwargs: None)
 
 
@@ -372,24 +371,11 @@ async def test_flush_batch_drops_rows_after_commit_timeout(monkeypatch):
     row = object()
     ing._snapshot_queue.put_nowait(row)
 
-    class _Session:
-        def add_all(self, rows):
-            self.rows = rows
+    class _FailingSink:
+        def write(self, rows, *, kind):
+            raise TimeoutError("simulated write timeout")
 
-        async def commit(self):
-            raise TimeoutError("simulated commit timeout")
-
-        async def rollback(self):
-            return None
-
-    class _SessionContext:
-        async def __aenter__(self):
-            return _Session()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr("services.market_data_ingestor.AsyncSessionLocal", lambda: _SessionContext())
+    ing._book_sink = _FailingSink()
 
     await ing._flush_batch(queue=ing._snapshot_queue, batch=10, kind="snapshot")
 

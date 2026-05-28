@@ -2134,17 +2134,17 @@ class _SyntheticOpp:
 # routes through the corresponding event-driven path; everything else
 # falls through to the book-driven path.
 def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
-    """Read the strategy's own ``subscriptions`` declaration to pick a
-    detect-loop branch — that's it.  No slug map, no topic resolver, no
-    indirection: the strategy declares which ``EventType`` it consumes
-    in itself, and the detect loop has a branch per event-driven kind.
+    """Pick a detect-loop branch for the given strategy.
 
-    Returns ``None`` (book-driven) when the strategy doesn't subscribe to
-    any of the event-driven kinds the detect loop knows about — its
-    detect() will be called against the price-grid tick instead.
+    Checks (in order):
+    1. ``subscriptions`` — the strategy's declared EventType list.
+    2. ``accepted_signal_strategy_types`` — strategies that copy-trade without
+       declaring explicit subscriptions still route to the wallet-event branch.
+    3. ``slug`` — final fallback for strategies whose slug is the canonical
+       copy-trade identifier.
 
-    The ``slug`` argument is retained for log/metric labeling but not
-    consulted for routing decisions.
+    Returns ``None`` (book-driven) when none of the above resolve to a known
+    event-driven branch.
     """
     from services.data_events import EventType
 
@@ -2155,6 +2155,14 @@ def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
         return "wallet_trade"
     if EventType.MARKET_DATA_REFRESH in subs:
         return "scanner_tick"
+
+    accepted = getattr(strategy, "accepted_signal_strategy_types", None) or []
+    if "traders_copy_trade" in accepted:
+        return "wallet_trade"
+
+    if slug.lower() == "traders_copy_trade":
+        return "wallet_trade"
+
     return None
 
 

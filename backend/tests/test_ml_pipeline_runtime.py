@@ -73,7 +73,9 @@ async def test_market_runtime_skips_ml_when_idle(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_market_runtime_records_without_active_deployment(monkeypatch):
+async def test_market_runtime_skips_sdk_when_deployment_inactive(monkeypatch):
+    # Recording is now the recorded_event_bus's responsibility; market_runtime
+    # only runs inference (annotate) when a deployment is active.
     sdk = _FakeMachineLearningSdk(recording_enabled=True, deployment_active=False)
     monkeypatch.setattr(market_runtime, "get_machine_learning_sdk", lambda: sdk)
 
@@ -87,7 +89,7 @@ async def test_market_runtime_records_without_active_deployment(monkeypatch):
     await runtime._refresh_ml_pipeline(payload, allow_record=True)
 
     sdk.annotate_market_batch.assert_not_awaited()
-    sdk.record_market_batch.assert_awaited_once_with(task_key="crypto_directional", markets=payload)
+    sdk.record_market_batch.assert_not_awaited()
     sdk.prune_data.assert_not_awaited()
 
 
