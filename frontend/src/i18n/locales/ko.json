@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "미리보기",
-    "liveFetchNoRecords": "실시간 가져오기 — 레코드가 저장되지 않음",
-    "recordSummary": "{{total}}행 중 {{shown}}행 · {{duration}}ms",
-    "fetchingPreview": "미리보기 행을 가져오는 중...",
+    "liveFetchNoRecords": "최근 수집에서 저장된 레코드",
+    "recordSummary": "저장된 {{total}}개 중 {{shown}}개",
+    "fetchingPreview": "저장된 행 불러오는 중...",
     "previewFailed": "미리보기 실패",
-    "zeroRecords": "fetch_async()가 0개의 레코드를 반환했습니다",
+    "zeroRecords": "아직 저장된 레코드가 없습니다",
     "untitled": "(제목 없음)",
     "fieldsCount": "필드 {{count}}개"
   },

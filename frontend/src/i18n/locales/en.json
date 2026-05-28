@@ -2517,11 +2517,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "Preview",
-    "liveFetchNoRecords": "Live fetch — no records persisted",
-    "recordSummary": "{{shown}} of {{total}} rows · {{duration}}ms",
-    "fetchingPreview": "Fetching preview rows...",
+    "liveFetchNoRecords": "Stored records from the latest ingest",
+    "recordSummary": "{{shown}} of {{total}} stored rows",
+    "fetchingPreview": "Loading stored rows...",
     "previewFailed": "Preview failed",
-    "zeroRecords": "fetch_async() returned 0 records",
+    "zeroRecords": "No records stored yet",
     "untitled": "(untitled)",
     "fieldsCount": "{{count}} fields"
   },

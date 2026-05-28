@@ -15,7 +15,7 @@ import { Button } from './ui/button'
 import { ScrollArea } from './ui/scroll-area'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './ui/sheet'
 import { cn } from '../lib/utils'
-import { previewUnifiedDataSource } from '../services/api'
+import { getUnifiedDataSourceRecords } from '../services/api'
 
 interface PreviewRecord {
   external_id: string | null
@@ -123,7 +123,7 @@ export default function DataSourcePreviewFlyout({
   const previewMutation = useMutation({
     mutationFn: async () => {
       if (!sourceId) throw new Error('No source selected')
-      return previewUnifiedDataSource(sourceId, { max_records: 25 })
+      return getUnifiedDataSourceRecords(sourceId, { limit: 25, offset: 0 })
     },
   })
 
@@ -132,9 +132,9 @@ export default function DataSourcePreviewFlyout({
     if (sourceId !== prevSourceIdRef.current) {
       prevSourceIdRef.current = sourceId
       previewMutation.reset()
-      if (open && sourceId) {
-        previewMutation.mutate()
-      }
+    }
+    if (open && sourceId) {
+      previewMutation.mutate()
     }
   }, [sourceId, open])
 
@@ -164,7 +164,7 @@ export default function DataSourcePreviewFlyout({
             <div className="flex items-center gap-2">
               {data && (
                 <span className="text-[10px] text-muted-foreground">
-                  {t('dataSourcePreviewFlyout.recordSummary', { shown: data.records.length, total: data.total_fetched, duration: data.duration_ms })}
+                  {t('dataSourcePreviewFlyout.recordSummary', { shown: data.records.length, total: data.total })}
                 </span>
               )}
               <Button

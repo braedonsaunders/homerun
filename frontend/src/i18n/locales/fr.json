@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "Aperçu",
-    "liveFetchNoRecords": "Récupération en direct — aucun enregistrement conservé",
-    "recordSummary": "{{shown}} sur {{total}} lignes · {{duration}} ms",
-    "fetchingPreview": "Récupération des lignes d'aperçu...",
+    "liveFetchNoRecords": "Enregistrements stockés du dernier import",
+    "recordSummary": "{{shown}} sur {{total}} lignes stockées",
+    "fetchingPreview": "Chargement des lignes stockées...",
     "previewFailed": "Échec de l'aperçu",
-    "zeroRecords": "fetch_async() a retourné 0 enregistrement",
+    "zeroRecords": "Aucun enregistrement stocké pour le moment",
     "untitled": "(sans titre)",
     "fieldsCount": "{{count}} champs"
   },

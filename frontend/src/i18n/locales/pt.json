@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "Pré-visualização",
-    "liveFetchNoRecords": "Busca ao vivo — nenhum registro persistido",
-    "recordSummary": "{{shown}} de {{total}} linhas · {{duration}}ms",
-    "fetchingPreview": "Buscando linhas de pré-visualização...",
+    "liveFetchNoRecords": "Registros armazenados da última ingestão",
+    "recordSummary": "{{shown}} de {{total}} linhas armazenadas",
+    "fetchingPreview": "Carregando linhas armazenadas...",
     "previewFailed": "Falha na pré-visualização",
-    "zeroRecords": "fetch_async() retornou 0 registros",
+    "zeroRecords": "Nenhum registro armazenado ainda",
     "untitled": "(sem título)",
     "fieldsCount": "{{count}} campos"
   },

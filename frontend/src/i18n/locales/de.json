@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "Vorschau",
-    "liveFetchNoRecords": "Live-Abruf — keine Datensätze gespeichert",
-    "recordSummary": "{{shown}} von {{total}} Zeilen · {{duration}} ms",
-    "fetchingPreview": "Vorschauzeilen werden abgerufen...",
+    "liveFetchNoRecords": "Gespeicherte Datensätze aus dem letzten Import",
+    "recordSummary": "{{shown}} von {{total}} gespeicherten Zeilen",
+    "fetchingPreview": "Gespeicherte Zeilen werden geladen...",
     "previewFailed": "Vorschau fehlgeschlagen",
-    "zeroRecords": "fetch_async() hat 0 Datensätze zurückgegeben",
+    "zeroRecords": "Noch keine Datensätze gespeichert",
     "untitled": "(ohne Titel)",
     "fieldsCount": "{{count}} Felder"
   },

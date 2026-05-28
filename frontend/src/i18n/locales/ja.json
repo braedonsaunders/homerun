@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "プレビュー",
-    "liveFetchNoRecords": "ライブ取得 — レコードは保存されません",
-    "recordSummary": "{{total}} 行中 {{shown}} 行 · {{duration}}ms",
-    "fetchingPreview": "プレビュー行を取得中...",
+    "liveFetchNoRecords": "最新の取り込みで保存されたレコード",
+    "recordSummary": "{{total}} 件中 {{shown}} 件（保存済み）",
+    "fetchingPreview": "保存された行を読み込み中...",
     "previewFailed": "プレビューに失敗しました",
-    "zeroRecords": "fetch_async() は 0 件のレコードを返しました",
+    "zeroRecords": "保存されたレコードはまだありません",
     "untitled": "（タイトルなし）",
     "fieldsCount": "{{count}}個のフィールド"
   },

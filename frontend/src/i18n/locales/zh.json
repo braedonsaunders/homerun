@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "预览",
-    "liveFetchNoRecords": "实时获取 — 不保留记录",
-    "recordSummary": "{{total}} 行中的 {{shown}} 行 · {{duration}}ms",
-    "fetchingPreview": "正在获取预览行...",
+    "liveFetchNoRecords": "最近一次采集已存储的记录",
+    "recordSummary": "{{total}} 行中的 {{shown}} 行（已存储）",
+    "fetchingPreview": "正在加载已存储的行...",
     "previewFailed": "预览失败",
-    "zeroRecords": "fetch_async() 返回 0 条记录",
+    "zeroRecords": "尚未存储任何记录",
     "untitled": "（无标题）",
     "fieldsCount": "{{count}} 个字段"
   },

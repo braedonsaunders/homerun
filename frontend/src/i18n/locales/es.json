@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "Vista previa",
-    "liveFetchNoRecords": "Obtención en vivo — no se conservan registros",
-    "recordSummary": "{{shown}} de {{total}} filas · {{duration}} ms",
-    "fetchingPreview": "Obteniendo filas de vista previa...",
+    "liveFetchNoRecords": "Registros almacenados de la última ingesta",
+    "recordSummary": "{{shown}} de {{total}} filas almacenadas",
+    "fetchingPreview": "Cargando filas almacenadas...",
     "previewFailed": "Vista previa fallida",
-    "zeroRecords": "fetch_async() devolvió 0 registros",
+    "zeroRecords": "Aún no hay registros almacenados",
     "untitled": "(sin título)",
     "fieldsCount": "{{count}} campos"
   },

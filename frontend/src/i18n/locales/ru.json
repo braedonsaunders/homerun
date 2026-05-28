@@ -2516,11 +2516,11 @@
   },
   "dataSourcePreviewFlyout": {
     "preview": "Предпросмотр",
-    "liveFetchNoRecords": "Живой запрос — записи не сохраняются",
-    "recordSummary": "{{shown}} из {{total}} строк · {{duration}} мс",
-    "fetchingPreview": "Получение строк предпросмотра...",
+    "liveFetchNoRecords": "Сохранённые записи из последнего импорта",
+    "recordSummary": "{{shown}} из {{total}} сохранённых строк",
+    "fetchingPreview": "Загрузка сохранённых строк...",
     "previewFailed": "Сбой предпросмотра",
-    "zeroRecords": "fetch_async() вернул 0 записей",
+    "zeroRecords": "Записи ещё не сохранены",
     "untitled": "(без названия)",
     "fieldsCount": "{{count}} полей"
   },
