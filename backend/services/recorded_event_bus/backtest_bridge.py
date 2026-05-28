@@ -55,16 +55,16 @@ _LEGACY_SUBSCRIPTION_MAP: dict[str, tuple[str, ...]] = {
     "trader_activity":   ("trader.activity",),
     "wallet_trade":      ("wallet.trade",),
     "trade_execution":   ("polymarket.trade.execution",),
-    # ``market_data_refresh`` is the catch-all live event for "look at
-    # the current book" — strategies that subscribe to it are book-
-    # driven, which the existing discovery replay handles via
-    # ``_build_per_tick_prices_grid`` (not the bus).  Return empty so
-    # that path keeps owning book replay.  The bus topic
-    # ``polymarket.book.snapshot`` exists for explicit subscribers and
-    # is also queried by the grid builder, so this isn't a duplicate
-    # — just a separation of concerns: legacy book strategies get the
-    # tick-grid; explicit topic subscribers get raw envelopes.
-    "market_data_refresh": (),
+    # ``market_data_refresh`` is the live scanner pulse — strategies
+    # subscribed to it (tail_end_carry, basic_arbitrage, news_edge,
+    # stat_arb, certainty_shock, …) consume the catalog snapshot it
+    # carries.  The catalog itself is teed into the bus once per refresh
+    # (services/shared_state.py::_publish_catalog_snapshot_to_bus); the
+    # backtest detect-loop carries that snapshot forward across ticks and
+    # augments per-token prices from the parquet book grid.  Books stay
+    # in live_ingestor parquet, oracle data stays in
+    # crypto.update.dispatch — only the catalog metadata is new here.
+    "market_data_refresh": ("polymarket.catalog.snapshot",),
 }
 
 

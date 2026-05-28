@@ -751,6 +751,20 @@ async def write_market_catalog(
             duration_seconds=duration_seconds,
             error=error,
         )
+        # Tee the same payload into the recorded-event bus so backtest
+        # replay can reconstruct each refresh's catalog state.  Best-
+        # effort; never blocks live catalog persistence.  Gated by the
+        # global recording master switch inside the publisher.
+        try:
+            await _publish_catalog_snapshot_to_bus(
+                events_payload=events_payload,
+                markets_payload=markets_payload,
+                updated_at=updated_at,
+                duration_seconds=duration_seconds,
+                error=error,
+            )
+        except Exception:  # noqa: BLE001 — publisher already swallows; defensive
+            logger.warning("polymarket.catalog.snapshot tee failed", exc_info=True)
 
     await _apply_local_db_timeouts(
         session,
@@ -2178,3 +2192,122 @@ async def cleanup_snapshot_opportunities(
     status["opportunities_count"] = len(opportunities)
     await write_scanner_snapshot(session, opportunities, status)
     return {"expired_removed": expired_removed, "old_removed": old_removed, "remaining_count": len(opportunities)}
+
+
+# ── Recorded-event bus tap (catalog snapshot) ─────────────────────────
+#
+# Every successful ``write_market_catalog`` call tees the catalog payload
+# into the recorded-event bus as a ``polymarket.catalog.snapshot``
+# envelope.  This is the historical-catalog stream every scanner-based
+# backtest (tail_end_carry, basic_arbitrage, news_edge, stat_arb, …)
+# needs to reconstruct as-if-live MARKET_DATA_REFRESH events — without
+# duplicating the per-token L2 books (already in live_ingestor parquet)
+# or the computed crypto oracle (already in crypto.update.dispatch).
+#
+# Cadence = catalog refresh cadence (~minutes between refreshes when
+# something actually changes); the snapshot is the entire markets +
+# events list, parquet-compressed by the bus storage.
+
+_CATALOG_SNAPSHOT_TOPIC = "polymarket.catalog.snapshot"
+_catalog_snapshot_topic_registered: bool = False
+
+
+async def _ensure_catalog_snapshot_topic_registered() -> None:
+    """Idempotently register the catalog-snapshot bus topic.  Mirrors
+    ``market_runtime._ensure_crypto_update_topic_registered`` in shape +
+    retention defaults."""
+    global _catalog_snapshot_topic_registered
+    if _catalog_snapshot_topic_registered:
+        return
+    try:
+        from services.external_data.parquet_schema import parquet_roots as _pq_roots
+        from services.recorded_event_bus.catalog import register_topic
+
+        roots = _pq_roots()
+        root = Path(str(roots[0])) if roots else Path("data") / "parquet"
+        storage_uri = (root / "recorded_event_bus").resolve().as_uri()
+
+        await register_topic(
+            upsert=True,
+            slug=_CATALOG_SNAPSHOT_TOPIC,
+            title="Polymarket catalog snapshots (live + replay)",
+            description=(
+                "Full markets + events payload of each "
+                "``write_market_catalog`` call — the historical catalog "
+                "state every MARKET_DATA_REFRESH-subscribing strategy "
+                "consumes.  Replayed envelopes shape into the same "
+                "DataEvent the live scanner dispatched, with prices "
+                "augmented per-tick from the parquet book grid so the "
+                "strategy sees fresh top-of-book."
+            ),
+            storage_kind="parquet",
+            storage_uri=storage_uri,
+            retention_days=7,
+            max_bytes=8 * 1024 * 1024 * 1024,  # 8 GB cap; refresh cadence is low
+            publishers=["scanner"],
+            subscribers=[],
+        )
+        _catalog_snapshot_topic_registered = True
+        logger.info("Registered recorded-event bus topic '%s'", _CATALOG_SNAPSHOT_TOPIC)
+    except Exception:  # pragma: no cover — never break the catalog write
+        logger.warning(
+            "Failed to register recorded-event bus topic '%s' — backtest "
+            "replay of MARKET_DATA_REFRESH-subscribing strategies will be "
+            "unavailable",
+            _CATALOG_SNAPSHOT_TOPIC,
+            exc_info=True,
+        )
+
+
+async def _publish_catalog_snapshot_to_bus(
+    *,
+    events_payload: list[Any],
+    markets_payload: list[Any],
+    updated_at: datetime,
+    duration_seconds: float,
+    error: Optional[str],
+) -> None:
+    """Tee a catalog snapshot into the recorded-event bus.  Best-effort:
+    any failure is logged + swallowed so the live catalog write path is
+    never blocked.  Honors the global recording master switch
+    (services.recording_control)."""
+    # Global recording master switch — when OFF, drop the tee.
+    try:
+        from services.recording_control import is_recording_enabled
+
+        if not await is_recording_enabled():
+            return
+    except Exception:  # pragma: no cover — never let the switch break dispatch
+        pass
+
+    # Lazy import: keep this module cold-start free of pyarrow / bus storage.
+    try:
+        from services.recorded_event_bus import RecordedEvent
+        from services.recorded_event_bus import bus as _bus
+        import services.recorded_event_bus.storage  # noqa: F401 -- attach
+    except Exception:  # pragma: no cover
+        return
+
+    await _ensure_catalog_snapshot_topic_registered()
+
+    payload: dict = {
+        "markets": list(markets_payload or []),
+        "events": list(events_payload or []),
+        "updated_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
+        "duration_seconds": float(duration_seconds or 0.0),
+        "error": error,
+        "market_count": len(markets_payload or []),
+        "event_count": len(events_payload or []),
+    }
+    envelope = RecordedEvent(
+        topic=_CATALOG_SNAPSHOT_TOPIC,
+        entity_id="latest",
+        observed_at_us=int(updated_at.timestamp() * 1_000_000)
+            if isinstance(updated_at, datetime) else int(time.time() * 1_000_000),
+        payload=payload,
+        source="scanner",
+    )
+    try:
+        await _bus.publish(envelope)
+    except Exception:  # pragma: no cover
+        logger.warning("polymarket.catalog.snapshot bus publish failed", exc_info=True)

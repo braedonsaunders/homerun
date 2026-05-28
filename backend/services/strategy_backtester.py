@@ -2127,6 +2127,8 @@ def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
         return "crypto_update"
     if EventType.TRADER_ACTIVITY in subs:
         return "wallet_trade"
+    if EventType.MARKET_DATA_REFRESH in subs:
+        return "scanner_tick"
     return None
 
 
@@ -2730,6 +2732,25 @@ async def _replay_bus_events_into_tick_grid(
                 timestamp=ts,
                 payload=dict(envelope.payload or {}),
             )
+        if t == "polymarket.catalog.snapshot":
+            # Recorded catalog snapshot — reconstruct a MARKET_DATA_REFRESH
+            # DataEvent carrying the markets/events the live catalog
+            # refresh published.  The detect loop carries this snapshot
+            # forward across ticks until a newer snapshot replaces it, and
+            # augments per-token prices from the parquet book grid.
+            p = dict(envelope.payload or {})
+            return DataEvent(
+                event_type=EventType.MARKET_DATA_REFRESH,
+                source=envelope.source or "scanner",
+                timestamp=ts,
+                payload={
+                    "updated_at": p.get("updated_at"),
+                    "duration_seconds": p.get("duration_seconds"),
+                    "error": p.get("error"),
+                },
+                markets=list(p.get("markets") or []) or None,
+                events=list(p.get("events") or []) or None,
+            )
         if t == "news.update":
             return DataEvent(
                 event_type=EventType.NEWS_UPDATE,
@@ -3196,16 +3217,18 @@ async def _replay_discover_opportunities(
                 continue
             catalog_markets.append(m)
 
-    if not catalog_markets and event_kind != "crypto_update":
+    if not catalog_markets and event_kind not in ("crypto_update", "scanner_tick"):
         # Without a catalog we can't shape event payloads / look up
         # markets-by-token (the ``market`` field is required for
         # wallet_trade etc.).  Bail out quietly for those.
         #
-        # crypto_update / bus-driven strategies are exempt: each replayed
-        # crypto.update.dispatch envelope CARRIES its markets array (with
-        # time-correct oracle + top-of-book), so the strategy's detect()
-        # reads from the event payload — the current-only catalog file is
-        # not the right source for a historical replay anyway.
+        # crypto_update / scanner_tick / other bus-driven kinds are
+        # exempt: each replayed envelope carries its own markets array
+        # (crypto.update.dispatch -> oracle/top-of-book per market;
+        # scanner.tick -> full catalog snapshot the live scanner pushed),
+        # so the strategy's detect() reads from the event payload — the
+        # current-only catalog file is not the right source for a
+        # historical replay anyway.
         return []
 
     # Step 3: derive the token universe from the catalog.
@@ -3348,6 +3371,15 @@ async def _replay_discover_opportunities(
     detected_total: list[_SyntheticOpp] = []
     detect_failures = 0
 
+    # Carry-forward catalog state for scanner_tick (MARKET_DATA_REFRESH)
+    # replay.  Catalog snapshots arrive at refresh cadence (~ minutes);
+    # backtest ticks fire every sample_interval_seconds.  Maintain the
+    # latest-seen markets across ticks so every tick sees the most recent
+    # snapshot, exactly the way live strategies do (the live catalog is
+    # a shared cache — its state on tick T+1 is whatever the last refresh
+    # left it in, even when no refresh happened between T and T+1).
+    carry_catalog_markets: dict[str, dict] = {}
+
     for tick_i in range(n_ticks):
         tick_t = ticks[tick_i]
 
@@ -3391,6 +3423,51 @@ async def _replay_discover_opportunities(
                         if key:
                             markets_by_id[key] = m
             markets_at_tick: list[dict] = list(markets_by_id.values())
+        elif event_kind == "scanner_tick":
+            # Recorded catalog-snapshot replay — each
+            # polymarket.catalog.snapshot envelope projects to a
+            # MARKET_DATA_REFRESH DataEvent carrying the full catalog at
+            # refresh time.  Carry that catalog forward across ticks until
+            # a fresher snapshot arrives (refresh cadence is minutes;
+            # tick cadence is seconds).  Per-tick prices come from the
+            # parquet book grid (live_ingestor) — we augment each market
+            # dict with the current best_bid/best_ask so the strategy
+            # sees fresh top-of-book on every tick.
+            for ev in events_at_tick:
+                for m in (getattr(ev, "markets", None) or []):
+                    if isinstance(m, dict):
+                        key = str(m.get("id") or m.get("condition_id") or m.get("slug") or "")
+                        if key:
+                            carry_catalog_markets[key] = m
+            if not carry_catalog_markets:
+                # Pre-recording window — no catalog snapshot seen yet.
+                continue
+            # Build markets_at_tick from the carried catalog, augmenting
+            # each market's top-of-book from the per-tick price grid when
+            # the parquet has coverage.  Markets without any token in the
+            # grid still pass through (their last-known book in the
+            # catalog payload is used) — same as live behaviour when the
+            # WS feed is silent for a token.
+            markets_at_tick = []
+            for m in carry_catalog_markets.values():
+                tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
+                augmented = m
+                for tid in tok_ids:
+                    px = prices_at_tick.get(tid)
+                    if not isinstance(px, dict):
+                        continue
+                    # Polymarket up/down: best_bid/ask on UP-side book is
+                    # the market-level price surface; copy the freshest
+                    # snapshot we have for this token into the market.
+                    augmented = dict(augmented)
+                    if px.get("best_bid") is not None:
+                        augmented["best_bid"] = px["best_bid"]
+                    if px.get("best_ask") is not None:
+                        augmented["best_ask"] = px["best_ask"]
+                    if px.get("spread") is not None:
+                        augmented["spread"] = px["spread"]
+                    break  # one token's price is enough at the market level
+                markets_at_tick.append(augmented)
         elif event_kind is not None:
             if not events_at_tick:
                 continue
