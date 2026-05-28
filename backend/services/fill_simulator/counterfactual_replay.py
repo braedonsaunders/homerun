@@ -40,9 +40,11 @@ Used by:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -58,6 +60,128 @@ from models.database import (
 logger = logging.getLogger("counterfactual_replay")
 
 _MIN_DELTA_SIZE = 0.01
+
+# Book + delta recording moved off Postgres to canonical parquet (see
+# market_data_ingestor / book_parquet_sink).  The SQL tables only retain
+# legacy/backfilled history, so the replay falls back to reading the
+# parquet windows when SQL has no rows for the requested token+window.
+# Look back this far when locating the parquet snapshot at placement time.
+_PARQUET_SNAPSHOT_LOOKBACK = timedelta(minutes=30)
+
+
+@dataclass
+class _BookLevelShim:
+    price: float
+    size: float
+
+
+@dataclass
+class _SnapshotShim:
+    """Duck-typed stand-in for MarketMicrostructureSnapshot.bids_json /
+    asks_json so ``_initial_queue_ahead`` works unchanged on parquet data."""
+    bids_json: list[dict[str, float]] = field(default_factory=list)
+    asks_json: list[dict[str, float]] = field(default_factory=list)
+
+
+@dataclass
+class _DeltaShim:
+    """Duck-typed stand-in for BookDeltaEvent fields the replay reads."""
+    price: float | None
+    side: str | None
+    event_type: str | None
+    trade_size: float | None
+    cancel_size: float | None
+    observed_at: datetime
+
+
+async def _resolve_parquet_window(
+    token_id: str, *, start: datetime, end: datetime
+) -> tuple[Path | None, Path | None]:
+    """Locate the parquet snapshot + delta files covering ``[start, end]``
+    for ``token_id``.  Returns ``(snapshots_path, deltas_path)`` — either
+    may be ``None`` if no parquet dataset covers the window / kind."""
+    from services.external_data.parquet_scanner import find_parquet_coverage
+
+    cov = await find_parquet_coverage(token_ids=[token_id], start=start, end=end)
+    snap = cov.get(token_id)
+    if not snap:
+        return None, None
+    snap_p = Path(snap)
+    deltas_p: Path | None = None
+    if "snapshots__" in snap_p.name:
+        cand = snap_p.with_name(snap_p.name.replace("snapshots__", "deltas__", 1))
+        if cand.exists():
+            deltas_p = cand
+    return snap_p, deltas_p
+
+
+def _read_parquet_snapshot_at(path: Path, ts_us_max: int) -> _SnapshotShim | None:
+    """Newest snapshot row with ``observed_at_us <= ts_us_max`` (sync)."""
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    try:
+        t = pq.read_table(
+            str(path),
+            columns=["observed_at_us", "bids_price", "bids_size", "asks_price", "asks_size"],
+        )
+    except Exception:
+        return None
+    if t.num_rows == 0:
+        return None
+    t = t.filter(pc.less_equal(t["observed_at_us"], ts_us_max))
+    if t.num_rows == 0:
+        return None
+    t = t.sort_by([("observed_at_us", "ascending")])
+    row = t.slice(t.num_rows - 1, 1).to_pydict()
+    bids = [
+        {"price": float(p), "size": float(s)}
+        for p, s in zip(row["bids_price"][0] or [], row["bids_size"][0] or [])
+    ]
+    asks = [
+        {"price": float(p), "size": float(s)}
+        for p, s in zip(row["asks_price"][0] or [], row["asks_size"][0] or [])
+    ]
+    return _SnapshotShim(bids_json=bids, asks_json=asks)
+
+
+def _read_parquet_deltas(path: Path, start_us: int, end_us: int) -> list[_DeltaShim]:
+    """Delta rows in ``(start_us, end_us]`` ascending by time (sync)."""
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    try:
+        t = pq.read_table(
+            str(path),
+            columns=["observed_at_us", "event_type", "side", "price", "trade_size", "cancel_size"],
+        )
+    except Exception:
+        return []
+    if t.num_rows == 0:
+        return []
+    t = t.filter(
+        pc.and_(
+            pc.greater(t["observed_at_us"], start_us),
+            pc.less_equal(t["observed_at_us"], end_us),
+        )
+    )
+    if t.num_rows == 0:
+        return []
+    t = t.sort_by([("observed_at_us", "ascending")])
+    d = t.to_pydict()
+    out: list[_DeltaShim] = []
+    for i in range(t.num_rows):
+        out.append(
+            _DeltaShim(
+                price=d["price"][i],
+                side=d["side"][i],
+                event_type=d["event_type"][i],
+                trade_size=d["trade_size"][i],
+                cancel_size=d["cancel_size"][i],
+                observed_at=datetime.fromtimestamp(int(d["observed_at_us"][i]) / 1e6, tz=timezone.utc),
+            )
+        )
+    return out
 
 
 @dataclass
@@ -144,7 +268,18 @@ async def _fetch_initial_snapshot(
         .order_by(MarketMicrostructureSnapshot.observed_at.desc())
         .limit(1)
     )
-    return result.scalar_one_or_none()
+    snap = result.scalar_one_or_none()
+    if snap is not None:
+        return snap
+
+    # Fallback: book recording now lands in parquet, not SQL.
+    snap_path, _deltas_path = await _resolve_parquet_window(
+        token_id, start=placed_at - _PARQUET_SNAPSHOT_LOOKBACK, end=placed_at
+    )
+    if snap_path is None:
+        return None
+    ts_us_max = int(placed_at.timestamp() * 1_000_000)
+    return await asyncio.to_thread(_read_parquet_snapshot_at, snap_path, ts_us_max)
 
 
 async def _stream_delta_events(
@@ -163,7 +298,19 @@ async def _stream_delta_events(
         .where(BookDeltaEvent.observed_at <= end_at)
         .order_by(BookDeltaEvent.observed_at.asc())
     )
-    return list(result.scalars().all())
+    events = list(result.scalars().all())
+    if events:
+        return events
+
+    # Fallback: delta recording now lands in parquet, not SQL.
+    _snap_path, deltas_path = await _resolve_parquet_window(
+        token_id, start=start_at, end=end_at
+    )
+    if deltas_path is None:
+        return []
+    start_us = int(start_at.timestamp() * 1_000_000)
+    end_us = int(end_at.timestamp() * 1_000_000)
+    return await asyncio.to_thread(_read_parquet_deltas, deltas_path, start_us, end_us)
 
 
 async def replay_counterfactual_order(
