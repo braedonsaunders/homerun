@@ -339,42 +339,16 @@ class MachineLearningSDK:
         }
 
     async def record_market_batch(self, *, task_key: str, markets: list[dict[str, Any]]) -> dict[str, Any]:
-        task = get_machine_learning_task(task_key)
-        recorder = await self.get_recorder_config(task.task_key)
-        config = _ensure_json_dict(recorder.get("config"))
-        if not bool(config.get("is_recording")) or not self._in_schedule(config):
-            return {"recorded": 0}
+        """RETIRED — no-op.
 
-        now_mono = time.monotonic()
-        last_recorded = self._last_record_mono_by_task.get(task.task_key, 0.0)
-        interval_seconds = max(5, int(config.get("interval_seconds") or 60))
-        if (now_mono - last_recorded) < interval_seconds:
-            return {"recorded": 0}
-
-        allowed_assets = set(task.normalize_assets(list(config.get("assets") or [])))
-        allowed_timeframes = set(task.normalize_timeframes(list(config.get("timeframes") or [])))
-        recorded_at = utcnow()
-        snapshot_rows: list[MLTrainingSnapshot] = []
-        for market in markets:
-            if not isinstance(market, dict):
-                continue
-            record = task.build_snapshot_record(market, recorded_at=recorded_at)
-            if record is None:
-                continue
-            if record["asset"] not in allowed_assets or record["timeframe"] not in allowed_timeframes:
-                continue
-            snapshot_rows.append(MLTrainingSnapshot(id=str(uuid.uuid4()), **record))
-
-        if not snapshot_rows:
-            return {"recorded": 0}
-
-        async with AsyncSessionLocal() as session:
-            session.add_all(snapshot_rows)
-            await session.commit()
-
-        self._last_record_mono_by_task[task.task_key] = now_mono
-        self._recorder_cache.pop(task.task_key, None)
-        return {"recorded": len(snapshot_rows), "recorded_at": _iso(recorded_at)}
+        The standalone SQL ``ml_training_snapshots`` recorder has been
+        removed.  The identical crypto market state is already archived by
+        the recorded-event-bus ``crypto.update.dispatch`` topic (parquet,
+        bounded + UI-managed), so ML training/eval sources from there
+        instead of a duplicate Postgres recorder on the trading process.
+        Kept as a no-op so any legacy caller is harmless.
+        """
+        return {"recorded": 0, "retired": True, "source": "recorded_event_bus:crypto.update.dispatch"}
 
     async def get_data_stats(self, task_key: str = "crypto_directional") -> dict[str, Any]:
         task = get_machine_learning_task(task_key)

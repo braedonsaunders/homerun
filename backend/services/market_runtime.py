@@ -1363,44 +1363,24 @@ class MarketRuntime:
             if not cache_fresh:
                 self._schedule_ml_runtime_state_refresh()
             runtime_state = self._cached_ml_runtime_state(allow_record=allow_record)
-            if not runtime_state.get("recording_enabled") and not runtime_state.get("deployment_active"):
+            # ML training data is sourced from the recorded_event_bus
+            # ``crypto.update.dispatch`` topic (parquet) — the SAME crypto
+            # market state this dispatch carries is already archived there.
+            # The standalone SQL ``ml_training_snapshots`` recorder has been
+            # retired (it duplicated the bus and wrote to Postgres on the
+            # trading process).  Here we only run live INFERENCE (annotate)
+            # when a deployment is active; recording is the bus's job.
+            if not runtime_state.get("deployment_active"):
                 return
-            should_record = bool(runtime_state.get("recording_enabled")) if allow_record else False
-            is_active = bool(runtime_state.get("deployment_active"))
             sdk = get_machine_learning_sdk()
-
-            if is_active:
-                try:
-                    await self._await_with_cancel_grace(
-                        sdk.annotate_market_batch(task_key=_CRYPTO_ML_TASK_KEY, markets=payload),
-                        timeout=_ML_ANNOTATE_TIMEOUT_SECONDS,
-                        task_name="market-runtime-ml-annotate",
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to annotate crypto markets with ML predictions", exc_info=exc)
-
-            if should_record:
-                try:
-                    await self._await_with_cancel_grace(
-                        sdk.record_market_batch(task_key=_CRYPTO_ML_TASK_KEY, markets=payload),
-                        timeout=_ML_RECORD_TIMEOUT_SECONDS,
-                        task_name="market-runtime-ml-record",
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to record ML training snapshots", exc_info=exc)
-
-            now_mono = time.monotonic()
-            if not should_record or (now_mono - self._last_ml_prune_mono) < _ML_PRUNE_INTERVAL_SECONDS:
-                return
             try:
                 await self._await_with_cancel_grace(
-                    sdk.prune_data(task_key=_CRYPTO_ML_TASK_KEY),
-                    timeout=_ML_PRUNE_TIMEOUT_SECONDS,
-                    task_name="market-runtime-ml-prune",
+                    sdk.annotate_market_batch(task_key=_CRYPTO_ML_TASK_KEY, markets=payload),
+                    timeout=_ML_ANNOTATE_TIMEOUT_SECONDS,
+                    task_name="market-runtime-ml-annotate",
                 )
-                self._last_ml_prune_mono = now_mono
             except Exception as exc:
-                logger.warning("Failed to prune ML training snapshots", exc_info=exc)
+                logger.warning("Failed to annotate crypto markets with ML predictions", exc_info=exc)
 
     async def _queue_ml_pipeline_refresh(self, payload: list[dict[str, Any]], *, allow_record: bool) -> None:
         async with self._pending_ml_lock:
