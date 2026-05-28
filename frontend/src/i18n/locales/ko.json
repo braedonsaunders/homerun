@@ -3064,7 +3064,8 @@
     "templatePreview": "템플릿 미리보기",
     "readOnly": "읽기 전용",
     "cancel": "취소",
-    "continueToEditor": "편집기로 계속"
+    "continueToEditor": "편집기로 계속",
+    "recordsCount": "{{count}}개"
   },
   "worldMap": {
     "unknown": "알 수 없음",

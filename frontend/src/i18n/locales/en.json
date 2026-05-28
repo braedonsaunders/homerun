@@ -3065,7 +3065,8 @@
     "templatePreview": "Template Preview",
     "readOnly": "Read-only",
     "cancel": "Cancel",
-    "continueToEditor": "Continue to Editor"
+    "continueToEditor": "Continue to Editor",
+    "recordsCount": "{{count}} records"
   },
   "worldMap": {
     "unknown": "Unknown",

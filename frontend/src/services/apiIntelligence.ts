@@ -1027,6 +1027,7 @@ export interface UnifiedDataSource {
     has_transform: boolean
   }
   runtime: Record<string, any> | null
+  record_count: number | null
 }
 
 export interface UnifiedDataSourceRun {

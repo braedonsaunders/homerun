@@ -247,7 +247,7 @@ async def _ensure_data_sources_seeded_once(session: AsyncSession) -> None:
             _DATA_SOURCES_SEEDED = False
 
 
-def _source_to_dict(row: DataSource, *, include_code: bool = True) -> dict:
+def _source_to_dict(row: DataSource, *, include_code: bool = True, record_count: Optional[int] = None) -> dict:
     source_code = str(row.source_code or "")
     capabilities = _detect_capabilities_fast(source_code)
     if include_code:
@@ -305,6 +305,7 @@ def _source_to_dict(row: DataSource, *, include_code: bool = True) -> dict:
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "capabilities": capabilities,
         "runtime": runtime_payload,
+        "record_count": int(record_count) if record_count is not None else None,
     }
 
 
@@ -782,10 +783,25 @@ async def list_data_sources(
             query = query.where(DataSource.enabled == bool(enabled))
 
         rows = (await session.execute(query)).scalars().all()
+        record_counts = dict(
+            (
+                await session.execute(
+                    select(DataSourceRecord.data_source_id, func.count()).group_by(
+                        DataSourceRecord.data_source_id
+                    )
+                )
+            ).all()
+        )
         items = []
         for row in rows:
             try:
-                items.append(_source_to_dict(row, include_code=include_code))
+                items.append(
+                    _source_to_dict(
+                        row,
+                        include_code=include_code,
+                        record_count=int(record_counts.get(row.id, 0)),
+                    )
+                )
             except Exception as exc:
                 slug = str(row.slug or "").strip().lower()
                 logger.warning("Skipping data source due serialization failure", source_slug=slug, error=exc)

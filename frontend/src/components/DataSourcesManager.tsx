@@ -1039,11 +1039,23 @@ export default function DataSourcesManager({
                         <p className="text-[10px] font-mono text-muted-foreground mt-1 truncate">
                           {source.slug}
                         </p>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">
-                          {SOURCE_KIND_LABEL_KEYS[source.source_kind]
-                            ? t(`dataSourcesManager.sourceKinds.${SOURCE_KIND_LABEL_KEYS[source.source_kind]}`)
-                            : source.source_kind}
-                        </p>
+                        <div className="flex items-center justify-between gap-2 mt-0.5">
+                          <p className="text-[10px] text-muted-foreground">
+                            {SOURCE_KIND_LABEL_KEYS[source.source_kind]
+                              ? t(`dataSourcesManager.sourceKinds.${SOURCE_KIND_LABEL_KEYS[source.source_kind]}`)
+                              : source.source_kind}
+                          </p>
+                          {source.record_count != null && (
+                            <span
+                              className={cn(
+                                'text-[10px] font-data shrink-0',
+                                source.record_count > 0 ? 'text-foreground' : 'text-muted-foreground/50'
+                              )}
+                            >
+                              {t('dataSourcesManager.recordsCount', { count: source.record_count })}
+                            </span>
+                          )}
+                        </div>
                         {healthDetails && healthTone && (
                           <div className="mt-1 flex items-center justify-between rounded bg-background/50 px-1.5 py-1 gap-2 min-w-0">
                             <span className="min-w-0 flex-1 truncate text-[10px] font-mono text-muted-foreground">

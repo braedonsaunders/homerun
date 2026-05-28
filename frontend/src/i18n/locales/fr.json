@@ -3064,7 +3064,8 @@
     "templatePreview": "Aperçu du modèle",
     "readOnly": "Lecture seule",
     "cancel": "Annuler",
-    "continueToEditor": "Continuer vers l'éditeur"
+    "continueToEditor": "Continuer vers l'éditeur",
+    "recordsCount": "{{count}} enreg."
   },
   "worldMap": {
     "unknown": "Inconnu",

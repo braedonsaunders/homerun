@@ -3064,7 +3064,8 @@
     "templatePreview": "模板预览",
     "readOnly": "只读",
     "cancel": "取消",
-    "continueToEditor": "继续到编辑器"
+    "continueToEditor": "继续到编辑器",
+    "recordsCount": "{{count}} 条"
   },
   "worldMap": {
     "unknown": "未知",

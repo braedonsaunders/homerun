@@ -3064,7 +3064,8 @@
     "templatePreview": "テンプレートプレビュー",
     "readOnly": "読み取り専用",
     "cancel": "キャンセル",
-    "continueToEditor": "エディタに進む"
+    "continueToEditor": "エディタに進む",
+    "recordsCount": "{{count}} 件"
   },
   "worldMap": {
     "unknown": "不明",

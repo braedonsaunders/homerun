@@ -3064,7 +3064,8 @@
     "templatePreview": "Vorlagen-Vorschau",
     "readOnly": "Schreibgeschützt",
     "cancel": "Abbrechen",
-    "continueToEditor": "Weiter zum Editor"
+    "continueToEditor": "Weiter zum Editor",
+    "recordsCount": "{{count}} Datensätze"
   },
   "worldMap": {
     "unknown": "Unbekannt",

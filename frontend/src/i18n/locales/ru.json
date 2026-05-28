@@ -3064,7 +3064,8 @@
     "templatePreview": "Предпросмотр шаблона",
     "readOnly": "Только чтение",
     "cancel": "Отмена",
-    "continueToEditor": "Продолжить в редактор"
+    "continueToEditor": "Продолжить в редактор",
+    "recordsCount": "{{count}} записей"
   },
   "worldMap": {
     "unknown": "Неизвестно",
