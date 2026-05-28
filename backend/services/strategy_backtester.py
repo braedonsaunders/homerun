@@ -2128,6 +2128,24 @@ def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
             )
             if kind:
                 return kind
+    # Bus-driven strategies: anything whose subscriptions resolve to a
+    # recorded-event-bus topic is event-driven — its detect() iterates the
+    # replayed envelopes (e.g. the whole btc_eth_* / crypto_* family
+    # subscribes to crypto.update.dispatch).  Route them through the bus
+    # replay path so each tick sees the recorded, time-correct market +
+    # oracle dispatch instead of the (current-only) catalog file.
+    try:
+        from services.recorded_event_bus.backtest_bridge import (
+            resolve_subscriptions_to_topics,
+        )
+
+        topics = resolve_subscriptions_to_topics(getattr(strategy, "subscriptions", None) or [])
+        if "crypto.update.dispatch" in topics:
+            return "crypto_update"
+        if topics:
+            return "bus"
+    except Exception:
+        pass
     return None
 
 
@@ -3197,10 +3215,16 @@ async def _replay_discover_opportunities(
                 continue
             catalog_markets.append(m)
 
-    if not catalog_markets:
-        # Without a catalog we can't even shape event payloads (the
-        # ``market`` field is required).  Bail out quietly — same
-        # behaviour as before for book-driven strategies.
+    if not catalog_markets and event_kind != "crypto_update":
+        # Without a catalog we can't shape event payloads / look up
+        # markets-by-token (the ``market`` field is required for
+        # wallet_trade etc.).  Bail out quietly for those.
+        #
+        # crypto_update / bus-driven strategies are exempt: each replayed
+        # crypto.update.dispatch envelope CARRIES its markets array (with
+        # time-correct oracle + top-of-book), so the strategy's detect()
+        # reads from the event payload — the current-only catalog file is
+        # not the right source for a historical replay anyway.
         return []
 
     # Step 3: derive the token universe from the catalog.
@@ -3365,7 +3389,28 @@ async def _replay_discover_opportunities(
         # markets list keeps any defensive ``if not markets`` guards
         # in strategy code happy).  Book-driven strategies see markets
         # whose tokens have reconstructable prices.
-        if event_kind is not None:
+        if event_kind == "crypto_update":
+            # CRYPTO_UPDATE DataEvents carry the full markets array in
+            # their payload — time-correct top-of-book + oracle + price-
+            # to-beat, recorded from the live dispatcher.  Surface those
+            # markets directly to detect(); ignore catalog_markets (the
+            # current-only catalog file is not the right source for a
+            # historical replay).  Dedupe by market id across events in
+            # this tick — last-seen wins, matching live "latest dispatch".
+            if not events_at_tick:
+                continue
+            markets_by_id: dict[str, dict] = {}
+            for ev in events_at_tick:
+                payload = getattr(ev, "payload", None) or (ev if isinstance(ev, dict) else {})
+                if not isinstance(payload, dict):
+                    continue
+                for m in (payload.get("markets") or []):
+                    if isinstance(m, dict):
+                        key = str(m.get("id") or m.get("condition_id") or m.get("slug") or "")
+                        if key:
+                            markets_by_id[key] = m
+            markets_at_tick: list[dict] = list(markets_by_id.values())
+        elif event_kind is not None:
             if not events_at_tick:
                 continue
             event_token_ids: set[str] = set()
@@ -3376,7 +3421,7 @@ async def _replay_discover_opportunities(
                         tid = str(market_meta.get("token_id") or "").strip()
                         if tid:
                             event_token_ids.add(tid)
-            markets_at_tick: list[dict] = []
+            markets_at_tick = []
             for m in catalog_markets:
                 tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
                 if any(t in event_token_ids for t in tok_ids):
