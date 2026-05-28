@@ -2049,6 +2049,14 @@ class _SyntheticOpp:
                  "detected_at", "positions_data",
                  "title", "event_id", "_synthetic")
 
+    # Class-level sequence counter so multiple opps emitted at the SAME
+    # tick on the SAME market (e.g. UP + DOWN sides of a binary, or
+    # repeated buys with different size/price within one detect call)
+    # get unique ids.  Without this the matcher aborts the entire run
+    # at the second submit with ``ValueError: duplicate order_id``,
+    # producing 0 fills despite hundreds of valid intents.
+    _SEQ = 0
+
     def __init__(
         self,
         *,
@@ -2071,13 +2079,31 @@ class _SyntheticOpp:
         self.event_id = event_id
         self._synthetic = True
         # The matcher builds intents via ``f"opp_{opp.id}_{idx}"`` and
-        # ``str(opp.id)`` so synthetic opps need a stable id even
-        # though they were never persisted.  Derive a deterministic id
-        # from (strategy_type, detected_at, title) so repeated detect()
-        # calls at the same tick reuse the same id rather than minting
-        # a fresh uuid every loop.
+        # ``str(opp.id)`` so synthetic opps need a UNIQUE id per emit.
+        # Seed: strategy/tick/title/event ARE NOT ENOUGH (two opps at
+        # the same tick on the same market for different sides have
+        # the same seed) — fingerprint the first position + add a
+        # per-process sequence counter for guaranteed uniqueness.
         import hashlib as _hashlib
-        seed = f"{strategy_type}|{detected_at.isoformat() if detected_at else ''}|{title}|{event_id or ''}"
+        pos_fp = ""
+        try:
+            ptt = positions_data.get("positions_to_take") if isinstance(positions_data, dict) else None
+            if isinstance(ptt, list) and ptt:
+                p0 = ptt[0]
+                if isinstance(p0, dict):
+                    pos_fp = (
+                        f"|{p0.get('token_id','')}|{p0.get('side','')}"
+                        f"|{p0.get('outcome','')}|{p0.get('price','')}"
+                        f"|{p0.get('size_usd','')}"
+                    )
+        except Exception:
+            pos_fp = ""
+        _SyntheticOpp._SEQ += 1
+        seed = (
+            f"{strategy_type}|"
+            f"{detected_at.isoformat() if detected_at else ''}|"
+            f"{title}|{event_id or ''}{pos_fp}|{_SyntheticOpp._SEQ}"
+        )
         digest = _hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
         self.id = f"syn_{digest}"
         self.stable_id = self.id
