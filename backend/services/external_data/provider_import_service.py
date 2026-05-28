@@ -296,6 +296,37 @@ async def _run_polybacktest_import(job_id: str, payload: dict[str, Any]) -> dict
     snapshots_fetched = 0
     rows_per_market: dict[str, dict[str, Any]] = {}
 
+    # Pre-fetch the market metadata via list_markets and index by id.  The
+    # per-market ``/v2/markets/{id}`` endpoint has been returning 500 for
+    # months for every request, even with paid credits — but list_markets
+    # serves the same payload (clob_token_up/down, slug, title, …) at
+    # 1000/page.  Paginating list_markets once up-front lets the inner loop
+    # resolve every market_id without a single get_market round-trip.
+    market_index: dict[str, Any] = {}
+    try:
+        wanted = set(str(x) for x in market_ids)
+        offset = 0
+        # Bound the prefetch to a few pages — operator-supplied market_ids
+        # are typically <= 100 markets, and the most-recent pages cover
+        # current/recent trading activity.  Stop once we've found them all
+        # or paginated 5000 markets.
+        for _ in range(5):
+            page, total = await client.list_markets(coin, offset=offset, limit=1000)
+            for m in page:
+                mid = str(getattr(m, "market_id", "") or "")
+                if mid in wanted:
+                    market_index[mid] = m
+            if not page or len(market_index) >= len(wanted) or offset + len(page) >= int(total or 0):
+                break
+            offset += len(page)
+        logger.info(
+            "polybacktest import: pre-fetched %d/%d market metadata records via list_markets",
+            len(market_index),
+            len(wanted),
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to per-market get_market below
+        logger.warning("polybacktest list_markets pre-fetch failed: %s", exc)
+
     try:
         for index, market_id in enumerate(market_ids):
             if await _is_cancelled(job_id):
@@ -307,17 +338,25 @@ async def _run_polybacktest_import(job_id: str, payload: dict[str, Any]) -> dict
                 message=f"Fetching market {market_id} ({index + 1}/{len(market_ids)})",
             )
 
-            try:
-                market = await client.get_market(coin, market_id)
-            except PolybacktestError as exc:
-                logger.warning(
-                    "polybacktest get_market %s failed: %s", market_id, exc
-                )
-                rows_per_market[market_id] = {
-                    "snapshots_inserted": 0,
-                    "error": str(exc),
-                }
-                continue
+            # Prefer the cached list_markets payload; fall back to get_market
+            # only when the cache missed (e.g. very new market not in the
+            # most-recent pages).  get_market is still upstream-broken (500),
+            # so an explicit empty market_index entry just means "skip this id"
+            # rather than wasting the whole window on retries.
+            market = market_index.get(str(market_id))
+            if market is None:
+                try:
+                    market = await client.get_market(coin, market_id)
+                except PolybacktestError as exc:
+                    logger.warning(
+                        "polybacktest market lookup %s failed (list_markets miss + get_market upstream broken): %s",
+                        market_id, exc,
+                    )
+                    rows_per_market[market_id] = {
+                        "snapshots_inserted": 0,
+                        "error": f"market metadata unavailable: {exc}",
+                    }
+                    continue
 
             # Fetch snapshots (paged via offset).  Polybacktest v2 returns
             # ``total`` in every response so we know exactly when to stop.
