@@ -35,6 +35,10 @@ from utils.signal_helpers import normalize_position_side
 
 logger = get_logger("signal_bus")
 
+# Strong refs to in-flight decision-tee tasks so the event loop doesn't
+# GC them mid-flight (asyncio only holds weak refs to tasks).
+_DECISION_TEE_TASKS: set = set()
+
 
 SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
 SIGNAL_ACTIVE_STATUSES = {"pending", "selected", "submitted"}
@@ -1382,6 +1386,36 @@ async def upsert_trade_signal(
             row,
             event_type="upsert_insert",
         )
+        # Tee the decision to the recorded-event bus (parity oracle).
+        # Fire-and-forget + best-effort: a lost decision record is a
+        # measurement gap, never a trading bug, so it must not block or
+        # break the signal transaction.  Primitive values are snapshotted
+        # into the coroutine args so a later row mutation can't race it.
+        try:
+            import asyncio as _asyncio
+
+            from services.recorded_event_bus.decision_recorder import publish_decision
+
+            _decision_task = _asyncio.create_task(
+                publish_decision(
+                    market_id=market_id,
+                    observed_at=_utc_now(),
+                    signal_type=signal_type,
+                    strategy_type=strategy_type,
+                    direction=direction,
+                    entry_price=entry_price,
+                    edge_percent=edge_percent,
+                    confidence=confidence,
+                    dedupe_key=dedupe_key,
+                    signal_id=row.id,
+                )
+            )
+            # Keep a reference so the task isn't GC'd before it runs.
+            _DECISION_TEE_TASKS.add(_decision_task)
+            _decision_task.add_done_callback(_DECISION_TEE_TASKS.discard)
+        except RuntimeError:
+            # No running event loop (sync context / tests) — skip the tee.
+            pass
     else:
         # Cross-process row-lock contention guard.  When the caller
         # supplies a ``runtime_sequence`` AND the existing row already

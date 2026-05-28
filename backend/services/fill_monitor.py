@@ -21,6 +21,9 @@ from utils.logger import get_logger
 
 logger = get_logger("fill_monitor")
 
+# Strong refs to in-flight fill-tee tasks (asyncio holds only weak refs).
+_FILL_TEE_TASKS: set = set()
+
 
 class FillEvent(Base):
     """Record of an order fill detected by the monitor."""
@@ -203,6 +206,30 @@ class FillMonitor:
                     )
                 )
                 await session.commit()
+            # Tee the fill to the recorded-event bus (fill-model
+            # calibration ground truth).  Fire-and-forget + best-effort.
+            try:
+                import asyncio as _asyncio
+
+                from services.recorded_event_bus.decision_recorder import publish_fill
+
+                _t = _asyncio.create_task(
+                    publish_fill(
+                        order_id=fill.order_id,
+                        token_id=fill.token_id,
+                        side=fill.side,
+                        price=fill.price,
+                        size_filled=fill.size_filled,
+                        size_requested=fill.size_requested,
+                        fill_percent=fill.fill_percent,
+                        fee=fill.fee,
+                        observed_at=fill.detected_at,
+                    )
+                )
+                _FILL_TEE_TASKS.add(_t)
+                _t.add_done_callback(_FILL_TEE_TASKS.discard)
+            except RuntimeError:
+                pass
         except Exception as e:
             logger.error("Failed to persist fill event", error=str(e))
 
