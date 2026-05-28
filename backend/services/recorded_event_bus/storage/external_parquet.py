@@ -139,10 +139,12 @@ async def external_parquet_replayer(
     # Build one async iterator per token — each is monotone in
     # observed_at because writer guarantees per-file sort AND each
     # window_dir's name encodes a non-overlapping time slice.
+    _reader = _read_delta_rows if expected_kind == "deltas" else _read_snapshot_rows
+
     async def _token_stream(token: str, paths: list[Path]) -> AsyncIterator[RecordedEvent]:
         for fp in paths:
             try:
-                rows = await asyncio.to_thread(_read_snapshot_rows, fp, token, window, spec)
+                rows = await asyncio.to_thread(_reader, fp, token, window, spec)
             except Exception:
                 logger.exception("external_parquet: failed to read %s", fp)
                 continue
@@ -302,6 +304,60 @@ def _read_snapshot_rows(
                 entity_id=cols["token_id"][i] or token,  # token_id column is authoritative
                 observed_at_us=t,
                 ingested_at_us=t,  # canonical layout has no separate ingest_at
+                source="external_import",
+                sequence=int(seq) if seq is not None else None,
+                schema_version=spec.schema_version,
+                payload=payload,
+            )
+        except Exception:
+            continue
+        out.append(ev)
+    out.sort(key=lambda e: (e.observed_at_us, e.sequence or 0))
+    return out
+
+
+def _read_delta_rows(
+    fp: Path,
+    token: str,
+    window,
+    spec: TopicSpec,
+) -> list[RecordedEvent]:
+    """Read one canonical DELTA_SCHEMA file (``deltas__*.parquet``) and
+    project rows into RecordedEvent envelopes — the parquet equivalent of
+    the SQL ``BookDeltaEvent`` adapter so ``polymarket.book.delta`` replays
+    off parquet just like the snapshot topic."""
+    try:
+        table = pq.read_table(str(fp))
+    except Exception:
+        return []
+    cols = table.to_pydict()
+    n = len(cols.get("observed_at_us", []))
+    if n == 0:
+        return []
+    times = cols["observed_at_us"]
+    out: list[RecordedEvent] = []
+    for i in range(n):
+        t = int(times[i])
+        if t < window.start_us or t >= window.end_us:
+            continue
+        payload: dict[str, Any] = {
+            "event_type": cols.get("event_type", [None] * n)[i],
+            "side": cols.get("side", [None] * n)[i],
+            "price": cols.get("price", [None] * n)[i],
+            "trade_size": cols.get("trade_size", [None] * n)[i],
+            "cancel_size": cols.get("cancel_size", [None] * n)[i],
+            "queue_depth_before": cols.get("queue_depth_before", [None] * n)[i],
+            "queue_depth_after": cols.get("queue_depth_after", [None] * n)[i],
+            "spread_bps_at_event": cols.get("spread_bps_at_event", [None] * n)[i],
+            "provider": _infer_provider_from_path(fp),
+        }
+        seq = cols.get("sequence", [None] * n)[i]
+        try:
+            ev = RecordedEvent(
+                topic=spec.slug,
+                entity_id=cols["token_id"][i] or token,
+                observed_at_us=t,
+                ingested_at_us=t,
                 source="external_import",
                 sequence=int(seq) if seq is not None else None,
                 schema_version=spec.schema_version,

@@ -533,6 +533,13 @@ def _sources(*entries: dict[str, Any]) -> str:
     return json.dumps({"sources": list(entries)})
 
 
+# Canonical parquet data-plane root (matches parquet_schema._builtin_default_root
+# without importing pyarrow here).  Book topics federate over every provider
+# beneath it via the external_parquet adapter's recursive window-dir walk.
+from pathlib import Path as _Path
+_PARQUET_ROOT = str((_Path(__file__).resolve().parents[3] / "data" / "parquet").resolve())
+
+
 SEED_TOPICS: tuple[dict[str, Any], ...] = (
     {
         "slug": "polymarket.book.snapshot",
@@ -551,28 +558,27 @@ SEED_TOPICS: tuple[dict[str, Any], ...] = (
         # legacy ``market_microstructure_snapshots`` SQL table is kept as a
         # source so historical (pre-cutover) data still replays, unioned by
         # observed_at with the live parquet + operator imports.
+        # Live book recording now writes columnar parquet (off Postgres),
+        # so the primary backing is external_parquet.
         "storage_kind": "external_parquet",
         "storage_uri": _sources(
             {
-                # Live book recording (off Postgres) — the canonical
-                # snapshots__/deltas__ columnar layout this sink writes.
+                # ONE federated parquet source at the data-plane ROOT.
+                # The adapter recursively finds every window-dir under any
+                # provider (live_ingestor, telonex, polybacktest, future
+                # vendors) and reads only ``snapshots__`` files — so a new
+                # provider needs NO new source entry, and non-book parquet
+                # (recorded_event_bus event topics use date dirs;
+                # reference/ohlc use a different file kind) is skipped.
                 "kind": "external_parquet",
-                "uri": r"C:\homerun\data\parquet\live_ingestor",
+                "uri": _PARQUET_ROOT,
             },
             {
                 # Legacy / historical: pre-cutover live data + polybacktest
-                # backfill still live in the SQL table.
+                # backfill still live in the SQL table — unioned by observed_at.
                 "kind": "sql_table",
                 "adapter": "MarketMicrostructureSnapshot",
                 "table": "market_microstructure_snapshots",
-            },
-            {
-                "kind": "external_parquet",
-                "uri": r"C:\homerun\data\parquet\telonex",
-                # Recursive walk picks up every coin subdirectory
-                # (btc/eth/sol/pred...).  Future providers under
-                # data/parquet/{provider}/{coin}/... can add their
-                # own source entry without changing the topic.
             },
         ),
         "publishers": (
@@ -590,12 +596,23 @@ SEED_TOPICS: tuple[dict[str, Any], ...] = (
             "Different shape from book.snapshot, hence its own topic.  "
             "Backed by book_delta_events (postgres).  7M+ rows."
         ),
-        "storage_kind": "sql_table",
-        "storage_uri": _sources({
-            "kind": "sql_table",
-            "adapter": "BookDeltaEvent",
-            "table": "book_delta_events",
-        }),
+        # Live deltas now write columnar parquet (deltas__ files) off
+        # Postgres; primary backing is external_parquet, with the legacy
+        # book_delta_events SQL table unioned for historical replay.
+        "storage_kind": "external_parquet",
+        "storage_uri": _sources(
+            {
+                # Federated parquet root — adapter reads only ``deltas__``
+                # files for this ``*.delta`` topic (kind-aware).
+                "kind": "external_parquet",
+                "uri": _PARQUET_ROOT,
+            },
+            {
+                "kind": "sql_table",
+                "adapter": "BookDeltaEvent",
+                "table": "book_delta_events",
+            },
+        ),
         "publishers": ("market_data_ingestor",),
     },
     {
