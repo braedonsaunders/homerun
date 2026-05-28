@@ -2104,7 +2104,16 @@ async def _ensure_crypto_update_topic_registered() -> None:
         ),
         storage_kind="parquet",
         storage_uri=storage_uri,
-        retention_days=30,
+        # This topic is HIGH VOLUME — ~3 GB/day at peak crypto activity.
+        # Bound it hard so it can never fill the disk again (it grew to
+        # ~50 GB with only a 30-day age cap and no size cap, which crashed
+        # the host).  max_bytes is the real protection: the pruner trims
+        # oldest partition files once the topic exceeds this, independent
+        # of age.  Operators can raise either via Data Lab → Topics; the
+        # global cap (app_settings.recorded_event_bus_global_max_bytes) is
+        # the cross-topic backstop.
+        retention_days=7,
+        max_bytes=8 * 1024 * 1024 * 1024,  # 8 GB (~2.5 days of replay)
         publishers=["market_runtime"],
         subscribers=[
             "btc_eth_convergence",
