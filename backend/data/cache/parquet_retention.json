@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "max_age_days": 30,
+  "max_total_gb": 50.0,
+  "interval_minutes": 60
+}
