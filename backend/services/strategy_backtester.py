@@ -2107,50 +2107,26 @@ class _SyntheticOpp:
 # (or accepted_signal_strategy_types) resolve to one of these topics
 # routes through the corresponding event-driven path; everything else
 # falls through to the book-driven path.
-# Canonical bus topic -> backtest event_kind label.  The detect loop in
-# ``_replay_discover_opportunities`` has a per-kind branch (crypto_update
-# reads time-correct markets from the recorded CRYPTO_UPDATE dispatch;
-# wallet_trade replays WalletMonitorEvent rows from the historical store).
-# Any strategy whose declared subscriptions resolve to one of these topics
-# routes through the matching branch; everything else falls through to the
-# book-driven path.
-_BUS_TOPIC_EVENT_KIND: dict[str, str] = {
-    "crypto.update.dispatch": "crypto_update",
-    "trader.activity":        "wallet_trade",
-}
-
-
 def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
-    """Return the event source kind for a strategy, or ``None`` if its
-    detect() doesn't iterate events.
+    """Read the strategy's own ``subscriptions`` declaration to pick a
+    detect-loop branch — that's it.  No slug map, no topic resolver, no
+    indirection: the strategy declares which ``EventType`` it consumes
+    in itself, and the detect loop has a branch per event-driven kind.
 
-    Routing is purely declarative — driven by the strategy's own
-    ``subscriptions`` list (the canonical ``EventType`` channel
-    declaration enforced by ``BaseStrategy.__init_subclass__``).  There
-    is NO strategy-slug lookup; a user-authored strategy with any slug
-    routes the same way as a built-in one as long as it declares the
-    correct subscription.
+    Returns ``None`` (book-driven) when the strategy doesn't subscribe to
+    any of the event-driven kinds the detect loop knows about — its
+    detect() will be called against the price-grid tick instead.
 
     The ``slug`` argument is retained for log/metric labeling but not
     consulted for routing decisions.
     """
-    try:
-        from services.recorded_event_bus.backtest_bridge import (
-            resolve_subscriptions_to_topics,
-        )
-    except Exception:
-        return None
-    subs = list(getattr(strategy, "subscriptions", None) or [])
-    if not subs:
-        return None
-    try:
-        topics = resolve_subscriptions_to_topics(subs)
-    except Exception:
-        return None
-    for t in topics:
-        kind = _BUS_TOPIC_EVENT_KIND.get(str(t))
-        if kind:
-            return kind
+    from services.data_events import EventType
+
+    subs = {str(s) for s in (getattr(strategy, "subscriptions", None) or [])}
+    if EventType.CRYPTO_UPDATE in subs:
+        return "crypto_update"
+    if EventType.TRADER_ACTIVITY in subs:
+        return "wallet_trade"
     return None
 
 
