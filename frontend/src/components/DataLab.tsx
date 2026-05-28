@@ -67,6 +67,8 @@ import {
   getDatasetStorageSummary,
   getMicrostructureRecorderStatus,
   getProactiveSubscriptionStatus,
+  getRecordingState,
+  setRecordingState,
   listDatasets,
   listRecordingSessions,
   queryDataset,
@@ -757,6 +759,20 @@ function MicrostructureRecorderSection() {
     queryFn: getMicrostructureRecorderStatus,
     refetchInterval: 5_000,
   })
+  const recordingQuery = useQuery({
+    queryKey: ['data-lab', 'recording-state'],
+    queryFn: getRecordingState,
+    refetchInterval: 5_000,
+  })
+  const recordingEnabled = recordingQuery.data?.enabled ?? true
+  const actual = recordingQuery.data?.actual_recording
+  const toggleRecording = useMutation({
+    mutationFn: (enabled: boolean) => setRecordingState(enabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['data-lab', 'recording-state'] })
+      queryClient.invalidateQueries({ queryKey: ['data-lab', 'recorder-microstructure'] })
+    },
+  })
   const s = statusQuery.data
   const running = Boolean(s?.running)
   const acceptPct =
@@ -789,21 +805,48 @@ function MicrostructureRecorderSection() {
           >
             {running ? t('dataLab.capturing') : t('dataLab.idle')}
           </Badge>
+          {actual ? (
+            <span className="text-[9px] text-muted-foreground">
+              {actual.actively_recording
+                ? `${actual.distinct_tokens} tokens · ${actual.book_rows.toLocaleString()} books / ${actual.trade_rows.toLocaleString()} deltas (last ${actual.window_minutes}m, ${actual.source})`
+                : recordingEnabled
+                ? 'no recent parquet activity'
+                : 'recording OFF'}
+            </span>
+          ) : null}
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-6 gap-1 text-[10px]"
-          onClick={() =>
-            queryClient.invalidateQueries({
-              queryKey: ['data-lab', 'recorder-microstructure'],
-            })
-          }
-          disabled={statusQuery.isFetching}
-        >
-          <RefreshCw className={cn('h-3 w-3', statusQuery.isFetching && 'animate-spin')} />
-          {t('dataLab.refresh')}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant={recordingEnabled ? 'outline' : 'destructive'}
+            className="h-6 gap-1 text-[10px]"
+            onClick={() => toggleRecording.mutate(!recordingEnabled)}
+            disabled={toggleRecording.isPending || recordingQuery.isLoading}
+            title="Global recording master switch — turns ALL market-data recording on/off"
+          >
+            <span
+              className={cn(
+                'inline-block h-2 w-2 rounded-full',
+                recordingEnabled ? 'bg-emerald-400' : 'bg-rose-400',
+              )}
+            />
+            {recordingEnabled ? 'Recording ON' : 'Recording OFF'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 text-[10px]"
+            onClick={() =>
+              queryClient.invalidateQueries({
+                queryKey: ['data-lab', 'recorder-microstructure'],
+              })
+            }
+            disabled={statusQuery.isFetching}
+          >
+            <RefreshCw className={cn('h-3 w-3', statusQuery.isFetching && 'animate-spin')} />
+            {t('dataLab.refresh')}
+          </Button>
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-3 px-3 py-3 md:grid-cols-3 lg:grid-cols-6">
         <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">

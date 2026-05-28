@@ -298,6 +298,35 @@ export async function getMicrostructureRecorderStatus(): Promise<MicrostructureR
   return data
 }
 
+export interface RecordingActualStatus {
+  window_minutes: number
+  distinct_tokens: number
+  book_rows: number
+  trade_rows: number
+  book_rows_per_sec: number
+  actively_recording: boolean | null
+  newest_age_seconds?: number | null
+  providers?: string[]
+  source?: string
+  note?: string
+  error?: string
+}
+
+export interface RecordingState {
+  enabled: boolean
+  actual_recording: RecordingActualStatus
+}
+
+export async function getRecordingState(): Promise<RecordingState> {
+  const { data } = await api.get<RecordingState>('/dataset/recorder/recording')
+  return data
+}
+
+export async function setRecordingState(enabled: boolean): Promise<{ enabled: boolean }> {
+  const { data } = await api.put<{ enabled: boolean }>('/dataset/recorder/recording', { enabled })
+  return data
+}
+
 export interface DatasetStorageRow {
   name: string
   label: string
