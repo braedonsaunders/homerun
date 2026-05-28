@@ -8,6 +8,7 @@ from typing import Any
 from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 
 from models import Event, Market, Opportunity
+from services.data_events import EventType
 from services.strategies.base import BaseStrategy, DecisionCheck, ExitDecision, StrategyDecision, _trader_size_limits
 from services.strategy_sdk import StrategySDK
 from utils.converters import coerce_bool as _coerce_bool, safe_float, to_confidence
@@ -266,6 +267,11 @@ class TradersCopyTradeStrategy(BaseStrategy):
     source_key = "traders"
     allow_deduplication = False
     accepted_signal_strategy_types = ["traders_copy_trade"]
+    # Channel this strategy consumes (canonical EventType) — drives both
+    # live dispatch and backtest routing.  Declared on the strategy so a
+    # user-authored copy-trade strategy routes correctly by its own
+    # declaration, no engine-side slug lookup.
+    subscriptions = [EventType.TRADER_ACTIVITY]
     default_config = traders_copy_trade_defaults()
 
     def configure(self, config: dict) -> None:

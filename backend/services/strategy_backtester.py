@@ -2091,62 +2091,66 @@ class _SyntheticOpp:
 # in replay, even when their live counterparts had been firing all week.
 # The fix: for strategies whose ``detect`` reads ``events``, materialise
 # the same historical event stream the live system saw and feed it in
-# at the right tick.  Each strategy slug declares which event source it
-# consumes; the dispatcher below loads, shapes, and bins those events.
+# at the right tick.  The router below picks a replay path purely from
+# what the strategy DECLARES it consumes — its ``subscriptions`` list
+# (and, as a legacy compat, ``accepted_signal_strategy_types``).  No
+# strategy-slug hardcoding, so user-created strategies route correctly.
 #
-# Adding a new event-driven strategy:
-#   1. Implement a ``_load_<kind>_events_for_replay`` helper that
-#      returns rows in (start_dt, end_dt] sorted by timestamp.
-#   2. Implement a ``_<kind>_event_to_strategy_input`` helper that
-#      shapes one row into the dict the strategy iterates in detect().
-#   3. Add the slug to ``_REPLAY_EVENT_SOURCE_BY_SLUG``.
-#
-# The ``traders_copy_trade`` slug is wired to ``wallet_trade``: events
-# come from the ``WalletMonitorEvent`` table the live ws-monitor
-# persists, shaped to mirror exactly what ``TradersCopyTradeSignalService``
-# builds at runtime so the strategy can't tell replay from live.
+# Adding a new event-driven backtest path:
+#   1. Implement a per-tick loader/projector (e.g. _replay_bus_events_into_
+#      tick_grid handles the recorded_event_bus side for any topic).
+#   2. Add the bus topic to ``_BUS_TOPIC_EVENT_KIND`` so the detect loop
+#      knows which event-driven branch to take.
 
-_REPLAY_EVENT_SOURCE_BY_SLUG: dict[str, str] = {
-    "traders_copy_trade": "wallet_trade",
+# Bus topic -> event_kind label used by ``_replay_discover_opportunities``
+# to pick the right detect-loop branch.  Any strategy whose subscriptions
+# (or accepted_signal_strategy_types) resolve to one of these topics
+# routes through the corresponding event-driven path; everything else
+# falls through to the book-driven path.
+# Canonical bus topic -> backtest event_kind label.  The detect loop in
+# ``_replay_discover_opportunities`` has a per-kind branch (crypto_update
+# reads time-correct markets from the recorded CRYPTO_UPDATE dispatch;
+# wallet_trade replays WalletMonitorEvent rows from the historical store).
+# Any strategy whose declared subscriptions resolve to one of these topics
+# routes through the matching branch; everything else falls through to the
+# book-driven path.
+_BUS_TOPIC_EVENT_KIND: dict[str, str] = {
+    "crypto.update.dispatch": "crypto_update",
+    "trader.activity":        "wallet_trade",
 }
 
 
 def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
-    """Return the event source kind for a strategy, or None if its
-    detect() doesn't iterate events.  Looked up by slug; falls back to
-    inspecting ``accepted_signal_strategy_types`` for strategies that
-    declare their event channel that way.
+    """Return the event source kind for a strategy, or ``None`` if its
+    detect() doesn't iterate events.
+
+    Routing is purely declarative — driven by the strategy's own
+    ``subscriptions`` list (the canonical ``EventType`` channel
+    declaration enforced by ``BaseStrategy.__init_subclass__``).  There
+    is NO strategy-slug lookup; a user-authored strategy with any slug
+    routes the same way as a built-in one as long as it declares the
+    correct subscription.
+
+    The ``slug`` argument is retained for log/metric labeling but not
+    consulted for routing decisions.
     """
-    norm = (slug or "").strip().lower()
-    if norm in _REPLAY_EVENT_SOURCE_BY_SLUG:
-        return _REPLAY_EVENT_SOURCE_BY_SLUG[norm]
-    accepted = getattr(strategy, "accepted_signal_strategy_types", None)
-    if isinstance(accepted, (list, tuple)):
-        for entry in accepted:
-            kind = _REPLAY_EVENT_SOURCE_BY_SLUG.get(
-                str(entry or "").strip().lower()
-            )
-            if kind:
-                return kind
-    # Crypto strategies (btc_eth_*, crypto_*) subscribe to "crypto_update"
-    # which resolves to the recorded_event_bus topic crypto.update.dispatch.
-    # Their detect() iterates the replayed CRYPTO_UPDATE dispatches with
-    # time-correct market + oracle data — route them through the bus replay
-    # path so they don't try to reconstruct from the current-only catalog
-    # file.  Other bus topics (news.update, weather.update, trader.activity,
-    # polymarket.trade.execution) keep their previous routing (event_kind
-    # None unless explicitly mapped above) until they're individually
-    # validated — they may need their own detect-loop shape.
     try:
         from services.recorded_event_bus.backtest_bridge import (
             resolve_subscriptions_to_topics,
         )
-
-        topics = resolve_subscriptions_to_topics(getattr(strategy, "subscriptions", None) or [])
-        if "crypto.update.dispatch" in topics:
-            return "crypto_update"
     except Exception:
-        pass
+        return None
+    subs = list(getattr(strategy, "subscriptions", None) or [])
+    if not subs:
+        return None
+    try:
+        topics = resolve_subscriptions_to_topics(subs)
+    except Exception:
+        return None
+    for t in topics:
+        kind = _BUS_TOPIC_EVENT_KIND.get(str(t))
+        if kind:
+            return kind
     return None
 
 
