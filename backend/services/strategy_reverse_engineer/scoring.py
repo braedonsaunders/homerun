@@ -210,10 +210,14 @@ def _extract_backtest_fills(result: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(result, dict):
         candidates.append(result.get("trades"))
         candidates.append(result.get("fills"))
-        eb = result.get("execution_backtest")
-        if isinstance(eb, dict):
-            candidates.append(eb.get("trades"))
-            candidates.append(eb.get("fills"))
+        for key in ("execution_backtest", "execution"):
+            eb = result.get(key)
+            if isinstance(eb, dict):
+                candidates.append(eb.get("trades"))
+                candidates.append(eb.get("fills"))
+                # The unified runner emits ``fills_sample`` (the canonical
+                # fills list with cap=200 for UI rendering — same shape).
+                candidates.append(eb.get("fills_sample"))
     raw = next((c for c in candidates if isinstance(c, list) and c), [])
 
     out: list[dict[str, Any]] = []
@@ -225,6 +229,7 @@ def _extract_backtest_fills(result: dict[str, Any]) -> list[dict[str, Any]]:
             or entry.get("ts")
             or entry.get("filled_at")
             or entry.get("placed_at")
+            or entry.get("occurred_at")  # unified-runner fill shape
             or entry.get("time")
         )
         if ts is None:
