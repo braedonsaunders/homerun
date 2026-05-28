@@ -29,10 +29,43 @@ just with an explicit checkpoint when you want durability.
 from __future__ import annotations
 
 import copy
+from contextvars import ContextVar
 from typing import Any, Optional
 
 
 _MISSING = object()
+
+
+# ── Replay isolation ─────────────────────────────────────────────────
+# A backtest replay must NOT read the live ``strategy_persistent_state``
+# table (it would see today's state, not the state as of the replay
+# window) and must NOT write to it (a backtest flush would corrupt live
+# strategy state).  When this ContextVar holds a store dict, load()/
+# flush() operate against that in-process dict instead of the DB:
+#   { strategy_slug: { key: value } }
+# The store starts empty and is populated by the replay's pre-roll
+# warmup, so state is rebuilt from the recorded input stream rather than
+# snapshotted — the same determinism principle as the rest of the work.
+_replay_store: ContextVar[Optional[dict]] = ContextVar("_persistent_state_replay_store", default=None)
+
+
+def enter_replay_isolation(seed: Optional[dict] = None):
+    """Begin replay isolation for PersistentState.  Returns a token for
+    ``exit_replay_isolation``.  ``seed`` optionally pre-populates the
+    store as ``{slug: {key: value}}`` (e.g. a window-start snapshot)."""
+    store: dict = {k: dict(v) for k, v in (seed or {}).items()}
+    return _replay_store.set(store)
+
+
+def exit_replay_isolation(token) -> None:
+    try:
+        _replay_store.reset(token)
+    except (ValueError, LookupError):
+        pass
+
+
+def replay_store() -> Optional[dict]:
+    return _replay_store.get()
 
 
 class PersistentState:
@@ -155,6 +188,15 @@ class PersistentState:
         dropped). Strategies typically call this once after instantiation;
         re-loading mid-cycle is allowed but uncommon.
         """
+        store = _replay_store.get()
+        if store is not None:
+            # Replay isolation — hydrate from the in-process store, never
+            # the live DB.
+            self._cache = copy.deepcopy(store.get(self._strategy_slug, {}))
+            self._dirty.clear()
+            self._loaded = True
+            return
+
         StrategyPersistentState, _ = self._import_models()
         from sqlalchemy import select
 
@@ -176,6 +218,18 @@ class PersistentState:
     async def flush(self) -> None:
         """Persist dirty entries to the DB. No-op when ``dirty`` is False."""
         if not self._dirty:
+            return
+        store = _replay_store.get()
+        if store is not None:
+            # Replay isolation — apply dirty entries to the in-process
+            # store, never the live DB.
+            slug_state = store.setdefault(self._strategy_slug, {})
+            for key in self._dirty:
+                if key in self._cache:
+                    slug_state[key] = copy.deepcopy(self._cache[key])
+                else:
+                    slug_state.pop(key, None)
+            self._dirty.clear()
             return
         StrategyPersistentState, _utcnow = self._import_models()
         from sqlalchemy.dialects.postgresql import insert as pg_insert

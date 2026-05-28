@@ -73,6 +73,18 @@ from services.recorded_event_bus.envelope import RecordedEvent
 logger = logging.getLogger(__name__)
 
 
+def _entity_order_key(ev: "RecordedEvent", time_attr: str) -> tuple:
+    """Sequence-aware total order for the cross-entity replay merge, so
+    same-timestamp events from different partitions yield in the source's
+    own order rather than heap-insertion order."""
+    return (
+        getattr(ev, time_attr),
+        ev.sequence if ev.sequence is not None else 0,
+        ev.topic,
+        ev.entity_id,
+    )
+
+
 # ── Tunables ─────────────────────────────────────────────────────────
 
 # Hot-path → flush cadence trade-offs:
@@ -432,10 +444,10 @@ async def parquet_replayer(
             first = None
         head[key] = first
         if first is not None:
-            heapq.heappush(heap, (getattr(first, time_attr), key))
+            heapq.heappush(heap, (_entity_order_key(first, time_attr), key))
 
     while heap:
-        _ts, key = heapq.heappop(heap)
+        _ord, key = heapq.heappop(heap)
         ev = head[key]
         if ev is None:
             continue
@@ -443,7 +455,7 @@ async def parquet_replayer(
         try:
             nxt = await iterators[key].__anext__()
             head[key] = nxt
-            heapq.heappush(heap, (getattr(nxt, time_attr), key))
+            heapq.heappush(heap, (_entity_order_key(nxt, time_attr), key))
         except StopAsyncIteration:
             head[key] = None
 

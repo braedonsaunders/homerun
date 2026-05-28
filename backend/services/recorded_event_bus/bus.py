@@ -60,6 +60,21 @@ from services.recorded_event_bus.catalog import (
 logger = logging.getLogger(__name__)
 
 
+def _replay_order_key(ev: RecordedEvent, time_attr: str) -> tuple:
+    """Total ordering for replay merge.  Mirrors ``RecordedEvent.order_key``
+    but honours the window's ``time_field`` (observed vs ingested).  The
+    ``sequence`` tiebreak makes same-timestamp events replay in the
+    source's own order (book ws sequence, block height, …) — without it
+    equal-timestamp events would merge in heap-insertion order, which is
+    deterministic but not faithful to how the events actually occurred."""
+    return (
+        getattr(ev, time_attr),
+        ev.sequence if ev.sequence is not None else 0,
+        ev.topic,
+        ev.entity_id,
+    )
+
+
 # ── Subscription handles ────────────────────────────────────────────
 
 
@@ -374,11 +389,11 @@ class RecordedEventBus:
             if first is not None:
                 heapq.heappush(
                     heap,
-                    (getattr(first, time_attr), topic),
+                    (_replay_order_key(first, time_attr), topic),
                 )
 
         while heap:
-            _ts, topic = heapq.heappop(heap)
+            _key, topic = heapq.heappop(heap)
             event = head[topic]
             if event is None:
                 continue
@@ -387,7 +402,7 @@ class RecordedEventBus:
                 nxt = await per_topic_iters[topic].__anext__()
                 head[topic] = nxt
                 heapq.heappush(
-                    heap, (getattr(nxt, time_attr), topic),
+                    heap, (_replay_order_key(nxt, time_attr), topic),
                 )
             except StopAsyncIteration:
                 head[topic] = None
