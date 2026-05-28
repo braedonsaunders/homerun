@@ -2128,12 +2128,15 @@ def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
             )
             if kind:
                 return kind
-    # Bus-driven strategies: anything whose subscriptions resolve to a
-    # recorded-event-bus topic is event-driven — its detect() iterates the
-    # replayed envelopes (e.g. the whole btc_eth_* / crypto_* family
-    # subscribes to crypto.update.dispatch).  Route them through the bus
-    # replay path so each tick sees the recorded, time-correct market +
-    # oracle dispatch instead of the (current-only) catalog file.
+    # Crypto strategies (btc_eth_*, crypto_*) subscribe to "crypto_update"
+    # which resolves to the recorded_event_bus topic crypto.update.dispatch.
+    # Their detect() iterates the replayed CRYPTO_UPDATE dispatches with
+    # time-correct market + oracle data — route them through the bus replay
+    # path so they don't try to reconstruct from the current-only catalog
+    # file.  Other bus topics (news.update, weather.update, trader.activity,
+    # polymarket.trade.execution) keep their previous routing (event_kind
+    # None unless explicitly mapped above) until they're individually
+    # validated — they may need their own detect-loop shape.
     try:
         from services.recorded_event_bus.backtest_bridge import (
             resolve_subscriptions_to_topics,
@@ -2142,8 +2145,6 @@ def _replay_event_kind_for_strategy(slug: str, strategy: Any) -> str | None:
         topics = resolve_subscriptions_to_topics(getattr(strategy, "subscriptions", None) or [])
         if "crypto.update.dispatch" in topics:
             return "crypto_update"
-        if topics:
-            return "bus"
     except Exception:
         pass
     return None
