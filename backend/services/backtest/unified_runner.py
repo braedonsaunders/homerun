@@ -957,6 +957,10 @@ async def run_unified_backtest(
     # reverse-engineer scoring needs full coverage.  Capped at 100k by the
     # route-level validator so a pathological run can't blow up the JSON.
     fills_sample_size: int | None = None,
+    # Discovery-replay tick grid overrides (defaults inside
+    # run_execution_backtest: 1800s interval / 96 ticks).
+    discovery_sample_interval_seconds: int | None = None,
+    discovery_max_ticks: int | None = None,
     # Async-job-queue path: when the dedicated backtest worker process
     # invokes this function, it passes a pre-allocated ``run_id`` (so
     # the operator's polling already has a stable pointer) and a
@@ -1054,6 +1058,10 @@ async def run_unified_backtest(
         exec_kwargs["progress_callback"] = progress_callback
     if fills_sample_size is not None:
         exec_kwargs["fills_sample_size"] = int(fills_sample_size)
+    if discovery_sample_interval_seconds is not None:
+        exec_kwargs["discovery_sample_interval_seconds"] = int(discovery_sample_interval_seconds)
+    if discovery_max_ticks is not None:
+        exec_kwargs["discovery_max_ticks"] = int(discovery_max_ticks)
     exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
     exec_dict = exec_result.to_dict()
 

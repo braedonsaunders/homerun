@@ -92,6 +92,13 @@ class UnifiedBacktestRequest(BaseModel):
     # full coverage so the wallet-match overlap isn't measured against a
     # sample.  Cap at 100k so a pathological run can't blow up the JSON.
     fills_sample_size: int = Field(default=200, ge=10, le=100_000)
+    # Discovery-replay tick grid controls.  Default 1800s tick / 96 ticks
+    # is fine for typical "did this strategy fire enough in a 7-day window"
+    # sanity checks.  Replication runs that need to match a wallet's
+    # high-frequency activity drop the interval and raise max_ticks so the
+    # discovery emits at the same cadence the live strategy did.
+    discovery_sample_interval_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    discovery_max_ticks: int | None = Field(default=None, ge=1, le=10_000)
 
 
 @router.post("/run")
@@ -168,6 +175,8 @@ async def run_backtest(req: UnifiedBacktestRequest):
             maker_rebate_max_spread_bps=req.maker_rebate_max_spread_bps,
             n_trials=req.n_trials,
             fills_sample_size=req.fills_sample_size,
+            discovery_sample_interval_seconds=req.discovery_sample_interval_seconds,
+            discovery_max_ticks=req.discovery_max_ticks,
         )
     except Exception as exc:
         logger.exception("Unified backtest failed")
