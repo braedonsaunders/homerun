@@ -63,6 +63,7 @@ class _ServiceState:
     last_run_already_subscribed: int = 0
     last_error: str | None = None
     total_runs: int = 0
+    recording_enabled: bool = True
 
 
 _state = _ServiceState()
@@ -88,6 +89,7 @@ def get_status() -> dict[str, Any]:
         "last_run_already_subscribed": _state.last_run_already_subscribed,
         "last_error": _state.last_error,
         "total_runs": _state.total_runs,
+        "recording_enabled": _state.recording_enabled,
     }
 
 
@@ -234,6 +236,19 @@ async def loop_tick() -> None:
     started = time.monotonic()
     _state.total_runs += 1
     try:
+        # Global recording master switch: when OFF, subscribe nothing new
+        # (the ingestor's flush gate also drops any in-flight persistence, so
+        # no data is written to disk regardless of existing subscriptions).
+        from services.recording_control import is_recording_enabled
+
+        _state.recording_enabled = await is_recording_enabled()
+        if not _state.recording_enabled:
+            _state.last_run_at = time.time()
+            _state.last_run_duration_ms = (time.monotonic() - started) * 1000
+            _state.last_run_target_count = 0
+            _state.last_error = None
+            return
+
         target_tokens, stats = await _gather_target_tokens()
         newly, already = await _ensure_subscribed(target_tokens)
 

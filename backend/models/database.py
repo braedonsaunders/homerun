@@ -1429,6 +1429,15 @@ class AppSettings(Base):
     recorded_event_bus_global_max_bytes = Column(BigInteger, nullable=True)
     recorded_event_bus_pruner_enabled = Column(Boolean, nullable=False, default=True)
 
+    # Global recording master switch.  When False, ALL market-data
+    # recording stops writing to disk: the live book/delta ingestor drops
+    # its flush batches, the proactive subscription loop unsubscribes and
+    # records nothing, and the crypto.update.dispatch bus tee is skipped.
+    # Default True (record).  Read live (short-TTL cache) via
+    # services.recording_control so the toggle takes effect without a
+    # restart.  This is the "turn recording off completely" control.
+    recording_enabled = Column(Boolean, nullable=False, default=True)
+
     # Strategy reverse-engineer agent — UI-tunable defaults.  Null
     # values fall back to service-level constants.  The default *model*
     # for this purpose lives in ``llm_model_assignments['strategy_reverse_engineer']``

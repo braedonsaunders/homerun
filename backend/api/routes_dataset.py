@@ -33,7 +33,7 @@ from typing import Any, Iterable
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel as _PydBaseModel
+from pydantic import BaseModel as _PydBaseModel, Field
 from sqlalchemy import and_, bindparam, func, select, text
 
 from models.database import (
@@ -932,44 +932,130 @@ async def run_recorder_backfill(body: BackfillRequest) -> dict[str, Any]:
     return result.to_dict()
 
 
-async def _recent_ingestion_actuals(minutes: int = 10) -> dict[str, Any]:
-    """Cross-process recording truth, read from the shared DB.
+def _scan_recent_parquet_actuals(minutes: int) -> dict[str, Any]:
+    """Sync scan of the parquet data plane for recent recording activity.
 
-    The per-process counters on the ingestor / subscription service only
-    reflect THIS process — and these endpoints are served by the API
-    process, where neither service runs (they live in the trading
-    worker).  Reading the shared ``market_microstructure_snapshots``
-    table tells the operator what is ACTUALLY being recorded, regardless
-    of which process does it.
+    Recording moved off Postgres onto parquet, so counting SQL rows always
+    returns 0 now.  Instead we walk every configured parquet root, find
+    snapshot/delta files written within the last ``minutes`` (cheap mtime
+    stat), and sum row counts straight from the parquet footers
+    (``read_metadata().num_rows`` — no data-page scan).  This is the
+    cross-process truth: it reflects whatever the trading worker is writing,
+    regardless of which process serves this endpoint.
+    """
+    import time as _time
+
+    import pyarrow.parquet as _pq
+
+    from services.external_data.parquet_schema import parquet_roots
+
+    cutoff = _time.time() - max(1, int(minutes)) * 60
+    book_rows = 0
+    delta_rows = 0
+    tokens: set[str] = set()
+    newest_mtime = 0.0
+    providers: set[str] = set()
+
+    seen_roots: set[str] = set()
+    for root in parquet_roots():
+        key = str(root)
+        if key in seen_roots or not root.exists():
+            continue
+        seen_roots.add(key)
+        for fp in root.rglob("*.parquet"):
+            name = fp.name
+            if name.startswith("snapshots__"):
+                kind = "book"
+            elif name.startswith("deltas__"):
+                kind = "delta"
+            else:
+                continue
+            try:
+                mt = fp.stat().st_mtime
+            except OSError:
+                continue
+            if mt < cutoff:
+                continue
+            try:
+                n = int(_pq.read_metadata(str(fp)).num_rows)
+            except Exception:
+                continue
+            if kind == "book":
+                book_rows += n
+            else:
+                delta_rows += n
+            tokens.add(name.split("__", 1)[1].rsplit(".", 1)[0])
+            newest_mtime = max(newest_mtime, mt)
+            # provider = first path segment under the root
+            try:
+                providers.add(fp.relative_to(root).parts[0])
+            except Exception:
+                pass
+
+    span = max(int(minutes) * 60, 1)
+    return {
+        "window_minutes": int(minutes),
+        "distinct_tokens": len(tokens),
+        "book_rows": book_rows,
+        # In the parquet model trade prints are delta events (event_type=
+        # 'trade'); ``trade_rows`` carries the delta-row count (trades+cancels).
+        "trade_rows": delta_rows,
+        "book_rows_per_sec": round(book_rows / span, 3),
+        "actively_recording": (book_rows > 0 or delta_rows > 0),
+        "newest_age_seconds": (round(_time.time() - newest_mtime, 1) if newest_mtime else None),
+        "providers": sorted(providers),
+        "source": "parquet",
+        "note": "parquet-derived (cross-process); per-process counters above reflect only the API process.",
+    }
+
+
+async def _recent_ingestion_actuals(minutes: int = 10) -> dict[str, Any]:
+    """Cross-process recording truth, derived from the parquet data plane.
+
+    See ``_scan_recent_parquet_actuals``.  Runs the (filesystem) scan off the
+    event loop so a large parquet tree can't block the API.
     """
     try:
-        async with AsyncSessionLocal() as session:
-            await session.execute(text("SET LOCAL statement_timeout = '8s'"))
-            row = (
-                await session.execute(
-                    text(
-                        "SELECT count(DISTINCT token_id) AS tokens, "
-                        "count(*) FILTER (WHERE snapshot_type='book') AS book_rows, "
-                        "count(*) FILTER (WHERE snapshot_type='trade') AS trade_rows, "
-                        "greatest(extract(epoch FROM (max(observed_at)-min(observed_at))),1) AS span_s "
-                        "FROM market_microstructure_snapshots "
-                        f"WHERE observed_at > now() - interval '{int(minutes)} minutes'"
-                    )
-                )
-            ).one()
-        book_rows = int(row.book_rows or 0)
-        span = float(row.span_s or 1.0)
-        return {
-            "window_minutes": int(minutes),
-            "distinct_tokens": int(row.tokens or 0),
-            "book_rows": book_rows,
-            "trade_rows": int(row.trade_rows or 0),
-            "book_rows_per_sec": round(book_rows / span, 3),
-            "actively_recording": book_rows > 0,
-            "note": "DB-derived (cross-process); per-process counters above reflect only the API process.",
-        }
+        return await asyncio.to_thread(_scan_recent_parquet_actuals, minutes)
     except Exception as exc:
         return {"error": str(exc), "actively_recording": None}
+
+
+class _RecordingToggle(_PydBaseModel):
+    enabled: bool = Field(..., description="Global recording master switch")
+
+
+@router.get("/recorder/recording")
+async def get_recording_state() -> dict[str, Any]:
+    """Current state of the global recording master switch + live activity.
+
+    ``enabled`` is the persisted ``app_settings.recording_enabled`` flag;
+    ``actual_recording`` is the parquet-derived truth of what's being
+    written right now, so the UI can show both intent and reality.
+    """
+    from services.recording_control import get_recording_enabled
+
+    enabled = await get_recording_enabled()
+    return {
+        "enabled": enabled,
+        "actual_recording": await _recent_ingestion_actuals(),
+    }
+
+
+@router.put("/recorder/recording")
+async def set_recording_state(req: _RecordingToggle) -> dict[str, Any]:
+    """Turn ALL market-data recording on/off.
+
+    When off: the live book/delta ingestor drops its flush batches, the
+    proactive subscription loop subscribes nothing, and the
+    crypto.update.dispatch bus tee is skipped.  Takes effect within a few
+    seconds (short-TTL cache) across processes — no restart required.
+    """
+    from services.recording_control import set_recording_enabled
+
+    enabled = await set_recording_enabled(bool(req.enabled))
+    logger.info("recording master switch set to enabled=%s via API", enabled)
+    return {"enabled": enabled}
 
 
 @router.get("/recorder/proactive-subscription")

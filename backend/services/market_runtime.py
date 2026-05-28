@@ -2119,6 +2119,16 @@ async def _publish_crypto_update_to_bus(
     markets payload + trigger live in the bus payload; consumers
     re-shape it exactly as the live ``event_dispatcher`` handlers do.
     """
+    # Global recording master switch — when OFF, skip the bus tee so the
+    # crypto.update.dispatch topic (book/reference recording) stops too.
+    try:
+        from services.recording_control import is_recording_enabled
+
+        if not await is_recording_enabled():
+            return
+    except Exception:  # pragma: no cover — never let the switch break dispatch
+        pass
+
     from services.recorded_event_bus import RecordedEvent
     from services.recorded_event_bus import bus as _bus
     # Lazy import the storage attach (otherwise pyarrow loads on every

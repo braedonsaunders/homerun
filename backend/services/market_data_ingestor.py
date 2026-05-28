@@ -222,6 +222,7 @@ class LiveMarketDataIngestor:
         # Counters (all in-memory, lock-free reads).
         self._snapshot_dropped = 0
         self._delta_dropped = 0
+        self._recording_disabled_dropped = 0
         self._accepted_books = 0
         self._reject_counts: dict[str, int] = {r: 0 for r in _REJECT_REASONS}
         self._sequence_gaps = 0
@@ -797,6 +798,23 @@ class LiveMarketDataIngestor:
         kind: str,
     ) -> None:
         rows: list[Any] = []
+        # Global recording master switch.  When recording is turned off, drain
+        # the queue without persisting so nothing lands on disk and the queue
+        # can't grow unbounded.  Read via a short-TTL cache (no per-batch DB
+        # hit); the toggle takes effect within a few seconds, no restart.
+        try:
+            from services.recording_control import is_recording_enabled
+
+            if not await is_recording_enabled():
+                drained = 0
+                while not queue.empty():
+                    queue.get_nowait()
+                    drained += 1
+                if drained:
+                    self._recording_disabled_dropped += drained
+                return
+        except Exception:  # pragma: no cover — never let the switch break flush
+            pass
         if self._should_shed_persistence(queue):
             dropped = 0
             while dropped < batch and not queue.empty():
@@ -887,6 +905,8 @@ class LiveMarketDataIngestor:
             # rendered ``queue_dropped`` on a single counter.  Aggregate
             # of both queues now.
             "queue_dropped": self._snapshot_dropped + self._delta_dropped,
+            # Rows discarded because the global recording master switch is OFF.
+            "recording_disabled_dropped": self._recording_disabled_dropped,
             "flush_latency_ms_p50": p50,
             "flush_latency_ms_p95": p95,
         }
