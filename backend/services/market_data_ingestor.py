@@ -229,6 +229,9 @@ class LiveMarketDataIngestor:
         self._last_pressure_log_mono = 0.0
         self._last_pressure_probe_mono = 0.0
         self._pressure_shed_until_mono = 0.0
+        # Columnar parquet sink — the OFF-Postgres persistence target for
+        # books/deltas.  Instantiated in start(); see book_parquet_sink.
+        self._book_sink: Any = None
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -238,6 +241,16 @@ class LiveMarketDataIngestor:
             return
         self._snapshot_queue = asyncio.Queue(maxsize=_SNAPSHOT_QUEUE_MAX)
         self._delta_queue = asyncio.Queue(maxsize=_DELTA_QUEUE_MAX)
+        # Columnar parquet sink — persistence runs off Postgres + off this
+        # loop (its own flush loop uses to_thread).  Lazy import so pyarrow
+        # only loads where the ingestor actually runs.
+        try:
+            from services.external_data.book_parquet_sink import BookParquetSink
+            self._book_sink = BookParquetSink()
+            asyncio.create_task(self._book_sink.start())
+        except Exception:
+            logger.exception("LiveMarketDataIngestor: failed to start book parquet sink")
+            self._book_sink = None
         self._snapshot_flush_task = asyncio.create_task(
             self._flush_loop(
                 queue=self._snapshot_queue,
@@ -274,6 +287,12 @@ class LiveMarketDataIngestor:
         # Drain any remaining rows so we don't lose late data on shutdown.
         await self._drain(self._snapshot_queue, kind="snapshot")
         await self._drain(self._delta_queue, kind="delta")
+        if self._book_sink is not None:
+            try:
+                await self._book_sink.stop()
+            except Exception:
+                logger.debug("book sink stop failed", exc_info=True)
+            self._book_sink = None
         self._snapshot_flush_task = None
         self._delta_flush_task = None
         self._snapshot_queue = None
@@ -802,32 +821,29 @@ class LiveMarketDataIngestor:
         # The async-with itself handles rollback/invalidate on error;
         # do not call session.rollback() here, it races the close()
         # machinery (see trader_hot_state._audit_run_group_inner).
-        async def _do_write() -> None:
-            async with AsyncSessionLocal() as session:
-                session.add_all(rows)
-                await session.commit()
-
+        # Persist OFF Postgres: hand the batch to the columnar parquet
+        # sink, which buffers synchronously here and encodes + writes the
+        # parquet on its OWN loop via ``to_thread``.  This removes ALL book
+        # DB writes from the trading process — eliminating the hot-path DB
+        # write pressure — while ``ParquetBookReplay`` reads the result
+        # natively.  The live trader reads book state from the WS feed
+        # cache + the ingestor's in-memory ``_states``, NOT this
+        # persistence layer, so a write hiccup here can never affect it.
+        sink = self._book_sink
+        if sink is None:
+            return
         try:
-            await asyncio.shield(_do_write())
-        except BaseException as exc:
+            sink.write(rows, kind=kind)
+        except Exception as exc:
             if kind == "snapshot":
                 self._snapshot_dropped += len(rows)
             elif kind == "delta":
                 self._delta_dropped += len(rows)
-            maybe_mark_db_pressure(exc, component=f"market_data_ingestor:{kind}", ttl_seconds=45.0)
-            publish_backpressure(
-                "market_data_ingestor",
-                level=0.95,
-                reason=f"{kind}_persist_failed:{type(exc).__name__}",
-            )
             logger.warning(
-                f"LiveMarketDataIngestor dropped failed {kind} batch",
+                f"LiveMarketDataIngestor: book sink write failed for {kind} batch",
                 exc_info=exc,
                 rows=len(rows),
-                dropped=len(rows),
             )
-            if isinstance(exc, asyncio.CancelledError):
-                raise
             return
         latency_ms = (time.perf_counter() - t0) * 1000.0
         # Bounded sliding window of last 100 latencies for p50/p95 stats.
