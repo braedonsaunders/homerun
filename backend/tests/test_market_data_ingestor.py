@@ -2,8 +2,8 @@
 
 Covers the hot-path contract (sync, no awaits, microsecond-scale) and
 the persistence pipeline (queues, throttling, validation gates).  No
-DB writes — we patch the AsyncSessionLocal to avoid touching real
-Postgres in the test env.
+DB writes — the ingestor no longer imports AsyncSessionLocal on the hot
+path so real Postgres is never touched.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -91,23 +90,19 @@ def test_record_book_is_sync_and_fast():
 
 
 def test_record_book_no_db_until_flush():
-    """Hot path must not touch the DB.  We patch AsyncSessionLocal
-    to a sentinel that raises if called — the test is that record_book
-    completes without raising.
+    """Hot path must not touch the DB.  AsyncSessionLocal is not imported
+    by this module, so any synchronous DB access would raise a NameError.
+    The test is that record_book completes without raising.
     """
     ing = _ingestor_with_queues()
     book = _Book(bids=[_level(0.50, 100)], asks=[_level(0.51, 80)])
-    with patch("services.market_data_ingestor.AsyncSessionLocal") as session_factory:
-        session_factory.side_effect = RuntimeError("DB touched on hot path!")
-        # If record_book awaits the session for any reason, this
-        # raises and the test fails.
-        ing.record_book(
-            token_id="tok",
-            order_book=book,
-            best_bid=0.50,
-            best_ask=0.51,
-            ingest_ts=time.time(),
-        )
+    ing.record_book(
+        token_id="tok",
+        order_book=book,
+        best_bid=0.50,
+        best_ask=0.51,
+        ingest_ts=time.time(),
+    )
 
 
 # ── Snapshot throttling ────────────────────────────────────────────────
