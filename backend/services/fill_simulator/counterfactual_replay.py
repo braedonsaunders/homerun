@@ -47,45 +47,36 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from models.database import (
-    AsyncSessionLocal,
-    BookDeltaEvent,
-    MarketMicrostructureSnapshot,
-)
-
 
 logger = logging.getLogger("counterfactual_replay")
 
 _MIN_DELTA_SIZE = 0.01
 
-# Book + delta recording moved off Postgres to canonical parquet (see
-# market_data_ingestor / book_parquet_sink).  The SQL tables only retain
-# legacy/backfilled history, so the replay falls back to reading the
-# parquet windows when SQL has no rows for the requested token+window.
-# Look back this far when locating the parquet snapshot at placement time.
+# Book + delta history lives ONLY in canonical parquet (see
+# market_data_ingestor / book_parquet_sink + the recorded_event_bus).  This
+# replay reads parquet exclusively — there is no SQL path.  Look back this
+# far when locating the parquet snapshot covering placement time.
 _PARQUET_SNAPSHOT_LOOKBACK = timedelta(minutes=30)
 
 
 @dataclass
-class _BookLevelShim:
+class _BookLevel:
     price: float
     size: float
 
 
 @dataclass
-class _SnapshotShim:
-    """Duck-typed stand-in for MarketMicrostructureSnapshot.bids_json /
-    asks_json so ``_initial_queue_ahead`` works unchanged on parquet data."""
+class _Snapshot:
+    """An L2 book snapshot read from parquet (``bids_json``/``asks_json`` are
+    ``[{"price", "size"}]`` lists, matching what ``_initial_queue_ahead``
+    walks)."""
     bids_json: list[dict[str, float]] = field(default_factory=list)
     asks_json: list[dict[str, float]] = field(default_factory=list)
 
 
 @dataclass
-class _DeltaShim:
-    """Duck-typed stand-in for BookDeltaEvent fields the replay reads."""
+class _Delta:
+    """One book-delta event read from parquet."""
     price: float | None
     side: str | None
     event_type: str | None
@@ -115,7 +106,7 @@ async def _resolve_parquet_window(
     return snap_p, deltas_p
 
 
-def _read_parquet_snapshot_at(path: Path, ts_us_max: int) -> _SnapshotShim | None:
+def _read_parquet_snapshot_at(path: Path, ts_us_max: int) -> _Snapshot | None:
     """Newest snapshot row with ``observed_at_us <= ts_us_max`` (sync)."""
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
@@ -142,10 +133,10 @@ def _read_parquet_snapshot_at(path: Path, ts_us_max: int) -> _SnapshotShim | Non
         {"price": float(p), "size": float(s)}
         for p, s in zip(row["asks_price"][0] or [], row["asks_size"][0] or [])
     ]
-    return _SnapshotShim(bids_json=bids, asks_json=asks)
+    return _Snapshot(bids_json=bids, asks_json=asks)
 
 
-def _read_parquet_deltas(path: Path, start_us: int, end_us: int) -> list[_DeltaShim]:
+def _read_parquet_deltas(path: Path, start_us: int, end_us: int) -> list[_Delta]:
     """Delta rows in ``(start_us, end_us]`` ascending by time (sync)."""
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
@@ -169,10 +160,10 @@ def _read_parquet_deltas(path: Path, start_us: int, end_us: int) -> list[_DeltaS
         return []
     t = t.sort_by([("observed_at_us", "ascending")])
     d = t.to_pydict()
-    out: list[_DeltaShim] = []
+    out: list[_Delta] = []
     for i in range(t.num_rows):
         out.append(
-            _DeltaShim(
+            _Delta(
                 price=d["price"][i],
                 side=d["side"][i],
                 event_type=d["event_type"][i],
@@ -225,7 +216,7 @@ def _aware(dt: datetime) -> datetime:
 
 
 def _initial_queue_ahead(
-    snapshot: MarketMicrostructureSnapshot | None,
+    snapshot: _Snapshot | None,
     *,
     side: str,
     price: float,
@@ -254,25 +245,12 @@ def _initial_queue_ahead(
 
 
 async def _fetch_initial_snapshot(
-    session: AsyncSession,
     *,
     token_id: str,
     placed_at: datetime,
-) -> MarketMicrostructureSnapshot | None:
+) -> _Snapshot | None:
+    """Newest parquet book snapshot at/before ``placed_at`` for the token."""
     placed_at = _aware(placed_at)
-    result = await session.execute(
-        select(MarketMicrostructureSnapshot)
-        .where(MarketMicrostructureSnapshot.token_id == token_id)
-        .where(MarketMicrostructureSnapshot.snapshot_type == "book")
-        .where(MarketMicrostructureSnapshot.observed_at <= placed_at)
-        .order_by(MarketMicrostructureSnapshot.observed_at.desc())
-        .limit(1)
-    )
-    snap = result.scalar_one_or_none()
-    if snap is not None:
-        return snap
-
-    # Fallback: book recording now lands in parquet, not SQL.
     snap_path, _deltas_path = await _resolve_parquet_window(
         token_id, start=placed_at - _PARQUET_SNAPSHOT_LOOKBACK, end=placed_at
     )
@@ -283,26 +261,14 @@ async def _fetch_initial_snapshot(
 
 
 async def _stream_delta_events(
-    session: AsyncSession,
     *,
     token_id: str,
     start_at: datetime,
     end_at: datetime,
-) -> list[BookDeltaEvent]:
+) -> list[_Delta]:
+    """Parquet delta events in ``(start_at, end_at]`` for the token."""
     start_at = _aware(start_at)
     end_at = _aware(end_at)
-    result = await session.execute(
-        select(BookDeltaEvent)
-        .where(BookDeltaEvent.token_id == token_id)
-        .where(BookDeltaEvent.observed_at > start_at)
-        .where(BookDeltaEvent.observed_at <= end_at)
-        .order_by(BookDeltaEvent.observed_at.asc())
-    )
-    events = list(result.scalars().all())
-    if events:
-        return events
-
-    # Fallback: delta recording now lands in parquet, not SQL.
     _snap_path, deltas_path = await _resolve_parquet_window(
         token_id, start=start_at, end=end_at
     )
@@ -315,105 +281,91 @@ async def _stream_delta_events(
 
 async def replay_counterfactual_order(
     order: CounterfactualOrder,
-    *,
-    session: AsyncSession | None = None,
 ) -> CounterfactualResult:
-    """Simulate a single hypothetical order against historical book + tape."""
-    own = session is None
-    if own:
-        session = AsyncSessionLocal()
-        await session.__aenter__()
-    try:
-        snapshot = await _fetch_initial_snapshot(
-            session, token_id=order.token_id, placed_at=order.placed_at
-        )
-        if snapshot is None:
-            return CounterfactualResult(
-                filled_shares=0.0,
-                average_fill_price=None,
-                time_to_fill_seconds=None,
-                final_queue_ahead=0.0,
-                cancels_ahead_observed=0.0,
-                trades_ahead_observed=0.0,
-                events_processed=0,
-                expired=True,
-                notes="no_book_snapshot_at_placement",
-            )
-
-        queue_ahead = _initial_queue_ahead(
-            snapshot, side=order.side, price=order.price
-        )
-
-        from datetime import timedelta
-
-        end_at = order.placed_at + timedelta(seconds=max(0.0, order.time_in_force_seconds))
-        events = await _stream_delta_events(
-            session,
-            token_id=order.token_id,
-            start_at=order.placed_at,
-            end_at=end_at,
-        )
-
-        is_buy = order.side.lower().startswith("buy")
-        target_price = round(order.price, 4)
-        side_key = "bid" if is_buy else "ask"
-
-        filled_shares = 0.0
-        cancels_observed = 0.0
-        trades_observed = 0.0
-        first_fill_at: datetime | None = None
-        for ev in events:
-            if filled_shares >= order.size_shares:
-                break
-            ev_price = round(float(ev.price or 0.0), 4)
-            ev_side = (ev.side or "").lower()
-            ev_type = (ev.event_type or "").lower()
-            # Only events at OUR price level on OUR side advance the queue.
-            if ev_side != side_key:
-                continue
-            if abs(ev_price - target_price) > 1e-4:
-                continue
-            if ev_type == "trade":
-                size = float(ev.trade_size or 0.0)
-                if size < _MIN_DELTA_SIZE:
-                    continue
-                trades_observed += size
-                # First clear the queue, then fill us.
-                consumed = min(size, queue_ahead)
-                queue_ahead -= consumed
-                remaining = size - consumed
-                if remaining > 0:
-                    take = min(remaining, order.size_shares - filled_shares)
-                    filled_shares += take
-                    if first_fill_at is None:
-                        first_fill_at = _aware(ev.observed_at)
-            elif ev_type == "cancel":
-                size = float(ev.cancel_size or 0.0)
-                if size < _MIN_DELTA_SIZE:
-                    continue
-                cancels_observed += size
-                # Cancels in front advance you for free (queue shortens)
-                # but do NOT contribute to fill.
-                queue_ahead = max(0.0, queue_ahead - size)
-
-        time_to_fill_seconds: float | None = None
-        if first_fill_at is not None:
-            time_to_fill_seconds = max(0.0, (first_fill_at - _aware(order.placed_at)).total_seconds())
-
+    """Simulate a single hypothetical order against recorded book + tape
+    (parquet only)."""
+    snapshot = await _fetch_initial_snapshot(
+        token_id=order.token_id, placed_at=order.placed_at
+    )
+    if snapshot is None:
         return CounterfactualResult(
-            filled_shares=filled_shares,
-            average_fill_price=order.price if filled_shares > 0 else None,
-            time_to_fill_seconds=time_to_fill_seconds,
-            final_queue_ahead=queue_ahead,
-            cancels_ahead_observed=cancels_observed,
-            trades_ahead_observed=trades_observed,
-            events_processed=len(events),
-            expired=filled_shares < order.size_shares,
-            notes=(
-                f"queue_init={_initial_queue_ahead(snapshot, side=order.side, price=order.price):.1f} "
-                f"trades_at_price={trades_observed:.1f} cancels_at_price={cancels_observed:.1f}"
-            ),
+            filled_shares=0.0,
+            average_fill_price=None,
+            time_to_fill_seconds=None,
+            final_queue_ahead=0.0,
+            cancels_ahead_observed=0.0,
+            trades_ahead_observed=0.0,
+            events_processed=0,
+            expired=True,
+            notes="no_book_snapshot_at_placement",
         )
-    finally:
-        if own:
-            await session.__aexit__(None, None, None)
+
+    queue_ahead = _initial_queue_ahead(snapshot, side=order.side, price=order.price)
+
+    end_at = order.placed_at + timedelta(seconds=max(0.0, order.time_in_force_seconds))
+    events = await _stream_delta_events(
+        token_id=order.token_id,
+        start_at=order.placed_at,
+        end_at=end_at,
+    )
+
+    is_buy = order.side.lower().startswith("buy")
+    target_price = round(order.price, 4)
+    side_key = "bid" if is_buy else "ask"
+
+    filled_shares = 0.0
+    cancels_observed = 0.0
+    trades_observed = 0.0
+    first_fill_at: datetime | None = None
+    for ev in events:
+        if filled_shares >= order.size_shares:
+            break
+        ev_price = round(float(ev.price or 0.0), 4)
+        ev_side = (ev.side or "").lower()
+        ev_type = (ev.event_type or "").lower()
+        # Only events at OUR price level on OUR side advance the queue.
+        if ev_side != side_key:
+            continue
+        if abs(ev_price - target_price) > 1e-4:
+            continue
+        if ev_type == "trade":
+            size = float(ev.trade_size or 0.0)
+            if size < _MIN_DELTA_SIZE:
+                continue
+            trades_observed += size
+            # First clear the queue, then fill us.
+            consumed = min(size, queue_ahead)
+            queue_ahead -= consumed
+            remaining = size - consumed
+            if remaining > 0:
+                take = min(remaining, order.size_shares - filled_shares)
+                filled_shares += take
+                if first_fill_at is None:
+                    first_fill_at = _aware(ev.observed_at)
+        elif ev_type == "cancel":
+            size = float(ev.cancel_size or 0.0)
+            if size < _MIN_DELTA_SIZE:
+                continue
+            cancels_observed += size
+            # Cancels in front advance you for free (queue shortens)
+            # but do NOT contribute to fill.
+            queue_ahead = max(0.0, queue_ahead - size)
+
+    time_to_fill_seconds: float | None = None
+    if first_fill_at is not None:
+        time_to_fill_seconds = max(0.0, (first_fill_at - _aware(order.placed_at)).total_seconds())
+
+    return CounterfactualResult(
+        filled_shares=filled_shares,
+        average_fill_price=order.price if filled_shares > 0 else None,
+        time_to_fill_seconds=time_to_fill_seconds,
+        final_queue_ahead=queue_ahead,
+        cancels_ahead_observed=cancels_observed,
+        trades_ahead_observed=trades_observed,
+        events_processed=len(events),
+        expired=filled_shares < order.size_shares,
+        notes=(
+            f"queue_init={_initial_queue_ahead(snapshot, side=order.side, price=order.price):.1f} "
+            f"trades_at_price={trades_observed:.1f} cancels_at_price={cancels_observed:.1f}"
+        ),
+    )
