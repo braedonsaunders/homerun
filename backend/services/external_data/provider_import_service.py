@@ -5,17 +5,19 @@ Coordinates the lifecycle of a ``ProviderImportJob``:
   1. Read the job row, mark it ``running``.
   2. Resolve provider-specific config (API key, base URL).
   3. Iterate over the requested markets / time windows, paginate the
-     provider's API, transform each page into ``MarketMicrostructureSnapshot``
-     rows, batch-insert with a unique-by-natural-key skip-if-exists policy.
-  4. Upsert a ``ProviderDataset`` catalog entry per (provider, market_id).
+     provider's API, accumulate each market's snapshots and write them to
+     canonical ``SNAPSHOT_SCHEMA`` parquet (Up + Down files in one window
+     directory) — the SAME parquet schema + layout every other ingest
+     source uses.  No book data is written to Postgres.
+  4. Register a ``ProviderDataset`` catalog entry per (provider, market_id)
+     with ``storage_type='parquet'`` so the unified backtester's
+     ``find_parquet_coverage()`` routes replays at the files directly.
   5. Mark the job ``completed`` (or ``failed`` with the error and the
      partial counters preserved).
 
-Idempotent: rerunning the same job over the same window simply skips
-rows that already exist (natural key is ``(provider, token_id, observed_at,
-sequence|null)``).  Snapshots have a stable ID derived from that natural
-key so SQL-level ``ON CONFLICT DO NOTHING`` is the cleanest behavior on
-Postgres; on SQLite (test) the inserter pre-checks the key.
+Idempotent: rerunning the same job over the same window recomputes the
+market-wide span and overwrites the canonical parquet files in place, and
+upserts the catalog row keyed on ``(provider, external_id)``.
 
 Currently implements only ``polybacktest``.  Adding a new provider is a
 matter of writing a sibling ``_run_<provider>_import`` function and
@@ -24,15 +26,16 @@ wiring it into ``_DISPATCH``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from sqlalchemy import and_, delete as sa_delete, func, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import and_, delete as sa_delete, select, update
 
 from models.database import (
     AsyncSessionLocal,
@@ -60,13 +63,20 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_POLYBACKTEST = "polybacktest"
 
+# Canonical parquet storage_type — matches what telonex_import_service and
+# parquet_scanner write, so the backtester's ``find_parquet_coverage()``
+# exact-match filter (storage_type == 'parquet') discovers polybacktest
+# imports the same way. Keeping every provider on the SAME parquet schema +
+# catalog convention is the whole point of the unified ingest path: no
+# provider writes book snapshots to Postgres on the hot or batch path.
+_STORAGE_TYPE_PARQUET = "parquet"
+
 # Page sizes — tuned for the typical Pro-tier rate limit.  Polybacktest
 # v2 caps snapshots at 1000 per page; we use the max to minimize API
 # calls per import.  Trades are not exposed for prediction markets
 # (they live only on the spot/futures reference endpoints, which we
 # don't currently import).
 _SNAPSHOT_PAGE_LIMIT = 1000
-_INSERT_BATCH_SIZE = 250
 
 
 # ---------------------------------------------------------------------------
@@ -311,10 +321,16 @@ async def _run_polybacktest_import(job_id: str, payload: dict[str, Any]) -> dict
 
             # Fetch snapshots (paged via offset).  Polybacktest v2 returns
             # ``total`` in every response so we know exactly when to stop.
+            # We accumulate the whole market's snapshots in memory and write
+            # them to canonical parquet once at the end (one window dir per
+            # market, Up + Down files side-by-side) rather than batch-inserting
+            # to Postgres per page — keeping the import path entirely off the
+            # DB hot path and on the same parquet schema as every other source.
             per_market_inserted = 0
             per_market_fetched = 0
             offset = 0
             total_avail: Optional[int] = None
+            market_snaps: list[PolybacktestSnapshot] = []
             while True:
                 if await _is_cancelled(job_id):
                     break
@@ -346,17 +362,13 @@ async def _run_polybacktest_import(job_id: str, payload: dict[str, Any]) -> dict
                 snapshots_fetched += row_count
 
                 if snaps:
-                    inserted = await _insert_snapshots(
-                        provider=PROVIDER_POLYBACKTEST,
-                        snapshots=snaps,
-                        market=market,
-                    )
-                    per_market_inserted += inserted
-                    snapshots_inserted += inserted
+                    market_snaps.extend(snaps)
 
                 await _set_counters(
                     job_id,
                     snapshots_fetched=snapshots_fetched,
+                    # ``inserted`` finalises after the parquet write below; keep
+                    # the progress counter at the running total committed so far.
                     snapshots_inserted=snapshots_inserted,
                     trades_fetched=0,
                     api_calls=client.stats()["api_calls"],
@@ -372,36 +384,40 @@ async def _run_polybacktest_import(job_id: str, payload: dict[str, Any]) -> dict
                 if total_avail is not None and offset >= total_avail:
                     break
 
+            # Write the market's accumulated snapshots to canonical parquet
+            # off the event loop, then register the parquet-backed dataset.
+            outputs = await asyncio.to_thread(
+                _write_polybacktest_parquet,
+                snapshots=market_snaps,
+                market=market,
+            )
+            per_market_inserted = sum(o[3] for o in outputs)
+            snapshots_inserted += per_market_inserted
+            await _set_counters(
+                job_id,
+                snapshots_fetched=snapshots_fetched,
+                snapshots_inserted=snapshots_inserted,
+                trades_fetched=0,
+                api_calls=client.stats()["api_calls"],
+                bytes_downloaded=client.stats()["bytes_downloaded"],
+            )
+
             rows_per_market[market_id] = {
                 "snapshots_fetched": per_market_fetched,
                 "snapshots_inserted": per_market_inserted,
                 "total_available": total_avail,
             }
 
-            # Catalog upsert.  Prefer real Polymarket clob_token_ids so
-            # the dataset metadata matches what _insert_snapshots
-            # actually wrote.  See _insert_snapshots for the full
-            # rationale.
-            real_up = getattr(market, "clob_token_up", None)
-            real_down = getattr(market, "clob_token_down", None)
-            if real_up and real_down:
-                catalog_token_ids = [str(real_up), str(real_down)]
-            else:
-                catalog_token_ids = _token_ids_for_market(coin, market_id)
-            await _upsert_provider_dataset(
-                provider=PROVIDER_POLYBACKTEST,
-                coin=coin,
-                external_id=market_id,
-                external_slug=market.slug,
-                title=market.title,
-                token_ids=catalog_token_ids,
-                start_ts=_ms_to_utc(start_ms),
-                end_ts=_ms_to_utc(end_ms),
-                snapshot_count=per_market_inserted,
-                trade_count=0,
-                payload=market.raw,
-                last_import_job_id=job_id,
-            )
+            if outputs:
+                await _register_polybacktest_parquet_dataset(
+                    coin=coin,
+                    market_id=market_id,
+                    market=market,
+                    outputs=outputs,
+                    requested_start=_ms_to_utc(start_ms),
+                    requested_end=_ms_to_utc(end_ms),
+                    last_import_job_id=job_id,
+                )
     finally:
         await client.close()
 
@@ -434,50 +450,14 @@ _DISPATCH: dict[str, Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]]
 # ---------------------------------------------------------------------------
 
 
-def _token_ids_for_market(coin: str, market_id: str) -> list[str]:
-    """Synthetic token IDs we write to ``MarketMicrostructureSnapshot``.
-
-    Polymarket Up/Down has two outcomes per market — we expand them
-    here so the backtest engine can iterate either side independently.
-    """
-    return [
-        f"polybacktest:{coin}:{market_id}:up",
-        f"polybacktest:{coin}:{market_id}:down",
-    ]
-
-
 def _token_id_for_side(coin: str, market_id: str, side: str) -> str:
+    """Synthetic fallback token id (only when polybacktest didn't expose
+    the real Polymarket clob_token_ids — see ``_token_id_for_snap``)."""
     return f"polybacktest:{coin}:{market_id}:{side}"
 
 
 def _ms_to_utc(ms: int) -> datetime:
     return datetime.fromtimestamp(int(ms) / 1000.0, tz=timezone.utc)
-
-
-def _snapshot_id(
-    token_id: str,
-    observed_at: datetime,
-    discriminator: Optional[str] = None,
-    side: Optional[str] = None,
-) -> str:
-    """Stable ID derived from the natural key.
-
-    Lets us safely re-run an import — duplicate rows are rejected at
-    insert time via ON CONFLICT DO NOTHING (or pre-checked on SQLite).
-    The discriminator slot accepts any provider-supplied uniqueness hint
-    (snapshot_id, sequence number, etc.); ``side`` discriminates UP/DOWN
-    when polybacktest emits a single snapshot row containing both books.
-    """
-    parts = [token_id, str(int(observed_at.timestamp() * 1000))]
-    if side:
-        parts.append(side)
-    parts.append(str(discriminator) if discriminator is not None else "x")
-    natural = "|".join(parts)
-    return "pbt-" + hashlib.sha1(natural.encode("utf-8")).hexdigest()[:24]
-
-
-def _serialize_levels(levels: list[tuple[float, float]]) -> list[list[float]]:
-    return [[float(p), float(s)] for p, s in levels]
 
 
 def _spread_bps(best_bid: Optional[float], best_ask: Optional[float]) -> Optional[float]:
@@ -491,229 +471,220 @@ def _spread_bps(best_bid: Optional[float], best_ask: Optional[float]) -> Optiona
     return (best_ask - best_bid) / mid * 10_000.0
 
 
-async def _insert_snapshots(
-    *,
-    provider: str,
-    snapshots: list[PolybacktestSnapshot],
-    market: Any,
-) -> int:
-    """Batch-insert book snapshots, skipping rows that already exist.
+def _token_id_for_snap(snap: PolybacktestSnapshot, market: Any) -> str:
+    """Resolve the canonical token id we write a snapshot under.
 
-    Returns the count of NEW rows inserted (not the page size).
+    Prefer the REAL Polymarket clob_token_ids exposed by polybacktest's
+    market metadata over the synthetic ``polybacktest:btc:X:up`` slugs:
+    polybacktest captures Polymarket markets, so the snapshots ARE
+    Polymarket book state.  Storing them under synthetic IDs meant crypto
+    strategies (which query coverage by their real opportunity-history
+    clob_token_ids) silently saw zero polybacktest coverage.  Fall back to
+    the synthetic ID only when clob_token_{up,down} is missing (rare).
     """
-    if not snapshots:
-        return 0
-
-    # Prefer the REAL Polymarket clob_token_ids exposed by polybacktest's
-    # market metadata over the synthetic ``polybacktest:btc:X:up`` slugs.
-    # Polybacktest captures Polymarket markets — the snapshots ARE
-    # Polymarket book state.  Storing them under synthetic IDs meant
-    # crypto strategies (which query mms by their real opportunity-
-    # history clob_token_ids) silently saw zero polybacktest coverage.
-    # We fall back to the synthetic ID only when polybacktest didn't
-    # populate clob_token_{up,down} (rare; would imply broken metadata).
     real_up = getattr(market, "clob_token_up", None)
     real_down = getattr(market, "clob_token_down", None)
+    if snap.side == "up" and real_up:
+        return str(real_up)
+    if snap.side == "down" and real_down:
+        return str(real_down)
+    return _token_id_for_side(snap.coin, snap.market_id, snap.side)
 
-    rows: list[dict[str, Any]] = []
+
+def _write_polybacktest_parquet(
+    *,
+    snapshots: list[PolybacktestSnapshot],
+    market: Any,
+) -> list[tuple[str, Path, str, int, datetime, datetime]]:
+    """Write a market's book snapshots to canonical SNAPSHOT_SCHEMA parquet.
+
+    Groups snapshots by real Polymarket clob_token_id (one file per side)
+    and writes them all into a SINGLE window directory keyed off the
+    market-wide span, mirroring the telonex canonical layout so the
+    backtester's ``find_parquet_coverage()`` discovers Up + Down side-by-
+    side.  Synchronous (PyArrow) — call via ``asyncio.to_thread``.
+
+    Returns one ``(coin, file_path, token_id, n_rows, span_start, span_end)``
+    tuple per token written (empty if no snapshots).
+    """
+    if not snapshots:
+        return []
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from services.external_data.parquet_schema import SNAPSHOT_SCHEMA, parquet_path_for
+
+    by_token: dict[str, list[PolybacktestSnapshot]] = {}
     for snap in snapshots:
-        if snap.side == "up" and real_up:
-            token_id = str(real_up)
-        elif snap.side == "down" and real_down:
-            token_id = str(real_down)
-        else:
-            token_id = _token_id_for_side(snap.coin, snap.market_id, snap.side)
-        observed_at = _ms_to_utc(snap.observed_at_ms)
-        # Snapshot ID uses the polybacktest snapshot_id when present
-        # (it's already globally unique per side+time).  Falls back to
-        # the synthetic natural-key hash so re-running an import is
-        # idempotent regardless of API response shape changes.
-        sid_key = snap.snapshot_id or str(snap.sequence) if snap.snapshot_id else None
-        rows.append(
+        by_token.setdefault(_token_id_for_snap(snap, market), []).append(snap)
+
+    # One shared window span for the whole market so Up + Down land in the
+    # same window_dir (a single ProviderDataset.storage_uri points at it).
+    all_ms = [int(s.observed_at_ms) for s in snapshots]
+    span_start = _ms_to_utc(min(all_ms)).replace(microsecond=0)
+    span_end = _ms_to_utc(max(all_ms)).replace(microsecond=0)
+    if span_end <= span_start:
+        span_end = span_start + timedelta(seconds=1)
+
+    coin = (snapshots[0].coin or "_").lower()
+    outputs: list[tuple[str, Path, str, int, datetime, datetime]] = []
+
+    for token_id, snaps in by_token.items():
+        snaps.sort(key=lambda s: s.observed_at_ms)
+        n = len(snaps)
+        observed_us = [int(s.observed_at_ms) * 1000 for s in snaps]
+        bids_price = [[float(p) for p, _s in s.bids] for s in snaps]
+        bids_size = [[float(sz) for _p, sz in s.bids] for s in snaps]
+        asks_price = [[float(p) for p, _s in s.asks] for s in snaps]
+        asks_size = [[float(sz) for _p, sz in s.asks] for s in snaps]
+
+        table = pa.table(
             {
-                "id": _snapshot_id(token_id, observed_at, sid_key, snap.side),
-                "provider": provider,
-                "token_id": token_id,
-                "snapshot_type": "book",
-                "observed_at": observed_at,
-                "exchange_ts_ms": snap.observed_at_ms,
-                "sequence": snap.sequence,
-                "best_bid": snap.best_bid,
-                "best_ask": snap.best_ask,
-                "spread_bps": _spread_bps(snap.best_bid, snap.best_ask),
-                "bids_json": _serialize_levels(snap.bids),
-                "asks_json": _serialize_levels(snap.asks),
-                "trade_price": None,
-                "trade_size": None,
-                "trade_side": None,
-                "payload_json": {
-                    "provider": provider,
-                    "coin": snap.coin,
-                    "market_id": snap.market_id,
-                    "side": snap.side,
-                    "external_market_slug": getattr(market, "slug", None),
-                    "external_market_title": getattr(market, "title", None),
-                    # Spot reference price + cross-side prices captured
-                    # alongside this snapshot — useful for the agent +
-                    # backtest engine when reasoning about the market's
-                    # state without a separate fetch.
-                    "spot_price": snap.coin_price,
-                    "price_up": snap.price_up,
-                    "price_down": snap.price_down,
-                    "depth_levels_bids": len(snap.bids),
-                    "depth_levels_asks": len(snap.asks),
-                    "polybacktest_snapshot_id": snap.snapshot_id,
-                },
-            }
+                "token_id":       pa.array([token_id] * n, pa.string()),
+                "observed_at_us": pa.array(observed_us, pa.int64()),
+                "sequence":       pa.array([s.sequence for s in snaps], pa.int64()),
+                "best_bid":       pa.array([s.best_bid for s in snaps], pa.float64()),
+                "best_ask":       pa.array([s.best_ask for s in snaps], pa.float64()),
+                "spread_bps":     pa.array(
+                    [_spread_bps(s.best_bid, s.best_ask) for s in snaps], pa.float64()
+                ),
+                "bids_price":     pa.array(bids_price, pa.list_(pa.float64())),
+                "bids_size":      pa.array(bids_size, pa.list_(pa.float64())),
+                "asks_price":     pa.array(asks_price, pa.list_(pa.float64())),
+                "asks_size":      pa.array(asks_size, pa.list_(pa.float64())),
+                "trade_price":    pa.array([None] * n, pa.float64()),
+                "trade_size":     pa.array([None] * n, pa.float64()),
+                "trade_side":     pa.array([None] * n, pa.string()),
+            },
+            schema=SNAPSHOT_SCHEMA,
         )
 
-    return await _bulk_insert_microstructure(rows)
+        dest = parquet_path_for(
+            provider=PROVIDER_POLYBACKTEST,
+            coin=coin,
+            token_id=token_id,
+            start=span_start,
+            end=span_end,
+            kind="snapshots",
+        )
+        dest.window_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(table, str(dest.file_path), compression="snappy")
+        outputs.append((coin, dest.file_path, token_id, n, span_start, span_end))
+
+    return outputs
 
 
-async def _bulk_insert_microstructure(rows: list[dict[str, Any]]) -> int:
-    """Insert with ``ON CONFLICT DO NOTHING`` semantics (Postgres).
-
-    Falls back to a per-row INSERT-or-skip on non-Postgres engines.
-    Returns the number of newly inserted rows (not counting skips).
-    """
-    if not rows:
-        return 0
-    inserted_total = 0
-    async with AsyncSessionLocal() as session:
-        # Preferred path: Postgres ``INSERT ... ON CONFLICT (id) DO NOTHING``.
-        try:
-            for batch_start in range(0, len(rows), _INSERT_BATCH_SIZE):
-                batch = rows[batch_start : batch_start + _INSERT_BATCH_SIZE]
-                stmt = pg_insert(MarketMicrostructureSnapshot).values(batch)
-                stmt = stmt.on_conflict_do_nothing(index_elements=["id"])
-                result = await session.execute(stmt)
-                # rowcount from ON CONFLICT only counts inserted rows on
-                # Postgres ≥9.5 — same engine we ship on, so this is
-                # accurate.  Negative rowcount → fall back to length.
-                rc = getattr(result, "rowcount", None)
-                inserted_total += rc if rc is not None and rc >= 0 else len(batch)
-            await session.commit()
-            return inserted_total
-        except Exception as exc:
-            await session.rollback()
-            logger.debug("bulk insert via pg_insert failed, falling back: %s", exc)
-
-        # Fallback: per-row check, used for SQLite-backed unit tests.
-        for row in rows:
-            existing = (
-                await session.execute(
-                    select(MarketMicrostructureSnapshot.id).where(
-                        MarketMicrostructureSnapshot.id == row["id"]
-                    )
-                )
-            ).first()
-            if existing is not None:
-                continue
-            session.add(MarketMicrostructureSnapshot(**row))
-            inserted_total += 1
-        await session.commit()
-        return inserted_total
+def _file_uri(path: Path) -> str:
+    """Cross-platform ``file://`` URI for a filesystem path."""
+    return path.resolve().as_uri()
 
 
-async def _upsert_provider_dataset(
+async def _register_polybacktest_parquet_dataset(
     *,
-    provider: str,
-    coin: Optional[str],
-    external_id: str,
-    external_slug: Optional[str],
-    title: Optional[str],
-    token_ids: list[str],
-    start_ts: Optional[datetime],
-    end_ts: Optional[datetime],
-    snapshot_count: int,
-    trade_count: int,
-    payload: Optional[dict[str, Any]],
+    coin: str,
+    market_id: str,
+    market: Any,
+    outputs: list[tuple[str, Path, str, int, datetime, datetime]],
+    requested_start: datetime,
+    requested_end: datetime,
     last_import_job_id: Optional[str],
 ) -> None:
-    """Insert-or-update the catalog row for this dataset.
+    """Insert-or-update the ``ProviderDataset`` catalog row for a parquet
+    import.  Mirrors telonex's canonical registration:
 
-    Counts are recomputed from the current import (so rerunning a
-    partial window doesn't double-count).
+      • ``storage_type='parquet'`` so ``find_parquet_coverage()`` (which
+        exact-matches that value) routes the backtester at the parquet
+        files instead of a SQL replay.
+      • ``storage_uri`` points at the shared window directory holding the
+        Up + Down snapshot files.
+      • ``token_ids_json`` holds the REAL Polymarket clob_token_ids the
+        files are keyed under, so per-token routing matches live opps.
+      • ``start_ts/end_ts`` reflect the ACTUAL data span (not the requested
+        calendar window) so coverage overlap is precise.
     """
+    if not outputs:
+        return
+
+    window_dir = outputs[0][1].parent
+    storage_uri = _file_uri(window_dir)
+
+    token_ids: list[str] = []
+    seen: set[str] = set()
+    for _coin, _path, tok, _n, _s, _e in outputs:
+        if tok not in seen:
+            token_ids.append(tok)
+            seen.add(tok)
+
+    span_start = min(o[4] for o in outputs)
+    span_end = max(o[5] for o in outputs)
+    total_rows = sum(o[3] for o in outputs)
+
+    payload: dict[str, Any] = {
+        "coin": coin,
+        "market_id": market_id,
+        "slug": getattr(market, "slug", None),
+        "title": getattr(market, "title", None),
+        "requested_start": requested_start.isoformat(),
+        "requested_end": requested_end.isoformat(),
+        "canonical": True,
+        "schema_version": "snapshots_v1",
+    }
+
+    external_id = str(market_id)
+    dataset_id = "polybacktest:" + hashlib.sha1(
+        f"{PROVIDER_POLYBACKTEST}|{external_id}".encode("utf-8")
+    ).hexdigest()[:16]
+
     async with AsyncSessionLocal() as session:
         existing = (
             await session.execute(
                 select(ProviderDataset).where(
                     and_(
-                        ProviderDataset.provider == provider,
-                        ProviderDataset.external_id == str(external_id),
+                        ProviderDataset.provider == PROVIDER_POLYBACKTEST,
+                        ProviderDataset.external_id == external_id,
                     )
                 )
             )
         ).scalar_one_or_none()
 
-        # Recompute the actual stored counts from microstructure to
-        # keep the catalog accurate even after multiple partial imports.
-        snap_count = await _count_microstructure_rows(
-            session, provider=provider, token_ids=token_ids, snapshot_type="book"
-        )
-        trade_count_actual = await _count_microstructure_rows(
-            session, provider=provider, token_ids=token_ids, snapshot_type="trade"
-        )
-
         if existing is None:
             row = ProviderDataset(
-                id=f"pds-{int(time.time() * 1000)}-{_short_hash([provider, external_id])}",
-                provider=provider,
+                id=dataset_id,
+                provider=PROVIDER_POLYBACKTEST,
                 coin=coin,
-                external_id=str(external_id),
-                external_slug=external_slug,
-                title=title,
+                external_id=external_id,
+                external_slug=getattr(market, "slug", None),
+                title=getattr(market, "title", None),
                 asset_class="prediction",
                 token_ids_json=token_ids,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                snapshot_count=int(snap_count),
-                trade_count=int(trade_count_actual),
+                storage_type=_STORAGE_TYPE_PARQUET,
+                storage_uri=storage_uri,
+                start_ts=span_start,
+                end_ts=span_end,
+                snapshot_count=int(total_rows),
+                trade_count=0,
                 last_imported_at=utcnow(),
                 last_import_job_id=last_import_job_id,
-                payload_json=payload or {},
+                payload_json=payload,
             )
             session.add(row)
         else:
             existing.coin = coin or existing.coin
-            existing.external_slug = external_slug or existing.external_slug
-            existing.title = title or existing.title
+            existing.external_slug = getattr(market, "slug", None) or existing.external_slug
+            existing.title = getattr(market, "title", None) or existing.title
+            existing.asset_class = "prediction"
             existing.token_ids_json = token_ids
-            # Widen the window if this import extended either edge.
-            if start_ts is not None:
-                existing.start_ts = (
-                    min(existing.start_ts, start_ts) if existing.start_ts else start_ts
-                )
-            if end_ts is not None:
-                existing.end_ts = (
-                    max(existing.end_ts, end_ts) if existing.end_ts else end_ts
-                )
-            existing.snapshot_count = int(snap_count)
-            existing.trade_count = int(trade_count_actual)
+            existing.storage_type = _STORAGE_TYPE_PARQUET
+            existing.storage_uri = storage_uri
+            existing.start_ts = min(existing.start_ts, span_start) if existing.start_ts else span_start
+            existing.end_ts = max(existing.end_ts, span_end) if existing.end_ts else span_end
+            existing.snapshot_count = int(total_rows)
+            existing.trade_count = 0
             existing.last_imported_at = utcnow()
             existing.last_import_job_id = last_import_job_id or existing.last_import_job_id
-            existing.payload_json = payload or existing.payload_json
+            existing.payload_json = payload
         await session.commit()
-
-
-async def _count_microstructure_rows(
-    session: Any,
-    *,
-    provider: str,
-    token_ids: list[str],
-    snapshot_type: str,
-) -> int:
-    if not token_ids:
-        return 0
-    stmt = select(func.count(MarketMicrostructureSnapshot.id)).where(
-        and_(
-            MarketMicrostructureSnapshot.provider == provider,
-            MarketMicrostructureSnapshot.token_id.in_(token_ids),
-            MarketMicrostructureSnapshot.snapshot_type == snapshot_type,
-        )
-    )
-    return int((await session.execute(stmt)).scalar_one() or 0)
 
 
 # ---------------------------------------------------------------------------
@@ -813,9 +784,12 @@ async def get_provider_dataset(dataset_id: str) -> Optional[ProviderDataset]:
 
 
 async def delete_provider_dataset(dataset_id: str) -> bool:
-    """Delete a catalog entry **and** its underlying microstructure rows.
+    """Delete a catalog entry **and** its underlying storage.
 
-    Returns ``True`` if the dataset existed.
+    For canonical parquet datasets this removes the on-disk window
+    directory the files live in; for legacy SQL-backed datasets it deletes
+    the underlying ``MarketMicrostructureSnapshot`` rows.  Returns ``True``
+    if the dataset existed.
     """
     async with AsyncSessionLocal() as session:
         row = (
@@ -825,16 +799,36 @@ async def delete_provider_dataset(dataset_id: str) -> bool:
         ).scalar_one_or_none()
         if row is None:
             return False
-        token_ids = list(row.token_ids_json or [])
-        if token_ids:
-            await session.execute(
-                sa_delete(MarketMicrostructureSnapshot).where(
-                    and_(
-                        MarketMicrostructureSnapshot.provider == row.provider,
-                        MarketMicrostructureSnapshot.token_id.in_(token_ids),
+
+        if row.storage_type == _STORAGE_TYPE_PARQUET and row.storage_uri:
+            # Parquet-backed: remove the on-disk window directory. Best-
+            # effort — a missing/locked dir shouldn't block catalog cleanup.
+            try:
+                from services.external_data.parquet_scanner import _uri_to_path
+
+                window_dir = Path(_uri_to_path(row.storage_uri))
+                if window_dir.exists() and window_dir.is_dir():
+                    import shutil
+
+                    await asyncio.to_thread(shutil.rmtree, window_dir, True)
+            except Exception:
+                logger.exception(
+                    "delete_provider_dataset: failed to remove parquet dir for %s",
+                    dataset_id,
+                )
+        else:
+            # Legacy SQL-backed dataset: drop its microstructure rows.
+            token_ids = list(row.token_ids_json or [])
+            if token_ids:
+                await session.execute(
+                    sa_delete(MarketMicrostructureSnapshot).where(
+                        and_(
+                            MarketMicrostructureSnapshot.provider == row.provider,
+                            MarketMicrostructureSnapshot.token_id.in_(token_ids),
+                        )
                     )
                 )
-            )
+
         await session.execute(
             sa_delete(ProviderDataset).where(ProviderDataset.id == dataset_id)
         )
