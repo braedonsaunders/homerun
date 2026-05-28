@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
-import time
 from collections import OrderedDict, defaultdict
 from typing import Any, Optional
 from models import Market, Event, Opportunity

@@ -26,6 +26,7 @@ import threading as _threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path as _Path
 from typing import Any, Iterable, Mapping, Optional
 
 from sqlalchemy import select, delete, update as _sa_update, func as _sa_func, text as _sa_text
@@ -536,7 +537,6 @@ def _sources(*entries: dict[str, Any]) -> str:
 # Canonical parquet data-plane root (matches parquet_schema._builtin_default_root
 # without importing pyarrow here).  Book topics federate over every provider
 # beneath it via the external_parquet adapter's recursive window-dir walk.
-from pathlib import Path as _Path
 _PARQUET_ROOT = str((_Path(__file__).resolve().parents[3] / "data" / "parquet").resolve())
 
 

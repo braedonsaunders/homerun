@@ -45,7 +45,6 @@ import json
 import os
 import re
 import signal
-import subprocess
 import sys
 import time
 from collections import Counter, defaultdict, deque
@@ -528,7 +527,6 @@ async def _tail_file(
     plane spawn).
     """
     fh = None
-    last_inode = None
     while not stop_event.is_set():
         try:
             if fh is None:
@@ -537,10 +535,6 @@ async def _tail_file(
                     continue
                 fh = file_path.open("r", encoding="utf-8", errors="replace")
                 fh.seek(0, 2)  # EOF — only read NEW lines
-                try:
-                    last_inode = file_path.stat().st_ino if hasattr(file_path.stat(), "st_ino") else None
-                except Exception:
-                    last_inode = None
             line = fh.readline()
             if not line:
                 # Detect truncation — if file shrunk, reopen at start.

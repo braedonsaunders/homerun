@@ -8,7 +8,6 @@ liquidity/spread constraints make execution realistic.
 from __future__ import annotations
 
 import re
-import time
 from collections import deque
 from typing import Any, Optional
 

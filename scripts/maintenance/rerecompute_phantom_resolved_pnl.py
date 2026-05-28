@@ -153,7 +153,6 @@ async def _main(trader_id: str, dry_run: bool) -> int:
             continue  # Already correct.
         proceeds = filled_size * (1.0 if actually_won else 0.0)
         new_pnl = proceeds - cost_basis
-        new_close_price = 1.0 if actually_won else 0.0
         new_status = "resolved_win" if actually_won else "resolved_loss"
         corrections.append(
             {

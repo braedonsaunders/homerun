@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -185,7 +184,7 @@ async def _main(args: argparse.Namespace) -> int:
     elif args.apply_all:
         target_ids = [c["order_id"] for c in candidates]
     else:
-        print(f"\n[dry-run] Pass --order-id ... --apply OR --apply-all to actually mark these terminal.")
+        print("\n[dry-run] Pass --order-id ... --apply OR --apply-all to actually mark these terminal.")
         return 0
 
     if not (args.apply or args.apply_all):

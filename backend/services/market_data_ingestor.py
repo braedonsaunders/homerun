@@ -64,14 +64,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from models.database import (
-    AsyncSessionLocal,
     BookDeltaEvent,
     MarketMicrostructureSnapshot,
 )
 from services.live_pressure import (
     current_backpressure_level,
     is_db_pressure_active,
-    maybe_mark_db_pressure,
     publish_backpressure,
 )
 from utils.logger import get_logger

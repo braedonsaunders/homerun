@@ -562,7 +562,7 @@ def format_log_line(line: str, tag: str) -> tuple[str, str]:
             exc_text = data.get("exception", "")
             if exc_text:
                 # Take the last non-empty line of the traceback (the actual error)
-                exc_lines = [l for l in exc_text.strip().splitlines() if l.strip()]
+                exc_lines = [ln for ln in exc_text.strip().splitlines() if ln.strip()]
                 if exc_lines:
                     parts.append(f"|| {exc_lines[-1].strip()}")
                     level = "ERROR"

@@ -16,7 +16,6 @@ overlap with ``sports_overreaction_fader``).
 from __future__ import annotations
 
 import re
-import time
 from collections import deque
 from typing import Any, Optional
 

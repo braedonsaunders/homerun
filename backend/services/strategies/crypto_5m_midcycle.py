@@ -30,7 +30,6 @@ will do at resolution.
 from __future__ import annotations
 
 import re
-import time
 from typing import Any, Optional
 
 from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)

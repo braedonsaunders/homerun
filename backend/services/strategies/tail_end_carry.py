@@ -8,7 +8,6 @@ liquidity/spread quality and non-trivial expected repricing room.
 from __future__ import annotations
 
 import re
-import time
 from dataclasses import asdict, dataclass
 from collections import deque
 from datetime import datetime, timezone

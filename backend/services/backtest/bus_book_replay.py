@@ -30,7 +30,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Iterable, Optional
+from typing import AsyncIterator, Iterable, Optional
 
 import pyarrow.parquet as pq
 

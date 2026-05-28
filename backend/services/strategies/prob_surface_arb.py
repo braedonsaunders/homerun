@@ -22,11 +22,10 @@ have information justifying the deviation. Use with position limits.
 from __future__ import annotations
 
 import re
-import time
 
 from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import Any, Optional
 
 from models import Market, Event, Opportunity

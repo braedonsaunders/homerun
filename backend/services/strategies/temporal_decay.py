@@ -21,10 +21,8 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from datetime import datetime, timezone
 
-from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim time)
 from typing import Any, Optional
 
 from models import Event, Market, Opportunity

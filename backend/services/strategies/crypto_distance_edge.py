@@ -54,7 +54,6 @@ entry in ``opportunity_strategy_catalog.py`` for the ``config_schema``.
 from __future__ import annotations
 
 import re
-import time
 from typing import Any, Optional
 
 from models import Market, Opportunity

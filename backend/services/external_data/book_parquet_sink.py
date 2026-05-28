@@ -195,9 +195,11 @@ class BookParquetSink:
                 await self._flush()
                 now = time.monotonic()
                 if now - self._last_catalog >= _CATALOG_INTERVAL_SECONDS:
-                    await self._catalog(); self._last_catalog = now
+                    await self._catalog()
+                    self._last_catalog = now
                 if now - self._last_prune >= _PRUNE_INTERVAL_SECONDS:
-                    await asyncio.to_thread(self._prune); self._last_prune = now
+                    await asyncio.to_thread(self._prune)
+                    self._last_prune = now
             except asyncio.CancelledError:
                 break
             except Exception:

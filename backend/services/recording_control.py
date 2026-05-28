@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
-
 from sqlalchemy import select
 
 from models.database import AppSettings, AsyncSessionLocal

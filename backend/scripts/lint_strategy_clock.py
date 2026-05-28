@@ -16,7 +16,6 @@ Usage:  python scripts/lint_strategy_clock.py
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 
 _STRATEGIES_DIR = Path(__file__).resolve().parent.parent / "services" / "strategies"
