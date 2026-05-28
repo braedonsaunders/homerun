@@ -2225,7 +2225,13 @@ async def _ensure_catalog_snapshot_topic_registered() -> None:
 
         roots = _pq_roots()
         root = Path(str(roots[0])) if roots else Path("data") / "parquet"
-        storage_uri = (root / "recorded_event_bus").resolve().as_uri()
+        # Match the working crypto.update.dispatch registration pattern
+        # (services/market_runtime.py): plain path, INCLUDING the topic
+        # segment.  Using ``.as_uri()`` produces ``file:///C:/...`` which
+        # the parquet writer treats as a literal relative path on Windows
+        # — mkdir fails silently and every envelope is dropped, which is
+        # why the topic was registered but no files ever appeared on disk.
+        storage_uri = str(root / "recorded_event_bus" / _CATALOG_SNAPSHOT_TOPIC)
 
         await register_topic(
             upsert=True,
