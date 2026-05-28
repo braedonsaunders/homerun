@@ -4302,91 +4302,27 @@ async def run_execution_backtest(
                 if opp_tokens:
                     # Filter to tokens with actual book snapshots in
                     # window so the engine can replay against them.
-                    # IMPORTANT: chunk the IN-list.  A 400+ token IN-
-                    # clause against the (token_id, snapshot_type,
-                    # observed_at) index forces 400+ index seeks +
-                    # GROUP BY work that blows past the Postgres
-                    # statement_timeout for crypto strategies that fan
-                    # out across many markets.  Chunks of 50 keep each
-                    # query predictable.
+                    # Recording moved off Postgres to parquet
+                    # (live_ingestor / canonical telonex etc.), so this
+                    # check uses ``find_parquet_coverage`` against the
+                    # provider_datasets catalog.  One lookup covers the
+                    # whole token list — no SQL chunking + timeout
+                    # gymnastics required.
                     candidate_tokens = list(opp_tokens.keys())
                     tokens_with_snaps: set[str] = set()
                     snap_filter_failed = False
-                    CHUNK_SIZE = 50
-                    # IMPORTANT: run the snap-availability check in its
-                    # OWN short-lived session so the outer backtest
-                    # session isn't held idle-in-transaction across
-                    # this fan-out.  Production soaks have seen the
-                    # outer connection sit for 6+ minutes here, eating
-                    # past idle_in_transaction_session_timeout (360s)
-                    # and dying with "connection is closed" on the
-                    # NEXT execute().  A separate session also lets us
-                    # set a tight per-chunk statement_timeout (30s) so
-                    # a slow chunk fails fast into the per-chunk
-                    # except-clause below rather than hogging a backtest
-                    # pool slot for the full 5-minute server timeout.
-                    from sqlalchemy import text as _snap_text
                     try:
-                        async with BacktestAsyncSessionLocal() as _snap_session:
-                            for i in range(0, len(candidate_tokens), CHUNK_SIZE):
-                                chunk = candidate_tokens[i : i + CHUNK_SIZE]
-                                chunk_stmt = (
-                                    select(MarketMicrostructureSnapshot.token_id)
-                                    .where(
-                                        MarketMicrostructureSnapshot.observed_at >= start_dt,
-                                        MarketMicrostructureSnapshot.observed_at <= end_dt,
-                                        MarketMicrostructureSnapshot.snapshot_type == "book",
-                                        MarketMicrostructureSnapshot.token_id.in_(chunk),
-                                    )
-                                    .group_by(MarketMicrostructureSnapshot.token_id)
-                                )
-                                # Per-chunk fail-fast: each chunk is its
-                                # own transaction so a slow chunk does
-                                # NOT lose results from earlier chunks.
-                                # Server-side 30s statement_timeout +
-                                # client-side asyncio 35s wait_for as a
-                                # belt-and-suspenders guard.
-                                try:
-                                    await _snap_session.execute(
-                                        _snap_text("SET LOCAL statement_timeout = '30000'")
-                                    )
-                                    chunk_rows = (await asyncio.wait_for(
-                                        _snap_session.execute(chunk_stmt),
-                                        timeout=35.0,
-                                    )).all()
-                                    for r in chunk_rows:
-                                        if r[0]:
-                                            tokens_with_snaps.add(str(r[0]))
-                                    # Close the per-chunk transaction
-                                    # so the next chunk starts fresh
-                                    # and SET LOCAL applies to its own
-                                    # transaction scope.
-                                    await _snap_session.rollback()
-                                except (asyncio.TimeoutError, Exception) as chunk_exc:
-                                    logger.warning(
-                                        "Snap-availability chunk %d/%d failed; "
-                                        "trusting these %d tokens: %s",
-                                        (i // CHUNK_SIZE) + 1,
-                                        (len(candidate_tokens) + CHUNK_SIZE - 1) // CHUNK_SIZE,
-                                        len(chunk),
-                                        chunk_exc,
-                                    )
-                                    # Trust this chunk's tokens rather
-                                    # than dropping them — the matcher
-                                    # handles no-snap tokens gracefully.
-                                    for tok in chunk:
-                                        tokens_with_snaps.add(str(tok))
-                                    try:
-                                        await _snap_session.rollback()
-                                    except Exception:
-                                        pass
+                        from services.external_data import parquet_scanner as _pq
+                        await _pq.ensure_recent_scan(max_age_seconds=60.0)
+                        cov = await _pq.find_parquet_coverage(
+                            token_ids=candidate_tokens,
+                            start=start_dt,
+                            end=end_dt,
+                        )
+                        tokens_with_snaps = set(str(k) for k in cov.keys())
                     except Exception as exc:
-                        # Session-level failure (couldn't even open the
-                        # snap session) — fall back to "trust all
-                        # opp_tokens".  Matching engine produces zero
-                        # fills for tokens without book data.
                         logger.warning(
-                            "Snap-availability check failed; trusting opp_tokens universe: %s",
+                            "parquet-availability check failed; trusting opp_tokens universe: %s",
                             exc,
                         )
                         snap_filter_failed = True
