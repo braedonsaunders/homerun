@@ -207,22 +207,57 @@ async def _run_detect_once(
     prices: dict[str, dict[str, Any]],
     *,
     timeout_seconds: float,
+    now_us: int | None = None,
 ) -> list[Any]:
+    """Run the strategy's detect with the replay clock pinned to
+    ``now_us`` (the tick's as-of time) so wall-clock reads inside detect
+    resolve to simulated event time, not real time.  Both the instance
+    attribute (thread-safe, for sync detect in an executor) and the
+    utcnow ContextVar (for free-function ``utcnow()`` callers + child
+    tasks) are set; the ContextVar is copied into the executor so a sync
+    detect running off-loop still sees the simulated clock."""
+    import contextvars as _cv
+
+    from utils import utcnow as _utcnow_mod
+
     loop = asyncio.get_running_loop()
-    if _has_custom_detect_async(strategy):
+    prev_instance = getattr(strategy, "_replay_now_us", None)
+    token = None
+    if now_us is not None:
+        try:
+            strategy.set_replay_clock(int(now_us))
+        except Exception:  # noqa: BLE001 — non-BaseStrategy duck types
+            try:
+                strategy._replay_now_us = int(now_us)
+            except Exception:  # noqa: BLE001
+                pass
+        token = _utcnow_mod.set_replay_clock_us(int(now_us))
+    try:
+        if _has_custom_detect_async(strategy):
+            return await asyncio.wait_for(
+                strategy.detect_async(events, markets, prices),
+                timeout=timeout_seconds,
+            )
+        # Sync detect runs in a thread — copy the current context (incl.
+        # the replay clock ContextVar) so utcnow() inside the thread sees
+        # the simulated time.
+        ctx = _cv.copy_context()
+        fn = strategy.detect_sync if _has_custom_detect_sync(strategy) else strategy.detect
         return await asyncio.wait_for(
-            strategy.detect_async(events, markets, prices),
+            loop.run_in_executor(None, lambda: ctx.run(fn, events, markets, prices)),
             timeout=timeout_seconds,
         )
-    if _has_custom_detect_sync(strategy):
-        return await asyncio.wait_for(
-            loop.run_in_executor(None, strategy.detect_sync, events, markets, prices),
-            timeout=timeout_seconds,
-        )
-    return await asyncio.wait_for(
-        loop.run_in_executor(None, strategy.detect, events, markets, prices),
-        timeout=timeout_seconds,
-    )
+    finally:
+        if now_us is not None:
+            try:
+                strategy.set_replay_clock(prev_instance)
+            except Exception:  # noqa: BLE001
+                try:
+                    strategy._replay_now_us = prev_instance
+                except Exception:  # noqa: BLE001
+                    pass
+            if token is not None:
+                _utcnow_mod.restore_replay_clock(token)
 
 
 async def _fetch_prices_for_markets(
@@ -3051,6 +3086,7 @@ async def _replay_discover_opportunities(
     max_ticks: int,
     candidate_token_ids: list[str] | None = None,
     use_deltas_for_prices: bool = False,
+    warmup_seconds: int = 0,
 ) -> list[_SyntheticOpp]:
     """Replay-discovery: walk historical market state at sampled time
     ticks across [start_dt, end_dt] and call strategy.detect_async at
@@ -3096,10 +3132,28 @@ async def _replay_discover_opportunities(
 
     # Step 1: build the time grid.  Cap at ``max_ticks`` total samples
     # so a 30-day window doesn't blow up into 1500 detect() calls.
-    total_seconds = max(60.0, (end_dt - start_dt).total_seconds())
-    n_ticks = min(max_ticks, max(1, int(total_seconds / max(60, sample_interval_seconds))))
-    actual_interval = total_seconds / n_ticks
+    #
+    # Pre-roll warmup: when ``warmup_seconds`` > 0 we prepend whole-
+    # interval ticks BEFORE the measured window so rolling windows /
+    # CycleTrackers / isolated PersistentState build up from the recorded
+    # stream — matching the state live had at window-start instead of a
+    # cold start.  Detect runs on warm-up ticks (to build state) but their
+    # opportunities are NOT emitted.  ``start_dt`` is rebound to the
+    # pre-roll start so all downstream index math (events binning, grid
+    # build) stays consistent with tick 0; ``_emit_start`` marks the real
+    # window boundary for the emit gate.
     from datetime import timedelta as _td_replay
+    _emit_start = start_dt
+    measured_seconds = max(60.0, (end_dt - _emit_start).total_seconds())
+    n_measured = min(max_ticks, max(1, int(measured_seconds / max(60, sample_interval_seconds))))
+    actual_interval = measured_seconds / n_measured
+    n_warm = (
+        int(max(0, int(warmup_seconds)) // actual_interval)
+        if warmup_seconds and actual_interval > 0
+        else 0
+    )
+    start_dt = _emit_start - _td_replay(seconds=actual_interval * n_warm)
+    n_ticks = n_measured + n_warm
     ticks: list[datetime] = [
         start_dt + _td_replay(seconds=actual_interval * i) for i in range(n_ticks)
     ]
@@ -3361,9 +3415,15 @@ async def _replay_discover_opportunities(
                 markets=market_models,
                 prices=prices_at_tick,
                 timeout_seconds=8.0,
+                now_us=int(tick_t.timestamp() * 1_000_000),
             )
         except Exception:
             detect_failures += 1
+            continue
+
+        # Warm-up tick: detect ran (state built up) but we don't emit its
+        # opportunities — only the measured window counts.
+        if tick_t < _emit_start:
             continue
 
         for opp in opps_at_tick or []:
@@ -3599,6 +3659,39 @@ async def _measure_data_coverage(
     coverage["snaps_per_token"] = dict(snaps_per_token)
     coverage["deltas_per_token"] = dict(deltas_per_token)
     coverage["window_hours"] = float(window_hours)
+
+    # Per-token replay fidelity label.  Mirrors the source router's
+    # ``_pick_sql_source_for`` rule so the operator sees, per token,
+    # whether the backtest reconstructed the book exactly from the live
+    # delta stream ("delta_exact") or approximated it from throttled
+    # 0.5s/token snapshots ("snapshot_approx") — the latter is lossy
+    # versus the sub-200ms book the strategy actually saw live, so
+    # passive-fill results on those tokens carry a fidelity caveat.
+    per_token_fidelity: dict[str, str] = {}
+    snapshot_approx_tokens: list[str] = []
+    for tok in opp_tokens:
+        n_snaps = int(snaps_per_token.get(tok, 0))
+        n_deltas = int(deltas_per_token.get(tok, 0))
+        if n_deltas >= max(10, 5 * max(n_snaps, 1)):
+            per_token_fidelity[tok] = "delta_exact"
+        elif n_snaps > 0:
+            per_token_fidelity[tok] = "snapshot_approx"
+            snapshot_approx_tokens.append(tok)
+        else:
+            per_token_fidelity[tok] = "none"
+    coverage["per_token_fidelity"] = per_token_fidelity
+    coverage["snapshot_approx_tokens"] = snapshot_approx_tokens
+    coverage["delta_exact_token_count"] = sum(
+        1 for v in per_token_fidelity.values() if v == "delta_exact"
+    )
+    coverage["snapshot_approx_token_count"] = len(snapshot_approx_tokens)
+    if snapshot_approx_tokens:
+        coverage["fidelity_warning"] = (
+            f"{len(snapshot_approx_tokens)}/{len(opp_tokens)} token(s) "
+            "replayed from throttled 0.5s snapshots (snapshot_approx), not the "
+            "live delta stream — passive-fill / book-cross results on these "
+            "tokens are approximate. Backfill book_delta_events for live-parity."
+        )
 
     # Per-token-per-hour rates.  Tokens with 0 snapshots are included as
     # zeros so the median reflects the WHOLE opp universe, not just the
