@@ -878,6 +878,46 @@ async def run_recorder_backfill(body: BackfillRequest) -> dict[str, Any]:
     return result.to_dict()
 
 
+async def _recent_ingestion_actuals(minutes: int = 10) -> dict[str, Any]:
+    """Cross-process recording truth, read from the shared DB.
+
+    The per-process counters on the ingestor / subscription service only
+    reflect THIS process — and these endpoints are served by the API
+    process, where neither service runs (they live in the trading
+    worker).  Reading the shared ``market_microstructure_snapshots``
+    table tells the operator what is ACTUALLY being recorded, regardless
+    of which process does it.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SET LOCAL statement_timeout = '8s'"))
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT count(DISTINCT token_id) AS tokens, "
+                        "count(*) FILTER (WHERE snapshot_type='book') AS book_rows, "
+                        "count(*) FILTER (WHERE snapshot_type='trade') AS trade_rows, "
+                        "greatest(extract(epoch FROM (max(observed_at)-min(observed_at))),1) AS span_s "
+                        "FROM market_microstructure_snapshots "
+                        f"WHERE observed_at > now() - interval '{int(minutes)} minutes'"
+                    )
+                )
+            ).one()
+        book_rows = int(row.book_rows or 0)
+        span = float(row.span_s or 1.0)
+        return {
+            "window_minutes": int(minutes),
+            "distinct_tokens": int(row.tokens or 0),
+            "book_rows": book_rows,
+            "trade_rows": int(row.trade_rows or 0),
+            "book_rows_per_sec": round(book_rows / span, 3),
+            "actively_recording": book_rows > 0,
+            "note": "DB-derived (cross-process); per-process counters above reflect only the API process.",
+        }
+    except Exception as exc:
+        return {"error": str(exc), "actively_recording": None}
+
+
 @router.get("/recorder/proactive-subscription")
 async def proactive_subscription_status() -> dict[str, Any]:
     """Status of the proactive recorder subscription loop.
@@ -890,7 +930,9 @@ async def proactive_subscription_status() -> dict[str, Any]:
     try:
         from services.recorder_subscription_service import get_status
 
-        return get_status()
+        status = get_status()
+        status["actual_recording"] = await _recent_ingestion_actuals()
+        return status
     except Exception as exc:
         logger.exception("proactive_subscription_status failed")
         return {"error": str(exc)}
@@ -928,6 +970,11 @@ async def microstructure_recorder_status() -> dict[str, Any]:
         # whenever the WS feed is alive; proxy on whether any token
         # has been seen.
         stats["running"] = bool(stats.get("tokens_tracked"))
+        # Per-process counters above only see the API process; attach the
+        # shared-DB truth so the UI shows what the worker is really recording.
+        stats["actual_recording"] = await _recent_ingestion_actuals()
+        if stats["actual_recording"].get("actively_recording"):
+            stats["running"] = True
         return stats
     except Exception as exc:
         logger.exception("microstructure_recorder_status failed")
