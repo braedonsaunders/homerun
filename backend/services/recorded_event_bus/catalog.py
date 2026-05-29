@@ -552,33 +552,17 @@ SEED_TOPICS: tuple[dict[str, Any], ...] = (
             "subscribe to this one topic regardless of which storage "
             "the bytes happen to live in."
         ),
-        # Primary-backing badge for the operator UI.  Live book recording
-        # now writes COLUMNAR PARQUET (``live_ingestor`` provider, off
-        # Postgres) — so the primary backing is external_parquet.  The
-        # legacy ``market_microstructure_snapshots`` SQL table is kept as a
-        # source so historical (pre-cutover) data still replays, unioned by
-        # observed_at with the live parquet + operator imports.
-        # Live book recording now writes columnar parquet (off Postgres),
-        # so the primary backing is external_parquet.
+        # Book recording is parquet-only (``live_ingestor`` / polybacktest /
+        # telonex providers, off Postgres).  ONE federated parquet source at
+        # the data-plane ROOT: the adapter recursively finds every window-dir
+        # under any provider and reads only ``snapshots__`` files, so a new
+        # provider needs no new source entry.  The legacy
+        # ``market_microstructure_snapshots`` SQL table is retired.
         "storage_kind": "external_parquet",
         "storage_uri": _sources(
             {
-                # ONE federated parquet source at the data-plane ROOT.
-                # The adapter recursively finds every window-dir under any
-                # provider (live_ingestor, telonex, polybacktest, future
-                # vendors) and reads only ``snapshots__`` files — so a new
-                # provider needs NO new source entry, and non-book parquet
-                # (recorded_event_bus event topics use date dirs;
-                # reference/ohlc use a different file kind) is skipped.
                 "kind": "external_parquet",
                 "uri": _PARQUET_ROOT,
-            },
-            {
-                # Legacy / historical: pre-cutover live data + polybacktest
-                # backfill still live in the SQL table — unioned by observed_at.
-                "kind": "sql_table",
-                "adapter": "MarketMicrostructureSnapshot",
-                "table": "market_microstructure_snapshots",
             },
         ),
         "publishers": (
@@ -596,9 +580,9 @@ SEED_TOPICS: tuple[dict[str, Any], ...] = (
             "Different shape from book.snapshot, hence its own topic.  "
             "Backed by book_delta_events (postgres).  7M+ rows."
         ),
-        # Live deltas now write columnar parquet (deltas__ files) off
-        # Postgres; primary backing is external_parquet, with the legacy
-        # book_delta_events SQL table unioned for historical replay.
+        # Deltas write columnar parquet (deltas__ files) off Postgres; the
+        # federated parquet root is the only source. The legacy
+        # book_delta_events SQL table is retired.
         "storage_kind": "external_parquet",
         "storage_uri": _sources(
             {
@@ -606,11 +590,6 @@ SEED_TOPICS: tuple[dict[str, Any], ...] = (
                 # files for this ``*.delta`` topic (kind-aware).
                 "kind": "external_parquet",
                 "uri": _PARQUET_ROOT,
-            },
-            {
-                "kind": "sql_table",
-                "adapter": "BookDeltaEvent",
-                "table": "book_delta_events",
             },
         ),
         "publishers": ("market_data_ingestor",),

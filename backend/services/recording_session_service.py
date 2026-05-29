@@ -34,15 +34,14 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import (
     AsyncSessionLocal,
-    BookDeltaEvent,
-    MarketMicrostructureSnapshot,
     RecordingSession,
 )
 
@@ -278,48 +277,53 @@ async def _terminate_session(
 async def _count_session_rows(
     *, session: AsyncSession, row: RecordingSession, until: datetime,
 ) -> dict[str, Any]:
+    """Count rows captured for a session from the canonical parquet plane.
+
+    Recording writes parquet (live_ingestor), not SQL; we count snapshot rows
+    via the unified coverage resolver for the session's tokens, plus any
+    sibling delta files in the same window dirs when the session captures
+    deltas. ``session`` is accepted for signature compatibility but unused.
+    """
     tokens = list(row.target_token_ids_json or [])
     if not tokens or row.started_at is None:
         return {"total": 0, "last_at": None}
+
+    import pyarrow.parquet as _pq
+
+    from services.marketdata.coverage import resolve_coverage
+
+    capture_types = set(row.capture_types_json or [])
+    want_snap = ("book" in capture_types) or ("trade" in capture_types)
+    want_delta = "delta" in capture_types
+    if not want_snap and not want_delta:
+        return {"total": 0, "last_at": None}
+
+    cov = await resolve_coverage(token_ids=tokens, start=row.started_at, end=until)
     total = 0
     last_at: datetime | None = None
-    capture_types = set(row.capture_types_json or [])
-    if "book" in capture_types or "trade" in capture_types:
-        types = []
-        if "book" in capture_types:
-            types.append("book")
-        if "trade" in capture_types:
-            types.append("trade")
-        stmt = select(
-            func.count(MarketMicrostructureSnapshot.id),
-            func.max(MarketMicrostructureSnapshot.observed_at),
-        ).where(
-            and_(
-                MarketMicrostructureSnapshot.token_id.in_(tokens),
-                MarketMicrostructureSnapshot.observed_at >= row.started_at,
-                MarketMicrostructureSnapshot.observed_at <= until,
-                MarketMicrostructureSnapshot.snapshot_type.in_(types),
-            )
-        )
-        n, t = (await session.execute(stmt)).one()
-        total += int(n or 0)
-        if t is not None and (last_at is None or t > last_at):
-            last_at = t
-    if "delta" in capture_types:
-        stmt = select(
-            func.count(BookDeltaEvent.id),
-            func.max(BookDeltaEvent.observed_at),
-        ).where(
-            and_(
-                BookDeltaEvent.token_id.in_(tokens),
-                BookDeltaEvent.observed_at >= row.started_at,
-                BookDeltaEvent.observed_at <= until,
-            )
-        )
-        n, t = (await session.execute(stmt)).one()
-        total += int(n or 0)
-        if t is not None and (last_at is None or t > last_at):
-            last_at = t
+    seen_files: set[str] = set()
+    for tok in cov.covered_tokens:
+        tc = cov.by_token[tok]
+        for snap_file in tc.files:
+            snap_p = Path(snap_file)
+            candidates = []
+            if want_snap:
+                candidates.append(snap_p)
+            if want_delta:
+                candidates.append(snap_p.with_name(snap_p.name.replace("snapshots__", "deltas__", 1)))
+            for f in candidates:
+                key = str(f)
+                if key in seen_files or not f.exists():
+                    continue
+                seen_files.add(key)
+                try:
+                    total += int(_pq.read_metadata(key).num_rows)
+                except Exception:
+                    pass
+        if tc.end_us is not None:
+            t = datetime.fromtimestamp(tc.end_us / 1_000_000, tz=timezone.utc)
+            if last_at is None or t > last_at:
+                last_at = t
     return {"total": total, "last_at": last_at}
 
 

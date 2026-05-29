@@ -36,9 +36,6 @@ from sqlalchemy import select
 
 from models.database import (
     AsyncSessionLocal,
-    BacktestAsyncSessionLocal,
-    BookDeltaEvent,
-    MarketMicrostructureSnapshot,
     OpportunityHistory,
 )
 from services.recorded_event_bus.catalog import TopicSpec
@@ -54,66 +51,6 @@ def _dt_to_us(dt: datetime) -> int:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp() * 1_000_000)
-
-
-def _project_microstructure_snapshot(
-    row: MarketMicrostructureSnapshot,
-    *,
-    topic: str,
-) -> RecordedEvent:
-    """Project one row into a RecordedEvent under the caller's topic.
-
-    The same table feeds multiple topics (one per provider —
-    ``polymarket.book.snapshot`` for live, ``polybacktest.book.snapshot``
-    for batch import, etc.).  The projector takes the topic slug from
-    the caller so subscribers see a topic name that matches what they
-    asked for, not whichever provider happens to own the row.
-    """
-    payload = {
-        "snapshot_type": row.snapshot_type,
-        "best_bid": row.best_bid,
-        "best_ask": row.best_ask,
-        "spread_bps": row.spread_bps,
-        "bids_json": row.bids_json,
-        "asks_json": row.asks_json,
-        "trade_price": row.trade_price,
-        "trade_size": row.trade_size,
-        "trade_side": row.trade_side,
-        "exchange_ts_ms": row.exchange_ts_ms,
-        "provider": row.provider,
-    }
-    obs_us = _dt_to_us(row.observed_at)
-    return RecordedEvent(
-        topic=topic,
-        entity_id=row.token_id,
-        observed_at_us=obs_us,
-        ingested_at_us=_dt_to_us(row.created_at) if row.created_at else obs_us,
-        source=row.provider or "polymarket",
-        sequence=int(row.sequence) if row.sequence is not None else None,
-        payload=payload,
-    )
-
-
-def _project_book_delta(row: BookDeltaEvent, *, topic: str) -> RecordedEvent:
-    payload: dict[str, Any] = {
-        "event_type": row.event_type,
-        "side": row.side,
-        "price": row.price,
-        "trade_size": row.trade_size,
-        "cancel_size": row.cancel_size,
-        "exchange_ts_ms": row.exchange_ts_ms,
-        "provider": row.provider,
-    }
-    obs_us = _dt_to_us(row.observed_at)
-    return RecordedEvent(
-        topic=topic,
-        entity_id=row.token_id,
-        observed_at_us=obs_us,
-        ingested_at_us=obs_us,
-        source=row.provider or "polymarket",
-        sequence=int(row.sequence) if row.sequence is not None else None,
-        payload=payload,
-    )
 
 
 def _project_opportunity_history(row: OpportunityHistory, *, topic: str) -> RecordedEvent:
@@ -175,101 +112,6 @@ async def _project_wallet_monitor_row(
 
 
 # ── Stream functions ─────────────────────────────────────────────────
-
-
-async def _stream_microstructure(
-    spec: TopicSpec, window
-) -> AsyncIterator[RecordedEvent]:
-    """Stream rows from ``market_microstructure_snapshots`` for one
-    provider's slice of the table.
-
-    The ``market_microstructure_snapshots`` table is a multi-tenant
-    home for snapshot data from several providers ('polymarket' for
-    live WS, 'polybacktest' for batch-imported history, future
-    providers as they're added).  Each provider gets its OWN bus topic
-    so subscribers don't mix sources — the topic's ``storage_uri``
-    JSON carries the provider filter:
-
-        {"adapter": "MarketMicrostructureSnapshot",
-         "table": "market_microstructure_snapshots",
-         "provider": "polymarket"}
-
-    Missing ``provider`` key in storage_uri = no filter applied (legacy
-    behaviour — keeps the original ``polymarket.book.snapshot`` topic
-    working unchanged even before its catalog row is updated).
-    """
-    start_dt = datetime.fromtimestamp(window.start_us / 1e6, tz=timezone.utc).replace(tzinfo=None)
-    end_dt = datetime.fromtimestamp(window.end_us / 1e6, tz=timezone.utc).replace(tzinfo=None)
-    entity_set = (
-        window.entity_filter.get(spec.slug)
-        if window.entity_filter else None
-    )
-    # Resolve the provider filter from the topic's storage_uri JSON.
-    provider_filter: str | None = None
-    if spec.storage_uri:
-        try:
-            cfg = json.loads(spec.storage_uri)
-            provider_filter = cfg.get("provider")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            provider_filter = None
-
-    async with BacktestAsyncSessionLocal() as session:
-        q = (
-            select(MarketMicrostructureSnapshot)
-            .where(MarketMicrostructureSnapshot.observed_at >= start_dt)
-            .where(MarketMicrostructureSnapshot.observed_at < end_dt)
-            # Restrict to book snapshots (this topic is books, not the
-            # composite mms table that also holds trade rows).
-            .where(MarketMicrostructureSnapshot.snapshot_type == "book")
-        )
-        if provider_filter:
-            q = q.where(MarketMicrostructureSnapshot.provider == provider_filter)
-        if entity_set is not None:
-            q = q.where(MarketMicrostructureSnapshot.token_id.in_(entity_set))
-        q = q.order_by(
-            MarketMicrostructureSnapshot.observed_at,
-            MarketMicrostructureSnapshot.sequence,
-        )
-        # Stream via yield_per to keep memory bounded.
-        result = await session.stream(q.execution_options(yield_per=1000))
-        async for row in result.scalars():
-            yield _project_microstructure_snapshot(row, topic=spec.slug)
-
-
-async def _stream_book_deltas(
-    spec: TopicSpec, window
-) -> AsyncIterator[RecordedEvent]:
-    """Stream rows from ``book_delta_events`` for one provider slice.
-    Same provider-filter convention as ``_stream_microstructure`` —
-    see that docstring."""
-    start_dt = datetime.fromtimestamp(window.start_us / 1e6, tz=timezone.utc).replace(tzinfo=None)
-    end_dt = datetime.fromtimestamp(window.end_us / 1e6, tz=timezone.utc).replace(tzinfo=None)
-    entity_set = (
-        window.entity_filter.get(spec.slug)
-        if window.entity_filter else None
-    )
-    provider_filter: str | None = None
-    if spec.storage_uri:
-        try:
-            cfg = json.loads(spec.storage_uri)
-            provider_filter = cfg.get("provider")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            provider_filter = None
-
-    async with BacktestAsyncSessionLocal() as session:
-        q = (
-            select(BookDeltaEvent)
-            .where(BookDeltaEvent.observed_at >= start_dt)
-            .where(BookDeltaEvent.observed_at < end_dt)
-        )
-        if provider_filter:
-            q = q.where(BookDeltaEvent.provider == provider_filter)
-        if entity_set is not None:
-            q = q.where(BookDeltaEvent.token_id.in_(entity_set))
-        q = q.order_by(BookDeltaEvent.observed_at, BookDeltaEvent.sequence)
-        result = await session.stream(q.execution_options(yield_per=2000))
-        async for row in result.scalars():
-            yield _project_book_delta(row, topic=spec.slug)
 
 
 async def _stream_opportunities(
@@ -338,8 +180,6 @@ ADAPTERS: dict[
     str,
     Callable[[TopicSpec, Any], AsyncIterator[RecordedEvent]],
 ] = {
-    "MarketMicrostructureSnapshot": _stream_microstructure,
-    "BookDeltaEvent": _stream_book_deltas,
     "OpportunityHistory": _stream_opportunities,
     "WalletMonitorEvent": _stream_wallet_trades,
 }
