@@ -180,7 +180,7 @@ function DatasetPicker({
                   : 'bg-muted/40 text-muted-foreground group-hover:bg-muted/60',
               )}
             >
-              {d.row_count.toLocaleString()}
+              {d.row_count == null ? 'per-token' : d.row_count.toLocaleString()}
             </span>
           </button>
         )
@@ -1847,7 +1847,9 @@ export default function DataLab() {
             <span className="text-sm font-semibold leading-tight">{t('dataLab.title')}</span>
             {mode === 'browse' && activeSpec ? (
               <Badge variant="outline" className="text-[10px]">
-                {t('dataLab.rowsCount', { n: activeSpec.row_count.toLocaleString() })}
+                {activeSpec.row_count == null
+                  ? t('dataLab.perToken', { defaultValue: 'per-token' })
+                  : t('dataLab.rowsCount', { n: activeSpec.row_count.toLocaleString() })}
               </Badge>
             ) : null}
           </div>

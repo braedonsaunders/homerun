@@ -6,16 +6,19 @@ through a single uniform shape so the UI can render any of them
 with the same table component.
 
 Datasets:
-    microstructure_snapshot  ── L2 book + trade snapshots
-    book_delta_event         ── trade-vs-cancel decomposed events
+    book_snapshot            ── L2 book + trade snapshots (PARQUET-backed,
+                                read per-token via the unified market-data
+                                layer; no SQL table)
     opportunity_history      ── strategy detect() outputs
     trader_order             ── live + shadow order ledger
     backtest_run             ── persisted BacktestStudio runs
 
-Per-dataset spec is declared in ``_DATASETS`` below and includes the
-ORM model, default sort column, allowed filter columns + types, and
-the columns to surface in the default UI view.  Adding a sixth
-dataset is a matter of one entry in that table.
+Per-dataset spec is declared in ``_DATASETS`` below.  SQL-backed specs set
+``model`` + default sort + filters; parquet-backed specs set
+``source='parquet'`` and read the canonical parquet plane through
+``services.marketdata`` so the browser shows the exact point-in-time book the
+backtester replays.  The generic routes branch on ``source`` so the frontend
+renders either kind identically.
 
 CSV export streams the same query results through ``StreamingResponse``
 so a 100k-row download doesn't blow up Python heap.
@@ -39,8 +42,6 @@ from sqlalchemy import and_, bindparam, func, select, text
 from models.database import (
     AsyncSessionLocal,
     BacktestRun,
-    BookDeltaEvent,
-    MarketMicrostructureSnapshot,
     OpportunityHistory,
     ProviderDataset,
     TraderOrder,
@@ -83,32 +84,37 @@ class DatasetSpec:
     name: str
     label: str
     description: str
-    model: type
     default_sort: str
     default_sort_dir: str  # 'asc' | 'desc'
     columns: tuple[ColumnSpec, ...]
     filters: tuple[FilterSpec, ...]
+    # SQL-backed datasets set ``model``; parquet-backed datasets (book
+    # snapshots read from the canonical parquet plane via the unified
+    # market-data layer) set ``source='parquet'`` + ``parquet_kind`` and
+    # leave ``model`` None. The generic browser routes on ``source`` so the
+    # frontend renders either identically.
+    model: type | None = None
+    source: str = "sql"  # 'sql' | 'parquet'
+    parquet_kind: str | None = None  # 'snapshots' when source == 'parquet'
 
 
 _DATASETS: dict[str, DatasetSpec] = {
-    "microstructure_snapshot": DatasetSpec(
-        name="microstructure_snapshot",
-        label="Microstructure snapshots",
+    "book_snapshot": DatasetSpec(
+        name="book_snapshot",
+        label="Book snapshots (parquet)",
         description=(
-            "L2 book + trade-print snapshots from the WebSocket recorder. "
-            "Filter by token, time range, or snapshot type."
+            "L2 book + trade-print snapshots read from the canonical parquet "
+            "plane via the unified market-data layer (point-in-time). Select a "
+            "token to browse its recorded book over a time window."
         ),
-        model=MarketMicrostructureSnapshot,
+        source="parquet",
+        parquet_kind="snapshots",
         default_sort="observed_at",
         default_sort_dir="desc",
         columns=(
-            ColumnSpec("id", "ID", "string", default_visible=False),
-            ColumnSpec("provider", "Provider", "string", default_visible=False),
             ColumnSpec("token_id", "Token", "string"),
-            ColumnSpec("snapshot_type", "Type", "enum", enum_values=("book", "trade")),
             ColumnSpec("observed_at", "Observed", "datetime"),
-            ColumnSpec("exchange_ts_ms", "Exchange ts (ms)", "int", default_visible=False),
-            ColumnSpec("sequence", "Seq", "int"),
+            ColumnSpec("sequence", "Seq", "int", default_visible=False),
             ColumnSpec("best_bid", "Bid", "float"),
             ColumnSpec("best_ask", "Ask", "float"),
             ColumnSpec("spread_bps", "Spread (bps)", "float"),
@@ -117,49 +123,9 @@ _DATASETS: dict[str, DatasetSpec] = {
             ColumnSpec("trade_price", "Trade px", "float"),
             ColumnSpec("trade_size", "Trade size", "float"),
             ColumnSpec("trade_side", "Trade side", "enum", enum_values=("BUY", "SELL")),
-            ColumnSpec("payload_json", "Payload", "json", sortable=False, default_visible=False),
-            ColumnSpec("created_at", "Created", "datetime", default_visible=False),
         ),
         filters=(
-            FilterSpec("token_id", "token_id", "Token ID", "eq"),
-            FilterSpec("snapshot_type", "snapshot_type", "Type", "enum_in"),
-            FilterSpec("start", "observed_at", "From", "time_range_start"),
-            FilterSpec("end", "observed_at", "To", "time_range_end"),
-            FilterSpec("provider", "provider", "Provider", "eq"),
-        ),
-    ),
-    "book_delta_event": DatasetSpec(
-        name="book_delta_event",
-        label="Book delta events",
-        description=(
-            "Decomposed trade-vs-cancel events from the book-delta "
-            "decomposer.  Powers the Cox PH fill model training set."
-        ),
-        model=BookDeltaEvent,
-        default_sort="observed_at",
-        default_sort_dir="desc",
-        columns=(
-            ColumnSpec("id", "ID", "string", default_visible=False),
-            ColumnSpec("provider", "Provider", "string", default_visible=False),
-            ColumnSpec("token_id", "Token", "string"),
-            ColumnSpec("event_type", "Event", "enum", enum_values=("trade", "cancel")),
-            ColumnSpec("side", "Side", "enum", enum_values=("bid", "ask")),
-            ColumnSpec("observed_at", "Observed", "datetime"),
-            ColumnSpec("exchange_ts_ms", "Exchange ts", "int", default_visible=False),
-            ColumnSpec("sequence", "Seq", "int", default_visible=False),
-            ColumnSpec("price", "Price", "float"),
-            ColumnSpec("trade_size", "Trade size", "float"),
-            ColumnSpec("cancel_size", "Cancel size", "float"),
-            ColumnSpec("queue_depth_before", "Depth before", "float"),
-            ColumnSpec("queue_depth_after", "Depth after", "float"),
-            ColumnSpec("spread_bps_at_event", "Spread (bps)", "float"),
-            ColumnSpec("payload_json", "Payload", "json", sortable=False, default_visible=False),
-            ColumnSpec("created_at", "Created", "datetime", default_visible=False),
-        ),
-        filters=(
-            FilterSpec("token_id", "token_id", "Token ID", "eq"),
-            FilterSpec("event_type", "event_type", "Event type", "enum_in"),
-            FilterSpec("side", "side", "Side", "enum_in"),
+            FilterSpec("token_id", "token_id", "Token ID (required)", "eq"),
             FilterSpec("start", "observed_at", "From", "time_range_start"),
             FilterSpec("end", "observed_at", "To", "time_range_end"),
         ),
@@ -422,6 +388,68 @@ def _serialize_filters(spec: DatasetSpec) -> list[dict[str, Any]]:
     ]
 
 
+# ── Parquet-backed query path ─────────────────────────────────────────────
+#
+# Book snapshots live in the canonical parquet plane (no SQL table). The
+# parquet datasets read through the unified market-data layer so the browser
+# shows the same point-in-time book the backtester replays. A token_id filter
+# is required (you browse one token's recorded book over a window) — listing
+# every token's rows would mean scanning every parquet file.
+
+
+def _book_snapshot_to_row(token_id: str, ts_us: int, snap: Any) -> dict[str, Any]:
+    obs = datetime.fromtimestamp(ts_us / 1_000_000, tz=timezone.utc)
+    return {
+        "token_id": token_id,
+        "observed_at": obs.isoformat(),
+        "sequence": snap.sequence,
+        "best_bid": snap.bids[0].price if snap.bids else None,
+        "best_ask": snap.asks[0].price if snap.asks else None,
+        "spread_bps": snap.spread_bps,
+        "bids_json": [[lvl.price, lvl.size] for lvl in snap.bids[:15]],
+        "asks_json": [[lvl.price, lvl.size] for lvl in snap.asks[:15]],
+        "trade_price": snap.trade_price,
+        "trade_size": snap.trade_size,
+        "trade_side": snap.trade_side,
+    }
+
+
+async def _query_parquet_book(
+    spec: DatasetSpec,
+    params: dict[str, Any],
+    *,
+    limit: int,
+    offset: int,
+    order_dir: str,
+) -> dict[str, Any]:
+    """Page a single token's canonical book snapshots from parquet.
+
+    Returns ``{"rows": [...], "total": int, "note": str|None}`` — same row
+    dicts the SQL path produces, so the frontend renders them identically.
+    """
+    token_id = str(params.get("token_id") or "").strip()
+    if not token_id:
+        return {"rows": [], "total": 0, "note": "Select a token_id to browse parquet book snapshots."}
+    start = _parse_iso(params.get("start")) or datetime(2000, 1, 1, tzinfo=timezone.utc)
+    end = _parse_iso(params.get("end")) or datetime.now(timezone.utc)
+
+    from services.marketdata.book import load_book_series, us_from_dt
+    from services.marketdata.coverage import resolve_coverage
+
+    cov = await resolve_coverage(token_ids=[token_id], start=start, end=end)
+    files = cov.files_for(token_id)
+    if not files:
+        return {"rows": [], "total": 0, "note": "No parquet coverage for this token in the window."}
+    series, _n = load_book_series(token_id, files, start_us=us_from_dt(start), end_us=us_from_dt(end))
+    entries = list(series.iter_range(us_from_dt(start), us_from_dt(end)))  # ascending (ts_us, snap)
+    if order_dir == "desc":
+        entries.reverse()
+    total = len(entries)
+    page = entries[int(offset): int(offset) + int(limit)]
+    rows = [_book_snapshot_to_row(token_id, ts, snap) for ts, snap in page]
+    return {"rows": rows, "total": total, "note": None}
+
+
 # ── Routes ──────────────────────────────────────────────────────────────
 
 
@@ -471,7 +499,11 @@ async def list_datasets() -> dict[str, Any]:
     tables (e.g. market_microstructure_snapshots) where an exact count would
     seq-scan the heap and trip the statement_timeout.
     """
-    table_names = [spec.model.__tablename__ for spec in _DATASETS.values()]
+    table_names = [
+        spec.model.__tablename__
+        for spec in _DATASETS.values()
+        if spec.source == "sql" and spec.model is not None
+    ]
     estimates: dict[str, int] = {}
     async with AsyncSessionLocal() as session:
         try:
@@ -511,14 +543,21 @@ async def list_datasets() -> dict[str, Any]:
 
     out: list[dict[str, Any]] = []
     for spec in _DATASETS.values():
-        table_name = spec.model.__tablename__
-        row_count = live_counts.get(table_name, estimates.get(table_name, 0))
+        if spec.source == "parquet" or spec.model is None:
+            # Parquet datasets are browsed per-token; a global row count would
+            # mean scanning every file, so we don't surface one.
+            row_count, row_count_exact = None, False
+        else:
+            table_name = spec.model.__tablename__
+            row_count = live_counts.get(table_name, estimates.get(table_name, 0))
+            row_count_exact = table_name in live_counts
         out.append({
             "name": spec.name,
             "label": spec.label,
             "description": spec.description,
             "row_count": row_count,
-            "row_count_exact": table_name in live_counts,
+            "row_count_exact": row_count_exact,
+            "source": spec.source,
             "default_sort": spec.default_sort,
             "default_sort_dir": spec.default_sort_dir,
             "columns": _serialize_columns(spec),
@@ -566,10 +605,6 @@ async def query_dataset(
     """
     spec = _resolve_dataset(name)
     sort_col_name = order_by or spec.default_sort
-    sort_attr = getattr(spec.model, sort_col_name, None)
-    if sort_attr is None:
-        raise HTTPException(status_code=400, detail=f"Unknown column '{sort_col_name}'")
-
     params = {
         "token_id": token_id,
         "strategy_type": strategy_type,
@@ -588,6 +623,31 @@ async def query_dataset(
         "start": start,
         "end": end,
     }
+
+    # Parquet-backed datasets read through the unified market-data layer.
+    if spec.source == "parquet":
+        result = await _query_parquet_book(
+            spec, params, limit=limit, offset=offset, order_dir=order_dir
+        )
+        out = {
+            "dataset": spec.name,
+            "label": spec.label,
+            "total": int(result["total"]),
+            "limit": int(limit),
+            "offset": int(offset),
+            "order_by": sort_col_name,
+            "order_dir": order_dir,
+            "columns": _serialize_columns(spec),
+            "filters": _serialize_filters(spec),
+            "rows": result["rows"],
+        }
+        if result.get("note"):
+            out["note"] = result["note"]
+        return out
+
+    sort_attr = getattr(spec.model, sort_col_name, None)
+    if sort_attr is None:
+        raise HTTPException(status_code=400, detail=f"Unknown column '{sort_col_name}'")
 
     async with AsyncSessionLocal() as session:
         # COUNT — applied with the same filters
@@ -866,70 +926,6 @@ async def delete_recording_session(session_id: str) -> dict[str, Any]:
     return {"deleted": True, "id": session_id}
 
 
-class BackfillRequest(_PydBaseModel):
-    scope: str = "token"  # token | strategy | session | catalog_top_liquid
-    target_values: list[str] | None = None
-    strategy_slug: str | None = None
-    session_id: str | None = None
-    start: datetime | None = None
-    end: datetime | None = None
-    interval: str = "1h"
-    fidelity_minutes: int | None = None
-    synthetic_spread_bps: float = 50.0
-    catalog_max_tokens: int = 2000
-    catalog_min_liquidity_usd: float = 100.0
-    concurrency: int = 5
-    max_tokens: int = 5000
-
-
-@router.post("/recorder/backfill")
-async def run_recorder_backfill(body: BackfillRequest) -> dict[str, Any]:
-    """Manual REST backfill into MarketMicrostructureSnapshot.
-
-    Polymarket REST does not serve full L2 book history — we fetch
-    mid-price points from the ``/prices-history`` endpoint and
-    synthesize single-level book snapshots centered on each mid.
-    Synthetic rows carry ``payload_json["synthetic"] = True``.
-
-    Scope options:
-      * ``token`` — pass token_ids in target_values
-      * ``strategy`` — pass strategy_slug; resolves to every distinct
-        token referenced by that strategy's OpportunityHistory rows
-        in the time window
-      * ``session`` — pass session_id; backfills the recording
-        session's target_token_ids
-      * ``catalog_top_liquid`` — top N most-liquid markets from the
-        live MarketCatalog (mirrors the proactive subscription policy)
-
-    Idempotent: rows already present at the same observed_at second
-    are skipped, so re-running the backfill is safe.
-    """
-    if body.scope not in {"token", "strategy", "session", "catalog_top_liquid"}:
-        raise HTTPException(status_code=400, detail=f"Unknown scope '{body.scope}'")
-    from services.recorder_backfill_service import run_backfill
-
-    try:
-        result = await run_backfill(
-            scope=body.scope,  # type: ignore[arg-type]
-            target_values=body.target_values,
-            strategy_slug=body.strategy_slug,
-            session_id=body.session_id,
-            start=body.start,
-            end=body.end,
-            interval=body.interval,
-            fidelity_minutes=body.fidelity_minutes,
-            synthetic_spread_bps=body.synthetic_spread_bps,
-            catalog_max_tokens=body.catalog_max_tokens,
-            catalog_min_liquidity_usd=body.catalog_min_liquidity_usd,
-            concurrency=body.concurrency,
-            max_tokens=body.max_tokens,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("backfill failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return result.to_dict()
 
 
 def _scan_recent_parquet_actuals(minutes: int) -> dict[str, Any]:

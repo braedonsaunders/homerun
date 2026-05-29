@@ -33,7 +33,11 @@ export interface DatasetSummary {
   name: string
   label: string
   description: string
-  row_count: number
+  // null for parquet-backed datasets (browsed per-token; no global count)
+  row_count: number | null
+  row_count_exact?: boolean
+  // 'sql' | 'parquet' — parquet datasets read the canonical parquet plane
+  source?: string
   default_sort: string
   default_sort_dir: 'asc' | 'desc'
   columns: DatasetColumn[]
