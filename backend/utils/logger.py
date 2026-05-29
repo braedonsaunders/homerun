@@ -101,17 +101,26 @@ def setup_logging(level: str = "INFO", json_format: bool = True, log_file: str =
     # Clear existing handlers
     root_logger.handlers = []
 
-    # Console handler — force UTF-8 on Windows to avoid charmap encode errors
-    # for Unicode characters like → (U+2192) in log messages.
-    if sys.platform == "win32" and hasattr(sys.stdout, "buffer") and not sys.stdout.closed:
-        import io
+    # Console handler — ensure UTF-8 so Unicode (e.g. → U+2192) doesn't raise
+    # charmap encode errors on Windows.
+    #
+    # IMPORTANT: reconfigure the EXISTING stream in place rather than wrapping
+    # ``sys.stdout.buffer`` in a NEW ``io.TextIOWrapper``.  A wrapping
+    # TextIOWrapper takes *ownership* of the buffer and closes it when it is
+    # garbage-collected — and ``root_logger.handlers = []`` above drops the only
+    # reference on any second ``setup_logging()`` call.  Under pytest's fd-level
+    # capture that closes the capture file and breaks every subsequent
+    # tempfile/capture op in the process ("I/O operation on closed file"); in
+    # production a second call would close real stdout's buffer.  ``reconfigure``
+    # (Py3.7+) changes the encoding in place with no owning wrapper.
+    stream = sys.stdout if (sys.stdout is not None and not sys.stdout.closed) else sys.stderr
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
         try:
-            utf8_stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
-            console_handler = logging.StreamHandler(utf8_stream)
-        except ValueError:
-            console_handler = logging.StreamHandler(sys.stderr)
-    else:
-        console_handler = logging.StreamHandler(sys.stdout if not sys.stdout.closed else sys.stderr)
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+    console_handler = logging.StreamHandler(stream)
     if json_format:
         console_handler.setFormatter(JSONFormatter())
     else:
