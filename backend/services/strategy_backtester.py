@@ -2833,6 +2833,7 @@ async def _replay_bus_events_into_tick_grid(
         return envelope
 
     n_binned = 0
+    real_crypto_market_keys: set[str] = set()
     async for envelope in replay_events_for_strategy(
         strategy=strategy,
         start_dt=start_dt,
@@ -2850,6 +2851,58 @@ async def _replay_bus_events_into_tick_grid(
         idx = min(n_ticks - 1, int(offset // max(actual_interval, 1)))
         events_by_tick[idx].append(shaped)
         n_binned += 1
+        # Track which crypto markets have REAL recorded dispatch coverage in
+        # this window so the synthesizer below only GAP-FILLS the rest —
+        # recorded data stays authoritative wherever it exists.
+        if envelope.topic == "crypto.update.dispatch":
+            payload = getattr(envelope, "payload", None) or {}
+            for m in (payload.get("markets") or []):
+                if isinstance(m, dict):
+                    k = str(m.get("condition_id") or m.get("id") or m.get("slug") or "")
+                    if k:
+                        real_crypto_market_keys.add(k)
+
+    # ── Imported-parquet gap-fill for event-driven crypto strategies ──
+    #
+    # Operator-imported historical book data (e.g. the polybacktest
+    # provider) lands as canonical SNAPSHOT_SCHEMA parquet but has no
+    # recorded crypto.update.dispatch envelopes, so an event-driven crypto
+    # strategy would never fire on those markets in backtest.  Reconstruct
+    # the dispatch events on-the-fly from that parquet + the self-describing
+    # ProviderDataset metadata (see services.backtest.crypto_update_synthesizer)
+    # and bin them — but only for markets without real recorded coverage.
+    if "crypto.update.dispatch" in topics:
+        try:
+            from services.backtest.crypto_update_synthesizer import (
+                synthesize_crypto_update_events,
+            )
+
+            synth_events, synth_stats = await synthesize_crypto_update_events(
+                ticks=ticks,
+                exclude_market_keys=real_crypto_market_keys,
+                token_scope=candidate_token_ids,
+            )
+            for ev in synth_events:
+                offset = (ev.timestamp - start_dt).total_seconds()
+                if offset < 0:
+                    continue
+                idx = min(n_ticks - 1, int(offset // max(actual_interval, 1)))
+                events_by_tick[idx].append(ev)
+                n_binned += 1
+            if synth_stats.get("events"):
+                logger.info(
+                    "crypto_update_synth: gap-filled %d events from %d imported "
+                    "markets (%d skipped — real recorded coverage)",
+                    synth_stats.get("events"),
+                    synth_stats.get("markets_active"),
+                    synth_stats.get("skipped_excluded"),
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "crypto_update_synth: imported-parquet synthesis failed",
+                exc_info=True,
+            )
+
     return n_binned
 
 

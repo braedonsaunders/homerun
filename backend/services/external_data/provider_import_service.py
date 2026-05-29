@@ -659,15 +659,33 @@ async def _register_polybacktest_parquet_dataset(
     span_end = max(o[5] for o in outputs)
     total_rows = sum(o[3] for o in outputs)
 
+    # Capture the market metadata a backtest-time CRYPTO_UPDATE synthesizer
+    # needs to reconstruct dispatch events from these book parquet files
+    # (see services.backtest.crypto_update_synthesizer).  Without these the
+    # dataset isn't self-describing: the synthesizer can't tell which token
+    # is UP vs DOWN, derive seconds_left, or label the market.
+    def _iso(dt: Any) -> Optional[str]:
+        if isinstance(dt, datetime):
+            return dt.astimezone(timezone.utc).isoformat()
+        return None
+
     payload: dict[str, Any] = {
         "coin": coin,
         "market_id": market_id,
         "slug": getattr(market, "slug", None),
         "title": getattr(market, "title", None),
+        "condition_id": getattr(market, "condition_id", None),
+        "clob_token_up": getattr(market, "clob_token_up", None),
+        "clob_token_down": getattr(market, "clob_token_down", None),
+        "market_type": getattr(market, "market_type", None),
+        "market_start_time": _iso(getattr(market, "start_time", None)),
+        "market_end_time": _iso(getattr(market, "end_time", None)),
+        "coin_price_start": getattr(market, "coin_price_start", None),
+        "coin_price_end": getattr(market, "coin_price_end", None),
         "requested_start": requested_start.isoformat(),
         "requested_end": requested_end.isoformat(),
         "canonical": True,
-        "schema_version": "snapshots_v1",
+        "schema_version": "snapshots_v2",
     }
 
     external_id = str(market_id)
