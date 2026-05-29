@@ -679,8 +679,12 @@ async def _register_polybacktest_parquet_dataset(
         "market_type": getattr(market, "market_type", None),
         "market_start_time": _iso(getattr(market, "start_time", None)),
         "market_end_time": _iso(getattr(market, "end_time", None)),
+        # Decision-time price-to-beat only.  ``coin_price_end`` (the settlement
+        # price) is HINDSIGHT and is deliberately NOT stored here: this payload
+        # is read by the backtest decision path (crypto_update projection), and
+        # leaking settlement would be lookahead bias.  Resolution/settlement
+        # lives in the separate evaluation channel (market_resolution).
         "coin_price_start": getattr(market, "coin_price_start", None),
-        "coin_price_end": getattr(market, "coin_price_end", None),
         "requested_start": requested_start.isoformat(),
         "requested_end": requested_end.isoformat(),
         "canonical": True,
