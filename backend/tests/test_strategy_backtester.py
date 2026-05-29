@@ -922,7 +922,7 @@ async def test_replay_discover_runs_strategies_that_only_override_detect(monkeyp
     )
 
     # Stub the per-tick price grid so TOK1 has a state at tick 1 onward.
-    async def _stub_grid(*, session, token_ids, ticks, end_dt, use_deltas, **_kwargs):
+    async def _stub_grid(*, token_ids, ticks, **_kwargs):
         return {
             "TOK1": [
                 None if i == 0 else {
@@ -939,14 +939,6 @@ async def test_replay_discover_runs_strategies_that_only_override_detect(monkeyp
 
     monkeypatch.setattr(
         strategy_backtester, "_build_per_tick_prices_grid", _stub_grid
-    )
-
-    # The probe runs even when grid is stubbed; short-circuit to avoid DB.
-    async def _no_probe(**_kw):
-        return False
-
-    monkeypatch.setattr(
-        strategy_backtester, "_probe_should_prefer_deltas", _no_probe
     )
 
     class _StubSession:

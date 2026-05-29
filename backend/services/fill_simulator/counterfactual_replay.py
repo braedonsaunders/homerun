@@ -91,13 +91,13 @@ async def _resolve_parquet_window(
     """Locate the parquet snapshot + delta files covering ``[start, end]``
     for ``token_id``.  Returns ``(snapshots_path, deltas_path)`` — either
     may be ``None`` if no parquet dataset covers the window / kind."""
-    from services.external_data.parquet_scanner import find_parquet_coverage
+    from services.marketdata.coverage import resolve_coverage
 
-    cov = await find_parquet_coverage(token_ids=[token_id], start=start, end=end)
-    snap = cov.get(token_id)
-    if not snap:
+    cov = await resolve_coverage(token_ids=[token_id], start=start, end=end)
+    files = cov.files_for(token_id)
+    if not files:
         return None, None
-    snap_p = Path(snap)
+    snap_p = Path(files[0])
     deltas_p: Path | None = None
     if "snapshots__" in snap_p.name:
         cand = snap_p.with_name(snap_p.name.replace("snapshots__", "deltas__", 1))

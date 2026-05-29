@@ -1,9 +1,8 @@
-"""Behavior-equivalence: MarketDataViewSource vs legacy ParquetBookReplay.
+"""Tests for MarketDataViewSource — the _BookSource adapter over MarketDataView.
 
-Phase 3 swaps the matcher's parquet book source from ParquetBookReplay to the
-unified MarketDataView (via MarketDataViewSource). This test pins that the swap
-is behavior-preserving: identical snapshot_at results and identical
-iter_snapshots streams over the same canonical parquet.
+The adapter is what the matching engine + discovery grid consume. It must
+present the engine's _BookSource protocol (snapshot_at + iter_snapshots) and
+faithfully delegate to the view's point-in-time book access.
 """
 from __future__ import annotations
 
@@ -13,7 +12,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from services.backtest.parquet_replay import ParquetBookReplay
 from services.external_data.parquet_schema import SNAPSHOT_SCHEMA
 from services.marketdata.book_source import MarketDataViewSource
 from services.marketdata.coverage import CoverageMap, TokenCoverage
@@ -43,79 +41,53 @@ def _write(path, token_id, ticks):
     pq.write_table(table, str(path))
 
 
-def _snap_key(s):
-    if s is None:
-        return None
-    return (
-        s.token_id,
-        int(s.observed_at.timestamp() * 1e6),
-        tuple((round(b.price, 9), round(b.size, 9)) for b in s.bids),
-        tuple((round(a.price, 9), round(a.size, 9)) for a in s.asks),
-    )
+def _view(tmp_path, token_ticks, base, span_us):
+    by_token = {}
+    for tok, ticks in token_ticks.items():
+        f = tmp_path / f"snapshots__{tok}.parquet"
+        _write(f, tok, ticks)
+        by_token[tok] = TokenCoverage(tok, files=(str(f),), start_us=base, end_us=base + span_us)
+    cov = CoverageMap(by_token=by_token, requested=tuple(token_ticks), window_start_us=base, window_end_us=base + span_us)
+    start = datetime.fromtimestamp(base / 1e6, tz=timezone.utc)
+    end = datetime.fromtimestamp((base + span_us) / 1e6, tz=timezone.utc)
+    return MarketDataView(coverage=cov, start=start, end=end)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_at_equivalent_to_parquet_replay(tmp_path):
+async def test_snapshot_at_point_in_time(tmp_path):
     base = 1_700_000_000_000_000
-    toks = {
-        "up": [(base + i * 1_000_000, 0.40 + i * 0.01, 0.42 + i * 0.01) for i in range(20)],
-        "down": [(base + i * 1_500_000, 0.58 - i * 0.01, 0.60 - i * 0.01) for i in range(20)],
-    }
-    files = {}
-    by_token = {}
-    for t, ticks in toks.items():
-        f = tmp_path / f"snapshots__{t}.parquet"
-        _write(f, t, ticks)
-        files[t] = str(f)
-        by_token[t] = TokenCoverage(t, files=(str(f),), start_us=base, end_us=base + 60_000_000)
+    view = _view(tmp_path, {"up": [(base, 0.40, 0.42), (base + 10_000_000, 0.55, 0.57)]}, base, 60_000_000)
+    src = MarketDataViewSource(view)
 
-    start = datetime.fromtimestamp(base / 1e6, tz=timezone.utc)
-    end = datetime.fromtimestamp((base + 60_000_000) / 1e6, tz=timezone.utc)
+    def at(sec):
+        return datetime.fromtimestamp((base + sec * 1_000_000) / 1e6, tz=timezone.utc)
 
-    legacy = ParquetBookReplay(per_token_files=files, start=start, end=end)
-    view = MarketDataView(
-        coverage=CoverageMap(by_token=by_token, requested=tuple(by_token), window_start_us=base, window_end_us=base + 60_000_000),
-        start=start, end=end,
-    )
-    adapter = MarketDataViewSource(view)
-
-    # Probe snapshot_at across many timestamps for both tokens.
-    for tok in ("up", "down"):
-        for sec in range(0, 30):
-            ts = datetime.fromtimestamp((base + sec * 1_000_000) / 1e6, tz=timezone.utc)
-            a = await legacy.snapshot_at(token_id=tok, ts=ts)
-            b = await adapter.snapshot_at(token_id=tok, ts=ts)
-            assert _snap_key(a) == _snap_key(b), f"mismatch tok={tok} sec={sec}"
+    assert await src.snapshot_at(token_id="up", ts=at(-1)) is None      # before first
+    s0 = await src.snapshot_at(token_id="up", ts=at(5))
+    assert s0 is not None and s0.bids[0].price == 0.40                  # full ladder preserved
+    assert len(s0.bids) == 2 and len(s0.asks) == 2
+    s1 = await src.snapshot_at(token_id="up", ts=at(15))
+    assert s1 is not None and s1.bids[0].price == 0.55
 
 
 @pytest.mark.asyncio
-async def test_iter_snapshots_equivalent_to_parquet_replay(tmp_path):
+async def test_iter_snapshots_global_order(tmp_path):
     base = 1_700_000_000_000_000
-    toks = {
-        "up": [(base + i * 1_000_000, 0.40, 0.42) for i in range(10)],
-        "down": [(base + i * 1_000_000 + 500_000, 0.58, 0.60) for i in range(10)],
-    }
-    files = {}
-    by_token = {}
-    for t, ticks in toks.items():
-        f = tmp_path / f"snapshots__{t}.parquet"
-        _write(f, t, ticks)
-        files[t] = str(f)
-        by_token[t] = TokenCoverage(t, files=(str(f),), start_us=base, end_us=base + 60_000_000)
+    view = _view(tmp_path, {
+        "up": [(base + 0, 0.40, 0.42), (base + 20_000_000, 0.45, 0.47)],
+        "down": [(base + 10_000_000, 0.58, 0.60), (base + 30_000_000, 0.55, 0.57)],
+    }, base, 60_000_000)
+    src = MarketDataViewSource(view)
+    times = [int(s.observed_at.timestamp() * 1e6) async for s in src.iter_snapshots()]
+    assert times == sorted(times)
+    assert len(times) == 4
 
-    start = datetime.fromtimestamp(base / 1e6, tz=timezone.utc)
-    end = datetime.fromtimestamp((base + 60_000_000) / 1e6, tz=timezone.utc)
 
-    legacy = ParquetBookReplay(per_token_files=files, start=start, end=end)
-    view = MarketDataView(
-        coverage=CoverageMap(by_token=by_token, requested=tuple(by_token), window_start_us=base, window_end_us=base + 60_000_000),
-        start=start, end=end,
-    )
-    adapter = MarketDataViewSource(view)
-
-    legacy_stream = [_snap_key(s) async for s in legacy.iter_snapshots()]
-    adapter_stream = [_snap_key(s) async for s in adapter.iter_snapshots()]
-    # Same multiset of snapshots; both globally ordered by observed_at.
-    assert sorted(legacy_stream) == sorted(adapter_stream)
-    assert [k[1] for k in adapter_stream] == sorted(k[1] for k in adapter_stream)
-    assert len(adapter_stream) == 20
+@pytest.mark.asyncio
+async def test_truncation_surface_present(tmp_path):
+    base = 1_700_000_000_000_000
+    view = _view(tmp_path, {"up": [(base, 0.4, 0.42)]}, base, 60_000_000)
+    src = MarketDataViewSource(view)
+    # The engine reads .truncated on the book source; the adapter exposes it.
+    assert src.truncated is False
+    assert src.truncation_reason is None

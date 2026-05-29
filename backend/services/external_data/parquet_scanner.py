@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
@@ -419,90 +419,15 @@ async def list_parquet_datasets() -> list[dict[str, Any]]:
     ]
 
 
-async def find_parquet_coverage(
-    *,
-    token_ids: Iterable[str],
-    start: datetime,
-    end: datetime,
-) -> dict[str, str]:
-    """For each requested token, return the parquet file path covering
-    its ``[start, end]`` window (or omit the entry if no parquet
-    dataset covers it).  Used by the backtester's source resolver to
-    decide which tokens get the parquet path vs. the SQL replays.
-
-    A dataset "covers" a token iff the dataset's ``[start_ts, end_ts]``
-    overlaps the requested window AND the token is in ``token_ids_json``.
-    """
-    from sqlalchemy import select
-    from models.database import AsyncSessionLocal, ProviderDataset
-
-    requested = {str(t) for t in token_ids if t}
-    if not requested:
-        return {}
-    if start.tzinfo is not None:
-        start = start.astimezone(timezone.utc).replace(tzinfo=None)
-    if end.tzinfo is not None:
-        end = end.astimezone(timezone.utc).replace(tzinfo=None)
-
-    async with AsyncSessionLocal() as session:
-        rows = (
-            await session.execute(
-                select(ProviderDataset).where(
-                    ProviderDataset.storage_type == "parquet",
-                    ProviderDataset.start_ts <= end,
-                    ProviderDataset.end_ts >= start,
-                )
-            )
-        ).scalars().all()
-
-    out: dict[str, str] = {}
-    for r in rows:
-        tokens_in_dataset = set(r.token_ids_json or [])
-        intersect = requested & tokens_in_dataset
-        if not intersect:
-            continue
-        # Build the file path per token from the storage_uri (window dir)
-        if not r.storage_uri or not r.storage_uri.startswith("file://"):
-            continue
-        try:
-            window_dir = Path(_uri_to_path(r.storage_uri))
-        except Exception:
-            continue
-        for tok in intersect:
-            # Token id may have been "safe-segmented" on write; we
-            # accept either the raw token or the canonical safe form.
-            from services.external_data.parquet_schema import _safe_segment
-            safe = _safe_segment(tok)
-            candidates = [
-                window_dir / f"snapshots__{safe}.parquet",
-                window_dir / f"snapshots__{tok}.parquet",
-            ]
-            for c in candidates:
-                if c.exists():
-                    # Don't overwrite an earlier dataset for the same
-                    # token — first dataset (most recent by ORDER BY)
-                    # wins.
-                    out.setdefault(tok, str(c))
-                    break
-    return out
-
-
-def _uri_to_path(uri: str) -> Path:
-    """file:///C:/foo → C:/foo on Windows; file:///foo/bar → /foo/bar
-    on POSIX.  Cross-platform via ``urllib.parse``.
-    """
-    from urllib.parse import urlparse, unquote
-    parsed = urlparse(uri)
-    path = unquote(parsed.path)
-    # Windows: ``file:///C:/foo`` parses with path="/C:/foo"; strip the leading "/"
-    if len(path) >= 3 and path[0] == "/" and path[2] == ":":
-        path = path[1:]
-    return Path(path)
+# NOTE: per-token coverage resolution moved to the unified
+# ``services.marketdata.coverage.resolve_coverage`` (returns a structured
+# CoverageMap with all covering files per token). This module now owns only
+# filesystem scanning + catalog upserts; consumers read coverage via the
+# market-data layer.
 
 
 __all__ = [
     "rescan_parquet_root",
     "ensure_recent_scan",
     "list_parquet_datasets",
-    "find_parquet_coverage",
 ]

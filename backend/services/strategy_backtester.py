@@ -2351,177 +2351,6 @@ async def _load_opps_from_trade_signals(
     return out
 
 
-class _BulkBookIndex:
-    """In-memory point-in-time book lookup for the eval loop.  Bulk-
-    pre-fetches every ``MarketMicrostructureSnapshot`` row for a token
-    universe over a window, then exposes ``snapshot_at(token, ts)``
-    backed by a binary search.  Avoids one DB round-trip per opp —
-    1500 opps × 1 query each at ~20ms is 30s of pure I/O versus a
-    single chunked bulk pull that finishes in seconds.
-
-    Quacks like ``BookReplay.snapshot_at`` (returns a ``BookSnapshot``
-    or ``None``) so ``_build_replay_live_context`` can use it
-    interchangeably with the streaming replays.
-    """
-
-    def __init__(self) -> None:
-        # token_id -> sorted list of (observed_at, BookSnapshot)
-        self._by_token: dict[str, list[tuple[datetime, Any]]] = {}
-
-    @classmethod
-    async def build(
-        cls,
-        *,
-        token_ids: list[str],
-        start_dt: datetime,
-        end_dt: datetime,
-        chunk: int = 50,
-    ) -> "_BulkBookIndex":
-        """Build the index using a SHORT-LIVED session per chunk.  The
-        production pool reaper force-invalidates any session held more
-        than 45s end-to-end (live's safety against checkout exhaustion);
-        a backtest that pulls a multi-day window across hundreds of
-        tokens will trip that ceiling on a single shared session.
-        Opening a fresh session per chunk keeps each checkout <1s
-        regardless of total wall-clock time.
-
-        Parquet-first: tokens covered by an operator-supplied parquet
-        dataset (HOMERUN_PARQUET_ROOT) are loaded straight from the
-        file with pyarrow — no SQL round-trip.  Remaining tokens fall
-        through to the chunked-session SQL path.  This matters for
-        live_context overlay: without parquet, evaluate sees the
-        token's edge_percent computed from a sparse mms snapshot;
-        with parquet, it sees the dense vendor data.
-        """
-        from sqlalchemy import select as _select, text as _text
-        from models.database import (
-            AsyncSessionLocal as _Sess,
-            MarketMicrostructureSnapshot,
-        )
-        from services.backtest.book_replay import BookSnapshot, PriceLevel
-
-        idx = cls()
-        if not token_ids:
-            return idx
-
-        # Phase A — parquet-covered tokens.
-        try:
-            from services.external_data import parquet_scanner as _pq_scanner
-            await _pq_scanner.ensure_recent_scan(max_age_seconds=60.0)
-            pq_paths = await _pq_scanner.find_parquet_coverage(
-                token_ids=token_ids, start=start_dt, end=end_dt,
-            )
-        except Exception as _exc:
-            logger.debug("_BulkBookIndex parquet lookup skipped: %s", _exc)
-            pq_paths = {}
-        if pq_paths:
-            import pyarrow.parquet as _pq
-            for tok, file_path in pq_paths.items():
-                try:
-                    table = _pq.read_table(
-                        str(file_path),
-                        columns=[
-                            "observed_at_us", "best_bid", "best_ask", "spread_bps",
-                        ],
-                    )
-                except Exception as _exc:
-                    logger.debug(
-                        "_BulkBookIndex parquet read failed for %s: %s", tok, _exc
-                    )
-                    continue
-                obs_us = table.column("observed_at_us").to_pylist()
-                best_bid = table.column("best_bid").to_pylist()
-                best_ask = table.column("best_ask").to_pylist()
-                spread_bps = table.column("spread_bps").to_pylist()
-                start_us = int(start_dt.replace(tzinfo=timezone.utc).timestamp() * 1_000_000) if start_dt.tzinfo is None else int(start_dt.timestamp() * 1_000_000)
-                end_us = int(end_dt.replace(tzinfo=timezone.utc).timestamp() * 1_000_000) if end_dt.tzinfo is None else int(end_dt.timestamp() * 1_000_000)
-                for i in range(len(obs_us)):
-                    us = int(obs_us[i] or 0)
-                    if us < start_us or us > end_us:
-                        continue
-                    bb_f = float(best_bid[i] or 0.0)
-                    ba_f = float(best_ask[i] or 0.0)
-                    observed = datetime.fromtimestamp(us / 1_000_000, tz=timezone.utc)
-                    snap = BookSnapshot(
-                        token_id=str(tok),
-                        observed_at=observed,
-                        bids=(PriceLevel(price=bb_f, size=0.0),) if bb_f > 0 else (),
-                        asks=(PriceLevel(price=ba_f, size=0.0),) if ba_f > 0 else (),
-                        spread_bps=(
-                            float(spread_bps[i]) if spread_bps[i] is not None else None
-                        ),
-                    )
-                    idx._by_token.setdefault(str(tok), []).append((observed, snap))
-
-        # Phase B — SQL fallback for everything not covered by parquet.
-        sql_tokens = [t for t in token_ids if t not in pq_paths]
-        if not sql_tokens:
-            return idx
-        for i in range(0, len(sql_tokens), chunk):
-            sub = sql_tokens[i : i + chunk]
-            async with _Sess() as session:
-                try:
-                    await session.execute(_text("SET statement_timeout = 60000"))
-                except Exception:
-                    pass
-                # Pull just the columns the live_context build needs
-                # (best_bid / best_ask / spread_bps / observed_at).
-                # Skipping bids_json / asks_json shaves row size by ~10x.
-                try:
-                    rows = (await session.execute(
-                        _select(
-                            MarketMicrostructureSnapshot.token_id,
-                            MarketMicrostructureSnapshot.observed_at,
-                            MarketMicrostructureSnapshot.best_bid,
-                            MarketMicrostructureSnapshot.best_ask,
-                            MarketMicrostructureSnapshot.spread_bps,
-                        )
-                        .where(
-                            MarketMicrostructureSnapshot.token_id.in_(sub),
-                            MarketMicrostructureSnapshot.observed_at >= start_dt,
-                            MarketMicrostructureSnapshot.observed_at <= end_dt,
-                            MarketMicrostructureSnapshot.snapshot_type == "book",
-                        )
-                        .order_by(
-                            MarketMicrostructureSnapshot.token_id.asc(),
-                            MarketMicrostructureSnapshot.observed_at.asc(),
-                        )
-                    )).all()
-                except Exception:
-                    continue
-            for tid, observed, bb, ba, sp in rows:
-                if observed is None:
-                    continue
-                if observed.tzinfo is None:
-                    observed = observed.replace(tzinfo=timezone.utc)
-                bb_f = float(bb) if bb is not None else 0.0
-                ba_f = float(ba) if ba is not None else 0.0
-                snap = BookSnapshot(
-                    token_id=str(tid or ""),
-                    observed_at=observed,
-                    bids=(PriceLevel(price=bb_f, size=0.0),) if bb_f > 0 else (),
-                    asks=(PriceLevel(price=ba_f, size=0.0),) if ba_f > 0 else (),
-                    spread_bps=float(sp) if sp is not None else None,
-                )
-                idx._by_token.setdefault(str(tid or ""), []).append(
-                    (observed, snap)
-                )
-        return idx
-
-    async def snapshot_at(self, *, token_id: str, ts: datetime) -> Any:
-        bucket = self._by_token.get(token_id)
-        if not bucket:
-            return None
-        target = ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
-        # bisect_right on observed_at (the first tuple slot)
-        import bisect as _bisect
-        keys = [t[0] for t in bucket]
-        i = _bisect.bisect_right(keys, target) - 1
-        if i < 0:
-            return None
-        return bucket[i][1]
-
-
 async def _build_replay_live_context(
     *,
     signal: Any,
@@ -3001,140 +2830,32 @@ def _wallet_event_to_strategy_input(
 # at every tick boundary, bounding memory at O(tokens × ticks).
 
 
-async def _probe_should_prefer_deltas(
-    *,
-    session: Any,
-    token_ids: list[str],
-    start_dt: datetime,
-    end_dt: datetime,
-) -> bool:
-    """Decide whether ``BookDeltaReplay`` should drive the per-tick
-    price grid.  Mirrors the matcher's auto-selection threshold so
-    discovery and matching see the same source.  Probes a token
-    sample (capped at 50) to keep the check cheap.
-    """
-    if not token_ids:
-        return False
-    from sqlalchemy import select as _select, func as _func
-    from models.database import MarketMicrostructureSnapshot, BookDeltaEvent
-
-    sample = token_ids[: min(50, len(token_ids))]
-    window_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-6)
-    try:
-        snap_count = int(
-            (
-                await session.execute(
-                    _select(_func.count(MarketMicrostructureSnapshot.id)).where(
-                        MarketMicrostructureSnapshot.token_id.in_(sample),
-                        MarketMicrostructureSnapshot.observed_at >= start_dt,
-                        MarketMicrostructureSnapshot.observed_at <= end_dt,
-                        MarketMicrostructureSnapshot.snapshot_type == "book",
-                    )
-                )
-            ).scalar_one()
-            or 0
-        )
-        delta_count = int(
-            (
-                await session.execute(
-                    _select(_func.count(BookDeltaEvent.id)).where(
-                        BookDeltaEvent.token_id.in_(sample),
-                        BookDeltaEvent.observed_at >= start_dt,
-                        BookDeltaEvent.observed_at <= end_dt,
-                    )
-                )
-            ).scalar_one()
-            or 0
-        )
-    except Exception as exc:
-        logger.warning("delta-probe query failed; defaulting to snapshots: %s", exc)
-        return False
-
-    deltas_per_token_per_hour = delta_count / max(len(sample), 1) / window_hours
-    return delta_count > 5 * max(snap_count, 1) and deltas_per_token_per_hour >= 10.0
-
-
 async def _build_per_tick_prices_grid(
     *,
-    session: Any,
     token_ids: list[str],
     ticks: list[datetime],
+    start_dt: datetime,
     end_dt: datetime,
-    use_deltas: bool,
-    parquet_coverage: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any] | None]]:
     """For each token, return per-tick price state lists (length =
     len(ticks)).  Each entry is ``{best_bid, best_ask, mid, price,
     spread_bps, observed_at}`` or ``None`` when no state was available
     at-or-before that tick.
 
-    Streams the chosen source ONCE; bins into ticks at boundary
-    crossings.  Truncations on the underlying replay are ignored — the
-    grid simply reflects whatever state the replay was able to produce.
-
-    When ``parquet_coverage`` is supplied (mapping token_id → parquet
-    file path), the function routes those tokens through
-    ``ParquetBookReplay`` and only the remaining tokens through the
-    SQL backend — mirroring the per-token routing the matcher uses.
-    Without this, operator-imported Telonex parquet data would be
-    invisible to discovery (matcher matches against it, but detect()
-    never sees the book → 0 opps discovered → 0 trades).
+    Builds a unified :class:`MarketDataView` over the token universe, streams
+    its ordered book stream ONCE, and bins into ticks at boundary crossings.
+    Source selection (which provider's parquet covers which token) is resolved
+    inside the view, so operator-imported (telonex / polybacktest) and
+    live-recorded data are all visible to discovery through the one
+    point-in-time access path.
     """
     if not token_ids or not ticks:
         return {}
-    from services.backtest.book_replay import (
-        BookDeltaReplay, BookReplay, HybridBookSource,
-    )
-    from services.backtest.parquet_replay import ParquetBookReplay
+    from services.marketdata.view import MarketDataView
+    from services.marketdata.book_source import MarketDataViewSource
 
-    parquet_coverage = parquet_coverage or {}
-    sql_tokens = [t for t in token_ids if t not in parquet_coverage]
-    parquet_tokens = [t for t in token_ids if t in parquet_coverage]
-
-    backends: dict[str, Any] = {}
-    routing: dict[str, str] = {}
-    if parquet_tokens:
-        backends["parquet"] = ParquetBookReplay(
-            per_token_files={t: parquet_coverage[t] for t in parquet_tokens},
-            start=ticks[0],
-            end=end_dt,
-        )
-        for t in parquet_tokens:
-            routing[t] = "parquet"
-
-    if sql_tokens:
-        if use_deltas:
-            backends["deltas"] = BookDeltaReplay(
-                session=session,
-                token_ids=sql_tokens,
-                start=ticks[0],
-                end=end_dt,
-            )
-            for t in sql_tokens:
-                routing[t] = "deltas"
-        else:
-            backends["snapshots"] = BookReplay(
-                session=session,
-                token_ids=sql_tokens,
-                start=ticks[0],
-                end=end_dt,
-                snapshot_type="book",
-            )
-            for t in sql_tokens:
-                routing[t] = "snapshots"
-
-    if not backends:
-        return {}
-
-    # When the only backend is the SQL one, use it directly — avoid
-    # the HybridBookSource heap-merge overhead for the trivial case.
-    # When parquet is involved, MUST use the hybrid because the parquet
-    # backend yields its own snapshots that need to be interleaved
-    # chronologically with any SQL stream.
-    if len(backends) == 1:
-        replay: Any = next(iter(backends.values()))
-    else:
-        replay = HybridBookSource(backends=backends, routing=routing)
+    view = await MarketDataView.build(token_ids=token_ids, start=start_dt, end=end_dt)
+    replay = MarketDataViewSource(view, token_ids=token_ids)
 
     cur_state: dict[str, dict[str, Any]] = {}
     grid: dict[str, list[dict[str, Any] | None]] = {}
@@ -3195,7 +2916,6 @@ async def _replay_discover_opportunities(
     sample_interval_seconds: int,
     max_ticks: int,
     candidate_token_ids: list[str] | None = None,
-    use_deltas_for_prices: bool = False,
     warmup_seconds: int = 0,
 ) -> list[_SyntheticOpp]:
     """Replay-discovery: walk historical market state at sampled time
@@ -3208,11 +2928,9 @@ async def _replay_discover_opportunities(
         ``candidate_token_ids`` when caller provides a scope (book-
         driven strategies).  Event-driven strategies bypass that
         narrowing — events drive the universe.
-      * prices — best_bid / best_ask / mid reconstructed per token
-        from either ``MarketMicrostructureSnapshot`` (default) or
-        ``BookDeltaReplay`` (when ``use_deltas_for_prices=True``,
-        chosen by the caller when delta coverage materially dominates
-        snapshot coverage — same logic the matcher uses).
+      * prices — best_bid / best_ask / mid reconstructed per token from the
+        unified ``MarketDataView`` (canonical parquet, point-in-time), which
+        resolves provider coverage internally.
       * events — for strategies whose ``detect`` reads events
         (``traders_copy_trade``, etc.), the same historical event
         stream the live system saw, loaded from the appropriate source
@@ -3336,55 +3054,22 @@ async def _replay_discover_opportunities(
     # (the strategy reads the live mid from the embedded ``market``
     # payload), so we skip the work for them.
     grid: dict[str, list[dict[str, Any] | None]] = {}
-    if event_kind is None:
-        async with _Sess() as price_session:
-            await price_session.execute(
-                _text("SET statement_timeout = 60000")
+    if event_kind is None and all_token_ids:
+        # Book-driven discovery reads per-tick prices from the unified
+        # MarketDataView (canonical parquet, point-in-time), built inside the
+        # grid helper. The view resolves coverage across every provider, so
+        # imported (telonex/polybacktest) and live-recorded tokens are all
+        # visible to detect().
+        try:
+            grid = await _build_per_tick_prices_grid(
+                token_ids=all_token_ids,
+                ticks=ticks,
+                start_dt=start_dt,
+                end_dt=end_dt,
             )
-            # Auto-select source unless the caller has explicitly
-            # requested deltas.  Cheap probe (one count per source
-            # over a 50-token sample) — same threshold the matcher
-            # uses, so discovery and matching see the same data.
-            chosen_use_deltas = use_deltas_for_prices
-            if not chosen_use_deltas:
-                chosen_use_deltas = await _probe_should_prefer_deltas(
-                    session=price_session,
-                    token_ids=all_token_ids,
-                    start_dt=start_dt,
-                    end_dt=end_dt,
-                )
-            # Resolve parquet coverage so tokens with operator-imported
-            # Telonex / canonical parquet data flow through
-            # ParquetBookReplay in the grid build — matching the per-
-            # token routing the matcher does later in the pipeline.
-            # Without this, parquet-only tokens would have empty grid
-            # entries and detect() never sees them.
-            parquet_cov_for_grid: dict[str, str] = {}
-            try:
-                from services.external_data import parquet_scanner as _pq_scan
-                await _pq_scan.ensure_recent_scan(max_age_seconds=60.0)
-                parquet_cov_for_grid = await _pq_scan.find_parquet_coverage(
-                    token_ids=all_token_ids,
-                    start=start_dt,
-                    end=end_dt,
-                )
-            except Exception as _pq_exc:
-                logger.warning(
-                    "replay_discover: parquet coverage lookup failed: %s",
-                    _pq_exc,
-                )
-            try:
-                grid = await _build_per_tick_prices_grid(
-                    session=price_session,
-                    token_ids=all_token_ids,
-                    ticks=ticks,
-                    end_dt=end_dt,
-                    use_deltas=chosen_use_deltas,
-                    parquet_coverage=parquet_cov_for_grid,
-                )
-            except Exception as exc:
-                logger.warning("replay_discover: price grid build failed: %s", exc)
-                grid = {}
+        except Exception as exc:
+            logger.warning("replay_discover: price grid build failed: %s", exc)
+            grid = {}
 
     # Step 5: build the per-tick events grid.  Each tick's slice covers
     # events whose timestamp lands in (prev_tick, this_tick] — same
@@ -4390,26 +4075,23 @@ async def run_execution_backtest(
                             if tok:
                                 opp_tokens[tok] = opp_tokens.get(tok, 0) + 1
                 if opp_tokens:
-                    # Filter to tokens with actual book snapshots in
-                    # window so the engine can replay against them.
-                    # Recording moved off Postgres to parquet
-                    # (live_ingestor / canonical telonex etc.), so this
-                    # check uses ``find_parquet_coverage`` against the
-                    # provider_datasets catalog.  One lookup covers the
-                    # whole token list — no SQL chunking + timeout
-                    # gymnastics required.
+                    # Filter to tokens with actual book coverage in window so
+                    # the engine can replay against them.  Recording lives in
+                    # canonical parquet (live_ingestor / polybacktest /
+                    # telonex), so this uses the unified coverage resolver
+                    # against the provider_datasets catalog — one lookup over
+                    # the whole token list.
                     candidate_tokens = list(opp_tokens.keys())
                     tokens_with_snaps: set[str] = set()
                     snap_filter_failed = False
                     try:
-                        from services.external_data import parquet_scanner as _pq
-                        await _pq.ensure_recent_scan(max_age_seconds=60.0)
-                        cov = await _pq.find_parquet_coverage(
+                        from services.marketdata.coverage import resolve_coverage
+                        cov_map = await resolve_coverage(
                             token_ids=candidate_tokens,
                             start=start_dt,
                             end=end_dt,
                         )
-                        tokens_with_snaps = set(str(k) for k in cov.keys())
+                        tokens_with_snaps = set(cov_map.covered_tokens)
                     except Exception as exc:
                         logger.warning(
                             "parquet-availability check failed; trusting opp_tokens universe: %s",
@@ -4773,11 +4455,17 @@ async def run_execution_backtest(
             })
             _eval_book_replay: Any = None
             if _eval_token_universe:
-                _eval_book_replay = await _BulkBookIndex.build(
-                    token_ids=_eval_token_universe,
-                    start_dt=start_dt,
-                    end_dt=end_dt,
+                # Point-in-time book lookups for the eval/live-context overlay
+                # come from the unified MarketDataView (canonical parquet),
+                # adapted to the _BookSource protocol the overlay expects.
+                from services.marketdata.view import MarketDataView
+                from services.marketdata.book_source import MarketDataViewSource
+                _eval_view = await MarketDataView.build(
+                    token_ids=list(_eval_token_universe),
+                    start=start_dt,
+                    end=end_dt,
                 )
+                _eval_book_replay = MarketDataViewSource(_eval_view)
 
             for opp in opps or []:
                 # OpportunityHistory.positions_data is a JSON blob;
@@ -5502,8 +5190,8 @@ async def run_execution_backtest(
         BookDeltaReplay as _BookDeltaReplay,
         HybridBookSource as _HybridBookSource,
     )
-    from services.backtest.parquet_replay import ParquetBookReplay as _ParquetBookReplay
-    from services.external_data import parquet_scanner as _parquet_scanner
+    from services.marketdata.view import MarketDataView
+    from services.marketdata.book_source import MarketDataViewSource
 
     run_start = time.monotonic()
     replay_for_run: Any = None
@@ -5529,29 +5217,32 @@ async def run_execution_backtest(
             # Auto-discovery: ``ensure_recent_scan`` walks the parquet
             # root iff the cached scan is >60s old, so newly-dropped
             # files are picked up without an explicit rescan.
+            # Parquet-covered tokens are served by the unified MarketDataView
+            # (point-in-time book access over canonical parquet); only tokens
+            # with no parquet coverage fall through to the SQL replays below
+            # (removed entirely in the SQL clean-cut phase).
             try:
-                await _parquet_scanner.ensure_recent_scan(max_age_seconds=60.0)
-                parquet_coverage = await _parquet_scanner.find_parquet_coverage(
+                _mdv = await MarketDataView.build(
                     token_ids=tokens, start=start_dt, end=end_dt,
                 )
+                _parquet_tokens = list(_mdv.coverage().covered_tokens)
             except Exception as _pq_exc:
-                logger.warning("parquet coverage lookup failed: %s", _pq_exc)
-                parquet_coverage = {}
+                logger.warning("market-data view build failed: %s", _pq_exc)
+                _mdv = None
+                _parquet_tokens = []
 
-            sql_tokens = [t for t in tokens if t not in parquet_coverage]
+            parquet_token_set = set(_parquet_tokens)
+            sql_tokens = [t for t in tokens if t not in parquet_token_set]
             backends: dict[str, Any] = {}
             routing: dict[str, str] = {}
             source_label_parts: list[str] = []
 
-            if parquet_coverage:
-                backends["parquet"] = _ParquetBookReplay(
-                    per_token_files=parquet_coverage,
-                    start=start_dt, end=end_dt,
-                )
-                for tok in parquet_coverage:
+            if _parquet_tokens and _mdv is not None:
+                backends["parquet"] = MarketDataViewSource(_mdv, token_ids=_parquet_tokens)
+                for tok in _parquet_tokens:
                     routing[tok] = "parquet"
                 source_label_parts.append(
-                    f"PARQUET={len(parquet_coverage)} tokens"
+                    f"PARQUET={len(_parquet_tokens)} tokens"
                 )
 
             sql_replay_label = None
