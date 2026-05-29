@@ -659,11 +659,11 @@ async def _register_polybacktest_parquet_dataset(
     span_end = max(o[5] for o in outputs)
     total_rows = sum(o[3] for o in outputs)
 
-    # Capture the market metadata a backtest-time CRYPTO_UPDATE synthesizer
+    # Capture the market metadata the backtest-time crypto_update projection
     # needs to reconstruct dispatch events from these book parquet files
-    # (see services.backtest.crypto_update_synthesizer).  Without these the
-    # dataset isn't self-describing: the synthesizer can't tell which token
-    # is UP vs DOWN, derive seconds_left, or label the market.
+    # (see services.marketdata.projection).  Without these the dataset isn't
+    # self-describing: the projection can't tell which token is UP vs DOWN,
+    # derive seconds_left, or label the market.
     def _iso(dt: Any) -> Optional[str]:
         if isinstance(dt, datetime):
             return dt.astimezone(timezone.utc).isoformat()

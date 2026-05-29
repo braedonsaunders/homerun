@@ -46,6 +46,11 @@ from services.marketdata.schema import (
     validate_file,
     validate_table,
 )
+from services.marketdata.projection import (
+    ProjectedMarket,
+    load_projected_markets,
+    project_crypto_update_events,
+)
 from services.marketdata.view import MarketDataView
 
 __all__ = [
@@ -73,4 +78,8 @@ __all__ = [
     "PriceLevel",
     "load_book_series",
     "row_to_book_snapshot",
+    # crypto_update projection (Phase 2b)
+    "ProjectedMarket",
+    "load_projected_markets",
+    "project_crypto_update_events",
 ]
