@@ -26,6 +26,7 @@ from services.marketdata.book import (
     load_book_series,
     row_to_book_snapshot,
 )
+from services.marketdata.book_source import MarketDataViewSource
 from services.marketdata.coverage import (
     CoverageMap,
     TokenCoverage,
@@ -71,6 +72,7 @@ __all__ = [
     "validate_table",
     # access layer (Phase 2)
     "MarketDataView",
+    "MarketDataViewSource",
     "CoverageMap",
     "TokenCoverage",
     "resolve_coverage",
