@@ -20,6 +20,17 @@ no wiring into the engine yet (no behavior change).
 from __future__ import annotations
 
 from services.marketdata.asof import AsOfSeries, bisect_as_of
+from services.marketdata.book import (
+    BookSnapshot,
+    PriceLevel,
+    load_book_series,
+    row_to_book_snapshot,
+)
+from services.marketdata.coverage import (
+    CoverageMap,
+    TokenCoverage,
+    resolve_coverage,
+)
 from services.marketdata.manifest import (
     DatasetSnapshot,
     SnapshotEntry,
@@ -35,8 +46,10 @@ from services.marketdata.schema import (
     validate_file,
     validate_table,
 )
+from services.marketdata.view import MarketDataView
 
 __all__ = [
+    # primitives (Phase 1)
     "AsOfSeries",
     "bisect_as_of",
     "ordered_merge",
@@ -51,4 +64,13 @@ __all__ = [
     "validate_arrow_schema",
     "validate_file",
     "validate_table",
+    # access layer (Phase 2)
+    "MarketDataView",
+    "CoverageMap",
+    "TokenCoverage",
+    "resolve_coverage",
+    "BookSnapshot",
+    "PriceLevel",
+    "load_book_series",
+    "row_to_book_snapshot",
 ]
