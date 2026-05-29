@@ -683,6 +683,29 @@ async def query_dataset(
     }
 
 
+@router.get("/quality/book-snapshot")
+async def book_snapshot_quality(
+    token_id: str,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, Any]:
+    """Parquet-native data-quality report for one token's recorded book.
+
+    Reads the SAME canonical parquet the backtester replays (coverage +
+    crossed-book + gaps + staleness), so the report reflects exactly what a
+    backtest would see. (Two-segment path so it never collides with the
+    ``/{name}`` dataset route.)
+    """
+    tok = (token_id or "").strip()
+    if not tok:
+        raise HTTPException(status_code=400, detail="token_id is required")
+    from services.marketdata.quality import assess_book_quality
+
+    s = _parse_iso(start) or datetime(2000, 1, 1, tzinfo=timezone.utc)
+    e = _parse_iso(end) or datetime.now(timezone.utc)
+    return await assess_book_quality(token_id=tok, start=s, end=e)
+
+
 @router.get("/{name}/csv")
 async def export_dataset_csv(
     name: str,
@@ -713,6 +736,13 @@ async def export_dataset_csv(
     columns are serialized inline as JSON strings — Excel-friendly.
     """
     spec = _resolve_dataset(name)
+    if spec.source == "parquet":
+        # Parquet datasets are browsed per-token via the table view; CSV
+        # streaming over the canonical parquet plane isn't wired here.
+        raise HTTPException(
+            status_code=400,
+            detail="CSV export is not available for parquet-backed datasets; use the table view.",
+        )
     sort_col_name = order_by or spec.default_sort
     sort_attr = getattr(spec.model, sort_col_name, None)
     if sort_attr is None:
@@ -1132,6 +1162,10 @@ async def storage_summary() -> dict[str, Any]:
     out: list[dict[str, Any]] = []
     async with AsyncSessionLocal() as session:
         for spec in _DATASETS.values():
+            if spec.source == "parquet" or spec.model is None:
+                # Parquet-backed datasets have no SQL table; their bytes are
+                # reported in the ``parquet`` section below.
+                continue
             row_count = 0
             try:
                 row_count = int(
@@ -1238,6 +1272,10 @@ async def dataset_distinct_values(
     (e.g., 'all known strategy_slugs' for the strategy filter).
     """
     spec = _resolve_dataset(name)
+    if spec.source == "parquet" or spec.model is None:
+        # Parquet datasets have no SQL column to DISTINCT over (token_id is
+        # free-text; the only enum filter carries static values).
+        return {"column": column, "values": []}
     col = getattr(spec.model, column, None)
     if col is None:
         raise HTTPException(status_code=400, detail=f"Unknown column '{column}'")

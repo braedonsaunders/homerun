@@ -290,34 +290,44 @@ class TestBridge:
         from services.recorded_event_bus.storage import flush_pending_writes
         import services.recorded_event_bus.storage  # noqa
 
+        import shutil
         import uuid
+
+        from services.external_data.parquet_schema import parquet_root
+
         run_id = uuid.uuid4().hex[:8]
         await _ensure_crypto_update_topic_registered()
         BASE = datetime.now(timezone.utc).replace(microsecond=0)
-        for i in range(3):
-            ts = BASE - timedelta(minutes=10) + timedelta(seconds=i * 30)
-            evt = DataEvent(
-                event_type=EventType.CRYPTO_UPDATE,
-                source="market_runtime",
-                timestamp=ts,
-                payload={},
-            )
-            await _publish_crypto_update_to_bus(
-                evt,
-                copied_for_event=[{"market_id": f"m_{i}", "mid": 0.5}],
-                trigger=f"unit_test_tick_{run_id}_{i}",
-            )
-        await flush_pending_writes()
+        try:
+            for i in range(3):
+                ts = BASE - timedelta(minutes=10) + timedelta(seconds=i * 30)
+                evt = DataEvent(
+                    event_type=EventType.CRYPTO_UPDATE,
+                    source="market_runtime",
+                    timestamp=ts,
+                    payload={},
+                )
+                await _publish_crypto_update_to_bus(
+                    evt,
+                    copied_for_event=[{"market_id": f"m_{i}", "mid": 0.5}],
+                    trigger=f"unit_test_tick_{run_id}_{i}",
+                )
+            await flush_pending_writes()
 
-        class FakeCryptoStrategy:
-            subscriptions = ["crypto_update"]
+            class FakeCryptoStrategy:
+                subscriptions = ["crypto_update"]
 
-        got = []
-        async for ev in replay_events_for_strategy(
-            strategy=FakeCryptoStrategy(),
-            start_dt=BASE - timedelta(minutes=15),
-            end_dt=BASE,
-        ):
-            if ev.entity_id.startswith(f"unit_test_tick_{run_id}_"):
-                got.append(ev)
-        assert len(got) == 3
+            got = []
+            async for ev in replay_events_for_strategy(
+                strategy=FakeCryptoStrategy(),
+                start_dt=BASE - timedelta(minutes=15),
+                end_dt=BASE,
+            ):
+                if ev.entity_id.startswith(f"unit_test_tick_{run_id}_"):
+                    got.append(ev)
+            assert len(got) == 3
+        finally:
+            # Don't pollute the real bus data plane with test entity dirs.
+            topic_dir = parquet_root() / "recorded_event_bus" / "crypto.update.dispatch"
+            for i in range(3):
+                shutil.rmtree(topic_dir / f"unit_test_tick_{run_id}_{i}", ignore_errors=True)

@@ -59,6 +59,7 @@ from services.marketdata.pins import (
     release_pin,
 )
 from services.marketdata.provider import MarketDataProvider
+from services.marketdata.quality import assess_book_quality, assess_universe_quality
 from services.marketdata.view import MarketDataView
 from services.marketdata.writer import write_canonical_table
 
@@ -100,4 +101,7 @@ __all__ = [
     "release_pin",
     "active_pinned_paths",
     "is_path_pinned",
+    # data-quality observability (Phase 8)
+    "assess_book_quality",
+    "assess_universe_quality",
 ]
