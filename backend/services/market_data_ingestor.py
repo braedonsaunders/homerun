@@ -63,9 +63,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from models.database import (
-    BookDeltaEvent,
-    MarketMicrostructureSnapshot,
+from services.external_data.book_parquet_sink import (
+    BookDeltaRow,
+    BookSnapshotRow,
 )
 from services.live_pressure import (
     current_backpressure_level,
@@ -212,8 +212,8 @@ class LiveMarketDataIngestor:
     ) -> None:
         self._snapshot_throttle_seconds = float(snapshot_throttle_seconds)
         self._states: dict[str, _TokenState] = {}
-        self._snapshot_queue: asyncio.Queue[MarketMicrostructureSnapshot] | None = None
-        self._delta_queue: asyncio.Queue[BookDeltaEvent] | None = None
+        self._snapshot_queue: asyncio.Queue[BookSnapshotRow] | None = None
+        self._delta_queue: asyncio.Queue[BookDeltaRow] | None = None
         self._snapshot_flush_task: asyncio.Task | None = None
         self._delta_flush_task: asyncio.Task | None = None
 
@@ -345,7 +345,7 @@ class LiveMarketDataIngestor:
         # — cheap because trades are far less frequent than book ticks.
         snap_queue = self._snapshot_queue
         if snap_queue is not None:
-            row = MarketMicrostructureSnapshot(
+            row = BookSnapshotRow(
                 id=uuid.uuid4().hex,
                 provider="polymarket",
                 token_id=normalized_token,
@@ -382,7 +382,7 @@ class LiveMarketDataIngestor:
           4. Diff vs prev state → enqueue delta events.
           5. Update running state (bids, asks, last_observed_at).
           6. If snapshot throttle window has elapsed for this token,
-             enqueue a full ``MarketMicrostructureSnapshot`` row.
+             enqueue a full ``BookSnapshotRow`` row.
 
         Recorded-event bus contract: this hot path deliberately does
         NOT call ``bus.publish`` for ``polymarket.book.snapshot`` or
@@ -475,7 +475,7 @@ class LiveMarketDataIngestor:
         if ingest - state.last_snapshot_write >= self._snapshot_throttle_seconds:
             state.last_snapshot_write = ingest
             self._enqueue_snapshot(
-                MarketMicrostructureSnapshot(
+                BookSnapshotRow(
                     id=uuid.uuid4().hex,
                     provider="polymarket",
                     token_id=normalized_token,
@@ -511,7 +511,7 @@ class LiveMarketDataIngestor:
     ) -> None:
         """For each price level whose size DECREASED, classify the cause
         (trade vs cancel) by attempting to consume from the recent-trade
-        tape.  Emit one BookDeltaEvent per non-zero classification.
+        tape.  Emit one BookDeltaRow per non-zero classification.
         """
         for price, prev_size in prev_levels.items():
             new_size = new_levels.get(price, 0.0)
@@ -523,7 +523,7 @@ class LiveMarketDataIngestor:
             cancel_part = max(0.0, delta - consumed)
             if trade_part > 0:
                 self._enqueue_delta(
-                    BookDeltaEvent(
+                    BookDeltaRow(
                         id=uuid.uuid4().hex,
                         provider="polymarket",
                         token_id=token_id,
@@ -547,7 +547,7 @@ class LiveMarketDataIngestor:
                 )
             if cancel_part > 0:
                 self._enqueue_delta(
-                    BookDeltaEvent(
+                    BookDeltaRow(
                         id=uuid.uuid4().hex,
                         provider="polymarket",
                         token_id=token_id,
@@ -690,7 +690,7 @@ class LiveMarketDataIngestor:
 
     # ── Queue management ────────────────────────────────────────────────
 
-    def _enqueue_snapshot(self, row: MarketMicrostructureSnapshot) -> None:
+    def _enqueue_snapshot(self, row: BookSnapshotRow) -> None:
         queue = self._snapshot_queue
         if queue is None:
             return
@@ -709,7 +709,7 @@ class LiveMarketDataIngestor:
                     dropped=self._snapshot_dropped,
                 )
 
-    def _enqueue_delta(self, row: BookDeltaEvent) -> None:
+    def _enqueue_delta(self, row: BookDeltaRow) -> None:
         queue = self._delta_queue
         if queue is None:
             return

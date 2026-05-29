@@ -30,6 +30,7 @@ import asyncio
 import os
 import shutil
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -56,6 +57,57 @@ _PRUNE_INTERVAL_SECONDS = 300.0
 _MAX_BUFFERED_ROWS = 200_000  # drop-oldest backstop
 _DEFAULT_RETENTION_DAYS = 7
 _DEFAULT_MAX_BYTES = 6 * 1024 * 1024 * 1024  # 6 GB
+
+
+# ── In-memory row carriers ────────────────────────────────────────────
+#
+# The live ingestor builds these lightweight rows and hands them to the
+# sink, which encodes them to parquet.  They replace the old practice of
+# constructing throwaway ``MarketMicrostructureSnapshot`` / ``BookDeltaEvent``
+# ORM objects purely as attribute bags — book data never touches SQL now.
+# Field names match the canonical SNAPSHOT_SCHEMA / DELTA_SCHEMA columns the
+# converters below read; all default so callers set only what they have.
+
+
+@dataclass
+class BookSnapshotRow:
+    token_id: str = ""
+    observed_at: Optional[datetime] = None
+    snapshot_type: str = "book"  # 'book' | 'trade'
+    provider: str = "polymarket"
+    sequence: Optional[int] = None
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+    spread_bps: Optional[float] = None
+    bids_json: Optional[list] = None
+    asks_json: Optional[list] = None
+    trade_price: Optional[float] = None
+    trade_size: Optional[float] = None
+    trade_side: Optional[str] = None
+    exchange_ts_ms: Optional[int] = None
+    payload_json: dict = field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    id: Optional[str] = None
+
+
+@dataclass
+class BookDeltaRow:
+    token_id: str = ""
+    observed_at: Optional[datetime] = None
+    provider: str = "polymarket"
+    sequence: Optional[int] = None
+    event_type: Optional[str] = None  # 'trade' | 'cancel'
+    side: Optional[str] = None
+    price: Optional[float] = None
+    trade_size: Optional[float] = None
+    cancel_size: Optional[float] = None
+    queue_depth_before: Optional[float] = None
+    queue_depth_after: Optional[float] = None
+    spread_bps_at_event: Optional[float] = None
+    exchange_ts_ms: Optional[int] = None
+    payload_json: dict = field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    id: Optional[str] = None
 
 
 def _levels(side_json: Any) -> tuple[list[float], list[float]]:

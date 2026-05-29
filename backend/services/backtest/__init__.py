@@ -25,7 +25,6 @@ package is for *strategy-fitness* backtesting where execution realism matters.
 
 from services.backtest.book_replay import (
     BookSnapshot,
-    BookReplay,
     InMemoryBookReplay,
     PriceLevel,
 )
@@ -70,7 +69,6 @@ from services.backtest.engine import (
 
 __all__ = [
     "BookSnapshot",
-    "BookReplay",
     "InMemoryBookReplay",
     "PriceLevel",
     "PolymarketVenue",
