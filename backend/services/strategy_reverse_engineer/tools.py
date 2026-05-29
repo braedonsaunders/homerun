@@ -598,52 +598,48 @@ def _handler_dataset_query(ctx: ReverseEngineerContext):
 
 def _handler_sample_token(ctx: ReverseEngineerContext):
     async def _h(args: dict) -> dict:
-        from sqlalchemy import asc, select
+        from datetime import datetime, timezone
 
-        from models.database import AsyncSessionLocal, MarketMicrostructureSnapshot
+        from services.marketdata.book import load_book_series, us_from_dt
+        from services.marketdata.coverage import resolve_coverage
 
         token_id = str(args.get("token_id") or "").strip()
         n = max(1, min(100, int(args.get("n") or 10)))
         if not token_id:
             return {"error": "token_id is required"}
-        start = ctx.dataset_scope.get("start")
-        end = ctx.dataset_scope.get("end")
+        start = ctx.dataset_scope.get("start") or datetime(2000, 1, 1, tzinfo=timezone.utc)
+        end = ctx.dataset_scope.get("end") or datetime.now(timezone.utc)
 
-        async with AsyncSessionLocal() as session:
-            stmt = (
-                select(MarketMicrostructureSnapshot)
-                .where(MarketMicrostructureSnapshot.token_id == token_id)
-                .where(MarketMicrostructureSnapshot.snapshot_type == "book")
-            )
-            if start is not None:
-                stmt = stmt.where(MarketMicrostructureSnapshot.observed_at >= start)
-            if end is not None:
-                stmt = stmt.where(MarketMicrostructureSnapshot.observed_at <= end)
-            stmt = stmt.order_by(asc(MarketMicrostructureSnapshot.observed_at))
-            rows = list((await session.execute(stmt)).scalars().all())
-
+        # Book state comes from canonical parquet via the unified layer.
+        cov = await resolve_coverage(token_ids=[token_id], start=start, end=end)
+        files = cov.files_for(token_id)
+        if not files:
+            return {"token_id": token_id, "samples": [], "note": "no parquet coverage in window"}
+        series, _rows = load_book_series(
+            token_id, files, start_us=us_from_dt(start), end_us=us_from_dt(end)
+        )
+        rows = list(series.iter_range(us_from_dt(start), us_from_dt(end)))
         if not rows:
             return {"token_id": token_id, "samples": [], "note": "no rows in window"}
 
-        if len(rows) <= n:
-            chosen = rows
-        else:
-            step = len(rows) / float(n)
-            chosen = [rows[int(i * step)] for i in range(n)]
+        chosen = rows if len(rows) <= n else [rows[int(i * (len(rows) / float(n)))] for i in range(n)]
+
+        def _levels(levels):
+            return [[round(lvl.price, 6), round(lvl.size, 6)] for lvl in levels[:3]]
 
         return {
             "token_id": token_id,
             "row_count": len(rows),
             "samples": [
                 {
-                    "observed_at": r.observed_at.isoformat() if r.observed_at else None,
-                    "best_bid": r.best_bid,
-                    "best_ask": r.best_ask,
-                    "spread_bps": r.spread_bps,
-                    "bids_top3": (r.bids_json or [])[:3],
-                    "asks_top3": (r.asks_json or [])[:3],
+                    "observed_at": snap.observed_at.isoformat() if snap.observed_at else None,
+                    "best_bid": snap.bids[0].price if snap.bids else None,
+                    "best_ask": snap.asks[0].price if snap.asks else None,
+                    "spread_bps": snap.spread_bps,
+                    "bids_top3": _levels(snap.bids),
+                    "asks_top3": _levels(snap.asks),
                 }
-                for r in chosen
+                for _ts, snap in chosen
             ],
         }
 

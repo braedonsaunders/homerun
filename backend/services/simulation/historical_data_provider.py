@@ -6,9 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
 
-from models.database import BacktestAsyncSessionLocal, MarketMicrostructureSnapshot
 from services.kalshi_client import kalshi_client
 from services.polymarket import polymarket_client
 
@@ -295,86 +293,66 @@ class HistoricalDataProvider:
         lookback_seconds: float = 30.0,
         forward_seconds: float = 6.0,
     ) -> dict[str, Any]:
-        normalized_token = str(token_id or "").strip().lower()
+        normalized_token = str(token_id or "").strip()
         event_dt = _ts_to_utc(event_ts)
         if not normalized_token or event_dt is None:
             return {}
         start_dt = event_dt - timedelta(seconds=max(1.0, float(lookback_seconds)))
         end_dt = event_dt + timedelta(seconds=max(0.0, float(forward_seconds)))
-        async with BacktestAsyncSessionLocal() as session:
-            before_book_query = (
-                select(MarketMicrostructureSnapshot)
-                .where(
-                    MarketMicrostructureSnapshot.token_id == normalized_token,
-                    MarketMicrostructureSnapshot.snapshot_type == "book",
-                    MarketMicrostructureSnapshot.observed_at <= event_dt,
-                )
-                .order_by(MarketMicrostructureSnapshot.observed_at.desc())
-                .limit(1)
-            )
-            book_row = (await session.execute(before_book_query)).scalar_one_or_none()
-            if book_row is None:
-                after_book_query = (
-                    select(MarketMicrostructureSnapshot)
-                    .where(
-                        MarketMicrostructureSnapshot.token_id == normalized_token,
-                        MarketMicrostructureSnapshot.snapshot_type == "book",
-                        MarketMicrostructureSnapshot.observed_at > event_dt,
-                        MarketMicrostructureSnapshot.observed_at <= event_dt + timedelta(seconds=2),
-                    )
-                    .order_by(MarketMicrostructureSnapshot.observed_at.asc())
-                    .limit(1)
-                )
-                book_row = (await session.execute(after_book_query)).scalar_one_or_none()
 
-            trades_query = (
-                select(MarketMicrostructureSnapshot)
-                .where(
-                    MarketMicrostructureSnapshot.token_id == normalized_token,
-                    MarketMicrostructureSnapshot.snapshot_type == "trade",
-                    MarketMicrostructureSnapshot.observed_at >= start_dt,
-                    MarketMicrostructureSnapshot.observed_at <= end_dt,
-                )
-                .order_by(MarketMicrostructureSnapshot.observed_at.asc())
-            )
-            trade_rows = list((await session.execute(trades_query)).scalars().all())
+        # Book + trade tape come from canonical parquet via the unified
+        # market-data layer.  Trades are carried in the snapshot rows'
+        # trade_* fields (the canonical SNAPSHOT_SCHEMA tape); the as-of
+        # book is the newest snapshot at-or-before the event.
+        from services.marketdata.book import load_book_series, us_from_dt
+        from services.marketdata.coverage import resolve_coverage
 
-        if book_row is None:
+        # Widen the coverage window a touch so an as-of book observed shortly
+        # before ``start_dt`` is still loaded.
+        cov_start = start_dt - timedelta(minutes=15)
+        cov = await resolve_coverage(token_ids=[normalized_token], start=cov_start, end=end_dt)
+        files = cov.files_for(normalized_token)
+        if not files:
             return {}
-        observed = book_row.observed_at
+        series, _n = load_book_series(
+            normalized_token, files, start_us=us_from_dt(cov_start), end_us=us_from_dt(end_dt)
+        )
+        event_us = us_from_dt(event_dt)
+        book = series.as_of(event_us)
+        if book is None:
+            # forward fallback: first snapshot within 2s after the event
+            fwd = list(series.iter_range(event_us + 1, us_from_dt(event_dt + timedelta(seconds=2))))
+            book = fwd[0][1] if fwd else None
+        if book is None:
+            return {}
+        observed = book.observed_at
         if observed.tzinfo is None:
             observed = observed.replace(tzinfo=timezone.utc)
-        else:
-            observed = observed.astimezone(timezone.utc)
         age_ms = (event_dt - observed).total_seconds() * 1000.0
+
         trades = []
-        for row in trade_rows:
-            observed_trade = row.observed_at
-            if observed_trade.tzinfo is None:
-                observed_trade = observed_trade.replace(tzinfo=timezone.utc)
-            else:
-                observed_trade = observed_trade.astimezone(timezone.utc)
-            if row.trade_price is None or row.trade_size is None:
+        for _ts_us, snap in series.iter_range(us_from_dt(start_dt), us_from_dt(end_dt)):
+            if snap.trade_price is None or snap.trade_size is None:
                 continue
             trades.append(
                 {
-                    "price": float(row.trade_price),
-                    "size": float(row.trade_size),
-                    "side": str(row.trade_side or "BUY").upper(),
-                    "timestamp": observed_trade.timestamp(),
+                    "price": float(snap.trade_price),
+                    "size": float(snap.trade_size),
+                    "side": str(snap.trade_side or "BUY").upper(),
+                    "timestamp": snap.observed_at.timestamp(),
                 }
             )
         return {
             "execution_order_book": {
-                "bids": list(book_row.bids_json or []),
-                "asks": list(book_row.asks_json or []),
+                "bids": [[lvl.price, lvl.size] for lvl in book.bids],
+                "asks": [[lvl.price, lvl.size] for lvl in book.asks],
             },
             "execution_recent_trades": trades,
             "execution_order_book_age_ms": max(0.0, age_ms),
             "execution_microstructure": {
-                "source": "market_microstructure_snapshots",
+                "source": "canonical_parquet",
                 "book_observed_at": observed.isoformat(),
-                "book_sequence": book_row.sequence,
+                "book_sequence": book.sequence,
                 "trade_count": len(trades),
                 "lookback_seconds": float(lookback_seconds),
                 "forward_seconds": float(forward_seconds),
