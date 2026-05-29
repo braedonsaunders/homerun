@@ -2,13 +2,12 @@
 
 A recording session is a user-defined, scoped market-data capture.
 The session row carries the spec (markets, capture types, tick
-interval, time window).  The actual rows still land in
-``MarketMicrostructureSnapshot`` / ``BookDeltaEvent`` — those tables
-are populated by the always-on ``LiveMarketDataIngestor`` (see
-services/market_data_ingestor.py) regardless.  The session pins the
-rows it "owns" by ``(target_token_ids, started_at, ended_at)`` so the
-unified backtester can replay just that slice without a separate
-datastore.
+interval, time window).  The actual book rows land in the canonical
+``snapshots__`` / ``deltas__`` parquet plane — written by the always-on
+``LiveMarketDataIngestor`` (see services/market_data_ingestor.py)
+regardless.  The session pins the rows it "owns" by
+``(target_token_ids, started_at, ended_at)`` so the unified backtester
+can replay just that slice without a separate datastore.
 
 What the service does:
 
@@ -374,11 +373,11 @@ async def get_protected_token_windows() -> list[dict[str, Any]]:
     """Return (token_ids, started_at, ended_at) tuples for every
     session whose captured rows must NOT be auto-pruned.
 
-    Protection contract: any maintenance job that bulk-deletes from
-    ``MarketMicrostructureSnapshot`` / ``BookDeltaEvent`` MUST exclude
-    rows whose ``(token_id, observed_at)`` falls inside any returned
+    Protection contract: any maintenance job that prunes the canonical
+    book parquet plane (``snapshots__`` / ``deltas__`` files) MUST
+    exclude files whose ``(token_id, window)`` overlaps any returned
     window.  Sessions explicitly stand in for "the operator (or a
-    scheduled job) wanted these specific rows kept" — losing them to
+    scheduled job) wanted these specific captures kept" — losing them to
     a default retention policy would silently corrupt every
     backtest, ML training run, and replay scoped to that session.
 

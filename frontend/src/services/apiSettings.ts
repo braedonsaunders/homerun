@@ -152,8 +152,6 @@ export interface MaintenanceSettings {
   llm_usage_retention_days: number
   trader_events_firehose_retention_days: number
   trader_events_other_retention_days: number
-  cleanup_market_microstructure_days: number
-  cleanup_book_delta_events_days: number
   cleanup_wallet_monitor_events_days: number
   cleanup_trader_decision_checks_days: number
   cleanup_trader_decisions_days: number

@@ -48,8 +48,9 @@ class MaintenanceService:
     DEFAULT_WALLET_ACTIVITY_ROLLUP_AGE = 60  # Delete wallet activity rollups older than 60 days
     # 2026-05-26: retention for previously-unbounded high-volume tables that
     # filled the disk (see migration 202605260001).  0 disables a sweep.
-    DEFAULT_MARKET_MICROSTRUCTURE_AGE = 7
-    DEFAULT_BOOK_DELTA_EVENTS_AGE = 7
+    # NOTE: book microstructure/delta retention moved to parquet pruners
+    # (services.external_data.book_parquet_sink) when the SQL book tables were
+    # dropped in 202605290001 — no SQL sweep remains for those.
     DEFAULT_WALLET_MONITOR_EVENTS_AGE = 14
     DEFAULT_TRADER_DECISION_CHECKS_AGE = 14
     DEFAULT_TRADER_DECISIONS_AGE = 30
@@ -1163,22 +1164,6 @@ RETURNING target.id
             "older_than_days": int(older_than_days),
         }
 
-    async def cleanup_market_microstructure_snapshots(
-        self, older_than_days: int = DEFAULT_MARKET_MICROSTRUCTURE_AGE
-    ) -> dict:
-        """Delete L2 microstructure snapshots older than the window."""
-        return await self._prune_table_by_age(
-            "market_microstructure_snapshots", "observed_at", older_than_days
-        )
-
-    async def cleanup_book_delta_events(
-        self, older_than_days: int = DEFAULT_BOOK_DELTA_EVENTS_AGE
-    ) -> dict:
-        """Delete tick-by-tick book delta events older than the window."""
-        return await self._prune_table_by_age(
-            "book_delta_events", "observed_at", older_than_days
-        )
-
     async def cleanup_wallet_monitor_events(
         self, older_than_days: int = DEFAULT_WALLET_MONITOR_EVENTS_AGE
     ) -> dict:
@@ -1235,8 +1220,6 @@ RETURNING target.id
         pattern so every window is operator-overridable from the Settings UI.
         """
         config = {
-            "market_microstructure_days": self.DEFAULT_MARKET_MICROSTRUCTURE_AGE,
-            "book_delta_events_days": self.DEFAULT_BOOK_DELTA_EVENTS_AGE,
             "wallet_monitor_events_days": self.DEFAULT_WALLET_MONITOR_EVENTS_AGE,
             "trader_decision_checks_days": self.DEFAULT_TRADER_DECISION_CHECKS_AGE,
             "trader_decisions_days": self.DEFAULT_TRADER_DECISIONS_AGE,
@@ -1249,10 +1232,6 @@ RETURNING target.id
                 ).scalar_one_or_none()
                 if row is None:
                     return config
-                if getattr(row, "cleanup_market_microstructure_days", None) is not None:
-                    config["market_microstructure_days"] = max(0, int(row.cleanup_market_microstructure_days))
-                if getattr(row, "cleanup_book_delta_events_days", None) is not None:
-                    config["book_delta_events_days"] = max(0, int(row.cleanup_book_delta_events_days))
                 if getattr(row, "cleanup_wallet_monitor_events_days", None) is not None:
                     config["wallet_monitor_events_days"] = max(0, int(row.cleanup_wallet_monitor_events_days))
                 if getattr(row, "cleanup_trader_decision_checks_days", None) is not None:
@@ -1397,8 +1376,6 @@ RETURNING target.id
         "data_source_records",
         # 2026-05-26: newly-retained high-volume tables — vacuum them so the
         # space freed by the new DELETE sweeps is reclaimed/reused.
-        "market_microstructure_snapshots",
-        "book_delta_events",
         "wallet_monitor_events",
     ]
 
@@ -1681,8 +1658,6 @@ RETURNING target.id
             ext_cfg = await self._extended_retention_settings()
             ext_results: dict = {}
             for label, fn, days in (
-                ("market_microstructure_snapshots", self.cleanup_market_microstructure_snapshots, ext_cfg["market_microstructure_days"]),
-                ("book_delta_events", self.cleanup_book_delta_events, ext_cfg["book_delta_events_days"]),
                 ("wallet_monitor_events", self.cleanup_wallet_monitor_events, ext_cfg["wallet_monitor_events_days"]),
                 ("trader_decision_checks", self.cleanup_trader_decision_checks, ext_cfg["trader_decision_checks_days"]),
                 ("trader_decisions", self.cleanup_trader_decisions, ext_cfg["trader_decisions_days"]),

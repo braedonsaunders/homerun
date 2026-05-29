@@ -3,7 +3,7 @@
 Each provider exposes:
   * ``client`` — async HTTP client wrapping the provider's REST API
   * a small mapping of provider-specific market metadata onto our
-    internal ``MarketMicrostructureSnapshot`` schema
+    canonical ``SNAPSHOT_SCHEMA`` (parquet) book layout
 
 Providers integrated to date:
   * ``polybacktest`` — paid SaaS for Polymarket Up/Down book history +

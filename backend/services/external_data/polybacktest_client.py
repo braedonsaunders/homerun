@@ -3,10 +3,10 @@
 Polybacktest is a paid SaaS that captures sub-second Polymarket Up/Down
 prediction-market book snapshots plus Binance spot/futures reference
 prices.  It is **not** a Polymarket wrapper — it stores its own
-~8 Hz captures.  We import their data on demand into our local
-``market_microstructure_snapshots`` table where the existing backtest
-engine, fill model, and Data Lab UI can consume it without any
-provider-specific code paths downstream.
+~8 Hz captures.  We import their data on demand into our canonical
+book parquet plane (via ``write_canonical_table``) where the backtest
+engine, fill model, and Data Lab UI consume it through the unified
+``MarketDataView`` — no provider-specific code paths downstream.
 
 API shape (verified live against api.polybacktest.com on 2026-05-05):
   * Base URL:           https://api.polybacktest.com

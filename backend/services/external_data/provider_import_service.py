@@ -11,7 +11,7 @@ Coordinates the lifecycle of a ``ProviderImportJob``:
      source uses.  No book data is written to Postgres.
   4. Register a ``ProviderDataset`` catalog entry per (provider, market_id)
      with ``storage_type='parquet'`` so the unified backtester's
-     ``find_parquet_coverage()`` routes replays at the files directly.
+     ``resolve_coverage()`` routes replays at the files directly.
   5. Mark the job ``completed`` (or ``failed`` with the error and the
      partial counters preserved).
 
@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_POLYBACKTEST = "polybacktest"
 
 # Canonical parquet storage_type — matches what telonex_import_service and
-# parquet_scanner write, so the backtester's ``find_parquet_coverage()``
+# parquet_scanner write, so the backtester's ``resolve_coverage()``
 # exact-match filter (storage_type == 'parquet') discovers polybacktest
 # imports the same way. Keeping every provider on the SAME parquet schema +
 # catalog convention is the whole point of the unified ingest path: no
@@ -539,7 +539,7 @@ def _write_polybacktest_parquet(
     Groups snapshots by real Polymarket clob_token_id (one file per side)
     and writes them all into a SINGLE window directory keyed off the
     market-wide span, mirroring the telonex canonical layout so the
-    backtester's ``find_parquet_coverage()`` discovers Up + Down side-by-
+    backtester's ``resolve_coverage()`` discovers Up + Down side-by-
     side.  Synchronous (PyArrow) — call via ``asyncio.to_thread``.
 
     Returns one ``(coin, file_path, token_id, n_rows, span_start, span_end)``
@@ -635,7 +635,7 @@ async def _register_polybacktest_parquet_dataset(
     """Insert-or-update the ``ProviderDataset`` catalog row for a parquet
     import.  Mirrors telonex's canonical registration:
 
-      • ``storage_type='parquet'`` so ``find_parquet_coverage()`` (which
+      • ``storage_type='parquet'`` so ``resolve_coverage()`` (which
         exact-matches that value) routes the backtester at the parquet
         files instead of a SQL replay.
       • ``storage_uri`` points at the shared window directory holding the

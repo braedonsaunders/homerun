@@ -496,7 +496,7 @@ async def list_datasets() -> dict[str, Any]:
     under ``_LIVE_COUNT_MAX_ESTIMATE`` (so actively-written datasets' counts
     increase on refresh), falling back to the planner estimate from
     ``pg_class.reltuples`` / ``pg_stat_user_tables.n_live_tup`` for very large
-    tables (e.g. market_microstructure_snapshots) where an exact count would
+    tables (e.g. wallet_monitor_events) where an exact count would
     seq-scan the heap and trip the statement_timeout.
     """
     table_names = [

@@ -8,15 +8,17 @@ Two backings supported in v1:
     background flush amortises the parquet write cost across hundreds
     of events.
 
-  * :mod:`.sql_adapters` — read-only adapters around the pre-existing
-    SQL tables (market_microstructure_snapshots, book_delta_events,
-    wallet_monitor_events, opportunity_history).  These topics aren't
-    written *through* the bus — the existing recorders own the writes,
-    which is why the migration plan is "tap the recorders to also
-    publish to the bus, leave the storage path alone."  The adapters
-    let the bus *read* those tables as if they were bus-native topics
-    so backtest replay sees a unified interface regardless of which
-    side the data was written from.
+  * :mod:`.sql_adapters` — read-only adapters around the remaining
+    audit SQL tables (wallet_monitor_events, opportunity_history).
+    These topics aren't written *through* the bus — the existing
+    recorders own the writes, which is why the approach is "tap the
+    recorders to also publish to the bus, leave the storage path
+    alone."  The adapters let the bus *read* those tables as if they
+    were bus-native topics so backtest replay sees a unified interface
+    regardless of which side the data was written from.  (Book snapshot
+    and delta topics moved fully to the canonical parquet plane in the
+    market-data clean cut — they're served by :mod:`.external_parquet`,
+    not SQL.)
 
 Importing this module attaches the writer + replayer to the singleton
 ``bus`` — this is the wire-up that makes ``bus.publish`` actually

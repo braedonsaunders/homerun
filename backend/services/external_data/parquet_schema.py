@@ -8,17 +8,16 @@ them in order.  When no roots are configured the built-in default
 
 The auto-discovery scanner (``parquet_scanner.py``) walks each root,
 validates schema, and inserts matching rows into ``provider_datasets``
-with ``storage_type='parquet'``.  The backtester's
-``ParquetBookReplay`` then reads the file directly — no Postgres
-round-trip — when a backtest's opp tokens fall inside a covered window.
+with ``storage_type='parquet'``.  The unified ``MarketDataView`` then
+reads the file directly — no Postgres round-trip — when a backtest's
+opp tokens fall inside a covered window.
 
 Two schema variants are supported:
 
   * ``snapshots`` — point-in-time L2 book snapshots.  The dominant case;
-    matches the columns ``MarketMicrostructureSnapshot`` (book) carries.
+    carries best bid/ask + full L2 ladder columns.
   * ``deltas``    — book-delta events (per-level changes).  Optional;
-    consumed by the matcher when delta coverage is materially denser
-    than snapshot coverage.
+    feeds fill-model calibration (``marketdata.aggregate_delta_events``).
 
 The ``token_id`` is stored as ``string`` rather than ``int64`` because
 Polymarket CLOB asset IDs are 256-bit decimals that don't fit native
@@ -73,8 +72,8 @@ SNAPSHOT_SCHEMA: pa.Schema = pa.schema(
     ]
 )
 
-# Delta kind: one row per book-level change.  Same shape as
-# ``BookDeltaEvent`` — kept compact for high-frequency events.
+# Delta kind: one row per book-level change (event_type, side, price,
+# trade/cancel size) — kept compact for high-frequency events.
 DELTA_SCHEMA: pa.Schema = pa.schema(
     [
         ("token_id", pa.string()),

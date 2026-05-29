@@ -1671,10 +1671,10 @@ class AppSettings(Base):
     trader_events_other_retention_days = Column(Integer, default=90)
     # 2026-05-26: retention for previously-unbounded high-volume tables
     # that were filling the disk (no prior DELETE retention).  These are
-    # ephemeral microstructure / per-decision audit / wallet-event tables;
-    # 0 disables the corresponding sweep.  See services/maintenance.py.
-    cleanup_market_microstructure_days = Column(Integer, default=7)
-    cleanup_book_delta_events_days = Column(Integer, default=7)
+    # ephemeral per-decision audit / wallet-event tables; 0 disables the
+    # corresponding sweep.  See services/maintenance.py.
+    # NOTE: the SQL book microstructure/delta retention knobs were dropped in
+    # migration 202605290001 when those tables moved to the parquet plane.
     cleanup_wallet_monitor_events_days = Column(Integer, default=14)
     cleanup_trader_decision_checks_days = Column(Integer, default=14)
     cleanup_trader_decisions_days = Column(Integer, default=30)
@@ -3459,9 +3459,9 @@ class FillProbabilityModel(Base):
     """Versioned Cox proportional hazards (or Kaplan-Meier fallback) fill model.
 
     Trained nightly by ``workers/cox_trainer_worker.py`` from
-    ``trader_orders`` joined against ``market_microstructure_snapshots``
-    at placement time.  Each row is one promoted model; the ``active``
-    flag picks which one inference reads.
+    ``trader_orders`` together with the book context captured on each
+    order at placement time.  Each row is one promoted model; the
+    ``active`` flag picks which one inference reads.
     """
 
     __tablename__ = "fill_probability_models"
@@ -3585,10 +3585,9 @@ class RecordingSession(Base):
     the unified backtester via ``session_id``: the backtester scopes
     its replay to ``target_token_ids`` × ``[started_at, ended_at]``.
 
-    The session row is metadata only — captured rows continue to
-    live in ``MarketMicrostructureSnapshot`` / ``BookDeltaEvent``
-    with no schema change there, pinned to the session implicitly
-    by the (token, time-window) pair.
+    The session row is metadata only — captured rows live in the
+    canonical ``snapshots__`` / ``deltas__`` parquet plane, pinned to
+    the session implicitly by the (token, time-window) pair.
     """
 
     __tablename__ = "recording_sessions"
@@ -3640,11 +3639,10 @@ class ProviderDataset(Base):
     accept additional providers (Kaiko, Tardis, Crypto Compare, etc.)
     without schema changes.
 
-    The actual snapshot rows continue to live in
-    ``MarketMicrostructureSnapshot`` with ``provider`` set to the
-    provider key — this table is the human-friendly catalog index that
-    powers Data Lab's "Imported datasets" view and the Backtest Studio
-    dataset picker.
+    The actual book rows live in the canonical parquet plane at
+    ``storage_uri`` (``provider`` stamped in the path) — this table is the
+    human-friendly catalog index that powers Data Lab's "Imported datasets"
+    view and the Backtest Studio dataset picker.
 
     Synthetic ``token_id`` shape for non-Polymarket providers:
         ``{provider}:{coin}:{market_id}:{outcome}``
@@ -3663,7 +3661,7 @@ class ProviderDataset(Base):
     external_slug = Column(String, nullable=True)
     title = Column(String, nullable=True)
     asset_class = Column(String, nullable=False, default="prediction")  # prediction | spot | futures
-    # Synthetic token_ids written to MarketMicrostructureSnapshot for this dataset.
+    # Synthetic token_ids written to the canonical book parquet for this dataset.
     token_ids_json = Column(JSON, nullable=False, default=list)
     start_ts = Column(DateTime, nullable=True, index=True)
     end_ts = Column(DateTime, nullable=True, index=True)
@@ -3672,13 +3670,15 @@ class ProviderDataset(Base):
     last_imported_at = Column(DateTime, nullable=True)
     last_import_job_id = Column(String, nullable=True)
     payload_json = Column(JSON, default=dict)  # cached provider market metadata
-    # Where the actual snapshot rows live.  ``postgres`` (default) means
-    # the legacy path: snapshots are projected into
-    # MarketMicrostructureSnapshot keyed by provider+token_id.  ``parquet``
-    # means the data lives in a file at ``storage_uri`` and the
-    # backtester's ParquetBookReplay reads it directly.  See
-    # services/external_data/parquet_scanner.py for how this is set.
-    storage_type = Column(String, nullable=False, default="postgres")
+    # Where the actual book rows live.  ``parquet`` (canonical) means the
+    # data lives in a file at ``storage_uri`` and is read through the unified
+    # ``MarketDataView`` (resolved via ``marketdata.resolve_coverage``).
+    # ``telonex_parquet`` marks legacy telonex imports kept for the browser
+    # but excluded from backtest coverage.  The historical ``postgres``
+    # projection path was retired with the SQL book tables (clean cut), so
+    # every live importer now writes ``parquet``.  See
+    # services/external_data/parquet_scanner.py for auto-discovery.
+    storage_type = Column(String, nullable=False, default="parquet")
     storage_uri = Column(String, nullable=True)  # e.g. file:///path or s3://bucket/key
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
@@ -3722,12 +3722,12 @@ class TopicCatalog(Base):
         years; fast to scan (window, topic) ranges.
 
       * ``sql_table`` — adapter wraps an existing SQLAlchemy table.
-        Used for the topics whose data already lives in well-indexed
-        Postgres tables we don't want to migrate yet
-        (``market_microstructure_snapshots``, ``book_delta_events``,
-        ``wallet_monitor_events``, ``opportunity_history``).  The
-        adapter knows how to translate ``(window, entity_filter)``
-        into a SELECT and how to project a row → RecordedEvent.
+        Used for the audit topics whose data already lives in well-
+        indexed Postgres tables (``wallet_monitor_events``,
+        ``opportunity_history``).  The adapter knows how to translate
+        ``(window, entity_filter)`` into a SELECT and how to project a
+        row → RecordedEvent.  (Book snapshot/delta topics moved to
+        ``external_parquet`` in the market-data clean cut.)
 
       * ``memory`` — ephemeral; only live publish / subscribe works.
         Used for high-volume internal events that aren't worth
@@ -3753,7 +3753,7 @@ class TopicCatalog(Base):
     # For 'parquet': base path under which envelopes are partitioned
     # ``{storage_uri}/{entity_id}/{date}/events.parquet``.
     # For 'sql_table': the table name + adapter class identifier in JSON
-    # ``{"table": "market_microstructure_snapshots", "adapter": "MarketMicrostructureSnapshot"}``.
+    # ``{"table": "wallet_monitor_events", "adapter": "WalletMonitorEvent"}``.
     # For 'memory': null.
     storage_uri = Column(String, nullable=True)
     # Optional JSON Schema draft-7 validating the payload shape.  When
@@ -5708,10 +5708,10 @@ AuditAsyncSessionLocal = sessionmaker(audit_async_engine, class_=RetryableAsyncS
 #
 # Backtests are fundamentally different beasts from live trading:
 #
-#   * They scan multi-GB tables (``market_microstructure_snapshots`` is
-#     ~9.7 GB / 6.9M rows), pulling pages of 5K snapshots in cursor-
-#     style loops that intentionally raise ``statement_timeout`` to
-#     5 minutes.
+#   * They scan large datasets (book state is now the canonical parquet
+#     plane — historically the ``market_microstructure_snapshots`` SQL
+#     table at ~9.7 GB / 6.9M rows before the market-data clean cut),
+#     pulling data in cursor-style loops that tolerate long runtimes.
 #   * They tolerate latency: a backtest taking 90s end-to-end is fine.
 #   * They MUST NOT block the trading hot path.  The 2026-05-10 soak
 #     captured a backtest holding a connection for 73.3s while running

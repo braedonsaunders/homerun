@@ -1,8 +1,9 @@
 """Cox proportional hazards trainer for the fill probability model.
 
-Run nightly by ``workers/cox_trainer_worker.py``.  Joins TraderOrder
-fills/cancels/expires against ``MarketMicrostructureSnapshot`` at
-placement time, fits Cox PH (or KM fallback if too few events), and
+Run nightly by ``workers/cox_trainer_worker.py``.  Reads TraderOrder
+fills/cancels/expires together with the book context captured on each
+order at placement time (book_age_ms, time_to_resolution, …), fits Cox
+PH (or KM fallback if too few events), and
 inserts a new row into ``fill_probability_models``.  Promotion to
 ``active=True`` is a separate decision: only promote when C-index
 beats the currently-active model by the configured margin.

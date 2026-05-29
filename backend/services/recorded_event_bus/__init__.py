@@ -29,11 +29,10 @@ This package defines the missing layer:
     ``(window, topics)`` and time-merges across topics so a strategy
     sees the same envelope sequence it would have seen live.
 
-  * Storage adapters — parquet for hot time-series (the default for
-    new topics), SQL wrappers for the existing tables that already
-    hold years of data (``market_microstructure_snapshots``,
-    ``book_delta_events``, ``wallet_monitor_events``).  Same bus,
-    different backings.
+  * Storage adapters — parquet for hot time-series (book snapshots and
+    deltas read from the canonical ``snapshots__`` / ``deltas__`` plane),
+    SQL wrappers for the remaining audit tables (``wallet_monitor_events``,
+    ``opportunity_history``).  Same bus, different backings.
 
 Design discipline (institutional-grade — not negotiable):
 

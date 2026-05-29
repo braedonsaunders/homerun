@@ -1,23 +1,15 @@
-"""L2 order-book replay backed by ``MarketMicrostructureSnapshot``.
+"""Canonical L2 book value types + an in-memory replay for tests.
 
-The microstructure recorder samples Polymarket CLOB books at ~0.5s intervals
-and persists up to 25 levels per side as JSON. This module exposes that data
-to the backtester as a stream of immutable ``BookSnapshot`` instances and
-provides ``snapshot_at(token_id, ts)`` for point-in-time queries.
+Defines the immutable book primitives the whole backtester speaks in —
+``PriceLevel`` and ``BookSnapshot`` — plus ``InMemoryBookReplay``, which lets
+tests and sparse-data tokens seed synthetic snapshots directly.
 
-Two access modes:
-
-1. **Streaming replay** (``iter_snapshots``) — yield snapshots in
-   chronological order for a token. Used by the matching engine to advance
-   simulated time and re-evaluate resting orders against book updates.
-
-2. **Point-in-time** (``snapshot_at``) — most-recent snapshot at-or-before a
-   timestamp. Used to evaluate fills for orders submitted at a specific
-   wall-clock time.
-
-The replay is **read-only** and pure: it never writes to the snapshot table.
-For tests or sparse-data tokens, ``InMemoryBookReplay`` lets callers seed
-synthetic snapshots directly.
+Real point-in-time book access (reading recorded books for a window) now lives
+in the unified ``services.marketdata`` layer: ``MarketDataView`` resolves the
+canonical parquet plane and ``MarketDataViewSource`` adapts it to the matching
+engine's ``snapshot_at`` / ``iter_snapshots`` contract.  The legacy
+SQL-backed replay (``MarketMicrostructureSnapshot``) was retired in the
+market-data clean cut, so this module no longer touches any database.
 """
 
 from __future__ import annotations

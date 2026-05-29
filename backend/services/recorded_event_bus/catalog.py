@@ -578,7 +578,7 @@ SEED_TOPICS: tuple[dict[str, Any], ...] = (
             "Per-level book changes — single-level event payload "
             "(event_type, side, price, trade_size, cancel_size).  "
             "Different shape from book.snapshot, hence its own topic.  "
-            "Backed by book_delta_events (postgres).  7M+ rows."
+            "Backed by canonical ``deltas__`` parquet (federated data-plane root)."
         ),
         # Deltas write columnar parquet (deltas__ files) off Postgres; the
         # federated parquet root is the only source. The legacy

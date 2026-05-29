@@ -3,7 +3,7 @@
 The order hot path reads measured latency (from
 ``services/execution_latency_metrics.py`` rolling window),
 empirical constants (from ``services/fill_simulator/empirical_
-constants.py`` derived from book_delta_events), and the active
+constants.py`` derived from the canonical book-delta parquet), and the active
 Cox model (from ``services/fill_simulator/cox_inference.py``).  All
 three are cached in process; this worker refreshes them on a
 background loop so the hot path never has to wait on a DB query.

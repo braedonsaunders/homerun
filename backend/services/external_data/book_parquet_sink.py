@@ -5,7 +5,7 @@ DB write pressure on the trading process's hot path.  The ingestor's hot
 path (``record_book`` → sync enqueue) is untouched; only the background
 flush task's PERSISTENCE target changes from ``session.add_all`` to this
 sink, which writes the canonical ``snapshots__/deltas__`` columnar layout
-that :class:`ParquetBookReplay` reads natively (no new backtest reader).
+that the unified ``MarketDataView`` reads natively (no new backtest reader).
 
 Design (mirrors the ingestor's own discipline):
   * Writes happen on a dedicated background flush loop, and the parquet

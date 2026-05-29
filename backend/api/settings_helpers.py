@@ -418,8 +418,6 @@ def maintenance_payload(settings: AppSettings) -> dict[str, Any]:
         "llm_usage_retention_days": _with_default(settings.llm_usage_retention_days, 30),
         "trader_events_firehose_retention_days": _with_default(settings.trader_events_firehose_retention_days, 7),
         "trader_events_other_retention_days": _with_default(settings.trader_events_other_retention_days, 90),
-        "cleanup_market_microstructure_days": _with_default(getattr(settings, "cleanup_market_microstructure_days", None), 7),
-        "cleanup_book_delta_events_days": _with_default(getattr(settings, "cleanup_book_delta_events_days", None), 7),
         "cleanup_wallet_monitor_events_days": _with_default(getattr(settings, "cleanup_wallet_monitor_events_days", None), 14),
         "cleanup_trader_decision_checks_days": _with_default(getattr(settings, "cleanup_trader_decision_checks_days", None), 14),
         "cleanup_trader_decisions_days": _with_default(getattr(settings, "cleanup_trader_decisions_days", None), 30),
@@ -935,16 +933,6 @@ def apply_update_request(settings: AppSettings, request: Any) -> dict[str, bool]
             maint,
             "trader_events_other_retention_days",
             settings.trader_events_other_retention_days,
-        )
-        settings.cleanup_market_microstructure_days = getattr(
-            maint,
-            "cleanup_market_microstructure_days",
-            getattr(settings, "cleanup_market_microstructure_days", 7),
-        )
-        settings.cleanup_book_delta_events_days = getattr(
-            maint,
-            "cleanup_book_delta_events_days",
-            getattr(settings, "cleanup_book_delta_events_days", 7),
         )
         settings.cleanup_wallet_monitor_events_days = getattr(
             maint,

@@ -314,7 +314,6 @@
   </span>
   {{ run.tokens_with_snapshots or 0 }}/{{ run.opp_tokens or 0 }} tokens with snapshots
   · median {{ '%.1f' | format(run.median_snaps_per_token_per_hour or 0) }}/hr snapshots
-  · median {{ '%.1f' | format(run.median_deltas_per_token_per_hour or 0) }}/hr deltas
   {% if run.fidelity_recommendation %}
     <div class="rec">{{ run.fidelity_recommendation }}</div>
   {% endif %}

@@ -6,10 +6,17 @@ unified ``services.marketdata`` access layer. The
 ``market_microstructure_snapshots`` and ``book_delta_events`` tables are no
 longer written or read by any code path — this migration drops them.
 
-Idempotent + boot-safe: uses ``DROP TABLE IF EXISTS`` so the alembic chain
-survives ``init_database`` retry loops. The data was derived/replayable
-market microstructure (no irreplaceable content); ``downgrade`` recreates the
-empty table structures so the migration is reversible.
+Also drops the two AppSettings retention knobs that only governed those SQL
+tables (``cleanup_market_microstructure_days`` / ``cleanup_book_delta_events_days``):
+book/delta retention is now handled by the parquet pruners
+(``services.external_data.book_parquet_sink``), so the SQL-era knobs are dead
+config — removed here as part of the same clean cut.
+
+Idempotent + boot-safe: uses ``DROP TABLE IF EXISTS`` / ``DROP COLUMN IF EXISTS``
+so the alembic chain survives ``init_database`` retry loops. The data was
+derived/replayable market microstructure (no irreplaceable content);
+``downgrade`` recreates the empty table structures and re-adds the columns so
+the migration is reversible.
 """
 
 import sqlalchemy as sa
@@ -23,15 +30,24 @@ depends_on = None
 
 
 _TABLES = ("book_delta_events", "market_microstructure_snapshots")
+_DEAD_SETTINGS_COLUMNS = (
+    "cleanup_market_microstructure_days",
+    "cleanup_book_delta_events_days",
+)
 
 
 def upgrade() -> None:
     bind = op.get_bind()
     for table in _TABLES:
         bind.execute(sa.text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
+    for column in _DEAD_SETTINGS_COLUMNS:
+        bind.execute(sa.text(f'ALTER TABLE app_settings DROP COLUMN IF EXISTS "{column}"'))
 
 
 def downgrade() -> None:
+    # Re-add the SQL-era retention knobs (defaults matched the originals).
+    op.add_column("app_settings", sa.Column("cleanup_market_microstructure_days", sa.Integer(), server_default="7"))
+    op.add_column("app_settings", sa.Column("cleanup_book_delta_events_days", sa.Integer(), server_default="7"))
     # Recreate the table structures (empty) so the migration is reversible.
     op.create_table(
         "market_microstructure_snapshots",

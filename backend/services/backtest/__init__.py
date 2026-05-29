@@ -3,8 +3,9 @@
 This package replaces the legacy single-fill simulator (``services/simulation``)
 for execution-realistic backtesting. It models:
 
-* **L2 order-book replay** from ``MarketMicrostructureSnapshot`` (real venue
-  depth at 0.5s sampling, up to 25 levels per side).
+* **L2 order-book replay** from the canonical parquet plane via the unified
+  ``services.marketdata`` layer (real venue depth at ~0.5s sampling, up to 25
+  levels per side; the legacy SQL snapshot table was retired in the clean cut).
 * **Per-venue order semantics**: GTC, IOC, FAK, FOK; post-only cross-book
   rejection; tick rounding; Polymarket $1 min notional.
 * **Latency model**: parameterized log-normal latency with calibratable

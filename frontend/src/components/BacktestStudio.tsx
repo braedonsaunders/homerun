@@ -987,16 +987,16 @@ function DiscoveryModePill({ mode }: { mode?: string }) {
 function ReplaySourcePill({ source }: { source?: string }) {
   const { t } = useTranslation()
   if (!source) return null
-  const isDelta = source.startsWith('deltas')
   return (
     <span
       className={cn(
         'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-        isDelta
-          ? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-500/30'
-          : 'bg-muted text-muted-foreground',
+        'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-500/30',
       )}
-      title={isDelta ? t('backtestStudio.replayDeltaTip') : t('backtestStudio.replaySnapshotsTip')}
+      title={t('backtestStudio.replayParquetTip', {
+        defaultValue:
+          'Replayed against the canonical parquet book plane via the unified MarketDataView — the same point-in-time source live strategies read.',
+      })}
     >
       {t('backtestStudio.replayPrefix')} {source}
     </span>
@@ -1004,34 +1004,20 @@ function ReplaySourcePill({ source }: { source?: string }) {
 }
 
 /**
- * Data-coverage / fidelity banner.
- *
- * Renders ABOVE the trade-count KPI tiles when a run completes so the
- * operator immediately sees whether 0 trades is a strategy result or
- * a data-coverage artifact.  Color coding (paired light + dark for
- * AA contrast on both):
- *   - high   → emerald, single line summary
- *   - medium → amber, recommendation
- *   - low/none → red, recommendation + explicit deltas-vs-snapshots split
- *
- * The banner reflects the live-parity delta-replay path: when the
- * engine ran on book_delta_events (deltas*), fidelity is implicitly
- * high regardless of the snapshot table — it's the SAME data the live
- * system uses.
- */
-/**
  * Compact data-fidelity indicator.
  *
  * Renders as a single-line chip — a subtle dot + concise rating
- * label + the relevant numeric.  Click to expand the full detail
- * (snapshots/deltas split + recommendation).  Lives in the sticky
- * header so it frames every stage without consuming vertical real
- * estate.
+ * label + per-token snapshot density.  Click to expand the full
+ * detail (canonical parquet coverage + recommendation).  Lives in
+ * the sticky header so it frames every stage without consuming
+ * vertical real estate.  Fidelity is keyed on canonical parquet
+ * snapshot density (the unified MarketDataView serves all book state
+ * from the parquet plane).
  *
  * Color rules:
- *   - delta-replay or fidelity=high → emerald (live-parity)
- *   - fidelity=medium               → amber
- *   - fidelity=low/none             → red
+ *   - fidelity=high   → emerald
+ *   - fidelity=medium → amber
+ *   - fidelity=low/none → red
  *
  * Light + dark mode use deliberately desaturated tints so the chip
  * reads as professional status rather than "alarm banner".
@@ -1050,29 +1036,22 @@ function DataCoverageBanner({
   if (!coverage || !coverage.fidelity_rating) return null
   const rating = coverage.fidelity_rating
   const median = coverage.median_snaps_per_token_per_hour ?? 0
-  const deltasMedian = coverage.median_deltas_per_token_per_hour ?? 0
-  const tokensWithDeltas = coverage.tokens_with_deltas ?? 0
   const tokensWithSnaps = coverage.tokens_with_snapshots ?? 0
   const oppTokens = coverage.opp_tokens ?? 0
   const rec = coverage.recommended_action || ''
-  const ranOnDeltas = replaySource?.startsWith('deltas') ?? false
 
-  // Resolve a single rating bucket.  Delta-replay always wins (it's
-  // live-parity regardless of the snapshot-table coverage).
+  // Resolve a single rating bucket from canonical parquet snapshot density.
   const tone: 'good' | 'warn' | 'bad' =
-    ranOnDeltas || rating === 'high' ? 'good' : rating === 'medium' ? 'warn' : 'bad'
+    rating === 'high' ? 'good' : rating === 'medium' ? 'warn' : 'bad'
 
-  const summaryLabel = ranOnDeltas
-    ? t('backtestStudio.liveParityReplay')
-    : rating === 'high'
+  const summaryLabel =
+    rating === 'high'
       ? t('backtestStudio.fidelityHigh')
       : rating === 'medium'
         ? t('backtestStudio.fidelityMedium')
         : t('backtestStudio.fidelityLowHeader', { rating: rating.toUpperCase() })
 
-  const summaryNumeric = ranOnDeltas
-    ? `${tokensWithDeltas}/${oppTokens} · ${deltasMedian.toFixed(1)}/hr Δ`
-    : `${tokensWithSnaps}/${oppTokens} · ${median.toFixed(1)}/hr`
+  const summaryNumeric = `${tokensWithSnaps}/${oppTokens} · ${median.toFixed(1)}/hr`
 
   const dotColor =
     tone === 'good' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : 'bg-red-500'
@@ -1120,22 +1099,12 @@ function DataCoverageBanner({
       </button>
       {expanded ? (
         <div className="mt-1.5 space-y-1 border-t border-border/30 pt-1.5 text-[10.5px] text-muted-foreground">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <span className="uppercase tracking-wide text-[9px]">
-                {t('backtestStudio.fidelitySnapshotsLabel')}
-              </span>
-              <div className="font-mono tabular-nums text-foreground">
-                {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithSnaps, total: oppTokens, median: median.toFixed(1) })}
-              </div>
-            </div>
-            <div>
-              <span className="uppercase tracking-wide text-[9px]">
-                {t('backtestStudio.fidelityDeltasLabel')}
-              </span>
-              <div className="font-mono tabular-nums text-foreground">
-                {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithDeltas, total: oppTokens, median: deltasMedian.toFixed(1) })}
-              </div>
+          <div>
+            <span className="uppercase tracking-wide text-[9px]">
+              {t('backtestStudio.fidelitySnapshotsLabel')}
+            </span>
+            <div className="font-mono tabular-nums text-foreground">
+              {t('backtestStudio.fidelityTokensHr', { withTokens: tokensWithSnaps, total: oppTokens, median: median.toFixed(1) })}
             </div>
           </div>
           {rec ? <div className="text-muted-foreground/90 leading-relaxed">{rec}</div> : null}

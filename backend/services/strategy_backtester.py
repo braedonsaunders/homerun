@@ -1673,10 +1673,8 @@ class ExecutionBacktestResult:
     # or a data-fidelity outcome.  Schema:
     #   {
     #     "opp_tokens": int,                      # tokens with opps in window
-    #     "tokens_with_snapshots": int,           # of those, in mms table
-    #     "tokens_with_deltas": int,              # of those, in book_delta_events
-    #     "snapshots_total": int,                 # total mms rows in window
-    #     "deltas_total": int,                    # total bde rows in window
+    #     "tokens_with_snapshots": int,           # of those, covered in parquet
+    #     "snapshots_total": int,                 # total snapshot rows in window
     #     "median_snaps_per_token_per_hour": float,
     #     "p10_snaps_per_token_per_hour": float,
     #     "fidelity_rating": "high"|"medium"|"low"|"none",
@@ -2815,21 +2813,14 @@ def _wallet_event_to_strategy_input(
 # ── Per-tick price grid (book-driven strategies) ─────────────────────────
 #
 # The discovery loop needs ``prices_at_tick = {token_id: {best_bid,
-# best_ask, mid, ...}}`` for each tick.  Two replay sources can build
-# that grid:
-#
-#   * ``BookReplay``     — reads ``market_microstructure_snapshots``
-#     (throttled to 0.5s/token by the live ingestor; sparse on calm
-#     markets).
-#   * ``BookDeltaReplay`` — reads ``book_delta_events`` and replays them
-#     atop a snapshot anchor, so it surfaces every level change the
-#     live system saw.
-#
-# When deltas dominate the window the matcher already auto-selects
-# ``BookDeltaReplay``; we mirror that selection here so discovery sees
-# the same data the matcher will fill against.  The streaming approach
-# below visits each replay snapshot once and freezes per-token state
-# at every tick boundary, bounding memory at O(tokens × ticks).
+# best_ask, mid, ...}}`` for each tick.  The grid is built from the one
+# unified book source: a :class:`MarketDataView` over the token universe,
+# reading the canonical parquet plane (full L2 in SNAPSHOT_SCHEMA).  Source
+# selection — which provider's parquet covers which token — is resolved
+# inside the view, so discovery and the matcher fill against byte-identical
+# state through the same point-in-time access path.  The streaming approach
+# below visits each snapshot once and freezes per-token state at every tick
+# boundary, bounding memory at O(tokens × ticks).
 
 
 async def _build_per_tick_prices_grid(
@@ -3379,19 +3370,16 @@ def _opp_to_positions_data(opp: Any) -> dict[str, Any]:
 
 # ── Pre-flight data-coverage measurement ─────────────────────────────────
 #
-# Backtests are only as good as the historical data they replay.  Live
-# trading writes every L2 delta to ``book_delta_events`` (3-4M rows/wk
-# in steady state); the standalone microstructure recorder writes full
-# snapshots to ``market_microstructure_snapshots``.  Operators who never
-# ran the recorder discover this only after seeing inexplicable "0
+# Backtests are only as good as the historical data they replay.  The live
+# ingestor writes full L2 book state to the canonical parquet plane (full
+# depth in SNAPSHOT_SCHEMA, throttled per token).  Operators who never ran
+# recording for a market discover this only after seeing inexplicable "0
 # trades" outcomes when live had real fills in the same window.
 #
-# This helper measures coverage in BOTH tables and produces a fidelity
-# rating + actionable recommendation.  The matching engine only reads
-# from market_microstructure_snapshots today (Phase 1) — surfacing
-# delta coverage tells the operator that even though the snapshot
-# table is sparse, the data DOES exist and a backfill / Phase-2
-# delta-replay would unlock it.
+# This helper measures per-token snapshot coverage from the parquet footers
+# (cheap — no data scan) and produces a fidelity rating + actionable
+# recommendation, so the operator can tell a genuine strategy "0 trades"
+# apart from a data-coverage artifact.
 
 _FIDELITY_HIGH_SNAPS_PER_HOUR = 30.0   # ~1 every 2 min — strategies that
                                        # rest GTC limits will see the book
@@ -3428,12 +3416,9 @@ async def _measure_data_coverage(
     coverage: dict[str, Any] = {
         "opp_tokens": len(opp_tokens),
         "tokens_with_snapshots": 0,
-        "tokens_with_deltas": 0,
         "snapshots_total": 0,
-        "deltas_total": 0,
         "median_snaps_per_token_per_hour": 0.0,
         "p10_snaps_per_token_per_hour": 0.0,
-        "median_deltas_per_token_per_hour": 0.0,
         "event_kind": event_kind,
         "events_total": 0,
         "events_per_hour": 0.0,
@@ -3499,11 +3484,8 @@ async def _measure_data_coverage(
             coverage["error"] = f"parquet coverage query failed: {exc}"
 
     coverage["tokens_with_snapshots"] = len(snaps_per_token)
-    coverage["tokens_with_deltas"] = 0
     coverage["snapshots_total"] = sum(snaps_per_token.values())
-    coverage["deltas_total"] = 0
     coverage["snaps_per_token"] = dict(snaps_per_token)
-    coverage["deltas_per_token"] = {}
     coverage["window_hours"] = float(window_hours)
 
     # Per-token fidelity: covered tokens carry canonical L2 snapshots
@@ -3513,9 +3495,6 @@ async def _measure_data_coverage(
         for tok in opp_tokens
     }
     coverage["per_token_fidelity"] = per_token_fidelity
-    coverage["snapshot_approx_tokens"] = []
-    coverage["delta_exact_token_count"] = 0
-    coverage["snapshot_approx_token_count"] = 0
 
     rates_snaps = sorted(snaps_per_token.get(t, 0) / window_hours for t in opp_tokens)
 
@@ -3527,7 +3506,6 @@ async def _measure_data_coverage(
 
     coverage["median_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.5)
     coverage["p10_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.1)
-    coverage["median_deltas_per_token_per_hour"] = 0.0
 
     # Fidelity rating.  Event-driven strategies anchor on the event
     # source — snapshot density is irrelevant when the strategy doesn't
@@ -3585,45 +3563,29 @@ async def _measure_data_coverage(
             )
         return coverage
 
-    # Book-driven recommendations — most useful when fidelity is bad
-    # but data is available in deltas (i.e. the live system has been
-    # ingesting but the snapshot table is sparse for the chosen window).
+    # Book-driven recommendations — keyed on canonical parquet snapshot
+    # density.  The unified MarketDataView serves all book state from the
+    # parquet plane (full L2 in SNAPSHOT_SCHEMA); there is no separate delta
+    # stream to fall back to, so sparse snapshots == sparse fidelity.
     median_rate = coverage["median_snaps_per_token_per_hour"]
-    has_delta_coverage = (
-        coverage["tokens_with_deltas"] > 0.5 * len(opp_tokens)
-        and coverage["median_deltas_per_token_per_hour"] >= 5.0
-    )
     if coverage["fidelity_rating"] in ("low", "none"):
-        if has_delta_coverage:
-            # The auto-source-selection logic in run_execution_backtest
-            # will already have picked BookDeltaReplay for this run, so
-            # this message is informational rather than actionable.
-            coverage["recommended_action"] = (
-                "Snapshot table sparse, BUT book_delta_events has dense coverage "
-                f"({coverage['tokens_with_deltas']}/{len(opp_tokens)} tokens, "
-                f"median {coverage['median_deltas_per_token_per_hour']:.0f} deltas/hr). "
-                "The engine auto-switched to live-parity delta replay — see the "
-                "replay-source pill on the result.  No action required."
-            )
-        else:
-            coverage["recommended_action"] = (
-                f"Sparse data: median {median_rate:.1f} snapshots/token/hr "
-                f"(target ≥{_FIDELITY_HIGH_SNAPS_PER_HOUR:.0f}/hr for high fidelity), "
-                f"and book_delta_events is ALSO sparse for this window.  This means "
-                f"the live ingestor wasn't capturing these markets during the "
-                f"backtest window — go to Data Lab → Record → Proactive coverage "
-                f"and confirm the WS subscription cap covers your strategy's opp "
-                f"universe.  Options: (1) widen WS coverage so future runs have "
-                f"data, (2) backfill historical mids via Data Lab → Providers "
-                f"(synthetic single-level book from Polymarket REST), (3) import "
-                f"full L2 from polybacktest.com if you have a key (BTC/ETH/SOL only)."
-            )
+        coverage["recommended_action"] = (
+            f"Sparse data: median {median_rate:.1f} snapshots/token/hr "
+            f"(target ≥{_FIDELITY_HIGH_SNAPS_PER_HOUR:.0f}/hr for high fidelity).  "
+            f"The live ingestor wasn't capturing these markets densely during the "
+            f"backtest window — go to Data Lab → Record → Proactive coverage "
+            f"and confirm the WS subscription cap covers your strategy's opp "
+            f"universe.  Options: (1) widen WS coverage so future runs have "
+            f"data, (2) backfill historical mids via Data Lab → Providers "
+            f"(synthetic single-level book from Polymarket REST), (3) import "
+            f"full L2 from polybacktest.com if you have a key (BTC/ETH/SOL only)."
+        )
     elif coverage["fidelity_rating"] == "medium":
         coverage["recommended_action"] = (
             f"Medium fidelity: median {median_rate:.1f} snapshots/token/hr. "
             "Taker-mode strategies will replay accurately; passive resting "
-            "GTC limits may underfill.  If book_delta_events has denser "
-            "coverage, the engine will auto-select the delta-replay path."
+            "GTC limits may underfill — widen recording density for tighter "
+            "queue-position fidelity."
         )
     else:  # high
         coverage["recommended_action"] = (
@@ -3700,8 +3662,8 @@ async def run_execution_backtest(
 ) -> ExecutionBacktestResult:
     """Execution-realistic backtest using full L2 replay + bootstrap CIs.
 
-    Loads the strategy, fetches book snapshots from
-    ``MarketMicrostructureSnapshot``, runs strategy.detect_async at
+    Loads the strategy, fetches book snapshots from the canonical parquet
+    plane via the unified ``MarketDataView``, runs strategy.detect_async at
     sampled time intervals across the window (so discovery itself is
     backtested, not just fill simulation), generates trade intents,
     runs the production matching engine, and reports headline + risk-
@@ -4142,30 +4104,17 @@ async def run_execution_backtest(
                     else:
                         median_rate = coverage.get("median_snaps_per_token_per_hour", 0.0)
                         p10_rate = coverage.get("p10_snaps_per_token_per_hour", 0.0)
-                        n_with_deltas = coverage.get("tokens_with_deltas", 0)
-                        deltas_total = coverage.get("deltas_total", 0)
                         # Loud, prominent warning when coverage is degraded.
                         # The funnel line above tells the operator how many
                         # tokens HAVE any data; this tells them whether that
                         # data is dense enough to trust the fill simulation.
                         if fidelity in ("low", "none"):
-                            # The matcher's per-token router (in the
-                            # source-selection block further down) WILL
-                            # route any token whose deltas materially
-                            # outweigh its snapshots to BookDeltaReplay.
-                            # So the headline rate above understates
-                            # actual fidelity when deltas dominate for
-                            # some tokens — but tokens with sparse data
-                            # in BOTH sources are still genuinely low
-                            # fidelity.  Word the warning accordingly.
                             result.validation_warnings.append(
-                                f"⚠ DATA FIDELITY: {fidelity.upper()} (snapshot-based) — median "
-                                f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}). "
-                                f"book_delta_events has {deltas_total:,} rows across "
-                                f"{n_with_deltas} of {len(candidate_tokens)} tokens — the matcher's "
-                                f"per-token router will use deltas where they dominate; tokens "
-                                f"with sparse data in BOTH sources will still backtest off "
-                                f"thin observations.  {rec}"
+                                f"⚠ DATA FIDELITY: {fidelity.upper()} — median "
+                                f"{median_rate:.1f} snaps/token/hr (p10={p10_rate:.1f}) "
+                                f"across {len(candidate_tokens)} tokens.  Tokens with "
+                                f"sparse canonical book coverage will backtest off thin "
+                                f"observations.  {rec}"
                             )
                         elif fidelity == "medium":
                             result.validation_warnings.append(

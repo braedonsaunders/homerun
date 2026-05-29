@@ -1,12 +1,13 @@
 """Unified market-data ingestor: persists snapshots + deltas in one pass.
 
 Replaces the previous split between ``microstructure_recorder.py``
-(snapshots → ``market_microstructure_snapshots``) and
-``book_delta_decomposer.py`` (deltas → ``book_delta_events``).  Both
+(book snapshots) and ``book_delta_decomposer.py`` (book deltas).  Both
 were called from the WS hot path, walking the book levels twice and
 duplicating validation work.  Unifying them halves the hot-path cost
-AND ensures the snapshot table is always populated whenever the live
-system runs — no separate recorder process required.
+AND ensures the canonical book parquet is always populated whenever the
+live system runs — no separate recorder process required.  The flush
+writes canonical ``snapshots__`` / ``deltas__`` parquet (off Postgres);
+the SQL book tables were retired in the market-data clean cut.
 
 Design constraints (financial-institution-grade, sub-second loop
 critical path):
@@ -388,9 +389,9 @@ class LiveMarketDataIngestor:
         NOT call ``bus.publish`` for ``polymarket.book.snapshot`` or
         ``polymarket.book.delta``.  Any await here would compete with
         the orchestrator's sub-second decision loop.  The bus exposes
-        both topics as sql_table adapters reading the same
-        ``market_microstructure_snapshots`` / ``book_delta_events``
-        rows this ingestor writes — subscribers consuming via
+        both topics as external_parquet adapters reading the same
+        canonical ``snapshots__`` / ``deltas__`` parquet files this
+        ingestor's flush writes — subscribers consuming via
         ``bus.replay`` see identical data, ~500ms behind live (the
         flush cadence) for the snapshot stream and within the delta
         flush window for the delta stream.  Strategies that need
@@ -841,8 +842,8 @@ class LiveMarketDataIngestor:
         # sink, which buffers synchronously here and encodes + writes the
         # parquet on its OWN loop via ``to_thread``.  This removes ALL book
         # DB writes from the trading process — eliminating the hot-path DB
-        # write pressure — while ``ParquetBookReplay`` reads the result
-        # natively.  The live trader reads book state from the WS feed
+        # write pressure — while the unified ``MarketDataView`` reads the
+        # result natively.  The live trader reads book state from the WS feed
         # cache + the ingestor's in-memory ``_states``, NOT this
         # persistence layer, so a write hiccup here can never affect it.
         sink = self._book_sink

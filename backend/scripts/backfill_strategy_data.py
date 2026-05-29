@@ -1,6 +1,6 @@
 """One-shot dataset backfill for backtest evaluation.
 
-Fills ``market_microstructure_snapshots`` with historical book data for
+Fills the canonical book parquet plane with historical book data for
 the strategies you want to backtest.  Two phases:
 
   1. **Polymarket REST** (``recorder_backfill_service.run_backfill``)
@@ -95,7 +95,7 @@ async def backfill_crypto_polybacktest(
 
     Walks recent BTC/ETH/SOL markets (those that resolved within the
     last ``hours``) and queues a polybacktest import job per coin --
-    pulls full L2 snapshots into ``market_microstructure_snapshots``.
+    pulls full L2 snapshots into the canonical book parquet plane.
     This is the high-fidelity path: sub-second captures, full depth,
     NOT synthetic.
 

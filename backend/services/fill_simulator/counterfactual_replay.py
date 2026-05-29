@@ -18,7 +18,8 @@ Algorithm:
 1. At placement time, take the L2 book snapshot.  Initial queue
    ahead = sum of size at the same price level (you arrive at the
    back of that queue).  Initial depth behind = sum at worse prices.
-2. Stream forward through ``book_delta_events`` for that token.
+2. Stream forward through the canonical delta tape (``deltas__`` parquet)
+   for that token.
 3. Each ``trade`` event at price <= P (for buys) consumes its
    ``trade_size`` from your queue ahead.  When queue_ahead reaches 0,
    any further trade at price <= P fills you.

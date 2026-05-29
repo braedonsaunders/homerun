@@ -116,7 +116,8 @@ class CodeBacktestOptimizeRequest(BaseModel):
 class ExecutionBacktestRequest(BaseModel):
     """Request for the production-grade backtest engine.
 
-    Runs full L2 order-book replay against ``MarketMicrostructureSnapshot``,
+    Runs full L2 order-book replay against the canonical parquet book plane
+    (via the unified ``MarketDataView``),
     enforces venue rules (TIF, post-only, tick, min-notional), models
     submit/cancel latency as log-normal quantiles, drives any laddered
     exits through ``exit_executor.plan_children``, and reports headline

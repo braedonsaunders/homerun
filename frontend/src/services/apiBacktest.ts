@@ -289,24 +289,21 @@ export interface UnifiedBacktestResult {
 export interface DataCoverageStats {
   opp_tokens: number
   tokens_with_snapshots: number
-  tokens_with_deltas: number
   snapshots_total: number
-  deltas_total: number
   median_snaps_per_token_per_hour: number
   p10_snaps_per_token_per_hour: number
-  median_deltas_per_token_per_hour: number
   fidelity_rating: 'high' | 'medium' | 'low' | 'none' | 'unknown'
   recommended_action: string
   error?: string
 }
 
 /**
- * Which book-replay source the matching engine ran against.
- *   - "snapshots"     — BookReplay reading market_microstructure_snapshots
- *   - "deltas"        — BookDeltaReplay reading book_delta_events (live-parity)
- *   - "deltas+anchor" — BookDeltaReplay seeded from mms anchors + replayed
+ * Which book source the matching engine ran against.  After the market-data
+ * clean cut there is one path: the unified MarketDataView serves all book
+ * state from the canonical parquet plane (the SQL snapshot/delta replays were
+ * retired), so this is always "parquet" for a completed run.
  */
-export type ReplaySource = 'snapshots' | 'deltas' | 'deltas+anchor' | ''
+export type ReplaySource = 'parquet' | ''
 
 export interface BacktestRunSummary {
   run_id: string

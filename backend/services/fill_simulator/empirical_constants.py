@@ -2,12 +2,13 @@
 
 Replaces the hardcoded magic numbers in ExecutionEstimatorConfig
 (``displayed_depth_factor=0.88``, ``maker_queue_ahead_fraction=0.65``,
-etc.) with values estimated from the actual book_delta_events feed.
+etc.) with values estimated from the actual canonical book-delta feed
+(``DELTA_SCHEMA`` parquet, via ``marketdata.aggregate_delta_events``).
 
 Each constant has:
 
-* a measurement function that crunches book_delta_events / fill events
-* a 5-minute in-process cache so the order hot path doesn't hit the DB
+* a measurement function that crunches canonical delta parquet / fill events
+* a 5-minute in-process cache so the order hot path doesn't re-scan parquet
 * a fallback to the current default if no data is available yet
 
 These constants are *additionally* exposed in the UI under
@@ -109,7 +110,7 @@ def get_overrides() -> dict[str, float]:
 
 
 async def refresh_async(*, session: AsyncSession | None = None) -> EmpiricalConstants:
-    """Recompute the constants from book_delta_events.
+    """Recompute the constants from the canonical book-delta parquet.
 
     The math is a pragmatic first cut — empirically validate further
     once we have real data flowing through it:

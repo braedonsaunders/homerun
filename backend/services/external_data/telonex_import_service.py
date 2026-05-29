@@ -11,12 +11,12 @@ downloads on the free trial).  This service:
   3. CONVERTS the Telonex-native schema into Homerun's ``SNAPSHOT_SCHEMA``
      and writes the canonical file at
      ``{parquet_root}/telonex/{coin}/{startISO}__{endISO}/snapshots__{asset_id}.parquet``
-     so the backtester's ``ParquetBookReplay`` can read it directly.
+     so the unified ``MarketDataView`` can read it directly.
   4. Upserts a :class:`ProviderDataset` row pointing at the CANONICAL
      window dir with ``storage_type='parquet'`` and the REAL Polymarket
      asset_id in ``token_ids_json`` — drives the Data Lab "Imported
      datasets" panel + Backtest Studio dataset picker, AND is what the
-     backtester's ``find_parquet_coverage()`` filters on.
+     backtester's ``resolve_coverage()`` filters on.
   5. Persists the latest ``X-Downloads-Remaining`` count back to
      ``AppSettings`` so the UI quota pill stays accurate.
 
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_TELONEX = "telonex"
 # Legacy storage_type — kept for the audit-copy registration only.
 # The CANONICAL dataset row uses 'parquet' so the backtester's
-# ``find_parquet_coverage()`` (which exact-matches storage_type='parquet')
+# ``resolve_coverage()`` (which exact-matches storage_type='parquet')
 # picks it up automatically.
 _STORAGE_TYPE_LEGACY = "telonex_parquet"
 _STORAGE_TYPE_CANONICAL = "parquet"
@@ -153,7 +153,7 @@ def _convert_book_snapshot_to_canonical(
     or ``None`` if the file is empty / unreadable.  ``span_start`` /
     ``span_end`` are the actual first/last timestamps in the file —
     used by the caller to compute the dataset row's window so that
-    ``find_parquet_coverage()`` only matches backtests whose window
+    ``resolve_coverage()`` only matches backtests whose window
     overlaps the real data span.
     """
     import pyarrow as pa
@@ -737,7 +737,7 @@ async def import_range(spec: TelonexImportSpec) -> TelonexImportResult:
     if succeeded:
         # When the converter produced canonical SNAPSHOT_SCHEMA files,
         # register the CANONICAL dataset (storage_type='parquet') —
-        # that's what the backtester's find_parquet_coverage() picks
+        # that's what the backtester's resolve_coverage() picks
         # up.  Otherwise (unsupported channel, or every conversion
         # raised) fall back to the legacy ``telonex_parquet`` row so
         # the audit copy still appears in the Data Lab.
@@ -829,7 +829,7 @@ async def _register_canonical_dataset(
 
     Key differences from the legacy ``_upsert_dataset``:
       • ``storage_type='parquet'`` (canonical) so the backtester's
-        ``find_parquet_coverage()`` exact-match filter picks it up.
+        ``resolve_coverage()`` exact-match filter picks it up.
       • ``token_ids_json`` holds the REAL Polymarket asset_id (78-char
         decimal), NOT the synthetic ``telonex:polymarket:...`` token
         the legacy code wrote — so the backtester's per-token routing

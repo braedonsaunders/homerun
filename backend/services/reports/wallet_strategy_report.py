@@ -580,10 +580,8 @@ def _backtest_run_view(run_row: Any, result: dict[str, Any]) -> dict[str, Any]:
         # ── Coverage / data fidelity banner ──
         "fidelity_rating": coverage.get("fidelity_rating"),
         "tokens_with_snapshots": coverage.get("tokens_with_snapshots"),
-        "tokens_with_deltas": coverage.get("tokens_with_deltas"),
         "opp_tokens": coverage.get("opp_tokens"),
         "median_snaps_per_token_per_hour": coverage.get("median_snaps_per_token_per_hour"),
-        "median_deltas_per_token_per_hour": coverage.get("median_deltas_per_token_per_hour"),
         "fidelity_recommendation": coverage.get("recommended_action"),
         # ── Deflated Sharpe (López de Prado) ──
         "probabilistic_sharpe": deflated.get("probabilistic_sharpe"),

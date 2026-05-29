@@ -634,18 +634,6 @@ class MaintenanceSettings(BaseModel):
         le=3650,
         description="Delete non-firehose trader_events older than this many days",
     )
-    cleanup_market_microstructure_days: int = Field(
-        default=7,
-        ge=0,
-        le=3650,
-        description="Delete market_microstructure_snapshots older than this many days (0 disables)",
-    )
-    cleanup_book_delta_events_days: int = Field(
-        default=7,
-        ge=0,
-        le=3650,
-        description="Delete book_delta_events older than this many days (0 disables)",
-    )
     cleanup_wallet_monitor_events_days: int = Field(
         default=14,
         ge=0,
