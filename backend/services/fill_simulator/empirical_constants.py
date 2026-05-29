@@ -24,10 +24,8 @@ from datetime import datetime, timedelta, timezone
 
 import asyncio
 
-from sqlalchemy import func, select, text as _sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import AsyncSessionLocal, BookDeltaEvent
 
 
 logger = logging.getLogger("fill_simulator.empirical_constants")
@@ -130,49 +128,28 @@ async def refresh_async(*, session: AsyncSession | None = None) -> EmpiricalCons
       and rely on the Cox covariate ``queue_ahead_shares`` (Phase 2)
       to account for variance.
     """
-    own_session = session is None
-    if own_session:
-        session = AsyncSessionLocal()
-        await session.__aenter__()
+    # ``session`` is accepted for backwards compatibility but no longer used:
+    # book deltas live in the canonical parquet plane, not SQL.  Aggregate the
+    # last 24h of trade/cancel events from parquet off the event loop.
     try:
-        # Trade-vs-cancel ratio from the last 24h.
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        # IMPORTANT: 3 separate counts/sums over a 24h window of
-        # book_delta_events scan the same range 3× — production soaks
-        # surfaced this as a 6-7s slow-execute per call.  Consolidate
-        # into ONE conditional aggregate (single index scan) and clamp
-        # with SET LOCAL statement_timeout so a hot ingestion period
-        # can't pin a worker session for tens of seconds.  If the
-        # query times out we keep the cached / default constants and
-        # try again next refresh tick.
-        try:
-            await session.execute(_sa_text("SET LOCAL statement_timeout = '10000'"))
-        except Exception:
-            pass
-        agg_stmt = select(
-            func.count(BookDeltaEvent.id)
-            .filter(BookDeltaEvent.event_type == "trade")
-            .label("n_trade"),
-            func.count(BookDeltaEvent.id)
-            .filter(BookDeltaEvent.event_type == "cancel")
-            .label("n_cancel"),
-            func.coalesce(func.sum(BookDeltaEvent.trade_size), 0).label("trade_sz"),
-            func.coalesce(func.sum(BookDeltaEvent.cancel_size), 0).label("cancel_sz"),
-        ).where(BookDeltaEvent.observed_at >= cutoff)
-        try:
-            agg_q = await asyncio.wait_for(session.execute(agg_stmt), timeout=12.0)
-        except (asyncio.TimeoutError, Exception) as exc:
-            logger.warning(
-                "Empirical-constants aggregate timed out / failed; keeping cached values: %s",
-                exc,
-            )
-            # Mark refreshed so we don't immediately retry — back off
-            # to the next periodic tick.
-            _state.last_refresh_epoch = time.monotonic()
-            return _state.constants
-        row = agg_q.first()
-        n_trade = int(getattr(row, "n_trade", 0) or 0)
-        n_cancel = int(getattr(row, "n_cancel", 0) or 0)
+        from services.marketdata.deltas import aggregate_delta_events
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=24)
+        agg = await asyncio.wait_for(
+            asyncio.to_thread(aggregate_delta_events, start=cutoff, end=now),
+            timeout=20.0,
+        )
+    except (asyncio.TimeoutError, Exception) as exc:
+        logger.warning(
+            "Empirical-constants aggregate timed out / failed; keeping cached values: %s",
+            exc,
+        )
+        _state.last_refresh_epoch = time.monotonic()
+        return _state.constants
+    try:
+        n_trade = int(agg.get("n_trade", 0) or 0)
+        n_cancel = int(agg.get("n_cancel", 0) or 0)
         total = n_trade + n_cancel
         if total < 50:
             # Not enough decomposed events yet; keep defaults.
@@ -186,8 +163,8 @@ async def refresh_async(*, session: AsyncSession | None = None) -> EmpiricalCons
         trade_fraction = n_trade / total
 
         # Sum-of-sizes weighted versions came from the same scan.
-        trade_sz = float(getattr(row, "trade_sz", 0) or 0)
-        cancel_sz = float(getattr(row, "cancel_sz", 0) or 0)
+        trade_sz = float(agg.get("trade_size_sum", 0) or 0)
+        cancel_sz = float(agg.get("cancel_size_sum", 0) or 0)
         total_sz = trade_sz + cancel_sz
         size_trade_fraction = trade_sz / total_sz if total_sz > 0 else trade_fraction
 
@@ -232,9 +209,10 @@ async def refresh_async(*, session: AsyncSession | None = None) -> EmpiricalCons
         _state.constants = constants
         _state.last_refresh_epoch = time.monotonic()
         return constants
-    finally:
-        if own_session:
-            await session.__aexit__(None, None, None)
+    except Exception:
+        logger.exception("Empirical constants computation failed; keeping cached values")
+        _state.last_refresh_epoch = time.monotonic()
+        return _state.constants
 
 
 def time_since_refresh_seconds() -> float:

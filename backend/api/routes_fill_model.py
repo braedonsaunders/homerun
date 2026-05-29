@@ -22,11 +22,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 
 from models.database import (
     AsyncSessionLocal,
-    BookDeltaEvent,
     FillProbabilityModel,
     TraderOrder,
 )
@@ -310,25 +309,19 @@ async def update_latency_fallbacks(
 
 @router.get("/decomposition-summary")
 async def get_decomposition_summary(hours: int = Query(default=24, ge=1, le=168)):
-    """Recent trade-vs-cancel decomposition stats per token."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(
-                BookDeltaEvent.event_type,
-                func.count(BookDeltaEvent.id).label("count"),
-                func.coalesce(func.sum(BookDeltaEvent.trade_size), 0.0).label("trade_total"),
-                func.coalesce(func.sum(BookDeltaEvent.cancel_size), 0.0).label("cancel_total"),
-            )
-            .where(BookDeltaEvent.observed_at >= cutoff)
-            .group_by(BookDeltaEvent.event_type)
-        )
-        rows = result.all()
-    by_type = {row.event_type: row for row in rows}
-    trade_count = int(by_type["trade"].count) if "trade" in by_type else 0
-    cancel_count = int(by_type["cancel"].count) if "cancel" in by_type else 0
-    trade_size = float(by_type["trade"].trade_total) if "trade" in by_type else 0.0
-    cancel_size = float(by_type["cancel"].cancel_total) if "cancel" in by_type else 0.0
+    """Recent trade-vs-cancel decomposition stats from the canonical parquet
+    delta plane (book deltas moved off SQL)."""
+    import asyncio
+
+    from services.marketdata.deltas import aggregate_delta_events
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=hours)
+    agg = await asyncio.to_thread(aggregate_delta_events, start=cutoff, end=now)
+    trade_count = int(agg.get("n_trade", 0) or 0)
+    cancel_count = int(agg.get("n_cancel", 0) or 0)
+    trade_size = float(agg.get("trade_size_sum", 0.0) or 0.0)
+    cancel_size = float(agg.get("cancel_size_sum", 0.0) or 0.0)
     total_count = trade_count + cancel_count
     total_size = trade_size + cancel_size
     return {

@@ -558,27 +558,19 @@ async def _capture_fill_model_snapshot() -> dict[str, Any]:
 
 
 async def _capture_decomposition_summary(hours: int) -> dict[str, Any]:
-    from sqlalchemy import func, select
-    from models.database import BacktestAsyncSessionLocal, BookDeltaEvent
+    # Book deltas live in the canonical parquet plane (not SQL); aggregate
+    # trade-vs-cancel from parquet off the event loop.
+    import asyncio
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
-    async with BacktestAsyncSessionLocal() as session:
-        result = await session.execute(
-            select(
-                BookDeltaEvent.event_type,
-                func.count(BookDeltaEvent.id).label("count"),
-                func.coalesce(func.sum(BookDeltaEvent.trade_size), 0.0).label("trade_sum"),
-                func.coalesce(func.sum(BookDeltaEvent.cancel_size), 0.0).label("cancel_sum"),
-            )
-            .where(BookDeltaEvent.observed_at >= cutoff)
-            .group_by(BookDeltaEvent.event_type)
-        )
-        rows = result.all()
-    by_type = {row.event_type: row for row in rows}
-    trade_count = int(by_type["trade"].count) if "trade" in by_type else 0
-    cancel_count = int(by_type["cancel"].count) if "cancel" in by_type else 0
-    trade_size = float(by_type["trade"].trade_sum) if "trade" in by_type else 0.0
-    cancel_size = float(by_type["cancel"].cancel_sum) if "cancel" in by_type else 0.0
+    from services.marketdata.deltas import aggregate_delta_events
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=max(1, hours))
+    agg = await asyncio.to_thread(aggregate_delta_events, start=cutoff, end=now)
+    trade_count = int(agg.get("n_trade", 0) or 0)
+    cancel_count = int(agg.get("n_cancel", 0) or 0)
+    trade_size = float(agg.get("trade_size_sum", 0.0) or 0.0)
+    cancel_size = float(agg.get("cancel_size_sum", 0.0) or 0.0)
     total_count = trade_count + cancel_count
     total_size = trade_size + cancel_size
     return {
