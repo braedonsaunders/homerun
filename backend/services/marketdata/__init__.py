@@ -52,7 +52,9 @@ from services.marketdata.projection import (
     load_projected_markets,
     project_crypto_update_events,
 )
+from services.marketdata.provider import MarketDataProvider
 from services.marketdata.view import MarketDataView
+from services.marketdata.writer import write_canonical_table
 
 __all__ = [
     # primitives (Phase 1)
@@ -84,4 +86,7 @@ __all__ = [
     "ProjectedMarket",
     "load_projected_markets",
     "project_crypto_update_events",
+    # canonical writer + provider contract (Phase 6)
+    "write_canonical_table",
+    "MarketDataProvider",
 ]

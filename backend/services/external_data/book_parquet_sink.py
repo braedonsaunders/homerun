@@ -27,7 +27,6 @@ Layout (see ``parquet_schema.parquet_path_for``)::
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -36,15 +35,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
     SNAPSHOT_SCHEMA,
-    SCHEMA_VERSION,
     parquet_path_for,
     parquet_root,
 )
+from services.marketdata.writer import write_canonical_table
 from utils.logger import get_logger
 
 logger = get_logger("book_parquet_sink")
@@ -285,13 +283,11 @@ class BookParquetSink:
         end = datetime.fromtimestamp(bucket + _WINDOW_SECONDS, tz=timezone.utc)
         pp = parquet_path_for(provider=PROVIDER, coin="_", token_id=token,
                               start=start, end=end, kind=pkind, root=self._root)
-        pp.window_dir.mkdir(parents=True, exist_ok=True)
         rows_sorted = sorted(rows, key=lambda r: r["observed_at_us"])
         cols = {name: [r.get(name) for r in rows_sorted] for name in schema.names}
-        table = pa.table(cols, schema=schema).replace_schema_metadata({"schema_version": SCHEMA_VERSION})
-        tmp = pp.file_path.with_suffix(".parquet.tmp")
-        pq.write_table(table, str(tmp), compression="zstd")
-        os.replace(tmp, pp.file_path)
+        table = pa.table(cols, schema=schema)
+        # Single canonical writer: schema-validates + lineage-stamps + atomic.
+        write_canonical_table(table, dest_path=pp.file_path, kind=pkind, provider=PROVIDER)
 
     async def _catalog(self) -> None:
         try:

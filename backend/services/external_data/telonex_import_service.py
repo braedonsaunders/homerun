@@ -109,8 +109,8 @@ def _write_canonical_snapshot_file(
     """Common write step — every converter ends with the same pa.Table →
     canonical-path write.  Centralised so the path layout and span-
     truncation rules stay in one place."""
-    import pyarrow.parquet as pq
     from services.external_data.parquet_schema import parquet_path_for
+    from services.marketdata.writer import write_canonical_table
 
     # Truncate span to second precision for a clean window-dir slug.
     span_start = span_start.replace(microsecond=0)
@@ -126,9 +126,11 @@ def _write_canonical_snapshot_file(
         end=span_end,
         kind="snapshots",
     )
-    dest.window_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_table(converted_table, str(dest.file_path), compression="snappy")
-    n = converted_table.num_rows
+    # Single canonical writer: schema-validates + lineage-stamps + atomic.
+    n = write_canonical_table(
+        converted_table, dest_path=dest.file_path, kind="snapshots",
+        provider=PROVIDER_TELONEX, compression="snappy",
+    )
     return dest.file_path, real_asset_id, n, span_start, span_end
 
 

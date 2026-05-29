@@ -549,7 +549,6 @@ def _write_polybacktest_parquet(
         return []
 
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
     from services.external_data.parquet_schema import SNAPSHOT_SCHEMA, parquet_path_for
 
@@ -606,8 +605,13 @@ def _write_polybacktest_parquet(
             end=span_end,
             kind="snapshots",
         )
-        dest.window_dir.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, str(dest.file_path), compression="snappy")
+        # Single canonical writer: schema-validates + lineage-stamps + atomic.
+        from services.marketdata.writer import write_canonical_table
+
+        write_canonical_table(
+            table, dest_path=dest.file_path, kind="snapshots",
+            provider=PROVIDER_POLYBACKTEST, compression="snappy",
+        )
         outputs.append((coin, dest.file_path, token_id, n, span_start, span_end))
 
     return outputs
