@@ -39,7 +39,6 @@ from sqlalchemy import and_, delete as sa_delete, select, update
 
 from models.database import (
     AsyncSessionLocal,
-    MarketMicrostructureSnapshot,
     ProviderDataset,
     ProviderImportJob,
 )
@@ -843,10 +842,8 @@ async def get_provider_dataset(dataset_id: str) -> Optional[ProviderDataset]:
 async def delete_provider_dataset(dataset_id: str) -> bool:
     """Delete a catalog entry **and** its underlying storage.
 
-    For canonical parquet datasets this removes the on-disk window
-    directory the files live in; for legacy SQL-backed datasets it deletes
-    the underlying ``MarketMicrostructureSnapshot`` rows.  Returns ``True``
-    if the dataset existed.
+    Removes the on-disk window directory the canonical parquet files live in,
+    then deletes the catalog row.  Returns ``True`` if the dataset existed.
     """
     async with AsyncSessionLocal() as session:
         row = (
@@ -857,11 +854,11 @@ async def delete_provider_dataset(dataset_id: str) -> bool:
         if row is None:
             return False
 
-        if row.storage_type == _STORAGE_TYPE_PARQUET and row.storage_uri:
-            # Parquet-backed: remove the on-disk window directory. Best-
-            # effort — a missing/locked dir shouldn't block catalog cleanup.
+        if row.storage_uri:
+            # Remove the on-disk window directory. Best-effort — a missing /
+            # locked dir shouldn't block catalog cleanup.
             try:
-                from services.external_data.parquet_scanner import _uri_to_path
+                from services.marketdata.coverage import _uri_to_path
 
                 window_dir = Path(_uri_to_path(row.storage_uri))
                 if window_dir.exists() and window_dir.is_dir():
@@ -872,18 +869,6 @@ async def delete_provider_dataset(dataset_id: str) -> bool:
                 logger.exception(
                     "delete_provider_dataset: failed to remove parquet dir for %s",
                     dataset_id,
-                )
-        else:
-            # Legacy SQL-backed dataset: drop its microstructure rows.
-            token_ids = list(row.token_ids_json or [])
-            if token_ids:
-                await session.execute(
-                    sa_delete(MarketMicrostructureSnapshot).where(
-                        and_(
-                            MarketMicrostructureSnapshot.provider == row.provider,
-                            MarketMicrostructureSnapshot.token_id.in_(token_ids),
-                        )
-                    )
                 )
 
         await session.execute(
