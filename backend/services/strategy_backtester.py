@@ -3422,7 +3422,6 @@ async def _measure_data_coverage(
     window" is the right zero, not "0 snapshots/hr".
     """
     from sqlalchemy import select, func as sa_func
-    from models.database import MarketMicrostructureSnapshot, BookDeltaEvent
 
     coverage: dict[str, Any] = {
         "opp_tokens": len(opp_tokens),
@@ -3444,7 +3443,6 @@ async def _measure_data_coverage(
         return coverage
 
     window_hours = max((end_dt - start_dt).total_seconds() / 3600.0, 1e-6)
-    CHUNK = 50
 
     # Event-source coverage (event-driven strategies only).  Cheap one-
     # query count of the relevant event table; the recommendation logic
@@ -3475,111 +3473,49 @@ async def _measure_data_coverage(
                 + f"event count query failed: {exc}"
             )
 
-    # Snapshot density per token
+    # ── Book coverage from canonical parquet (via the unified layer) ──
+    # Recording lives in parquet; "deltas" as a separate SQL stream is
+    # retired (the canonical SNAPSHOT_SCHEMA carries full L2 depth). Count
+    # snapshot rows per covered token from the parquet footers (cheap — no
+    # data scan) so the operator still sees per-token density.
     snaps_per_token: dict[str, int] = {}
-    try:
-        for i in range(0, len(opp_tokens), CHUNK):
-            chunk = opp_tokens[i : i + CHUNK]
-            stmt = (
-                select(
-                    MarketMicrostructureSnapshot.token_id,
-                    sa_func.count(MarketMicrostructureSnapshot.id).label("c"),
-                )
-                .where(
-                    MarketMicrostructureSnapshot.observed_at >= start_dt,
-                    MarketMicrostructureSnapshot.observed_at <= end_dt,
-                    MarketMicrostructureSnapshot.snapshot_type == "book",
-                    MarketMicrostructureSnapshot.token_id.in_(chunk),
-                )
-                .group_by(MarketMicrostructureSnapshot.token_id)
-            )
-            for tid, cnt in (await session.execute(stmt)).all():
-                if tid:
-                    snaps_per_token[str(tid)] = int(cnt)
-    except Exception as exc:
-        coverage["error"] = f"snapshot density query failed: {exc}"
-        # Continue — delta query may still succeed.
-
-    # Delta-event density per token (the live system's data source)
-    deltas_per_token: dict[str, int] = {}
-    try:
-        for i in range(0, len(opp_tokens), CHUNK):
-            chunk = opp_tokens[i : i + CHUNK]
-            stmt = (
-                select(
-                    BookDeltaEvent.token_id,
-                    sa_func.count(BookDeltaEvent.id).label("c"),
-                )
-                .where(
-                    BookDeltaEvent.observed_at >= start_dt,
-                    BookDeltaEvent.observed_at <= end_dt,
-                    BookDeltaEvent.token_id.in_(chunk),
-                )
-                .group_by(BookDeltaEvent.token_id)
-            )
-            for tid, cnt in (await session.execute(stmt)).all():
-                if tid:
-                    deltas_per_token[str(tid)] = int(cnt)
-    except Exception as exc:
-        prev_err = coverage.get("error", "")
-        coverage["error"] = (prev_err + " | " if prev_err else "") + f"delta density query failed: {exc}"
+    if opp_tokens:
+        try:
+            import pyarrow.parquet as _pq
+            from services.marketdata.coverage import resolve_coverage
+            cov_map = await resolve_coverage(token_ids=opp_tokens, start=start_dt, end=end_dt)
+            for tok in cov_map.covered_tokens:
+                rows = 0
+                for f in cov_map.files_for(tok):
+                    try:
+                        rows += int(_pq.read_metadata(f).num_rows)
+                    except Exception:
+                        pass
+                if rows:
+                    snaps_per_token[str(tok)] = rows
+        except Exception as exc:
+            coverage["error"] = f"parquet coverage query failed: {exc}"
 
     coverage["tokens_with_snapshots"] = len(snaps_per_token)
-    coverage["tokens_with_deltas"] = len(deltas_per_token)
+    coverage["tokens_with_deltas"] = 0
     coverage["snapshots_total"] = sum(snaps_per_token.values())
-    coverage["deltas_total"] = sum(deltas_per_token.values())
-    # Per-token counts — surfaced so the matcher's source router can
-    # pick the best backend PER TOKEN instead of globally.  Without
-    # these, a window where some tokens have dense deltas and others
-    # have dense snapshots gets routed by the dominant source for the
-    # WHOLE run, losing data from every token whose backing isn't
-    # the global winner.
+    coverage["deltas_total"] = 0
     coverage["snaps_per_token"] = dict(snaps_per_token)
-    coverage["deltas_per_token"] = dict(deltas_per_token)
+    coverage["deltas_per_token"] = {}
     coverage["window_hours"] = float(window_hours)
 
-    # Per-token replay fidelity label.  Mirrors the source router's
-    # ``_pick_sql_source_for`` rule so the operator sees, per token,
-    # whether the backtest reconstructed the book exactly from the live
-    # delta stream ("delta_exact") or approximated it from throttled
-    # 0.5s/token snapshots ("snapshot_approx") — the latter is lossy
-    # versus the sub-200ms book the strategy actually saw live, so
-    # passive-fill results on those tokens carry a fidelity caveat.
-    per_token_fidelity: dict[str, str] = {}
-    snapshot_approx_tokens: list[str] = []
-    for tok in opp_tokens:
-        n_snaps = int(snaps_per_token.get(tok, 0))
-        n_deltas = int(deltas_per_token.get(tok, 0))
-        if n_deltas >= max(10, 5 * max(n_snaps, 1)):
-            per_token_fidelity[tok] = "delta_exact"
-        elif n_snaps > 0:
-            per_token_fidelity[tok] = "snapshot_approx"
-            snapshot_approx_tokens.append(tok)
-        else:
-            per_token_fidelity[tok] = "none"
+    # Per-token fidelity: covered tokens carry canonical L2 snapshots
+    # ("parquet"); uncovered tokens have no book ("none").
+    per_token_fidelity: dict[str, str] = {
+        tok: ("parquet" if snaps_per_token.get(tok, 0) > 0 else "none")
+        for tok in opp_tokens
+    }
     coverage["per_token_fidelity"] = per_token_fidelity
-    coverage["snapshot_approx_tokens"] = snapshot_approx_tokens
-    coverage["delta_exact_token_count"] = sum(
-        1 for v in per_token_fidelity.values() if v == "delta_exact"
-    )
-    coverage["snapshot_approx_token_count"] = len(snapshot_approx_tokens)
-    if snapshot_approx_tokens:
-        coverage["fidelity_warning"] = (
-            f"{len(snapshot_approx_tokens)}/{len(opp_tokens)} token(s) "
-            "replayed from throttled 0.5s snapshots (snapshot_approx), not the "
-            "live delta stream — passive-fill / book-cross results on these "
-            "tokens are approximate. Backfill book_delta_events for live-parity."
-        )
+    coverage["snapshot_approx_tokens"] = []
+    coverage["delta_exact_token_count"] = 0
+    coverage["snapshot_approx_token_count"] = 0
 
-    # Per-token-per-hour rates.  Tokens with 0 snapshots are included as
-    # zeros so the median reflects the WHOLE opp universe, not just the
-    # covered subset — that's the metric the operator cares about.
-    rates_snaps = sorted(
-        [snaps_per_token.get(t, 0) / window_hours for t in opp_tokens]
-    )
-    rates_deltas = sorted(
-        [deltas_per_token.get(t, 0) / window_hours for t in opp_tokens]
-    )
+    rates_snaps = sorted(snaps_per_token.get(t, 0) / window_hours for t in opp_tokens)
 
     def _percentile(sorted_vals: list[float], p: float) -> float:
         if not sorted_vals:
@@ -3589,7 +3525,7 @@ async def _measure_data_coverage(
 
     coverage["median_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.5)
     coverage["p10_snaps_per_token_per_hour"] = _percentile(rates_snaps, 0.1)
-    coverage["median_deltas_per_token_per_hour"] = _percentile(rates_deltas, 0.5)
+    coverage["median_deltas_per_token_per_hour"] = 0.0
 
     # Fidelity rating.  Event-driven strategies anchor on the event
     # source — snapshot density is irrelevant when the strategy doesn't
@@ -3773,7 +3709,6 @@ async def run_execution_backtest(
     from services.backtest import (
         BacktestConfig,
         BacktestEngine,
-        BookReplay,
         LatencyModel,
         LatencyProfile,
         PortfolioConfig,
@@ -3786,10 +3721,7 @@ async def run_execution_backtest(
     )
     from services.trader_orchestrator.risk_manager import evaluate_risk
     from sqlalchemy import select, func as sa_func
-    from models.database import (
-        BacktestAsyncSessionLocal,
-        MarketMicrostructureSnapshot,
-    )
+    from models.database import BacktestAsyncSessionLocal
 
     result = ExecutionBacktestResult(
         strategy_slug=slug,
@@ -4244,30 +4176,36 @@ async def run_execution_backtest(
                                 f"snaps/token/hr ✓"
                             )
                 # If the strategy has zero opportunities (e.g. a fresh
-                # strategy), fall back to "top tokens by snapshot
-                # volume in window" so the engine still has something
-                # to drive against — same behavior as before but only
-                # as a last resort, not the primary path.
+                # strategy), fall back to "top parquet-covered tokens in
+                # window" so the engine still has something to drive
+                # against — a last resort, not the primary path.
                 if not tokens:
-                    fallback_stmt = (
-                        select(
-                            MarketMicrostructureSnapshot.token_id,
-                            sa_func.count(MarketMicrostructureSnapshot.id).label("c"),
-                        )
+                    from models.database import ProviderDataset as _PD
+                    _s = start_dt.replace(tzinfo=None) if start_dt.tzinfo else start_dt
+                    _e = end_dt.replace(tzinfo=None) if end_dt.tzinfo else end_dt
+                    pd_stmt = (
+                        select(_PD)
                         .where(
-                            MarketMicrostructureSnapshot.observed_at >= start_dt,
-                            MarketMicrostructureSnapshot.observed_at <= end_dt,
-                            MarketMicrostructureSnapshot.snapshot_type == "book",
+                            _PD.storage_type == "parquet",
+                            _PD.start_ts <= _e,
+                            _PD.end_ts >= _s,
                         )
-                        .group_by(MarketMicrostructureSnapshot.token_id)
-                        .order_by(sa_func.count(MarketMicrostructureSnapshot.id).desc())
+                        .order_by(_PD.snapshot_count.desc())
                         .limit(25)
                     )
-                    rows = (await session.execute(fallback_stmt)).all()
-                    tokens = [str(r[0]) for r in rows if r[0]]
+                    pd_rows = (await session.execute(pd_stmt)).scalars().all()
+                    seen_fb: list[str] = []
+                    for _pd in pd_rows:
+                        for t in (_pd.token_ids_json or []):
+                            ts = str(t)
+                            if ts and ts not in seen_fb:
+                                seen_fb.append(ts)
+                        if len(seen_fb) >= 25:
+                            break
+                    tokens = seen_fb[:25]
                     if tokens:
                         result.validation_warnings.append(
-                            "No strategy opportunities in window — falling back to top-25 microstructure tokens"
+                            "No strategy opportunities in window — falling back to top parquet-covered tokens"
                         )
 
             if not tokens:
@@ -5141,198 +5079,34 @@ async def run_execution_backtest(
     )
     engine = BacktestEngine(config=engine_config, strategy=strategy)
 
-    # ── Source selection: per-token snapshots vs deltas ──────────────────
-    #
-    # The matching engine takes a ``_BookSource`` protocol that produces
-    # ``BookSnapshot`` instances.  We have three backends for them:
-    #
-    #   * ``ParquetBookReplay`` — operator-imported parquet files
-    #   * ``BookDeltaReplay`` — the live ingestor's authoritative
-    #     7M+-row delta stream, anchored to mms snapshots
-    #   * ``BookReplay`` — throttled mms snapshots (2/sec/token cap)
-    #
-    # Routing is PER-TOKEN, not global.  In a window where some tokens
-    # have dense snapshots and others have dense deltas, the global
-    # vote loses data from the minority — so we let each token pick
-    # whichever local source is denser, scoring source quality as the
-    # row count over the window.
-    #
-    # Fallback when per-token coverage isn't available (legacy probe
-    # path): use the global rule, deltas only if 5x snapshots AND
-    # median ≥ 10/hr.
-    cov = result.data_coverage or {}
-    deltas_total = int(cov.get("deltas_total") or 0)
-    snapshots_total = int(cov.get("snapshots_total") or 0)
-    per_token_snaps: dict[str, int] = cov.get("snaps_per_token") or {}
-    per_token_deltas: dict[str, int] = cov.get("deltas_per_token") or {}
-    def _pick_sql_source_for(token: str) -> str:
-        """Return 'deltas' or 'snapshots' for one token.  Prefers
-        deltas when they're materially denser (≥ 5×) and meaningful
-        (≥ 10 events in window).  Falls back to snapshots otherwise.
-        The 5× ratio matches the old global threshold; the absolute
-        floor of 10 events filters out tokens with a handful of
-        spurious deltas that wouldn't reconstruct a real book."""
-        n_snaps = int(per_token_snaps.get(token, 0))
-        n_deltas = int(per_token_deltas.get(token, 0))
-        if n_deltas >= max(10, 5 * max(n_snaps, 1)):
-            return "deltas"
-        return "snapshots"
-
-    # Legacy single-decision flag — kept only for the fallback path
-    # below when per-token coverage is missing.
-    median_deltas_per_hr = float(cov.get("median_deltas_per_token_per_hour") or 0.0)
-    use_delta_replay_global = (
-        deltas_total > 5 * max(snapshots_total, 1)
-        and median_deltas_per_hr >= 10.0
-    )
-    # Import locally to avoid circular imports at module load.
-    from services.backtest.book_replay import (
-        BookDeltaReplay as _BookDeltaReplay,
-        HybridBookSource as _HybridBookSource,
-    )
+    # ── Book source: the unified MarketDataView ─────────────────
+    # All book state comes from canonical parquet via the one point-in-time
+    # access layer (services.marketdata). The view resolves coverage across
+    # every parquet provider (live_ingestor / polybacktest / telonex); tokens
+    # with no parquet coverage simply have no book (the SQL replays are gone).
     from services.marketdata.view import MarketDataView
     from services.marketdata.book_source import MarketDataViewSource
 
     run_start = time.monotonic()
     replay_for_run: Any = None
     try:
-        # The book replays manage their own short-lived sessions per
-        # chunk (see book_replay.py — production pool reaper would
-        # otherwise kill any single session held >45s on a multi-day
-        # replay).  We pass session=None to opt into that path; the
-        # outer ``async with`` is no longer needed but kept as a
-        # placeholder for any future per-run resources we want
-        # scoped to the matcher's lifetime.
-        async with BacktestAsyncSessionLocal() as _matcher_run_scope:  # noqa: F841 — reserved for future per-run resources
-            # ── Per-token source resolver ────────────────────────────
-            # Three potential book sources: parquet (operator-supplied
-            # files in HOMERUN_PARQUET_ROOT), book_delta_events (the
-            # live ingestor's authoritative stream), and
-            # market_microstructure_snapshots (throttled snapshots).
-            # Selection is per-token: parquet > deltas (when delta
-            # density dominates the window) > snapshots.  A
-            # HybridBookSource dispatches each ``snapshot_at`` /
-            # ``iter_snapshots`` to the right backend.
-            #
-            # Auto-discovery: ``ensure_recent_scan`` walks the parquet
-            # root iff the cached scan is >60s old, so newly-dropped
-            # files are picked up without an explicit rescan.
-            # Parquet-covered tokens are served by the unified MarketDataView
-            # (point-in-time book access over canonical parquet); only tokens
-            # with no parquet coverage fall through to the SQL replays below
-            # (removed entirely in the SQL clean-cut phase).
-            try:
-                _mdv = await MarketDataView.build(
-                    token_ids=tokens, start=start_dt, end=end_dt,
-                )
-                _parquet_tokens = list(_mdv.coverage().covered_tokens)
-            except Exception as _pq_exc:
-                logger.warning("market-data view build failed: %s", _pq_exc)
-                _mdv = None
-                _parquet_tokens = []
-
-            parquet_token_set = set(_parquet_tokens)
-            sql_tokens = [t for t in tokens if t not in parquet_token_set]
-            backends: dict[str, Any] = {}
-            routing: dict[str, str] = {}
-            source_label_parts: list[str] = []
-
-            if _parquet_tokens and _mdv is not None:
-                backends["parquet"] = MarketDataViewSource(_mdv, token_ids=_parquet_tokens)
-                for tok in _parquet_tokens:
-                    routing[tok] = "parquet"
-                source_label_parts.append(
-                    f"PARQUET={len(_parquet_tokens)} tokens"
-                )
-
-            sql_replay_label = None
-            if sql_tokens:
-                # Per-token routing.  Each SQL token gets assigned to
-                # 'deltas' or 'snapshots' based on its own row counts.
-                # When per-token data is missing (legacy coverage
-                # report), fall back to the global decision.
-                tokens_to_deltas: list[str] = []
-                tokens_to_snaps: list[str] = []
-                if per_token_snaps or per_token_deltas:
-                    for tok in sql_tokens:
-                        if _pick_sql_source_for(tok) == "deltas":
-                            tokens_to_deltas.append(tok)
-                        else:
-                            tokens_to_snaps.append(tok)
-                else:
-                    # Legacy fallback — single-decision routing.
-                    if use_delta_replay_global:
-                        tokens_to_deltas = sql_tokens
-                    else:
-                        tokens_to_snaps = sql_tokens
-
-                if tokens_to_deltas:
-                    backends["deltas"] = _BookDeltaReplay(
-                        session=None, token_ids=tokens_to_deltas,
-                        start=start_dt, end=end_dt,
-                    )
-                    for tok in tokens_to_deltas:
-                        routing[tok] = "deltas"
-                    n_deltas_rows = sum(int(per_token_deltas.get(t, 0)) for t in tokens_to_deltas)
-                    source_label_parts.append(
-                        f"DELTAS={len(tokens_to_deltas)} tokens ({n_deltas_rows:,} events)"
-                    )
-                if tokens_to_snaps:
-                    backends["snapshots"] = BookReplay(
-                        session=None, token_ids=tokens_to_snaps,
-                        start=start_dt, end=end_dt, snapshot_type="book",
-                    )
-                    for tok in tokens_to_snaps:
-                        routing[tok] = "snapshots"
-                    n_snap_rows = sum(int(per_token_snaps.get(t, 0)) for t in tokens_to_snaps)
-                    source_label_parts.append(
-                        f"SNAPSHOTS={len(tokens_to_snaps)} tokens ({n_snap_rows:,} rows)"
-                    )
-
-                # Surface a composite label for ``replay_source``.
-                if tokens_to_deltas and tokens_to_snaps:
-                    sql_replay_label = "deltas+snapshots"
-                elif tokens_to_deltas:
-                    sql_replay_label = (
-                        "deltas+anchor"
-                        if int(cov.get("tokens_with_snapshots") or 0) > 0
-                        else "deltas"
-                    )
-                else:
-                    sql_replay_label = "snapshots"
-
-            if not backends:
-                # Defensive: shouldn't happen because the universe is
-                # non-empty by this point, but if every backend was
-                # somehow empty fall back to snapshots over the whole
-                # universe so the matcher doesn't crash.
-                backends["snapshots"] = BookReplay(
-                    session=None, token_ids=tokens,
-                    start=start_dt, end=end_dt, snapshot_type="book",
-                )
-                routing = {tok: "snapshots" for tok in tokens}
-                sql_replay_label = "snapshots"
-
-            replay_for_run = _HybridBookSource(
-                backends=backends, routing=routing,
-            )
-            # Surface which source(s) drove this run.  When parquet
-            # covers the entire universe label is just "parquet";
-            # otherwise we get e.g. "parquet+deltas" or "parquet+snapshots".
-            if "parquet" in backends and sql_replay_label is None:
-                result.replay_source = "parquet"
-            elif "parquet" in backends:
-                result.replay_source = f"parquet+{sql_replay_label}"
-            else:
-                result.replay_source = sql_replay_label or "snapshots"
+        _mdv = await MarketDataView.build(token_ids=tokens, start=start_dt, end=end_dt)
+        _cov_map = _mdv.coverage()
+        _covered = list(_cov_map.covered_tokens)
+        replay_for_run = MarketDataViewSource(_mdv, token_ids=_covered)
+        result.replay_source = "parquet"
+        result.validation_warnings.append(
+            f"Replay source: MarketDataView parquet · {len(_covered)}/{len(tokens)} tokens covered"
+        )
+        if _cov_map.uncovered_tokens:
             result.validation_warnings.append(
-                "Replay source: " + " · ".join(source_label_parts)
+                f"{len(_cov_map.uncovered_tokens)} token(s) had no parquet coverage in window"
             )
-            bt_result = await engine.run(
-                book_source=replay_for_run,
-                trade_intents=intents,
-                progress_callback=progress_callback,
-            )
+        bt_result = await engine.run(
+            book_source=replay_for_run,
+            trade_intents=intents,
+            progress_callback=progress_callback,
+        )
     except Exception as e:
         result.runtime_error = f"Backtest engine error: {e}"
         result.runtime_traceback = traceback.format_exc()
