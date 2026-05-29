@@ -52,6 +52,12 @@ from services.marketdata.projection import (
     load_projected_markets,
     project_crypto_update_events,
 )
+from services.marketdata.pins import (
+    active_pinned_paths,
+    is_path_pinned,
+    pin_paths,
+    release_pin,
+)
 from services.marketdata.provider import MarketDataProvider
 from services.marketdata.view import MarketDataView
 from services.marketdata.writer import write_canonical_table
@@ -89,4 +95,9 @@ __all__ = [
     # canonical writer + provider contract (Phase 6)
     "write_canonical_table",
     "MarketDataProvider",
+    # reproducibility pins (Phase 7)
+    "pin_paths",
+    "release_pin",
+    "active_pinned_paths",
+    "is_path_pinned",
 ]

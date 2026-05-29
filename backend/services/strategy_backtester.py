@@ -1683,14 +1683,16 @@ class ExecutionBacktestResult:
     #     "recommended_action": str,              # human-readable advice
     #   }
     data_coverage: dict[str, Any] = field(default_factory=dict)
-    # Which book-replay source the engine ran against.  One of:
-    #   - "snapshots"       — BookReplay reading market_microstructure_snapshots
-    #   - "deltas"          — BookDeltaReplay reading book_delta_events
-    #   - "deltas+anchor"   — BookDeltaReplay seeded from mms anchor + replayed
-    # The selection is automatic: deltas (the live system's data source)
-    # are preferred when their coverage is materially richer than
-    # snapshots for the run's window.
+    # Which book source the engine ran against.  Now always "parquet" — the
+    # unified MarketDataView serves all book state from the canonical parquet
+    # plane (the SQL snapshot/delta replays were retired in the clean cut).
     replay_source: str = ""
+    # Reproducibility fingerprint: a content-hashed manifest of the exact
+    # parquet files the run pinned (path/size/mtime/rows/span). Two runs of the
+    # same window produce the same content_hash iff the underlying data is
+    # byte-identical, so a re-run can detect data drift (e.g. pruning). Wired
+    # from MarketDataView.dataset_snapshot(). See services.marketdata.manifest.
+    dataset_snapshot: dict[str, Any] = field(default_factory=dict)
     fill_probability_model: dict[str, Any] = field(default_factory=dict)
     # How the strategy discovered the opportunities driving this run.
     # One of:
@@ -5089,11 +5091,33 @@ async def run_execution_backtest(
 
     run_start = time.monotonic()
     replay_for_run: Any = None
+    _pin_hash: str | None = None
     try:
         _mdv = await MarketDataView.build(token_ids=tokens, start=start_dt, end=end_dt)
         _cov_map = _mdv.coverage()
         _covered = list(_cov_map.covered_tokens)
         replay_for_run = MarketDataViewSource(_mdv, token_ids=_covered)
+        # Reproducibility: content-hash the exact parquet this run reads, and
+        # pin its window dirs so a pruner can't delete data mid-run.
+        try:
+            from pathlib import Path as _PPath
+            from services.marketdata.pins import pin_paths
+            _snap = _mdv.dataset_snapshot()
+            result.dataset_snapshot = {
+                "content_hash": _snap.content_hash,
+                "file_count": len(_snap.entries),
+                "total_rows": _snap.total_rows,
+                "schema_version": _snap.schema_version,
+            }
+            if _snap.entries:
+                _pin_hash = _snap.content_hash
+                pin_paths(
+                    _pin_hash,
+                    {str(_PPath(e.path).parent) for e in _snap.entries},
+                    ttl_seconds=3600,
+                )
+        except Exception:
+            logger.debug("dataset snapshot/pin skipped", exc_info=True)
         result.replay_source = "parquet"
         result.validation_warnings.append(
             f"Replay source: MarketDataView parquet · {len(_covered)}/{len(tokens)} tokens covered"
@@ -5115,6 +5139,12 @@ async def run_execution_backtest(
         return result
     finally:
         result.run_time_ms = (time.monotonic() - run_start) * 1000
+        if _pin_hash:
+            try:
+                from services.marketdata.pins import release_pin
+                release_pin(_pin_hash)
+            except Exception:
+                pass
 
     # If the book replay had to truncate (e.g. a chunk hit
     # statement_timeout under DB load), surface that loud-and-clear.

@@ -320,10 +320,23 @@ class BookParquetSink:
                 continue
             sz = sum(f.stat().st_size for f in d.rglob("*.parquet"))
             dirs.append((end, d, sz))
+        # Reproducibility guard: never delete a window dir a running backtest
+        # has pinned (cross-process via services.marketdata.pins).
+        try:
+            from services.marketdata.pins import active_pinned_paths, is_path_pinned
+            _pinned = active_pinned_paths()
+        except Exception:
+            _pinned, is_path_pinned = set(), None  # type: ignore[assignment]
+
+        def _protected(path: Path) -> bool:
+            if not _pinned or is_path_pinned is None:
+                return False
+            return is_path_pinned(path, _pinned)
+
         now = datetime.now(timezone.utc)
         kept: list[tuple[datetime, Path, int]] = []
         for end, d, sz in dirs:
-            if (now - end).total_seconds() > self._retention_days * 86400:
+            if (now - end).total_seconds() > self._retention_days * 86400 and not _protected(d):
                 shutil.rmtree(d, ignore_errors=True)
             else:
                 kept.append((end, d, sz))
@@ -333,5 +346,7 @@ class BookParquetSink:
             for end, d, sz in kept:
                 if total <= self._max_bytes:
                     break
+                if _protected(d):
+                    continue
                 shutil.rmtree(d, ignore_errors=True)
                 total -= sz
