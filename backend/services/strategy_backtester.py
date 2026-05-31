@@ -2677,7 +2677,7 @@ async def _replay_bus_events_into_tick_grid(
         offset = (ev_ts - start_dt).total_seconds()
         if offset < 0:
             continue
-        idx = min(n_ticks - 1, int(offset // max(actual_interval, 1)))
+        idx = min(n_ticks - 1, int(offset // max(actual_interval, 1e-9)))
         events_by_tick[idx].append(shaped)
         n_binned += 1
         # Track which crypto markets have REAL recorded dispatch coverage in
@@ -2719,7 +2719,7 @@ async def _replay_bus_events_into_tick_grid(
                 offset = (ev.timestamp - start_dt).total_seconds()
                 if offset < 0:
                     continue
-                idx = min(n_ticks - 1, int(offset // max(actual_interval, 1)))
+                idx = min(n_ticks - 1, int(offset // max(actual_interval, 1e-9)))
                 events_by_tick[idx].append(ev)
                 n_binned += 1
             if proj_stats.get("events"):
