@@ -2884,12 +2884,21 @@ async def _build_per_tick_prices_grid(
             next_tick_idx += 1
 
         mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else (bb or ba)
+        # Top-5 L2 depth per side (cheap; reads raw arrays, no ladder
+        # materialisation) so microstructure strategies can see orderbook
+        # imbalance — a real signal (book pressure builds toward the bid
+        # before a momentum buyer trades) that top-of-book alone hides.
+        bid_depth = snap.depth("bid", 5)
+        ask_depth = snap.depth("ask", 5)
         cur_state[snap.token_id] = {
             "best_bid": bb,
             "best_ask": ba,
             "mid": mid,
             "price": mid,
             "spread_bps": snap.spread_bps,
+            "bid_depth": bid_depth,
+            "ask_depth": ask_depth,
+            "imbalance": (bid_depth / (bid_depth + ask_depth)) if (bid_depth + ask_depth) > 0 else 0.5,
             "observed_at": observed,
         }
 

@@ -129,6 +129,18 @@ class BookSnapshot:
         a = self.asks
         return a[0].price if a else None
 
+    def depth(self, side: str, levels: int = 5) -> float:
+        """Sum of size across the top ``levels`` of one side.  Reads the raw
+        (price, size) arrays when present so it does NOT materialise the lazy
+        PriceLevel ladders — cheap enough to compute per-snapshot in the
+        discovery grid.  ``side`` is 'bid'/'buy' or 'ask'/'sell'."""
+        s = (side or "").lower()
+        raw = self._bids_raw if s in ("bid", "buy") else self._asks_raw
+        if raw is not None:
+            return float(sum(sz for _p, sz in raw[:levels]))
+        seq = self.bids if s in ("bid", "buy") else self.asks
+        return float(sum(lvl.size for lvl in seq[:levels]))
+
     def __repr__(self) -> str:  # lightweight; avoids forcing ladder materialisation
         return (
             f"BookSnapshot(token_id={self.token_id!r}, observed_at={self.observed_at!r}, "
