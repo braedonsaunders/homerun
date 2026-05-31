@@ -257,20 +257,29 @@ def _extract_backtest_pnl_series(result: dict[str, Any]) -> list[tuple[datetime,
 
     candidates: list[Any] = []
     candidates.append(result.get("equity_curve"))
-    eb = result.get("execution_backtest")
-    if isinstance(eb, dict):
-        candidates.append(eb.get("equity_curve"))
-        candidates.append(eb.get("equity_history"))
+    candidates.append(result.get("equity_curve_sample"))
+    # The unified runner emits the curve under ``execution`` as
+    # ``equity_curve_sample`` (rows of ``{at, equity_usd}``), so look there too
+    # — otherwise pnl_correlation is silently 0 for every unified-runner result.
+    for key in ("execution_backtest", "execution"):
+        eb = result.get(key)
+        if isinstance(eb, dict):
+            candidates.append(eb.get("equity_curve"))
+            candidates.append(eb.get("equity_history"))
+            candidates.append(eb.get("equity_curve_sample"))
     raw = next((c for c in candidates if isinstance(c, list) and c), [])
 
     for entry in raw or []:
         if isinstance(entry, dict):
-            ts = _coerce_ts(entry.get("timestamp") or entry.get("ts") or entry.get("time"))
+            ts = _coerce_ts(
+                entry.get("timestamp") or entry.get("ts") or entry.get("time") or entry.get("at")
+            )
             value = _coerce_float(
                 entry.get("cumulative_pnl")
                 or entry.get("pnl")
                 or entry.get("equity")
                 or entry.get("value")
+                or entry.get("equity_usd")
             )
         elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
             ts = _coerce_ts(entry[0])
@@ -446,9 +455,19 @@ def _pnl_correlation(
     if not wallet_series or len(wallet_series) < 5:
         return 0.0
 
-    # Resample both onto an hourly grid.
-    bt_resampled = _resample_to_grid(backtest_pnl_series, granularity_seconds=3600)
-    wallet_resampled = _resample_to_grid(wallet_series, granularity_seconds=3600)
+    # Resample both onto a grid sized to the window.  A fixed hourly grid made
+    # pnl_correlation undefined for any intraday backtest (a 4h window has only
+    # ~4 hourly buckets, below the 5-bucket floor → always 0).  Aim for ~200
+    # buckets, clamped to [30s, 1h], so intraday windows resample finely enough
+    # to correlate while multi-day windows stay coarse.
+    span_s = max(
+        (backtest_pnl_series[-1][0] - backtest_pnl_series[0][0]).total_seconds(),
+        (wallet_series[-1][0] - wallet_series[0][0]).total_seconds(),
+        1.0,
+    )
+    granularity = int(min(3600, max(30, span_s / 200)))
+    bt_resampled = _resample_to_grid(backtest_pnl_series, granularity_seconds=granularity)
+    wallet_resampled = _resample_to_grid(wallet_series, granularity_seconds=granularity)
 
     common_times = sorted(set(bt_resampled) & set(wallet_resampled))
     if len(common_times) < 5:
