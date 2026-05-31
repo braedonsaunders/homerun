@@ -39,9 +39,16 @@ def row_to_book_snapshot(token_id: str, row: dict[str, Any]) -> BookSnapshot:
     Filters invalid levels (size <= 0, price <= 0 or >= 1) and sorts bids
     descending / asks ascending — identical semantics to the legacy
     ``parquet_replay._row_to_snapshot`` so the matcher sees the same books.
+
+    MEMORY: stores the filtered/sorted ladders as raw ``(price, size)`` tuples
+    + the cached top-of-book, NOT ``PriceLevel`` objects.  ``BookSnapshot``
+    builds ``PriceLevel`` lazily only when ``.bids``/``.asks`` is accessed (the
+    matcher), so a sub-second discovery replay reading only top-of-book never
+    pays for tens of millions of ladder objects.  Top-of-book is derived from
+    the same filtered ladder, so semantics are identical to the eager path.
     """
-    def _levels(prices: Any, sizes: Any, *, reverse: bool) -> tuple[PriceLevel, ...]:
-        out: list[PriceLevel] = []
+    def _raw_levels(prices: Any, sizes: Any, *, reverse: bool) -> tuple[tuple[float, float], ...]:
+        out: list[tuple[float, float]] = []
         for p, s in zip(prices or [], sizes or []):
             try:
                 pf = float(p) if p is not None else 0.0
@@ -50,23 +57,27 @@ def row_to_book_snapshot(token_id: str, row: dict[str, Any]) -> BookSnapshot:
                 continue
             if pf <= 0 or pf >= 1.0 or sf <= 0:
                 continue
-            out.append(PriceLevel(price=pf, size=sf))
-        out.sort(key=lambda lvl: lvl.price, reverse=reverse)
+            out.append((pf, sf))
+        out.sort(key=lambda lvl: lvl[0], reverse=reverse)
         return tuple(out)
 
     observed_us = int(row.get("observed_at_us") or 0)
     seq = row.get("sequence")
     spread = row.get("spread_bps")
+    bids_raw = _raw_levels(row.get("bids_price"), row.get("bids_size"), reverse=True)
+    asks_raw = _raw_levels(row.get("asks_price"), row.get("asks_size"), reverse=False)
     return BookSnapshot(
         token_id=token_id,
         observed_at=dt_from_us(observed_us),
-        bids=_levels(row.get("bids_price"), row.get("bids_size"), reverse=True),
-        asks=_levels(row.get("asks_price"), row.get("asks_size"), reverse=False),
         sequence=int(seq) if seq is not None else None,
         spread_bps=float(spread) if spread is not None else None,
         trade_price=(float(row["trade_price"]) if row.get("trade_price") is not None else None),
         trade_size=(float(row["trade_size"]) if row.get("trade_size") is not None else None),
         trade_side=(str(row["trade_side"]) if row.get("trade_side") else None),
+        top_bid=bids_raw[0][0] if bids_raw else None,
+        top_ask=asks_raw[0][0] if asks_raw else None,
+        bids_raw=bids_raw,
+        asks_raw=asks_raw,
     )
 
 
