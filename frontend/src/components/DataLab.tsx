@@ -36,6 +36,7 @@ import {
   PlayCircle,
   RefreshCw,
   Search,
+  Settings2,
   Table as TableIcon,
   X,
 } from 'lucide-react'
@@ -57,6 +58,7 @@ import {
   type DatasetSummary,
   type MicrostructureRecorderStatus,
   type ProactiveSubscriptionStatus,
+  type RecorderConfig,
   type RecordingCaptureType,
   type RecordingSession,
   type RecordingTargetKind,
@@ -67,8 +69,10 @@ import {
   getDatasetStorageSummary,
   getMicrostructureRecorderStatus,
   getProactiveSubscriptionStatus,
+  getRecorderConfig,
   getRecordingState,
   setRecordingState,
+  updateRecorderConfig,
   listDatasets,
   listRecordingSessions,
   queryDataset,
@@ -961,6 +965,328 @@ function MicrostructureRecorderSection() {
 }
 
 
+/**
+ * Recording Configuration — tunable capture settings for the background
+ * recorder (depth levels, token cap, liquidity floor, and which planes
+ * to persist).  Reads/writes GET|PUT /api/dataset/recorder/config.
+ *
+ * Defensive by design: if the endpoint 404s (backend not yet deployed)
+ * we render a muted "unavailable" notice instead of crashing.  A local
+ * draft mirrors the server config so operators can stage several edits
+ * and commit them in one PUT; only changed fields are sent.
+ */
+function RecordingConfigSection() {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+
+  const configQuery = useQuery<RecorderConfig>({
+    queryKey: ['data-lab', 'recorder-config'],
+    queryFn: getRecorderConfig,
+    // The recorder config is operator-edited, not a live metric — no
+    // aggressive polling.  Refresh on a slow cadence so external changes
+    // eventually reconcile, but don't fight the operator mid-edit.
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  })
+
+  // 404 ⇒ backend not deployed yet.  Treat as a soft "unavailable" state
+  // rather than an error banner (mirrors apiFillModel / apiTopicCatalog).
+  const httpStatus = (configQuery.error as { response?: { status?: number } } | null)?.response
+    ?.status
+  const unavailable = configQuery.isError && httpStatus === 404
+  const hardError = configQuery.isError && !unavailable
+
+  const server = configQuery.data
+
+  // Editable draft.  Kept in sync with the latest server config; resyncs
+  // whenever a fresh config lands (initial load + post-save reload).
+  const [draft, setDraft] = useState<RecorderConfig | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
+  useEffect(() => {
+    if (server) setDraft({ ...server })
+  }, [server])
+
+  const saveMutation = useMutation({
+    mutationFn: (patch: Partial<RecorderConfig>) => updateRecorderConfig(patch),
+    onSuccess: (updated) => {
+      setSaveError(null)
+      setSavedAt(Date.now())
+      // Echo the merged config straight into the cache, then refetch so
+      // the draft resyncs to the authoritative server state.
+      queryClient.setQueryData(['data-lab', 'recorder-config'], updated)
+      queryClient.invalidateQueries({ queryKey: ['data-lab', 'recorder-config'] })
+    },
+    onError: (err) => {
+      setSavedAt(null)
+      setSaveError(
+        (err as Error)?.message ||
+          t('dataLab.configSaveFailed', { defaultValue: 'Failed to save recording configuration' }),
+      )
+    },
+  })
+
+  // Build the minimal patch — only fields that diverge from the server.
+  const dirtyKeys: (keyof RecorderConfig)[] =
+    draft && server
+      ? (Object.keys(draft) as (keyof RecorderConfig)[]).filter((k) => draft[k] !== server[k])
+      : []
+  const isDirty = dirtyKeys.length > 0
+  const buildPatch = (): Partial<RecorderConfig> => {
+    if (!draft) return {}
+    const patch: Partial<RecorderConfig> = {}
+    for (const k of dirtyKeys) {
+      // Narrow per-field so the union stays type-safe under strict mode.
+      if (k === 'depth_levels') patch.depth_levels = draft.depth_levels
+      else if (k === 'max_tokens') patch.max_tokens = draft.max_tokens
+      else if (k === 'min_liquidity_usd') patch.min_liquidity_usd = draft.min_liquidity_usd
+      else if (k === 'capture_books') patch.capture_books = draft.capture_books
+      else if (k === 'capture_trades') patch.capture_trades = draft.capture_trades
+      else if (k === 'capture_catalog') patch.capture_catalog = draft.capture_catalog
+    }
+    return patch
+  }
+
+  const setNum = (key: 'depth_levels' | 'max_tokens' | 'min_liquidity_usd', raw: string) => {
+    setSavedAt(null)
+    const n = Number(raw)
+    setDraft((d) => (d ? { ...d, [key]: Number.isFinite(n) ? n : 0 } : d))
+  }
+  const toggle = (key: 'capture_books' | 'capture_trades' | 'capture_catalog') => {
+    setSavedAt(null)
+    setDraft((d) => (d ? { ...d, [key]: !d[key] } : d))
+  }
+
+  const showSkeleton = configQuery.isLoading && !draft
+  const saving = saveMutation.isPending
+
+  const PLANE_TOGGLES: { key: 'capture_books' | 'capture_trades' | 'capture_catalog'; label: string }[] = [
+    { key: 'capture_books', label: t('dataLab.captureBooks', { defaultValue: 'Books' }) },
+    { key: 'capture_trades', label: t('dataLab.captureTrades', { defaultValue: 'Trades' }) },
+    { key: 'capture_catalog', label: t('dataLab.captureCatalog', { defaultValue: 'Catalog' }) },
+  ]
+
+  return (
+    <div className="rounded-md border border-border/40 bg-card/30">
+      <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Settings2 className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
+          <span className="text-xs font-semibold">
+            {t('dataLab.recordingConfigTitle', { defaultValue: 'Recording Configuration' })}
+          </span>
+          <span className="text-[10px] text-muted-foreground">
+            {t('dataLab.recordingConfigSub', {
+              defaultValue: 'Capture depth, token cap, liquidity floor & which planes to persist',
+            })}
+          </span>
+          {configQuery.isFetching && draft ? (
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+          ) : null}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 gap-1 text-[10px]"
+          onClick={() => queryClient.invalidateQueries({ queryKey: ['data-lab', 'recorder-config'] })}
+          disabled={configQuery.isFetching || saving}
+        >
+          <RefreshCw className={cn('h-3 w-3', configQuery.isFetching && 'animate-spin')} />
+          {t('dataLab.refresh')}
+        </Button>
+      </div>
+
+      {unavailable ? (
+        <div className="px-3 py-4 text-[11px] text-muted-foreground">
+          {t('dataLab.recordingConfigUnavailable', {
+            defaultValue: 'Recording config endpoint unavailable',
+          })}
+        </div>
+      ) : hardError ? (
+        <div className="px-3 py-4 text-[11px] text-rose-300">
+          {t('dataLab.recordingConfigLoadError', {
+            defaultValue: 'Failed to load recording configuration',
+          })}
+          {configQuery.error ? (
+            <span className="ml-1 text-muted-foreground">
+              ({(configQuery.error as Error).message})
+            </span>
+          ) : null}
+        </div>
+      ) : showSkeleton || !draft ? (
+        <div className="grid grid-cols-1 gap-3 px-3 py-3 md:grid-cols-3">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <div className="h-2 w-20 animate-pulse rounded bg-muted/60" />
+              <div
+                className="mt-2 h-7 w-full animate-pulse rounded bg-muted/70"
+                style={{ animationDuration: '1.6s' }}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          {/* Numeric tuning — depth / cap / liquidity floor. */}
+          <div className="grid grid-cols-1 gap-3 px-3 py-3 md:grid-cols-3">
+            <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {t('dataLab.depthLevels', { defaultValue: 'Depth levels' })}
+              </Label>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="range"
+                  min={1}
+                  max={25}
+                  step={1}
+                  value={draft.depth_levels}
+                  onChange={(e) => setNum('depth_levels', e.target.value)}
+                  disabled={saving}
+                  className="h-1.5 flex-1 cursor-pointer accent-violet-500"
+                />
+                <Input
+                  type="number"
+                  min={1}
+                  max={25}
+                  step={1}
+                  value={String(draft.depth_levels)}
+                  onChange={(e) => setNum('depth_levels', e.target.value)}
+                  disabled={saving}
+                  className="h-7 w-16 text-[12px]"
+                />
+              </div>
+              <div className="mt-1 text-[9px] text-muted-foreground">
+                {t('dataLab.depthLevelsHint', { defaultValue: 'L2 book levels per side (1–25)' })}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {t('dataLab.maxTokens', { defaultValue: 'Max tokens' })}
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step={100}
+                value={String(draft.max_tokens)}
+                onChange={(e) => setNum('max_tokens', e.target.value)}
+                disabled={saving}
+                className="mt-1 h-7 text-[12px]"
+              />
+              <div className="mt-1 text-[9px] text-muted-foreground">
+                {t('dataLab.maxTokensHint', { defaultValue: 'Cap on distinct tokens recorded' })}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {t('dataLab.minLiquidityUsd', { defaultValue: 'Min liquidity (USD)' })}
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step={1}
+                value={String(draft.min_liquidity_usd)}
+                onChange={(e) => setNum('min_liquidity_usd', e.target.value)}
+                disabled={saving}
+                className="mt-1 h-7 text-[12px]"
+              />
+              <div className="mt-1 text-[9px] text-muted-foreground">
+                {t('dataLab.minLiquidityUsdHint', {
+                  defaultValue: 'Skip markets below this liquidity',
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Capture planes — pill toggles mirroring the on-demand
+              session capture-type chips for visual consistency. */}
+          <div className="border-t border-border/30 px-3 py-3">
+            <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+              {t('dataLab.capturePlanes', { defaultValue: 'Capture planes' })}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {PLANE_TOGGLES.map(({ key, label }) => {
+                const on = draft[key]
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => toggle(key)}
+                    disabled={saving}
+                    aria-pressed={on}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50',
+                      on
+                        ? 'border-violet-500/50 bg-violet-500/10 text-violet-700 dark:text-violet-200'
+                        : 'border-border/40 text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'inline-block h-2 w-2 rounded-full',
+                        on ? 'bg-emerald-400' : 'bg-muted-foreground/40',
+                      )}
+                    />
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Action row — Save + inline status. */}
+          <div className="flex items-center justify-between gap-2 border-t border-border/30 px-3 py-2">
+            <div className="min-h-[16px] text-[10px]">
+              {saveError ? (
+                <span className="text-rose-300">{saveError}</span>
+              ) : savedAt ? (
+                <span className="text-emerald-300">
+                  {t('dataLab.configSaved', { defaultValue: 'Saved' })}
+                </span>
+              ) : isDirty ? (
+                <span className="text-amber-300">
+                  {t('dataLab.configUnsaved', {
+                    defaultValue: 'Unsaved changes',
+                    count: dirtyKeys.length,
+                  })}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  {t('dataLab.configInSync', { defaultValue: 'In sync with recorder' })}
+                </span>
+              )}
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 gap-1 text-[10px]"
+              onClick={() => {
+                setSaveError(null)
+                saveMutation.mutate(buildPatch())
+              }}
+              disabled={saving || !isDirty}
+              title={t('dataLab.configSaveTitle', {
+                defaultValue: 'Persist recorder capture configuration',
+              })}
+            >
+              {saving ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Settings2 className="h-3 w-3" />
+              )}
+              {saving
+                ? t('dataLab.saving', { defaultValue: 'Saving…' })
+                : t('dataLab.save', { defaultValue: 'Save' })}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+
 function ProactiveCoverageSection() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -1685,7 +2011,12 @@ function RecordView() {
           </button>
         ))}
       </div>
-      {tab === 'microstructure' ? <MicrostructureRecorderSection /> : null}
+      {tab === 'microstructure' ? (
+        <>
+          <MicrostructureRecorderSection />
+          <RecordingConfigSection />
+        </>
+      ) : null}
       {tab === 'coverage' ? <ProactiveCoverageSection /> : null}
       {tab === 'sessions' ? <OnDemandSessionsSection /> : null}
     </div>

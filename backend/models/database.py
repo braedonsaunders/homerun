@@ -1438,6 +1438,25 @@ class AppSettings(Base):
     # restart.  This is the "turn recording off completely" control.
     recording_enabled = Column(Boolean, nullable=False, default=True)
 
+    # Operator-tunable recording configuration, stored as a single JSON
+    # blob so new knobs can be added without a schema migration.  Read /
+    # written via ``services.recording_control.get_recorder_config`` /
+    # ``set_recorder_config`` (short-TTL cache, same pattern as
+    # ``recording_enabled``).  Keys (all optional; service-level defaults
+    # fill any missing):
+    #   * ``depth_levels`` (int 1..25)   — L2 levels per side persisted by
+    #     the live ingestor (``market_data_ingestor``).  Default 25.
+    #   * ``max_tokens`` (int)           — proactive subscription cap
+    #     (``recorder_subscription_service``).  Default 8000.
+    #   * ``min_liquidity_usd`` (float)  — liquidity floor before the cap.
+    #     Default 10.0.
+    #   * ``capture_books`` (bool)       — record L2 book/delta snapshots.
+    #   * ``capture_trades`` (bool)      — record trade prints.
+    #   * ``capture_catalog`` (bool)     — tee the scanner catalog into the
+    #     ``polymarket.catalog.snapshot`` bus topic on each scan.
+    # Null = use all service-level defaults.
+    recorder_config_json = Column(JSON, nullable=True)
+
     # Strategy reverse-engineer agent — UI-tunable defaults.  Null
     # values fall back to service-level constants.  The default *model*
     # for this purpose lives in ``llm_model_assignments['strategy_reverse_engineer']``

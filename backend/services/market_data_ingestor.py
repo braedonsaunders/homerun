@@ -135,8 +135,63 @@ _REJECT_REASONS = (
 )
 
 # Maximum levels per side persisted.  Polymarket exposes 25 levels per
-# side; we clamp to that to bound the JSON payload size.
+# side; we clamp to that to bound the JSON payload size.  This is the hard
+# ceiling AND the default; the operator can lower it (1..25) via the recorder
+# config (``services.recording_control``) — read on the hot path through the
+# short-TTL sync cache below so a per-snapshot DB hit never lands on the
+# WebSocket callback.
 _MAX_LEVELS_PER_SIDE = 25
+
+# Hot-path config cache.  ``record_book`` / ``record_trade`` / ``_levels_to_map``
+# run on the sync WS callback, so they can't await the (async, DB-backed)
+# recorder config.  Instead we read the last-known config snapshot
+# (``get_recorder_config_cached`` — pure in-memory, kept warm by the async
+# flush loop's per-batch refresh) at most once per ``_CONFIG_REFRESH_SECONDS``
+# and cache the derived hot-path values (depth int, capture bools).
+_CONFIG_REFRESH_SECONDS = 5.0
+_hot_depth_levels: int = _MAX_LEVELS_PER_SIDE
+_hot_capture_books: bool = True
+_hot_capture_trades: bool = True
+_hot_config_ts: float = 0.0
+
+
+def _refresh_hot_config() -> None:
+    """Refresh the cached hot-path values from the in-memory recorder-config
+    snapshot, at most once per ``_CONFIG_REFRESH_SECONDS``.  Sync + DB-free;
+    keeps the last values on any error."""
+    global _hot_depth_levels, _hot_capture_books, _hot_capture_trades, _hot_config_ts
+    now = time.monotonic()
+    if (now - _hot_config_ts) < _CONFIG_REFRESH_SECONDS and _hot_config_ts > 0.0:
+        return
+    try:
+        from services.recording_control import get_recorder_config_cached
+
+        cfg = get_recorder_config_cached()
+        raw = int(cfg.get("depth_levels", _MAX_LEVELS_PER_SIDE))
+        _hot_depth_levels = max(1, min(_MAX_LEVELS_PER_SIDE, raw))
+        _hot_capture_books = bool(cfg.get("capture_books", True))
+        _hot_capture_trades = bool(cfg.get("capture_trades", True))
+    except Exception:  # pragma: no cover — keep last values on any error
+        pass
+    _hot_config_ts = now
+
+
+def _effective_depth_levels() -> int:
+    """Operator-configured L2 levels-per-side to persist, clamped to 1..25."""
+    _refresh_hot_config()
+    return _hot_depth_levels
+
+
+def _capture_books_enabled() -> bool:
+    """Whether L2 book snapshots + deltas should be recorded (operator knob)."""
+    _refresh_hot_config()
+    return _hot_capture_books
+
+
+def _capture_trades_enabled() -> bool:
+    """Whether trade prints should be recorded (operator knob)."""
+    _refresh_hot_config()
+    return _hot_capture_trades
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -344,8 +399,12 @@ class LiveMarketDataIngestor:
         # (counterfactual replay, latency-distribution capture) without
         # needing a separate trades table.  Same throttle as snapshots
         # — cheap because trades are far less frequent than book ticks.
+        #
+        # NOTE: the in-memory ``recent_trades`` buffer above is ALWAYS filled
+        # (book-delta classification matches deltas against it); only the
+        # persisted trade row is gated by the ``capture_trades`` operator knob.
         snap_queue = self._snapshot_queue
-        if snap_queue is not None:
+        if snap_queue is not None and _capture_trades_enabled():
             row = BookSnapshotRow(
                 id=uuid.uuid4().hex,
                 provider="polymarket",
@@ -472,8 +531,13 @@ class LiveMarketDataIngestor:
 
         # Snapshot persistence (throttled per token).  This is the path
         # that makes the snapshot table self-populating — no separate
-        # recorder process required.
-        if ingest - state.last_snapshot_write >= self._snapshot_throttle_seconds:
+        # recorder process required.  Gated by the ``capture_books`` operator
+        # knob (in-memory state above is always updated so the live trader and
+        # delta diffing are unaffected; only persistence is skipped).
+        if (
+            ingest - state.last_snapshot_write >= self._snapshot_throttle_seconds
+            and _capture_books_enabled()
+        ):
             state.last_snapshot_write = ingest
             self._enqueue_snapshot(
                 BookSnapshotRow(
@@ -667,7 +731,7 @@ class LiveMarketDataIngestor:
         if raw is None and isinstance(order_book, dict):
             raw = order_book.get(side_name)
         result: dict[float, float] = {}
-        for level in list(raw or [])[:_MAX_LEVELS_PER_SIDE]:
+        for level in list(raw or [])[: _effective_depth_levels()]:
             if isinstance(level, dict):
                 price = _coerce_float(level.get("price"), 0.0)
                 size = _coerce_float(level.get("size"), 0.0)
@@ -713,6 +777,11 @@ class LiveMarketDataIngestor:
     def _enqueue_delta(self, row: BookDeltaRow) -> None:
         queue = self._delta_queue
         if queue is None:
+            return
+        # ``capture_books`` operator knob: deltas are book data.  Skip
+        # persistence when off (diff/state computation already ran upstream,
+        # so the live view stays consistent — only the parquet row is dropped).
+        if not _capture_books_enabled():
             return
         if self._should_shed_persistence(queue):
             self._delta_dropped += 1
@@ -802,7 +871,7 @@ class LiveMarketDataIngestor:
         # can't grow unbounded.  Read via a short-TTL cache (no per-batch DB
         # hit); the toggle takes effect within a few seconds, no restart.
         try:
-            from services.recording_control import is_recording_enabled
+            from services.recording_control import get_recorder_config, is_recording_enabled
 
             if not await is_recording_enabled():
                 drained = 0
@@ -812,6 +881,11 @@ class LiveMarketDataIngestor:
                 if drained:
                     self._recording_disabled_dropped += drained
                 return
+            # Keep the in-memory recorder-config snapshot warm so the sync hot
+            # path (depth + capture toggles in record_book / record_trade) sees
+            # operator changes without ever doing DB I/O itself.  TTL-cached, so
+            # this is at most one tiny indexed read per few seconds.
+            await get_recorder_config()
         except Exception:  # pragma: no cover — never let the switch break flush
             pass
         if self._should_shed_persistence(queue):

@@ -1084,6 +1084,58 @@ async def set_recording_state(req: _RecordingToggle) -> dict[str, Any]:
     return {"enabled": enabled}
 
 
+class _RecorderConfigUpdate(_PydBaseModel):
+    """Partial recorder-config update.  Every field is optional; only the
+    supplied keys are changed.  Ranges are validated here so a bad value is
+    rejected with 400 before it reaches the store."""
+
+    depth_levels: int | None = Field(
+        None, ge=1, le=25, description="L2 levels per side persisted (1..25)"
+    )
+    max_tokens: int | None = Field(
+        None, ge=0, description="Proactive-subscription token cap"
+    )
+    min_liquidity_usd: float | None = Field(
+        None, ge=0.0, description="Liquidity floor (USD) before the cap"
+    )
+    capture_books: bool | None = Field(None, description="Record L2 book snapshots + deltas")
+    capture_trades: bool | None = Field(None, description="Record trade prints")
+    capture_catalog: bool | None = Field(
+        None, description="Tee the scanner catalog into the bus each scan"
+    )
+
+
+@router.get("/recorder/config")
+async def get_recorder_config_state() -> dict[str, Any]:
+    """Operator recording configuration (depth / coverage / capture toggles).
+
+    Returns the full persisted config — depth_levels, max_tokens,
+    min_liquidity_usd, capture_books, capture_trades, capture_catalog — every
+    key always present (service defaults fill any unset).  Read live by the
+    ingestor (depth + capture knobs) and the proactive subscription loop
+    (max_tokens + liquidity floor); changes take effect within seconds, no
+    restart.
+    """
+    from services.recording_control import get_recorder_config_persisted
+
+    return await get_recorder_config_persisted()
+
+
+@router.put("/recorder/config")
+async def set_recorder_config_state(req: _RecorderConfigUpdate) -> dict[str, Any]:
+    """Update one or more recorder-config knobs.  Accepts a partial body; only
+    the supplied keys change.  Ranges are validated (depth 1..25, non-negative
+    cap/liquidity).  Returns the full updated config."""
+    from services.recording_control import set_recorder_config
+
+    # Only forward keys the caller actually set (exclude_unset) so an omitted
+    # field preserves its stored value rather than being reset.
+    partial = req.model_dump(exclude_unset=True, exclude_none=True)
+    updated = await set_recorder_config(**partial)
+    logger.info("recorder config updated keys=%s via API", sorted(partial.keys()))
+    return updated
+
+
 @router.get("/recorder/proactive-subscription")
 async def proactive_subscription_status() -> dict[str, Any]:
     """Status of the proactive recorder subscription loop.

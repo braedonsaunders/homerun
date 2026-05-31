@@ -64,6 +64,11 @@ class _ServiceState:
     last_error: str | None = None
     total_runs: int = 0
     recording_enabled: bool = True
+    # Effective coverage knobs applied on the last tick — these reflect the
+    # operator recording config (or the env defaults when unset), not the
+    # static module constants.
+    effective_max_tokens: int = _DEFAULT_MAX_TOKENS
+    effective_min_liquidity_usd: float = _MIN_LIQUIDITY_USD
 
 
 _state = _ServiceState()
@@ -72,8 +77,12 @@ _state = _ServiceState()
 def get_status() -> dict[str, Any]:
     """Status snapshot for the Data Lab UI / agent diagnostics."""
     return {
-        "max_tokens": _DEFAULT_MAX_TOKENS,
-        "min_liquidity_usd": _MIN_LIQUIDITY_USD,
+        # Effective (operator-config-aware) values applied last tick; the
+        # ``*_default`` keys expose the static env fallback for reference.
+        "max_tokens": _state.effective_max_tokens,
+        "min_liquidity_usd": _state.effective_min_liquidity_usd,
+        "max_tokens_default": _DEFAULT_MAX_TOKENS,
+        "min_liquidity_usd_default": _MIN_LIQUIDITY_USD,
         "loop_interval_seconds": _LOOP_INTERVAL_SECONDS,
         "last_run_at_epoch": _state.last_run_at,
         "last_run_age_seconds": (
@@ -123,13 +132,25 @@ def _classify_market(m: dict[str, Any]) -> tuple[bool, list[str], float]:
     return True, tokens, liq
 
 
-async def _gather_target_tokens() -> tuple[list[str], dict[str, Any]]:
+async def _gather_target_tokens(
+    *,
+    max_tokens: int | None = None,
+    min_liquidity_usd: float | None = None,
+) -> tuple[list[str], dict[str, Any]]:
     """Read MarketCatalog and return the token list to subscribe.
+
+    ``max_tokens`` / ``min_liquidity_usd`` come from the operator recording
+    config (``services.recording_control.get_recorder_config``); when not
+    supplied they fall back to the env-var defaults.  Read each tick so
+    operator changes take effect without a restart.
 
     Returns ``(tokens, stats)`` where ``stats`` carries the funnel
     counts for the status endpoint.
     """
     from services.shared_state import _read_market_catalog_file
+
+    cap = _DEFAULT_MAX_TOKENS if max_tokens is None else int(max_tokens)
+    liq_floor = _MIN_LIQUIDITY_USD if min_liquidity_usd is None else float(min_liquidity_usd)
 
     stats = {
         "catalog_market_count": 0,
@@ -165,15 +186,15 @@ async def _gather_target_tokens() -> tuple[list[str], dict[str, Any]]:
 
     # Liquidity floor — drop markets below the floor before ranking
     # so cheap dust markets don't crowd out the cap.
-    above_floor = [(tok, liq) for tok, liq in by_token.items() if liq >= _MIN_LIQUIDITY_USD]
+    above_floor = [(tok, liq) for tok, liq in by_token.items() if liq >= liq_floor]
     stats["after_liquidity_filter"] = len(above_floor)
     stats["dropped_low_liquidity"] = len(by_token) - len(above_floor)
 
     # Rank by liquidity desc, take top max_tokens.
     above_floor.sort(key=lambda kv: kv[1], reverse=True)
-    selected = above_floor[: _DEFAULT_MAX_TOKENS]
+    selected = above_floor[:cap]
     stats["after_cap"] = len(selected)
-    stats["dropped_over_cap"] = max(0, len(above_floor) - _DEFAULT_MAX_TOKENS)
+    stats["dropped_over_cap"] = max(0, len(above_floor) - cap)
 
     return [t for t, _ in selected], stats
 
@@ -239,7 +260,7 @@ async def loop_tick() -> None:
         # Global recording master switch: when OFF, subscribe nothing new
         # (the ingestor's flush gate also drops any in-flight persistence, so
         # no data is written to disk regardless of existing subscriptions).
-        from services.recording_control import is_recording_enabled
+        from services.recording_control import get_recorder_config, is_recording_enabled
 
         _state.recording_enabled = await is_recording_enabled()
         if not _state.recording_enabled:
@@ -249,7 +270,23 @@ async def loop_tick() -> None:
             _state.last_error = None
             return
 
-        target_tokens, stats = await _gather_target_tokens()
+        # Read operator coverage knobs live each tick (fallback to env
+        # defaults on any error) so changes take effect without a restart.
+        cap = _DEFAULT_MAX_TOKENS
+        liq_floor = _MIN_LIQUIDITY_USD
+        try:
+            cfg = await get_recorder_config()
+            cap = int(cfg.get("max_tokens", _DEFAULT_MAX_TOKENS))
+            liq_floor = float(cfg.get("min_liquidity_usd", _MIN_LIQUIDITY_USD))
+        except Exception:  # pragma: no cover — keep env defaults on config error
+            pass
+        _state.effective_max_tokens = cap
+        _state.effective_min_liquidity_usd = liq_floor
+
+        target_tokens, stats = await _gather_target_tokens(
+            max_tokens=cap,
+            min_liquidity_usd=liq_floor,
+        )
         newly, already = await _ensure_subscribed(target_tokens)
 
         _state.last_run_at = time.time()

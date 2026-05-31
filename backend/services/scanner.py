@@ -1960,6 +1960,79 @@ class ArbitrageScanner:
 
         return incremental, full_snapshot
 
+    def _tee_catalog_snapshot(self, event: DataEvent) -> None:
+        """Fire-and-forget: tee this scan's catalog (the markets + events the
+        MARKET_DATA_REFRESH carries) into the ``polymarket.catalog.snapshot``
+        recorded-event bus topic.
+
+        Book/scanner strategies (tail_end_carry, basic_arbitrage, …) need a
+        *continuous* recorded catalog stream to replay as-if-live
+        MARKET_DATA_REFRESH events; ``write_market_catalog`` only tees on the
+        ~5-min catalog-refresh cadence, leaving the stream sparse.  This tees
+        on EVERY scan instead.
+
+        Best-effort + fully off the hot path: gating (capture_catalog +
+        recording master switch), serialization, and the bus publish all run in
+        a background task; any error is swallowed so dispatch is never blocked.
+        """
+        markets = list(event.markets or [])
+        events = list(event.events or [])
+        if not markets and not events:
+            return
+
+        async def _run() -> None:
+            try:
+                from services.recording_control import get_recorder_config, is_recording_enabled
+                from services.shared_state import _publish_catalog_snapshot_to_bus
+
+                # Operator knob — skip the tee entirely when catalog capture is
+                # off (the publisher also re-checks the master switch).
+                if not await is_recording_enabled():
+                    return
+                cfg = await get_recorder_config()
+                if not cfg.get("capture_catalog", True):
+                    return
+
+                def _serialize() -> tuple[list, list]:
+                    ev_payload: list = []
+                    for ev in events:
+                        try:
+                            if hasattr(ev, "model_dump"):
+                                ev_payload.append(ev.model_dump(mode="json", exclude={"markets"}))
+                            elif isinstance(ev, dict):
+                                d = dict(ev)
+                                d.pop("markets", None)
+                                ev_payload.append(d)
+                        except Exception:
+                            pass
+                    mkt_payload: list = []
+                    for mk in markets:
+                        try:
+                            mkt_payload.append(
+                                mk.model_dump(mode="json") if hasattr(mk, "model_dump") else mk
+                            )
+                        except Exception:
+                            pass
+                    return ev_payload, mkt_payload
+
+                events_payload, markets_payload = await asyncio.to_thread(_serialize)
+                await _publish_catalog_snapshot_to_bus(
+                    events_payload=events_payload,
+                    markets_payload=markets_payload,
+                    updated_at=utcnow(),
+                    duration_seconds=0.0,
+                    error=None,
+                )
+            except Exception:  # noqa: BLE001 — never break dispatch
+                logger.debug("per-scan catalog snapshot tee failed", exc_info=True)
+
+        try:
+            task = asyncio.create_task(_run(), name="scanner_catalog_snapshot_tee")
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except Exception:  # pragma: no cover — no running loop / shutdown
+            pass
+
     async def _dispatch_market_refresh(
         self,
         event: DataEvent,
@@ -1971,6 +2044,10 @@ class ArbitrageScanner:
         handler_timeout_seconds: Optional[float] = None,
     ) -> list[Opportunity]:
         """Dispatch market_data_refresh with per-strategy incremental/full routing."""
+        # Tee the catalog into the recorded-event bus on every scan so
+        # book/scanner-strategy backtests have a continuous catalog stream.
+        # Fire-and-forget; gated + serialized off the hot path.
+        self._tee_catalog_snapshot(event)
         if incremental_slugs is None or full_slugs is None:
             incremental_slugs, full_slugs = self._partition_market_refresh_strategies()
         if not incremental_slugs and not full_slugs:

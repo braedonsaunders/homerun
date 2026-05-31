@@ -331,6 +331,34 @@ export async function setRecordingState(enabled: boolean): Promise<{ enabled: bo
   return data
 }
 
+// ─── Recorder capture configuration ────────────────────────────────────
+
+/**
+ * Tunable recorder capture settings (depth/cap/liquidity floor + which
+ * planes to persist).  Returned in full by GET; PUT accepts a partial
+ * patch and echoes back the merged full config.
+ */
+export interface RecorderConfig {
+  depth_levels: number
+  max_tokens: number
+  min_liquidity_usd: number
+  capture_books: boolean
+  capture_trades: boolean
+  capture_catalog: boolean
+}
+
+export async function getRecorderConfig(): Promise<RecorderConfig> {
+  const { data } = await api.get<RecorderConfig>('/dataset/recorder/config')
+  return data
+}
+
+export async function updateRecorderConfig(
+  patch: Partial<RecorderConfig>,
+): Promise<RecorderConfig> {
+  const { data } = await api.put<RecorderConfig>('/dataset/recorder/config', patch)
+  return data
+}
+
 export interface DatasetStorageRow {
   name: string
   label: string
