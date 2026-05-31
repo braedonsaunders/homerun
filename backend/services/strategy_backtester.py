@@ -2711,7 +2711,7 @@ async def _replay_bus_events_into_tick_grid(
             proj_events, proj_stats = await project_crypto_update_events(
                 start=ticks[0],
                 end=window_end,
-                cadence_seconds=max(1.0, float(actual_interval)),
+                cadence_seconds=max(_MIN_DISCOVERY_INTERVAL_SECONDS, float(actual_interval)),
                 token_scope=candidate_token_ids,
                 exclude_market_keys=real_crypto_market_keys,
             )
@@ -2900,13 +2900,20 @@ async def _build_per_tick_prices_grid(
     return grid
 
 
+# Smallest discovery tick interval the engine honours.  This is NOT a fidelity
+# floor (it sits well below the recorded book's native ~8 Hz cadence) — it only
+# guards against a zero/negative interval producing an unbounded tick count.
+# Actual resolution is governed by ``sample_interval_seconds`` + ``max_ticks``.
+_MIN_DISCOVERY_INTERVAL_SECONDS = 0.02
+
+
 async def _replay_discover_opportunities(
     *,
     strategy: Any,
     slug: str,
     start_dt: datetime,
     end_dt: datetime,
-    sample_interval_seconds: int,
+    sample_interval_seconds: float,
     max_ticks: int,
     candidate_token_ids: list[str] | None = None,
     warmup_seconds: int = 0,
@@ -2951,8 +2958,18 @@ async def _replay_discover_opportunities(
 
     event_kind = _replay_event_kind_for_strategy(slug, strategy)
 
-    # Step 1: build the time grid.  Cap at ``max_ticks`` total samples
-    # so a 30-day window doesn't blow up into 1500 detect() calls.
+    # Step 1: build the time grid.  Resolution = ``sample_interval_seconds``,
+    # bounded only by ``max_ticks`` (the safety cap that stops a 30-day window
+    # from exploding into millions of detect() calls).
+    #
+    # FINANCIAL-GRADE FIDELITY: there is intentionally NO fixed floor on the
+    # interval.  The recorded book is captured sub-second (polybacktest ~8 Hz),
+    # and microstructure/latency strategies (crypto up/down momentum, queue
+    # races) only show up when the replay samples at the data's native cadence.
+    # A coarse floor here would silently degrade every signal to that floor —
+    # the antithesis of an institutional backtester.  Callers that need tick
+    # fidelity pass a small ``sample_interval_seconds`` + a matching
+    # ``max_ticks``; long-horizon book strategies pass a coarse interval.
     #
     # Pre-roll warmup: when ``warmup_seconds`` > 0 we prepend whole-
     # interval ticks BEFORE the measured window so rolling windows /
@@ -2966,7 +2983,8 @@ async def _replay_discover_opportunities(
     from datetime import timedelta as _td_replay
     _emit_start = start_dt
     measured_seconds = max(60.0, (end_dt - _emit_start).total_seconds())
-    n_measured = min(max_ticks, max(1, int(measured_seconds / max(60, sample_interval_seconds))))
+    _req_interval = max(_MIN_DISCOVERY_INTERVAL_SECONDS, float(sample_interval_seconds))
+    n_measured = min(max_ticks, max(1, int(measured_seconds / _req_interval)))
     actual_interval = measured_seconds / n_measured
     n_warm = (
         int(max(0, int(warmup_seconds)) // actual_interval)
@@ -3148,8 +3166,21 @@ async def _replay_discover_opportunities(
     # left it in, even when no refresh happened between T and T+1).
     carry_catalog_markets: dict[str, dict] = {}
 
+    _progress_every = max(1, n_ticks // 20)
+    _discover_t0 = time.monotonic()
     for tick_i in range(n_ticks):
         tick_t = ticks[tick_i]
+
+        # Universal discovery-progress heartbeat (any strategy / resolution).
+        # Sub-second replays can be 10k-100k+ ticks; without this the run is a
+        # silent multi-minute black box.  Logs ~20 lines/run with a live ETA.
+        if n_ticks >= 400 and tick_i and tick_i % _progress_every == 0:
+            _el = time.monotonic() - _discover_t0
+            _eta = _el * (n_ticks - tick_i) / max(1, tick_i)
+            logger.info(
+                "discovery replay: tick %d/%d (%.0f%%) · %d opps · %.0fs elapsed · ~%.0fs left",
+                tick_i, n_ticks, 100.0 * tick_i / n_ticks, len(detected_total), _el, _eta,
+            )
 
         # Prices at this tick — built from the streaming grid for book-
         # driven strategies, empty for event-driven ones.
@@ -3657,7 +3688,7 @@ async def run_execution_backtest(
     # state on similar time scales), wider misses fast-moving
     # opportunities.  Capped at 96 ticks per window to bound runtime
     # (each tick = one strategy.detect_async call).
-    discovery_sample_interval_seconds: int = 1800,
+    discovery_sample_interval_seconds: float = 1800.0,
     discovery_max_ticks: int = 96,
 ) -> ExecutionBacktestResult:
     """Execution-realistic backtest using full L2 replay + bootstrap CIs.
@@ -3885,7 +3916,7 @@ async def run_execution_backtest(
                         slug=slug,
                         start_dt=start_dt,
                         end_dt=end_dt,
-                        sample_interval_seconds=int(discovery_sample_interval_seconds),
+                        sample_interval_seconds=float(discovery_sample_interval_seconds),
                         max_ticks=int(discovery_max_ticks),
                         candidate_token_ids=token_ids,
                     )

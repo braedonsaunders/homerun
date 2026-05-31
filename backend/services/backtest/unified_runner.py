@@ -950,8 +950,9 @@ async def run_unified_backtest(
     # route-level validator so a pathological run can't blow up the JSON.
     fills_sample_size: int | None = None,
     # Discovery-replay tick grid overrides (defaults inside
-    # run_execution_backtest: 1800s interval / 96 ticks).
-    discovery_sample_interval_seconds: int | None = None,
+    # run_execution_backtest: 1800s interval / 96 ticks).  Float so callers can
+    # request sub-second (tick-grade) resolution for microstructure strategies.
+    discovery_sample_interval_seconds: float | None = None,
     discovery_max_ticks: int | None = None,
     # Async-job-queue path: when the dedicated backtest worker process
     # invokes this function, it passes a pre-allocated ``run_id`` (so
@@ -1051,10 +1052,28 @@ async def run_unified_backtest(
     if fills_sample_size is not None:
         exec_kwargs["fills_sample_size"] = int(fills_sample_size)
     if discovery_sample_interval_seconds is not None:
-        exec_kwargs["discovery_sample_interval_seconds"] = int(discovery_sample_interval_seconds)
+        # float — sub-second resolution is the whole point of a tick-grade
+        # backtest; an int() cast here silently floored 0.25s → 0.
+        exec_kwargs["discovery_sample_interval_seconds"] = float(discovery_sample_interval_seconds)
     if discovery_max_ticks is not None:
         exec_kwargs["discovery_max_ticks"] = int(discovery_max_ticks)
-    exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
+
+    # A backtest replays a FROZEN, pinned parquet dataset — the data plane is
+    # pure parquet (MarketDataView -> load_book_series), and the only DB touch
+    # is resolving the catalog (which files cover which tokens).  Re-walking the
+    # filesystem + re-UPSERTing that catalog every 60s mid-run is wasted work
+    # that storms the connection pool on long sub-second runs.  Scan once up
+    # front, then freeze the catalog for the duration of the run.
+    import services.external_data.parquet_scanner as _ps
+    try:
+        await _ps.ensure_recent_scan()
+    except Exception:  # noqa: BLE001
+        logger.debug("pre-run parquet scan skipped", exc_info=True)
+    _ps.suspend_scan()
+    try:
+        exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
+    finally:
+        _ps.resume_scan()
     exec_dict = exec_result.to_dict()
 
     # Snapshot the fill simulator state.  Run in parallel — they

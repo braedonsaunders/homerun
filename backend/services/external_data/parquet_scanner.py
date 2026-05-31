@@ -300,6 +300,25 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
 _LAST_SCAN_AT: float = 0.0
 _RESCAN_LOCK = asyncio.Lock()
 
+# When > 0, ``ensure_recent_scan`` is a no-op.  A backtest replays a FROZEN,
+# pinned dataset — the filesystem can't change underneath it — so re-walking
+# every root + re-UPSERTing the catalog every 60s mid-run is pure waste and, on
+# a long sub-second run, storms the connection pool (the rescan opens its own
+# sessions).  The engine suspends scanning for the duration of a run.  Counted
+# so nested/concurrent suspensions compose.
+_SCAN_SUSPEND_DEPTH: int = 0
+
+
+def suspend_scan() -> None:
+    """Suspend ``ensure_recent_scan`` (backtest replays frozen data)."""
+    global _SCAN_SUSPEND_DEPTH
+    _SCAN_SUSPEND_DEPTH += 1
+
+
+def resume_scan() -> None:
+    global _SCAN_SUSPEND_DEPTH
+    _SCAN_SUSPEND_DEPTH = max(0, _SCAN_SUSPEND_DEPTH - 1)
+
 
 async def rescan_parquet_root(*, root: Path | None = None) -> dict[str, Any]:
     """Walk every configured parquet root (or the single ``root`` arg
@@ -379,6 +398,8 @@ async def ensure_recent_scan(*, max_age_seconds: float = 60.0) -> bool:
     newly-dropped files are picked up automatically.  Returns True
     iff a fresh scan ran.
     """
+    if _SCAN_SUSPEND_DEPTH > 0:
+        return False
     if (time.time() - _LAST_SCAN_AT) <= max_age_seconds:
         return False
     await rescan_parquet_root()

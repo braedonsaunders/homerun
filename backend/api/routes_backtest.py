@@ -94,11 +94,14 @@ class UnifiedBacktestRequest(BaseModel):
     fills_sample_size: int = Field(default=200, ge=10, le=100_000)
     # Discovery-replay tick grid controls.  Default 1800s tick / 96 ticks
     # is fine for typical "did this strategy fire enough in a 7-day window"
-    # sanity checks.  Replication runs that need to match a wallet's
-    # high-frequency activity drop the interval and raise max_ticks so the
-    # discovery emits at the same cadence the live strategy did.
-    discovery_sample_interval_seconds: int | None = Field(default=None, ge=1, le=86_400)
-    discovery_max_ticks: int | None = Field(default=None, ge=1, le=10_000)
+    # sanity checks.  Microstructure / latency replication (crypto up/down
+    # momentum, HFT book races) needs SUB-SECOND resolution: the recorded book
+    # is captured at ~8 Hz, and the strategy must be replayed at that cadence
+    # or the signal is destroyed.  Hence ``float`` (sub-second) with no 1s
+    # floor, and a tick cap high enough that a fine interval over a multi-hour
+    # window isn't silently coarsened (4h @ 0.1s = 144k ticks).
+    discovery_sample_interval_seconds: float | None = Field(default=None, gt=0.0, le=86_400.0)
+    discovery_max_ticks: int | None = Field(default=None, ge=1, le=2_000_000)
 
 
 @router.post("/run")
