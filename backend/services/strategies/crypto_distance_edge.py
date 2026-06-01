@@ -67,6 +67,7 @@ from services.strategies._firehose import (
 )
 from services.strategies.base import BaseStrategy
 from services.strategy_helpers.crypto_strategy_utils import (
+    build_binary_crypto_market,
     normalize_timeframe,
     pick_oracle_source,
     taker_fee_pct,
@@ -257,42 +258,11 @@ def _select_tier(
     return chosen
 
 
-def _build_market(d: dict[str, Any]) -> Market:
-    """Deserialize a crypto-worker market dict to a typed ``Market``."""
-    market_id = str(d.get("condition_id") or d.get("id") or "")
-    up_price = float(d.get("up_price") or 0.0)
-    down_price = float(d.get("down_price") or 0.0)
-    liquidity = max(0.0, float(d.get("liquidity") or 0.0))
-    slug = d.get("slug") or market_id
-    question = d.get("question") or slug
-
-    end_date = None
-    end_time_raw = d.get("end_time")
-    if isinstance(end_time_raw, str) and end_time_raw.strip():
-        try:
-            from datetime import datetime as _dt
-            end_date = _dt.fromisoformat(end_time_raw.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
-            pass
-
-    raw_token_ids = d.get("clob_token_ids") or []
-    clob_token_ids = [
-        str(t).strip()
-        for t in raw_token_ids
-        if str(t).strip() and len(str(t).strip()) > 20
-    ]
-
-    return Market(
-        id=market_id,
-        condition_id=market_id,
-        question=question,
-        slug=slug,
-        outcome_prices=[up_price, down_price],
-        liquidity=liquidity,
-        end_date=end_date,
-        platform="polymarket",
-        clob_token_ids=clob_token_ids,
-    )
+def _build_market(d: dict[str, Any]) -> Market | None:
+    """Crypto-worker market dict -> typed ``Market`` via the canonical shared
+    reconstructor (``build_binary_crypto_market``).  Returns ``None`` for rows
+    with no usable price/id — callers reject those (the strategy's gates do too)."""
+    return build_binary_crypto_market(d)
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +497,9 @@ class CryptoDistanceEdgeStrategy(BaseStrategy):
         min_cost_cents = float(tier["min_cost_cents"])
 
         typed_market = _build_market(market)
+        if typed_market is None:
+            _emit_reject(MURMUR)
+            return None
         token_ids_present = bool(typed_market.clob_token_ids)
         gates.append(GateResult(
             "clob_tokens", "CLOB token ids present", token_ids_present,

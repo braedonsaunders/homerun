@@ -37,6 +37,7 @@ from ._firehose import (
 )
 from .base import BaseStrategy, DecisionCheck, StrategyDecision, ExitDecision, _trader_size_limits
 from services.strategy_helpers.crypto_strategy_utils import (
+    build_binary_crypto_market,
     parse_datetime_utc,
     first_present as _first_present,
     resolve_oracle_availability as _resolve_oracle_availability,
@@ -4797,46 +4798,11 @@ class BtcEthMakerQuoteStrategy(BaseStrategy):
         return self._detect_from_crypto_markets(markets)
 
     @staticmethod
-    def _market_from_crypto_dict(d: dict) -> Market:
-        """Deserialize a crypto worker market dict into a typed Market object.
-
-        Crypto worker dicts use non-standard keys (condition_id, up_price,
-        down_price, end_time). We map them to Market fields immediately at
-        the DataEvent boundary so every downstream code path sees only typed
-        objects — never raw dicts.
-        """
-        market_id = str(d.get("condition_id") or d.get("id") or "")
-        up_price = float(d.get("up_price") or 0.0)
-        down_price = float(d.get("down_price") or 0.0)
-        liquidity = max(0.0, float(d.get("liquidity") or 0.0))
-        slug = d.get("slug") or market_id
-        question = d.get("question") or slug
-
-        end_date = None
-        end_time_raw = d.get("end_time")
-        if isinstance(end_time_raw, str) and end_time_raw.strip():
-            try:
-                from datetime import datetime as _dt
-
-                end_date = _dt.fromisoformat(end_time_raw.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
-
-        raw_token_ids = d.get("clob_token_ids") or []
-        clob_token_ids = [str(t).strip() for t in raw_token_ids if str(t).strip() and len(str(t).strip()) > 20]
-
-        return Market(
-            id=market_id,
-            condition_id=market_id,
-            question=question,
-            slug=slug,
-            # yes_price = up_price (market-implied prob of going Up)
-            outcome_prices=[up_price, down_price],
-            liquidity=liquidity,
-            end_date=end_date,
-            platform="polymarket",
-            clob_token_ids=clob_token_ids,
-        )
+    def _market_from_crypto_dict(d: dict) -> "Market | None":
+        """Crypto-worker market dict -> typed ``Market`` via the canonical shared
+        reconstructor (``build_binary_crypto_market``).  Returns ``None`` for rows
+        with no usable price/id — the caller rejects those (the price gate does too)."""
+        return build_binary_crypto_market(d)
 
     def _detect_from_crypto_markets(self, markets: list[dict]) -> list[Opportunity]:
         """Oracle-only directional signal logic for the crypto worker hot path.
@@ -4870,6 +4836,15 @@ class BtcEthMakerQuoteStrategy(BaseStrategy):
                 _emit_reject(WHISPER)
                 continue
             typed_market = self._market_from_crypto_dict(market)
+            if typed_market is None:
+                # No usable price/id — the prices_present gate below rejects
+                # these anyway; bail before detection touches a None market.
+                gates.append(GateResult(
+                    "prices_present", "Up/down prices present", False,
+                    detail="reconstruction failed",
+                ))
+                _emit_reject(WHISPER)
+                continue
             asset = self._detect_asset(typed_market) or _normalize_asset(
                 market.get("asset") or market.get("symbol") or market.get("coin")
             )
