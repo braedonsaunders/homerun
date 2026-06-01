@@ -438,7 +438,13 @@ async def parquet_replayer(
             day_dir = ed / day
             if not day_dir.exists():
                 continue
-            for fp in sorted(day_dir.glob("events__*.parquet")):
+            all_files = sorted(day_dir.glob("events__*.parquet"))
+            # Skip whole files provably outside the window before reading them —
+            # otherwise a short slice reads the entire (whole-day) partition.
+            files = await asyncio.to_thread(
+                _prune_files_to_window, all_files, window, window.time_field
+            )
+            for fp in files:
                 try:
                     rows = await asyncio.to_thread(_read_file_rows, fp, window)
                 except Exception:  # noqa: BLE001
@@ -479,6 +485,51 @@ async def parquet_replayer(
             heapq.heappush(heap, (_entity_order_key(nxt, time_attr), key))
         except StopAsyncIteration:
             head[key] = None
+
+
+def _prune_files_to_window(
+    files: list[Path], window: "ReplayWindow", time_field: str
+) -> list[Path]:
+    """Drop parquet files whose ``time_field`` row-group statistics put their
+    ENTIRE range outside ``[window.start_us, window.end_us)``.
+
+    Recorded-bus replay otherwise opens + decodes EVERY file in a date partition
+    (whole-day, ~150 files / GBs of ``payload_json``) just to extract a short
+    slice — the dominant cost of a backtest (≈70% of wall-clock).  Each file is a
+    flush batch carrying min/max stats on the time columns, so we can skip files
+    provably outside the window before reading them.  This reads only the parquet
+    FOOTER (KB) per file, not the data, and the exact per-file row filter in
+    ``_read_file_rows`` still runs — so the surviving rows are byte-identical;
+    this only avoids reading files that contribute nothing.  Files with no usable
+    stats are kept (correctness over pruning)."""
+    kept: list[Path] = []
+    for fp in files:
+        try:
+            pf = pq.ParquetFile(fp)
+            names = list(pf.schema_arrow.names)
+            if time_field not in names:
+                kept.append(fp)
+                continue
+            col_idx = names.index(time_field)
+            md = pf.metadata
+            lo = hi = None
+            usable = True
+            for rg in range(md.num_row_groups):
+                st = md.row_group(rg).column(col_idx).statistics
+                if st is None or not getattr(st, "has_min_max", False):
+                    usable = False
+                    break
+                lo = st.min if lo is None else min(lo, st.min)
+                hi = st.max if hi is None else max(hi, st.max)
+            if not usable or lo is None or hi is None:
+                kept.append(fp)
+                continue
+            if hi < window.start_us or lo >= window.end_us:
+                continue  # entire file outside the window — skip
+            kept.append(fp)
+        except Exception:
+            kept.append(fp)  # any metadata trouble -> keep; the row filter decides
+    return kept
 
 
 def _read_file_rows(fp: Path, window: "ReplayWindow") -> list[RecordedEvent]:

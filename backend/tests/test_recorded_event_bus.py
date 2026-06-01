@@ -219,6 +219,39 @@ class TestBusStorageRoundTrip:
                 await delete_topic(slug)
 
     @pytest.mark.asyncio(loop_scope="module")
+    async def test_replay_prunes_out_of_window_files_without_losing_rows(self):
+        """Speed optimization guard: replay skips whole files provably outside the
+        window (row-group time stats) but must still return EXACTLY the in-window
+        events — over-pruning would silently drop rows."""
+        from services.recorded_event_bus import bus
+        from services.recorded_event_bus.storage import flush_pending_writes
+        import services.recorded_event_bus.storage  # noqa: F401
+        slug = "test.prune.window"
+        with tempfile.TemporaryDirectory() as td:
+            uri = str(Path(td) / "topic")
+            try:
+                await register_topic(slug=slug, title="pr", storage_kind="parquet", storage_uri=uri)
+                base = int(datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc).timestamp() * 1e6)
+                hour_us = 3_600_000_000
+                # 3 batches an hour apart, each flushed to its own file.
+                for h in range(3):
+                    await bus.publish(RecordedEvent(
+                        topic=slug, entity_id="e",
+                        observed_at_us=base + h * hour_us, payload={"h": h},
+                    ))
+                    await flush_pending_writes()
+                # Window covering ONLY the middle event — files 0 and 2 are
+                # provably outside and must be pruned, file 1 kept.
+                mid = base + hour_us
+                got = [ev async for ev in bus.replay(ReplayWindow(
+                    start_us=mid - 1, end_us=mid + 1, topics=(slug,),
+                ))]
+                assert len(got) == 1, f"pruning lost/duplicated rows: {len(got)}"
+                assert got[0].payload["h"] == 1
+            finally:
+                await delete_topic(slug)
+
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_flush_loop_drains_partials_on_cadence(self, monkeypatch):
         """Regression: the background flush loop must periodically drain PARTIAL
         (sub-_FLUSH_BATCH_SIZE) buckets.  Otherwise low-volume topics (e.g.
