@@ -2613,6 +2613,11 @@ async def _replay_bus_events_into_tick_grid(
                 },
                 markets=list(p.get("markets") or []) or None,
                 events=list(p.get("events") or []) or None,
+                # The recorded `prices` arg ({token_id: book}) live's detect()
+                # saw — scanner_tick strategies (e.g. tail_end_carry) read the
+                # book from here, not from market.best_bid/ask, so replaying it
+                # is what makes detect() byte-identical to live.
+                prices=dict(p.get("prices") or {}) or None,
             )
         if t == "news.update":
             return DataEvent(
@@ -3286,6 +3291,11 @@ async def _replay_discover_opportunities(
     # a shared cache — its state on tick T+1 is whatever the last refresh
     # left it in, even when no refresh happened between T and T+1).
     carry_catalog_markets: dict[str, dict] = {}
+    # Per-token book carried forward across ticks (the live ``prices`` arg the
+    # catalog-snapshot tee recorded), latest-wins per token — mirrors the live
+    # shared price cache.  scanner_tick strategies (e.g. tail_end_carry) read
+    # the book from this ``prices`` argument, NOT from market.best_bid/ask.
+    carry_catalog_prices: dict[str, dict] = {}
 
     _progress_every = max(1, n_ticks // 20)
     _discover_t0 = time.monotonic()
@@ -3359,35 +3369,29 @@ async def _replay_discover_opportunities(
                         key = str(m.get("id") or m.get("condition_id") or m.get("slug") or "")
                         if key:
                             carry_catalog_markets[key] = m
+                # Carry the recorded per-token book (the live ``prices`` arg)
+                # forward, latest-wins per token — the live shared price cache.
+                # The catalog-snapshot tee records exactly the book live's
+                # detect() saw (the live scanner mutates the markets with fresh
+                # WS book AND passes the same book as the prices arg).
+                ev_prices = getattr(ev, "prices", None)
+                if isinstance(ev_prices, dict):
+                    for tid, book in ev_prices.items():
+                        if isinstance(book, dict):
+                            carry_catalog_prices[str(tid)] = book
             if not carry_catalog_markets:
                 # Pre-recording window — no catalog snapshot seen yet.
                 continue
-            # Build markets_at_tick from the carried catalog, augmenting
-            # each market's top-of-book from the per-tick price grid when
-            # the parquet has coverage.  Markets without any token in the
-            # grid still pass through (their last-known book in the
-            # catalog payload is used) — same as live behaviour when the
-            # WS feed is silent for a token.
-            markets_at_tick = []
-            for m in carry_catalog_markets.values():
-                tok_ids = [str(t).strip() for t in (m.get("clob_token_ids") or []) if t]
-                augmented = m
-                for tid in tok_ids:
-                    px = prices_at_tick.get(tid)
-                    if not isinstance(px, dict):
-                        continue
-                    # Polymarket up/down: best_bid/ask on UP-side book is
-                    # the market-level price surface; copy the freshest
-                    # snapshot we have for this token into the market.
-                    augmented = dict(augmented)
-                    if px.get("best_bid") is not None:
-                        augmented["best_bid"] = px["best_bid"]
-                    if px.get("best_ask") is not None:
-                        augmented["best_ask"] = px["best_ask"]
-                    if px.get("spread") is not None:
-                        augmented["spread"] = px["spread"]
-                    break  # one token's price is enough at the market level
-                markets_at_tick.append(augmented)
+            # The recorded catalog markets already carry their live top-of-book
+            # (the live scanner mutates them via _apply_live_prices_to_markets
+            # before publishing, so the tee captured best_bid/ask), and the
+            # carried ``prices`` arg below carries the same book in
+            # {token_id: book} form.  Pass BOTH through AS-IS — no
+            # reconstruction — so detect() sees byte-identical (markets, prices)
+            # to live.  (The book-driven price grid is intentionally not built
+            # for event-driven strategies, so there is nothing to augment from.)
+            markets_at_tick = list(carry_catalog_markets.values())
+            prices_at_tick = dict(carry_catalog_prices)
         elif event_kind is not None:
             if not events_at_tick:
                 continue

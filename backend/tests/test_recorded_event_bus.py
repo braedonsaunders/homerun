@@ -261,6 +261,46 @@ class TestBusStorageRoundTrip:
         assert partial_ticks == [5, 10], f"unexpected partial-drain cadence: {partial_ticks}"
 
     @pytest.mark.asyncio(loop_scope="module")
+    async def test_catalog_snapshot_records_prices_arg(self, monkeypatch):
+        """Regression: the catalog-snapshot publisher must record the per-token
+        ``prices`` arg detect() received.  scanner_tick strategies (e.g.
+        tail_end_carry) read the book from ``prices``, NOT market.best_bid/ask,
+        so without it their backtest replay sees an empty book and never fires
+        — the catalog-snapshot stream must carry (markets, events, prices)."""
+        from services import shared_state
+        import services.recording_control as rc
+        import services.recorded_event_bus as reb
+
+        captured: dict = {}
+
+        class _FakeBus:
+            async def publish(self, envelope):
+                captured["env"] = envelope
+
+        async def _yes():
+            return True
+
+        async def _noop_register():
+            return None
+
+        monkeypatch.setattr(rc, "is_recording_enabled", _yes)
+        monkeypatch.setattr(reb, "bus", _FakeBus())
+        monkeypatch.setattr(shared_state, "_ensure_catalog_snapshot_topic_registered", _noop_register)
+
+        await shared_state._publish_catalog_snapshot_to_bus(
+            events_payload=[],
+            markets_payload=[{"id": "m1", "clob_token_ids": ["tok"]}],
+            prices_payload={"tok": {"bid": 0.42, "ask": 0.55}},
+            updated_at=datetime.now(timezone.utc),
+            duration_seconds=0.0,
+            error=None,
+        )
+        env = captured.get("env")
+        assert env is not None, "publisher did not publish an envelope"
+        assert env.payload.get("prices") == {"tok": {"bid": 0.42, "ask": 0.55}}, \
+            "catalog.snapshot must carry the prices arg for scanner_tick replay"
+
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_live_subscribe_dedups_handlers(self):
         b = RecordedEventBus()  # isolated instance
         seen = []

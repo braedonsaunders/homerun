@@ -2272,6 +2272,7 @@ async def _publish_catalog_snapshot_to_bus(
     updated_at: datetime,
     duration_seconds: float,
     error: Optional[str],
+    prices_payload: Optional[dict[str, Any]] = None,
 ) -> None:
     """Tee a catalog snapshot into the recorded-event bus.  Best-effort:
     any failure is logged + swallowed so the live catalog write path is
@@ -2299,6 +2300,9 @@ async def _publish_catalog_snapshot_to_bus(
     payload: dict = {
         "markets": list(markets_payload or []),
         "events": list(events_payload or []),
+        # {token_id: book} prices arg detect() received — recorded so backtest
+        # replay can hand scanner_tick strategies an identical prices dict.
+        "prices": dict(prices_payload or {}),
         "updated_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
         "duration_seconds": float(duration_seconds or 0.0),
         "error": error,

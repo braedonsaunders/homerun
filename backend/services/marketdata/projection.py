@@ -424,6 +424,11 @@ async def project_market_data_refresh_events(
     while tick_us <= end_us:
         tick = datetime.fromtimestamp(tick_us / 1_000_000, tz=timezone.utc)
         market_dicts: list[dict[str, Any]] = []
+        # {token_id: book} prices map — mirrors the live scanner's ``prices``
+        # arg so scanner_tick strategies (tail_end_carry reads the book HERE,
+        # not from market.best_bid/ask) fire identically on imported data and
+        # on the recorded catalog-snapshot gold path.
+        prices_map: dict[str, dict[str, Any]] = {}
         for m in active:
             if not m.alive_at(tick_us):
                 continue
@@ -436,6 +441,14 @@ async def project_market_data_refresh_events(
             md = _catalog_market_dict(m, tick=tick, up_bid=up_bid, up_ask=up_ask, down_bid=down_bid, down_ask=down_ask)
             if md is not None:
                 market_dicts.append(md)
+                if m.up_token and (up_bid is not None or up_ask is not None):
+                    prices_map[str(m.up_token)] = {
+                        "bid": up_bid, "ask": up_ask, "best_bid": up_bid, "best_ask": up_ask,
+                    }
+                if m.down_token and (down_bid is not None or down_ask is not None):
+                    prices_map[str(m.down_token)] = {
+                        "bid": down_bid, "ask": down_ask, "best_bid": down_bid, "best_ask": down_ask,
+                    }
         if market_dicts:
             n_market_dicts += len(market_dicts)
             events.append(DataEvent(
@@ -444,11 +457,13 @@ async def project_market_data_refresh_events(
                 timestamp=tick,
                 payload={
                     "markets": market_dicts,
+                    "prices": prices_map,
                     "updated_at": tick.isoformat().replace("+00:00", "Z"),
                     "trigger": "marketdata.projection",
                     "event_source": "imported_parquet",
                 },
                 markets=market_dicts,
+                prices=prices_map,
             ))
         tick_us += cadence_us
 

@@ -1979,6 +1979,11 @@ class ArbitrageScanner:
         events = list(event.events or [])
         if not markets and not events:
             return
+        # The {token_id: book} prices arg this dispatch carried to detect()
+        # (the live WS top-of-book the scanner applied to the markets) — record
+        # it so backtest replay can hand scanner_tick strategies an identical
+        # ``prices`` argument.  They read the book from here, not market.*.
+        prices = dict(getattr(event, "prices", None) or {})
 
         async def _run() -> None:
             try:
@@ -1993,7 +1998,7 @@ class ArbitrageScanner:
                 if not cfg.get("capture_catalog", True):
                     return
 
-                def _serialize() -> tuple[list, list]:
+                def _serialize() -> tuple[list, list, dict]:
                     ev_payload: list = []
                     for ev in events:
                         try:
@@ -2013,12 +2018,17 @@ class ArbitrageScanner:
                             )
                         except Exception:
                             pass
-                    return ev_payload, mkt_payload
+                    px_payload: dict = {}
+                    for tid, book in (prices or {}).items():
+                        if isinstance(book, dict):
+                            px_payload[str(tid)] = book
+                    return ev_payload, mkt_payload, px_payload
 
-                events_payload, markets_payload = await asyncio.to_thread(_serialize)
+                events_payload, markets_payload, prices_payload = await asyncio.to_thread(_serialize)
                 await _publish_catalog_snapshot_to_bus(
                     events_payload=events_payload,
                     markets_payload=markets_payload,
+                    prices_payload=prices_payload,
                     updated_at=utcnow(),
                     duration_seconds=0.0,
                     error=None,
