@@ -634,16 +634,28 @@ async def _capture_fill_model_snapshot() -> dict[str, Any]:
     }
 
 
-async def _capture_decomposition_summary(hours: int) -> dict[str, Any]:
+async def _capture_decomposition_summary(
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    fallback_hours: int = 24,
+) -> dict[str, Any]:
     # Book deltas live in the canonical parquet plane (not SQL); aggregate
-    # trade-vs-cancel from parquet off the event loop.
+    # trade-vs-cancel from parquet off the event loop.  Scope to the backtest
+    # window when given — the panel is about THIS run, and a historical window
+    # would otherwise scan irrelevant now-minus-24h data (slow AND wrong).
     import asyncio
 
     from services.marketdata.deltas import aggregate_delta_events
 
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=max(1, hours))
-    agg = await asyncio.to_thread(aggregate_delta_events, start=cutoff, end=now)
+    if start is not None and end is not None:
+        lo, hi = start, end
+        window_hours = round((end - start).total_seconds() / 3600.0, 4)
+    else:
+        hi = datetime.now(timezone.utc)
+        lo = hi - timedelta(hours=max(1, fallback_hours))
+        window_hours = float(fallback_hours)
+    agg = await asyncio.to_thread(aggregate_delta_events, start=lo, end=hi)
     trade_count = int(agg.get("n_trade", 0) or 0)
     cancel_count = int(agg.get("n_cancel", 0) or 0)
     trade_size = float(agg.get("trade_size_sum", 0.0) or 0.0)
@@ -651,7 +663,7 @@ async def _capture_decomposition_summary(hours: int) -> dict[str, Any]:
     total_count = trade_count + cancel_count
     total_size = trade_size + cancel_size
     return {
-        "window_hours": hours,
+        "window_hours": window_hours,
         "trade_count": trade_count,
         "cancel_count": cancel_count,
         "trade_size": trade_size,
@@ -1178,7 +1190,7 @@ async def run_unified_backtest(
     # Snapshot the fill simulator state.  Run in parallel — they
     # don't depend on each other.
     fill_model_task = asyncio.create_task(_capture_fill_model_snapshot())
-    decomp_task = asyncio.create_task(_capture_decomposition_summary(hours=24))
+    decomp_task = asyncio.create_task(_capture_decomposition_summary(start=start, end=end))
     latency_task = asyncio.create_task(_capture_latency())
 
     fill_model = await fill_model_task
