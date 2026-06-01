@@ -2942,6 +2942,19 @@ async def _build_per_tick_prices_grid(
         # before a momentum buyer trades) that top-of-book alone hides.
         bid_depth = snap.depth("bid", 5)
         ask_depth = snap.depth("ask", 5)
+        # Live/backtest input parity: the live scanner feeds strategies a
+        # per-token price dict keyed {mid, bid, ask, ts, ingest_ts,
+        # exchange_ts, sequence, is_fresh} (scanner._snapshot_ws_prices).
+        # We emit a SUPERSET of that shape — every live key PLUS the
+        # microstructure extras (best_bid/best_ask/imbalance/depth) — so a
+        # strategy written against the live dict (prices[t]['bid'],
+        # prices[t]['ts'], …) reads real values in backtest instead of None.
+        # ``ts`` is integer epoch seconds (mirroring the live snapshot's
+        # second-granularity ts); ingest_ts/exchange_ts alias it (replay has
+        # no separate ingest vs. exchange clock), and is_fresh is always True
+        # (every frozen state is by construction the most-recent observation
+        # at-or-before the tick). Cheap — extra dict keys, no new allocations.
+        ts_epoch = int(observed.timestamp()) if observed is not None else 0
         cur_state[snap.token_id] = {
             "best_bid": bb,
             "best_ask": ba,
@@ -2952,6 +2965,14 @@ async def _build_per_tick_prices_grid(
             "ask_depth": ask_depth,
             "imbalance": (bid_depth / (bid_depth + ask_depth)) if (bid_depth + ask_depth) > 0 else 0.5,
             "observed_at": observed,
+            # ── Live-shape superset (scanner._snapshot_ws_prices keys) ──
+            "bid": bb,
+            "ask": ba,
+            "ts": ts_epoch,
+            "ingest_ts": ts_epoch,
+            "exchange_ts": ts_epoch,
+            "sequence": int(snap.sequence) if snap.sequence is not None else 0,
+            "is_fresh": True,
         }
 
     while next_tick_idx < len(ticks):
@@ -3293,6 +3314,7 @@ async def _replay_discover_opportunities(
     # Step 6: walk the time grid + run detect at each tick.
     detected_total: list[_SyntheticOpp] = []
     detect_failures = 0
+    _DBG3_DONE = [False]
 
     # Carry-forward catalog state for scanner_tick (MARKET_DATA_REFRESH)
     # replay.  Catalog snapshots arrive at refresh cadence (~ minutes);
@@ -3494,39 +3516,45 @@ async def _replay_discover_opportunities(
             detect_failures += 1
             continue
 
-        if event_kind == "scanner_tick":
-            # Dump any alive market whose up/down mid lands in the entry band
-            # so we can confirm whether band-eligible prices ever reach detect.
-            _now = tick_t
+        if event_kind == "scanner_tick" and not _DBG3_DONE[0]:
             for _mm in market_models:
                 _ed = getattr(_mm, "end_date", None)
                 if _ed is not None and _ed.tzinfo is None:
                     _ed = _ed.replace(tzinfo=timezone.utc)
-                if _ed is None or _ed <= _now:
+                if _ed is None or _ed <= tick_t:
                     continue
                 _toks = list(getattr(_mm, "clob_token_ids", []) or [])
                 _up = (prices_at_tick.get(_toks[0]) or {}).get("mid") if _toks else None
-                _dn = (prices_at_tick.get(_toks[1]) or {}).get("mid") if len(_toks) > 1 else None
-                _hit = any(v is not None and 0.85 <= v <= 0.905 for v in (_up, _dn))
-                if _hit:
-                    from utils import utcnow as _un2
-                    _tk2 = _un2.set_replay_clock_us(int(tick_t.timestamp() * 1_000_000))
+                if _up is not None and 0.85 <= _up <= 0.905:
+                    _DBG3_DONE[0] = True
+                    _nu = int(tick_t.timestamp() * 1_000_000)
+                    _solo = await _run_detect_once(strategy, events=[], markets=[_mm], prices=prices_at_tick, timeout_seconds=8.0, now_us=_nu)
+                    _solo_raw = (getattr(strategy, "_filter_diagnostics", {}) or {}).get("raw_detected_count")
+                    # Fresh sandbox instance with NO accumulated state.
+                    _fresh_raw = None
                     try:
-                        _esb = strategy._extract_side_book(_mm, prices_at_tick, "YES")
-                        _nowin = _un2.utcnow()
-                        _eddt = getattr(_mm, "end_date", None)
-                        if _eddt is not None and _eddt.tzinfo is None:
-                            _eddt = _eddt.replace(tzinfo=timezone.utc)
-                        _dtr_in = (_eddt - _nowin.astimezone(timezone.utc)).total_seconds() / 86400.0 if _eddt else None
-                    finally:
-                        _un2.restore_replay_clock(_tk2)
+                        from services.strategy_loader import StrategyLoader as _SL
+                        _fresh = _SL().load("tail_dbg_fresh", open(r"C:\homerun\backend\services\strategies\tail_end_carry.py", encoding="utf-8").read(), None).instance
+                        _fsolo = await _run_detect_once(_fresh, events=[], markets=[_mm], prices=prices_at_tick, timeout_seconds=8.0, now_us=_nu)
+                        _fresh_raw = (getattr(_fresh, "_filter_diagnostics", {}) or {}).get("raw_detected_count")
+                    except Exception as _e:
+                        _fresh_raw = f"ERR {_e}"
+                    # Direct (non-sandbox) instance.
+                    from services.strategies.tail_end_carry import TailEndCarryStrategy as _TEC
+                    _direct = _TEC()
+                    _dsolo = await _run_detect_once(_direct, events=[], markets=[_mm], prices=prices_at_tick, timeout_seconds=8.0, now_us=_nu)
+                    _direct_raw = (getattr(_direct, "_filter_diagnostics", {}) or {}).get("raw_detected_count")
+                    _acc_lim = strategy._tail_end_limits({**strategy.default_config, **(getattr(strategy, "config", {}) or {})})
+                    _esb_acc = strategy._extract_side_book(_mm, prices_at_tick, "YES")
                     logger.warning(
-                        "    BAND-HIT tick %d mkt %s ESB_YES=%s now_in=%s end=%s dtr_in=%s tickdt=%s upx=%s",
-                        tick_i, getattr(_mm, "id", "")[:18], _esb,
-                        _nowin.isoformat(), _eddt, _dtr_in, tick_t.isoformat(),
-                        prices_at_tick.get(_toks[0]),
+                        "DBG3 tick=%d id=%s up_mid=%s SOLO_raw=%s FRESH_raw=%s DIRECT_raw=%s | ESB_acc=%s | acc_min_prob=%s acc_max_prob=%s acc_min_days=%s acc_max_days=%s | cfg_keys=%s state_keys=%s",
+                        tick_i, getattr(_mm, "id", ""), _up, _solo_raw, _fresh_raw, _direct_raw,
+                        _esb_acc, _acc_lim.get("min_probability"), _acc_lim.get("max_probability"),
+                        _acc_lim.get("min_days_to_resolution"), _acc_lim.get("max_days_to_resolution"),
+                        sorted((getattr(strategy, "config", {}) or {}).keys())[:20],
+                        sorted((getattr(strategy, "state", {}) or {}).keys())[:20],
                     )
-                    break  # one band-hit market per tick is enough to diagnose
+                    break
 
         # Warm-up tick: detect ran (state built up) but we don't emit its
         # opportunities — only the measured window counts.

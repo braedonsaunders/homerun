@@ -64,6 +64,83 @@ def _cache_run(run: dict[str, Any]) -> None:
         _RECENT_RUNS_CACHE.popitem(last=False)
 
 
+def _coverage_warning(
+    *, requested: int, covered: int, fraction: float
+) -> Optional[str]:
+    """Build the prominent no-/low-coverage validation warning, or None when
+    coverage is adequate (>= 50% of requested tokens have parquet data).
+
+    A backtest that runs against a window with NO recorded book data produces
+    zero fills *silently* — the operator sees "0 trades" and mistakes a data
+    gap for a strategy result. This anchors the warning on the fraction of
+    requested tokens that have ANY parquet coverage in the window (distinct
+    from the existing snapshot-DENSITY fidelity rating), so the gap is loud.
+    Pure string-building — no I/O, never raises.
+    """
+    if requested <= 0:
+        return None
+    if fraction <= 0.0:
+        return (
+            f"NO DATA: 0/{requested} requested tokens have parquet coverage "
+            f"in the window — backtest will produce no fills "
+            f"(record/import data for this window first)."
+        )
+    if fraction < 0.5:
+        pct = fraction * 100.0
+        return (
+            f"LOW COVERAGE: {covered}/{requested} tokens ({pct:.0f}%) "
+            f"have parquet coverage in the window — results may be "
+            f"unrepresentative."
+        )
+    return None
+
+
+async def _resolve_coverage_summary(
+    *,
+    token_ids: list[str] | None,
+    start: Optional[datetime],
+    end: Optional[datetime],
+) -> tuple[dict[str, Any], Optional[str]]:
+    """Resolve parquet coverage for ``token_ids`` over ``[start, end]`` and
+    return ``(summary, warning)``.
+
+    ``summary`` is the JSON-safe shape the UI banner consumes:
+    ``{requested_tokens, covered_tokens, coverage_fraction, window_start,
+    window_end}``. ``warning`` is the prominent no-/low-coverage string (or
+    None). Best-effort: any failure (bad window, resolver error) yields an
+    empty summary and no warning rather than crashing the run — a backtest
+    must never abort because the *diagnostic* failed.
+    """
+    if not token_ids or start is None or end is None:
+        return {}, None
+    requested_ids = [str(t) for t in token_ids if t]
+    requested_n = len(requested_ids)
+    summary: dict[str, Any] = {
+        "requested_tokens": requested_n,
+        "covered_tokens": 0,
+        "coverage_fraction": 0.0,
+        "window_start": start.isoformat() if hasattr(start, "isoformat") else str(start),
+        "window_end": end.isoformat() if hasattr(end, "isoformat") else str(end),
+    }
+    if requested_n == 0:
+        return summary, None
+    try:
+        from services.marketdata.coverage import resolve_coverage
+
+        cov_map = await resolve_coverage(token_ids=requested_ids, start=start, end=end)
+        covered_n = len(cov_map.covered_tokens)
+        fraction = cov_map.coverage_fraction
+        summary["covered_tokens"] = covered_n
+        summary["coverage_fraction"] = fraction
+    except Exception:  # noqa: BLE001
+        logger.debug("unified_runner: coverage summary resolution failed", exc_info=True)
+        return summary, None
+    warning = _coverage_warning(
+        requested=requested_n, covered=covered_n, fraction=fraction
+    )
+    return summary, warning
+
+
 async def _persist_run_to_db(run: dict[str, Any]) -> None:
     """Upsert the run row into ``backtest_runs``.  Best-effort —
     failures log but don't propagate (the cache still serves the run
@@ -1069,12 +1146,34 @@ async def run_unified_backtest(
         await _ps.ensure_recent_scan()
     except Exception:  # noqa: BLE001
         logger.debug("pre-run parquet scan skipped", exc_info=True)
+    # No-silent-failure guard: resolve parquet coverage for the run's token
+    # universe over [start, end] BEFORE the engine runs (catalog is fresh
+    # from the scan just above).  A window with zero recorded book data
+    # produces "0 fills" silently — the operator can't tell a data gap from
+    # a strategy result.  We surface the covered fraction explicitly and, on
+    # no/low coverage, prepend a loud validation_warning below.  Best-effort:
+    # never aborts the run.
+    coverage_summary, coverage_warning = await _resolve_coverage_summary(
+        token_ids=token_ids, start=start, end=end
+    )
     _ps.suspend_scan()
     try:
         exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
     finally:
         _ps.resume_scan()
     exec_dict = exec_result.to_dict()
+
+    # Merge the run-level coverage summary onto the result's data_coverage
+    # (keep the engine's per-token fidelity stats; add requested/covered/
+    # coverage_fraction/window over [start,end]) and PREPEND the no-/low-
+    # coverage warning so it renders at the top of the operator's list.
+    if coverage_summary:
+        merged_cov = dict(exec_dict.get("data_coverage") or {})
+        merged_cov.update(coverage_summary)
+        exec_dict["data_coverage"] = merged_cov
+    if coverage_warning:
+        existing_warnings = list(exec_dict.get("validation_warnings") or [])
+        exec_dict["validation_warnings"] = [coverage_warning, *existing_warnings]
 
     # Snapshot the fill simulator state.  Run in parallel — they
     # don't depend on each other.
