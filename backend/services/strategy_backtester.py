@@ -2519,6 +2519,64 @@ def _hydrate_market_model(market_cls: Any, m: Any) -> Any | None:
         return None
 
 
+async def _load_asof_catalog_markets(
+    start_dt: datetime, end_dt: datetime
+) -> tuple[list[Any], list[Any], dict[str, Any]] | None:
+    """Reconstruct the market catalog AS-OF a historical window from the recorded
+    ``polymarket.catalog.snapshot`` bus topic — same ``(events, markets, meta)``
+    shape as ``shared_state._read_market_catalog_file``.
+
+    Book-driven (event_kind=None) backtests need the universe of markets that were
+    ACTIVE during ``[start, end]`` — NOT the current catalog file, which excludes
+    markets that have since resolved/closed but were tradeable in-window (a
+    lookahead-style divergence from what the live scanner saw).  First-seen-wins
+    per market key keeps each market in its in-window state: the live scanner only
+    publishes active markets, so a market's first in-window snapshot is its
+    tradeable state.  Returns ``None`` when no catalog snapshot covers the window
+    (caller falls back to the current file — e.g. imported-only data)."""
+    try:
+        from services.recorded_event_bus import bus, ReplayWindow
+        import services.recorded_event_bus.storage  # noqa: F401 — attach parquet backend
+    except Exception:
+        return None
+    markets_by_key: dict[str, dict] = {}
+    events_by_key: dict[str, dict] = {}
+    n_env = 0
+    try:
+        async for ev in bus.replay(ReplayWindow(
+            start_us=int(start_dt.timestamp() * 1_000_000),
+            end_us=int(end_dt.timestamp() * 1_000_000),
+            topics=("polymarket.catalog.snapshot",),
+        )):
+            payload = getattr(ev, "payload", None) or {}
+            n_env += 1
+            for m in (payload.get("markets") or []):
+                if isinstance(m, dict):
+                    k = str(m.get("id") or m.get("condition_id") or m.get("slug") or "")
+                    if k and k not in markets_by_key:
+                        markets_by_key[k] = m
+            for e in (payload.get("events") or []):
+                if isinstance(e, dict):
+                    k = str(e.get("id") or e.get("slug") or "")
+                    if k and k not in events_by_key:
+                        events_by_key[k] = e
+    except Exception:
+        logger.warning("replay_discover: as-of catalog load failed", exc_info=True)
+        return None
+    if n_env == 0 or not markets_by_key:
+        return None
+    meta = {
+        "source": "recorded_catalog_snapshot_asof",
+        "market_count": len(markets_by_key),
+        "event_count": len(events_by_key),
+    }
+    logger.info(
+        "replay_discover: as-of catalog from %d catalog.snapshot envelopes -> %d markets",
+        n_env, len(markets_by_key),
+    )
+    return (list(events_by_key.values()), list(markets_by_key.values()), meta)
+
+
 def _build_token_to_market_lookup(catalog_markets: list[Any]) -> dict[str, dict[str, Any]]:
     """Walk the catalog once and produce a ``token_id → market_payload``
     map matching the shape ``TradersCopyTradeSignalService`` builds via
@@ -3117,17 +3175,26 @@ async def _replay_discover_opportunities(
         start_dt + _td_replay(seconds=actual_interval * i) for i in range(n_ticks)
     ]
 
-    # Step 2: load the current market catalog from the live scanner
-    # (in-memory cache, no API call).  For book-driven strategies we
-    # narrow to markets with at least one token in scope.  For event-
-    # driven strategies the candidate filter is bypassed — events drive
-    # the universe, and the catalog is used only for token→market
-    # lookups.
-    try:
-        from services.shared_state import _read_market_catalog_file
-        catalog = _read_market_catalog_file()
-    except Exception:
-        catalog = None
+    # Step 2: load the market catalog.  Book-driven (event_kind=None) discovery
+    # needs the universe AS-OF the window — the markets the live scanner saw
+    # during [start, end] — so source it from the recorded catalog.snapshot
+    # (a market that has since resolved but was tradeable in-window must NOT be
+    # excluded by its *current* state).  Event-driven kinds use the catalog only
+    # for token→market lookups (events drive the universe), so the current-cache
+    # file is fine there.  Both fall back to the current file when no recorded
+    # catalog covers the window (e.g. imported-only data).
+    catalog: tuple[list[Any], list[Any], dict[str, Any]] | None = None
+    if event_kind is None:
+        try:
+            catalog = await _load_asof_catalog_markets(start_dt, end_dt)
+        except Exception:
+            catalog = None
+    if catalog is None:
+        try:
+            from services.shared_state import _read_market_catalog_file
+            catalog = _read_market_catalog_file()
+        except Exception:
+            catalog = None
 
     candidate_set: set[str] | None = (
         set(candidate_token_ids) if (candidate_token_ids and event_kind is None) else None

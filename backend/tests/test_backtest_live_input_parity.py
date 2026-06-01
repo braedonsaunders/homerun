@@ -360,3 +360,66 @@ def test_recorded_market_hydration_preserves_end_date():
         "clobTokenIds": '["a", "b"]', "endDate": "2026-06-30T00:00:00Z",
     })
     assert gamma is not None and gamma.end_date is not None
+
+
+@pytest.mark.asyncio
+async def test_asof_catalog_first_seen_wins_keeps_active_state(monkeypatch):
+    """P1b: book-driven backtests source the universe AS-OF the window from the
+    recorded catalog.snapshot.  First-seen-wins per market key keeps each market
+    in its in-window ACTIVE state — a market that resolves later in-window must
+    NOT collapse to its resolved snapshot (which the closed/resolved filter would
+    then drop), else the backtest excludes a market the live scanner could trade
+    in-window."""
+    import services.recorded_event_bus as reb
+
+    class _Ev:
+        def __init__(self, payload):
+            self.payload = payload
+
+    async def _fake_replay(window):
+        yield _Ev({"markets": [
+            {"id": "m1", "clob_token_ids": ["t1"], "closed": False, "end_date": "2026-06-30T00:00:00Z"},
+        ], "events": [{"id": "e1"}]})
+        yield _Ev({"markets": [
+            {"id": "m1", "clob_token_ids": ["t1"], "closed": True, "resolved": True},
+            {"id": "m2", "clob_token_ids": ["t2"], "closed": False},
+        ], "events": []})
+
+    class _FakeBus:
+        def replay(self, window):
+            return _fake_replay(window)
+
+    monkeypatch.setattr(reb, "bus", _FakeBus())
+
+    res = await strategy_backtester._load_asof_catalog_markets(
+        datetime(2026, 6, 1, tzinfo=timezone.utc),
+        datetime(2026, 6, 1, 1, tzinfo=timezone.utc),
+    )
+    assert res is not None
+    _events, markets, meta = res
+    by_id = {m["id"]: m for m in markets}
+    assert set(by_id) == {"m1", "m2"}
+    assert by_id["m1"].get("closed") is False, "first-seen-wins must keep m1's active in-window state"
+    assert meta["source"] == "recorded_catalog_snapshot_asof"
+
+
+@pytest.mark.asyncio
+async def test_asof_catalog_empty_window_returns_none(monkeypatch):
+    """No recorded catalog.snapshot covering the window -> None, so the caller
+    falls back to the current catalog file (imported-only data still backtests)."""
+    import services.recorded_event_bus as reb
+
+    async def _empty_replay(window):
+        return
+        yield  # unreachable — makes this an async generator that yields nothing
+
+    class _FakeBus:
+        def replay(self, window):
+            return _empty_replay(window)
+
+    monkeypatch.setattr(reb, "bus", _FakeBus())
+    res = await strategy_backtester._load_asof_catalog_markets(
+        datetime(2020, 1, 1, tzinfo=timezone.utc),
+        datetime(2020, 1, 2, tzinfo=timezone.utc),
+    )
+    assert res is None
