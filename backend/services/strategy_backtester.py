@@ -3314,7 +3314,6 @@ async def _replay_discover_opportunities(
     # Step 6: walk the time grid + run detect at each tick.
     detected_total: list[_SyntheticOpp] = []
     detect_failures = 0
-    _DBG3_DONE = [False]
 
     # Carry-forward catalog state for scanner_tick (MARKET_DATA_REFRESH)
     # replay.  Catalog snapshots arrive at refresh cadence (~ minutes);
@@ -3515,46 +3514,6 @@ async def _replay_discover_opportunities(
         except Exception:
             detect_failures += 1
             continue
-
-        if event_kind == "scanner_tick" and not _DBG3_DONE[0]:
-            for _mm in market_models:
-                _ed = getattr(_mm, "end_date", None)
-                if _ed is not None and _ed.tzinfo is None:
-                    _ed = _ed.replace(tzinfo=timezone.utc)
-                if _ed is None or _ed <= tick_t:
-                    continue
-                _toks = list(getattr(_mm, "clob_token_ids", []) or [])
-                _up = (prices_at_tick.get(_toks[0]) or {}).get("mid") if _toks else None
-                if _up is not None and 0.85 <= _up <= 0.905:
-                    _DBG3_DONE[0] = True
-                    _nu = int(tick_t.timestamp() * 1_000_000)
-                    _solo = await _run_detect_once(strategy, events=[], markets=[_mm], prices=prices_at_tick, timeout_seconds=8.0, now_us=_nu)
-                    _solo_raw = (getattr(strategy, "_filter_diagnostics", {}) or {}).get("raw_detected_count")
-                    # Fresh sandbox instance with NO accumulated state.
-                    _fresh_raw = None
-                    try:
-                        from services.strategy_loader import StrategyLoader as _SL
-                        _fresh = _SL().load("tail_dbg_fresh", open(r"C:\homerun\backend\services\strategies\tail_end_carry.py", encoding="utf-8").read(), None).instance
-                        _fsolo = await _run_detect_once(_fresh, events=[], markets=[_mm], prices=prices_at_tick, timeout_seconds=8.0, now_us=_nu)
-                        _fresh_raw = (getattr(_fresh, "_filter_diagnostics", {}) or {}).get("raw_detected_count")
-                    except Exception as _e:
-                        _fresh_raw = f"ERR {_e}"
-                    # Direct (non-sandbox) instance.
-                    from services.strategies.tail_end_carry import TailEndCarryStrategy as _TEC
-                    _direct = _TEC()
-                    _dsolo = await _run_detect_once(_direct, events=[], markets=[_mm], prices=prices_at_tick, timeout_seconds=8.0, now_us=_nu)
-                    _direct_raw = (getattr(_direct, "_filter_diagnostics", {}) or {}).get("raw_detected_count")
-                    _acc_lim = strategy._tail_end_limits({**strategy.default_config, **(getattr(strategy, "config", {}) or {})})
-                    _esb_acc = strategy._extract_side_book(_mm, prices_at_tick, "YES")
-                    logger.warning(
-                        "DBG3 tick=%d id=%s up_mid=%s SOLO_raw=%s FRESH_raw=%s DIRECT_raw=%s | ESB_acc=%s | acc_min_prob=%s acc_max_prob=%s acc_min_days=%s acc_max_days=%s | cfg_keys=%s state_keys=%s",
-                        tick_i, getattr(_mm, "id", ""), _up, _solo_raw, _fresh_raw, _direct_raw,
-                        _esb_acc, _acc_lim.get("min_probability"), _acc_lim.get("max_probability"),
-                        _acc_lim.get("min_days_to_resolution"), _acc_lim.get("max_days_to_resolution"),
-                        sorted((getattr(strategy, "config", {}) or {}).keys())[:20],
-                        sorted((getattr(strategy, "state", {}) or {}).keys())[:20],
-                    )
-                    break
 
         # Warm-up tick: detect ran (state built up) but we don't emit its
         # opportunities — only the measured window counts.
