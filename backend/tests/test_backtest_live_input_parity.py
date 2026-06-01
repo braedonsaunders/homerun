@@ -331,6 +331,7 @@ def test_recorded_market_hydration_preserves_end_date():
     model_validate; camelCase gamma payloads (incl. the projection) ->
     from_gamma_response."""
     from models.market import Market
+    from services.strategy_inputs import hydrate_market
 
     live = Market.from_gamma_response({
         "id": "m1",
@@ -349,13 +350,13 @@ def test_recorded_market_hydration_preserves_end_date():
     assert Market.from_gamma_response(recorded).end_date is None
 
     # The fix: the shape-aware hydrator restores it via model_validate.
-    rehydrated = strategy_backtester._hydrate_market_model(Market, recorded)
+    rehydrated = hydrate_market(recorded)
     assert rehydrated is not None
     assert rehydrated.end_date is not None
     assert [str(t) for t in (rehydrated.clob_token_ids or [])] == ["tok_yes", "tok_no"]
 
     # Genuine gamma (camelCase) payloads still route through from_gamma_response.
-    gamma = strategy_backtester._hydrate_market_model(Market, {
+    gamma = hydrate_market({
         "id": "m2", "question": "Q", "conditionId": "0xc2",
         "clobTokenIds": '["a", "b"]', "endDate": "2026-06-30T00:00:00Z",
     })

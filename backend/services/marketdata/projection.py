@@ -161,16 +161,21 @@ async def load_projected_markets(
     return markets
 
 
-def _market_dict(
-    m: ProjectedMarket,
+def _derive_projected_prices(
+    m: "ProjectedMarket",
     *,
     tick: datetime,
     up_bid: Optional[float],
     up_ask: Optional[float],
     down_bid: Optional[float],
     down_ask: Optional[float],
-) -> Optional[dict[str, Any]]:
-    # Derive a missing side via the binary complement P(down)=1-P(up).
+) -> Optional[tuple]:
+    """Shared book math for projected market dicts.  Fills a missing binary side
+    via the complement P(down)=1-P(up), computes up/down mids + seconds_left +
+    spread.  Returns ``None`` when neither side has a usable top-of-book, else
+    ``(up_bid, up_ask, down_bid, down_ask, up_mid, down_mid, seconds_left,
+    spread)``.  Both _market_dict (crypto_update shape) and _catalog_market_dict
+    (MARKET_DATA_REFRESH shape) build their dicts on top of this."""
     if up_bid is None and up_ask is None and (down_bid is not None or down_ask is not None):
         up_bid = _clamp01(1.0 - down_ask) if down_ask is not None else None
         up_ask = _clamp01(1.0 - down_bid) if down_bid is not None else None
@@ -183,15 +188,33 @@ def _market_dict(
             return round((b + a) / 2.0, 6)
         return b if b is not None else a
 
-    up_price = _mid(up_bid, up_ask)
-    down_price = _mid(down_bid, down_ask)
-    if up_price is None and down_price is None:
+    up_mid = _mid(up_bid, up_ask)
+    down_mid = _mid(down_bid, down_ask)
+    if up_mid is None and down_mid is None:
         return None
-
     ts_us = int(tick.timestamp() * 1_000_000)
     seconds_left = max(0, int((m.end_us - ts_us) / 1_000_000)) if m.end_us is not None else None
-    is_live = (m.start_us is None or m.start_us <= ts_us) and (m.end_us is None or ts_us < m.end_us)
     spread = round(up_ask - up_bid, 6) if (up_bid is not None and up_ask is not None) else None
+    return (up_bid, up_ask, down_bid, down_ask, up_mid, down_mid, seconds_left, spread)
+
+
+def _market_dict(
+    m: ProjectedMarket,
+    *,
+    tick: datetime,
+    up_bid: Optional[float],
+    up_ask: Optional[float],
+    down_bid: Optional[float],
+    down_ask: Optional[float],
+) -> Optional[dict[str, Any]]:
+    derived = _derive_projected_prices(
+        m, tick=tick, up_bid=up_bid, up_ask=up_ask, down_bid=down_bid, down_ask=down_ask
+    )
+    if derived is None:
+        return None
+    up_bid, up_ask, down_bid, down_ask, up_price, down_price, seconds_left, spread = derived
+    ts_us = int(tick.timestamp() * 1_000_000)
+    is_live = (m.start_us is None or m.start_us <= ts_us) and (m.end_us is None or ts_us < m.end_us)
 
     return {
         "id": str(m.market_id or ""),
@@ -282,29 +305,14 @@ def _catalog_market_dict(
     Returns ``None`` when neither side has a usable top-of-book (no point
     surfacing a market the strategy can't price).
     """
-    # Derive a missing side via the binary complement P(down)=1-P(up).
-    if up_bid is None and up_ask is None and (down_bid is not None or down_ask is not None):
-        up_bid = _clamp01(1.0 - down_ask) if down_ask is not None else None
-        up_ask = _clamp01(1.0 - down_bid) if down_bid is not None else None
-    if down_bid is None and down_ask is None and (up_bid is not None or up_ask is not None):
-        down_bid = _clamp01(1.0 - up_ask) if up_ask is not None else None
-        down_ask = _clamp01(1.0 - up_bid) if up_bid is not None else None
-
-    def _mid(b: Optional[float], a: Optional[float]) -> Optional[float]:
-        if b is not None and a is not None:
-            return round((b + a) / 2.0, 6)
-        return b if b is not None else a
-
-    up_mid = _mid(up_bid, up_ask)
-    down_mid = _mid(down_bid, down_ask)
-    if up_mid is None and down_mid is None:
+    derived = _derive_projected_prices(
+        m, tick=tick, up_bid=up_bid, up_ask=up_ask, down_bid=down_bid, down_ask=down_ask
+    )
+    if derived is None:
         return None
-
-    ts_us = int(tick.timestamp() * 1_000_000)
-    seconds_left = max(0, int((m.end_us - ts_us) / 1_000_000)) if m.end_us is not None else None
+    up_bid, up_ask, down_bid, down_ask, up_mid, down_mid, seconds_left, up_spread = derived
     end_iso = _iso_us(m.end_us)
     start_iso = _iso_us(m.start_us)
-    up_spread = round(up_ask - up_bid, 6) if (up_bid is not None and up_ask is not None) else None
     category = _classify_projected_category(m)
     title = m.title or m.slug or ""
 

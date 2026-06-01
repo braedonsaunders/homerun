@@ -2486,39 +2486,6 @@ async def _load_wallet_events_for_replay(
     return rows, truncated
 
 
-def _hydrate_market_model(market_cls: Any, m: Any) -> Any | None:
-    """Rebuild a ``Market`` from a recorded/replayed market dict, faithfully.
-
-    Recorded catalog-snapshot markets are ``Market.model_dump(mode="json")``
-    outputs — snake_case field names only — so the FAITHFUL inverse is
-    ``model_validate``.  ``from_gamma_response`` parses the Polymarket *gamma
-    API* shape (camelCase: ``endDate``, ``clobTokenIds`` …) and silently drops
-    fields whose names don't match — notably ``end_date``, which scanner-tick
-    strategies (e.g. tail_end_carry) read for days-to-resolution — so running it
-    on a model_dump yields a lossy Market (null resolution date / book), the
-    cause of recorded market-source strategies emitting nothing.
-
-    Route by shape: dicts carrying camelCase keys (genuine gamma payloads — incl.
-    the marketdata projection, which deliberately emits camelCase so
-    from_gamma_response picks up the date/tokens) go through from_gamma_response
-    unchanged; snake-only model_dumps go through model_validate.  Falls back to
-    from_gamma_response when model_validate can't produce a usable Market."""
-    if not isinstance(m, dict):
-        return None
-    looks_gamma = "clobTokenIds" in m or "endDate" in m or "conditionId" in m
-    if not looks_gamma:
-        try:
-            mk = market_cls.model_validate(m)
-            if getattr(mk, "clob_token_ids", None):
-                return mk
-        except Exception:
-            pass
-    try:
-        return market_cls.from_gamma_response(m)
-    except Exception:
-        return None
-
-
 async def _load_asof_catalog_markets(
     start_dt: datetime, end_dt: datetime
 ) -> tuple[list[Any], list[Any], dict[str, Any]] | None:
@@ -3525,12 +3492,8 @@ async def _replay_discover_opportunities(
         # detect_async signature in the repo annotates ``markets:
         # list[Market]``).
         try:
-            from models.market import Market as _Market
-            market_models: list[Any] = []
-            for m in markets_at_tick:
-                mk = _hydrate_market_model(_Market, m)
-                if mk is not None:
-                    market_models.append(mk)
+            from services.strategy_inputs import hydrate_markets
+            market_models: list[Any] = hydrate_markets(markets_at_tick)
         except Exception:
             market_models = list(markets_at_tick)
 
@@ -3549,22 +3512,15 @@ async def _replay_discover_opportunities(
         events_for_detect: list[Any] = events_at_tick
         if event_kind == "scanner_tick":
             try:
-                from models.market import Event as _Event
-                _ev_models: list[Any] = []
+                from services.strategy_inputs import hydrate_events
+                _raw: list[Any] = []
                 for ev in events_at_tick:
                     raw_events = getattr(ev, "events", None)
                     if not raw_events:
                         _pl = getattr(ev, "payload", None)
                         raw_events = _pl.get("events") if isinstance(_pl, dict) else None
-                    for raw in (raw_events or []):
-                        if isinstance(raw, dict):
-                            try:
-                                _ev_models.append(_Event.from_gamma_response(raw))
-                            except Exception:
-                                continue
-                        else:
-                            _ev_models.append(raw)
-                events_for_detect = _ev_models
+                    _raw.extend(raw_events or [])
+                events_for_detect = hydrate_events(_raw)
             except Exception:
                 events_for_detect = []
 
