@@ -2486,6 +2486,39 @@ async def _load_wallet_events_for_replay(
     return rows, truncated
 
 
+def _hydrate_market_model(market_cls: Any, m: Any) -> Any | None:
+    """Rebuild a ``Market`` from a recorded/replayed market dict, faithfully.
+
+    Recorded catalog-snapshot markets are ``Market.model_dump(mode="json")``
+    outputs — snake_case field names only — so the FAITHFUL inverse is
+    ``model_validate``.  ``from_gamma_response`` parses the Polymarket *gamma
+    API* shape (camelCase: ``endDate``, ``clobTokenIds`` …) and silently drops
+    fields whose names don't match — notably ``end_date``, which scanner-tick
+    strategies (e.g. tail_end_carry) read for days-to-resolution — so running it
+    on a model_dump yields a lossy Market (null resolution date / book), the
+    cause of recorded market-source strategies emitting nothing.
+
+    Route by shape: dicts carrying camelCase keys (genuine gamma payloads — incl.
+    the marketdata projection, which deliberately emits camelCase so
+    from_gamma_response picks up the date/tokens) go through from_gamma_response
+    unchanged; snake-only model_dumps go through model_validate.  Falls back to
+    from_gamma_response when model_validate can't produce a usable Market."""
+    if not isinstance(m, dict):
+        return None
+    looks_gamma = "clobTokenIds" in m or "endDate" in m or "conditionId" in m
+    if not looks_gamma:
+        try:
+            mk = market_cls.model_validate(m)
+            if getattr(mk, "clob_token_ids", None):
+                return mk
+        except Exception:
+            pass
+    try:
+        return market_cls.from_gamma_response(m)
+    except Exception:
+        return None
+
+
 def _build_token_to_market_lookup(catalog_markets: list[Any]) -> dict[str, dict[str, Any]]:
     """Walk the catalog once and produce a ``token_id → market_payload``
     map matching the shape ``TradersCopyTradeSignalService`` builds via
@@ -3428,10 +3461,9 @@ async def _replay_discover_opportunities(
             from models.market import Market as _Market
             market_models: list[Any] = []
             for m in markets_at_tick:
-                try:
-                    market_models.append(_Market.from_gamma_response(m))
-                except Exception:
-                    continue
+                mk = _hydrate_market_model(_Market, m)
+                if mk is not None:
+                    market_models.append(mk)
         except Exception:
             market_models = list(markets_at_tick)
 

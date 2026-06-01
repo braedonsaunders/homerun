@@ -319,3 +319,44 @@ async def test_resolve_coverage_summary_never_crashes_on_resolver_error(monkeypa
     )
     assert summary["requested_tokens"] == 1
     assert warning is None  # degrade gracefully, don't fabricate a warning
+
+
+def test_recorded_market_hydration_preserves_end_date():
+    """Markets leg of the invariant: recorded catalog-snapshot markets are
+    ``Market.model_dump()``s (snake_case only).  The backtest must rehydrate them
+    with ``model_validate`` — NOT ``from_gamma_response``, which parses the gamma
+    API's camelCase and silently DROPS ``end_date`` (so a market-source strategy
+    like tail_end_carry sees a null resolution date and emits nothing).
+    ``_hydrate_market_model`` routes by shape: snake-only model_dumps ->
+    model_validate; camelCase gamma payloads (incl. the projection) ->
+    from_gamma_response."""
+    from models.market import Market
+
+    live = Market.from_gamma_response({
+        "id": "m1",
+        "question": "Will it resolve?",
+        "conditionId": "0xcond",
+        "clobTokenIds": '["tok_yes", "tok_no"]',
+        "endDate": "2026-06-30T00:00:00Z",
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.6", "0.4"]',
+    })
+    assert live.end_date is not None
+    recorded = live.model_dump(mode="json")  # exactly what the catalog-snapshot tee stores
+    assert "clob_token_ids" in recorded and "clobTokenIds" not in recorded  # snake-only
+
+    # The bug this guards: from_gamma_response on a model_dump drops end_date.
+    assert Market.from_gamma_response(recorded).end_date is None
+
+    # The fix: the shape-aware hydrator restores it via model_validate.
+    rehydrated = strategy_backtester._hydrate_market_model(Market, recorded)
+    assert rehydrated is not None
+    assert rehydrated.end_date is not None
+    assert [str(t) for t in (rehydrated.clob_token_ids or [])] == ["tok_yes", "tok_no"]
+
+    # Genuine gamma (camelCase) payloads still route through from_gamma_response.
+    gamma = strategy_backtester._hydrate_market_model(Market, {
+        "id": "m2", "question": "Q", "conditionId": "0xc2",
+        "clobTokenIds": '["a", "b"]', "endDate": "2026-06-30T00:00:00Z",
+    })
+    assert gamma is not None and gamma.end_date is not None
