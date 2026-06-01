@@ -27,6 +27,7 @@ from services.market_prioritizer import market_prioritizer, MarketTier
 from services.ws_feeds import get_feed_manager
 from services.quality_filter import quality_filter
 from services.data_events import DataEvent, EventType
+from services.strategy_inputs import build_market_data_refresh_inputs
 from services.event_dispatcher import event_dispatcher
 from services.live_pressure import is_db_pressure_active
 from sqlalchemy import select
@@ -3946,8 +3947,7 @@ class ArbitrageScanner:
                     f"Fast scan: running strategies on {len(affected_ids_payload)} markets ({scan_mode})..."
                 )
 
-                fast_data_event = DataEvent(
-                    event_type=EventType.MARKET_DATA_REFRESH,
+                fast_data_event = build_market_data_refresh_inputs(
                     source=source,
                     timestamp=utcnow(),
                     payload={
@@ -4340,8 +4340,7 @@ class ArbitrageScanner:
                     self._apply_live_prices_to_markets(chunk_markets, full_snapshot_prices)
 
                     market_ids = [str(getattr(market, "id", "") or "") for market in chunk_markets]
-                    full_event = DataEvent(
-                        event_type=EventType.MARKET_DATA_REFRESH,
+                    full_event = build_market_data_refresh_inputs(
                         source="scanner_full_snapshot",
                         timestamp=utcnow(),
                         payload={

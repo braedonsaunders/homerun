@@ -117,6 +117,23 @@ def _has_custom_detect_plain(strategy) -> bool:
     return method is not base_method
 
 
+def _has_custom_on_event(strategy) -> bool:
+    """Check if strategy overrides ``on_event`` (the LIVE event-driven entry
+    point).  The base ``on_event`` routes MARKET_DATA_REFRESH to ``detect`` but
+    returns ``[]`` for CRYPTO_UPDATE, so a crypto strategy MUST override
+    ``on_event`` to fire live — and is therefore NOT reachable via ``detect()``.
+    Replay discovery uses this to dispatch such strategies through ``on_event``
+    instead of ``detect()`` (else backtest runs different code than live).
+    """
+    method = getattr(type(strategy), "on_event", None)
+    if method is None:
+        return False
+    from services.strategies.base import BaseStrategy
+
+    base_method = getattr(BaseStrategy, "on_event", None)
+    return method is not base_method
+
+
 def _timeframe_to_seconds(value: str | int | None, *, default_seconds: int = 1800) -> int:
     if isinstance(value, int):
         return max(60, int(value))
@@ -247,6 +264,58 @@ async def _run_detect_once(
             loop.run_in_executor(None, lambda: ctx.run(fn, events, markets, prices)),
             timeout=timeout_seconds,
         )
+    finally:
+        if now_us is not None:
+            try:
+                strategy.set_replay_clock(prev_instance)
+            except Exception:  # noqa: BLE001
+                try:
+                    strategy._replay_now_us = prev_instance
+                except Exception:  # noqa: BLE001
+                    pass
+            if token is not None:
+                _utcnow_mod.restore_replay_clock(token)
+
+
+async def _run_on_event_once(
+    strategy: Any,
+    events: list[Any],
+    *,
+    timeout_seconds: float,
+    now_us: int | None = None,
+) -> list[Any]:
+    """Dispatch a tick's events through ``strategy.on_event`` — the LIVE entry
+    point for event-driven (CRYPTO_UPDATE) strategies.
+
+    The base ``on_event`` returns ``[]`` for CRYPTO_UPDATE, so a crypto strategy
+    overrides ``on_event`` and is NEVER reached via ``detect()``; replaying it
+    through ``detect()`` would run different code than live.  This forwards the
+    binned ``DataEvent(CRYPTO_UPDATE)`` objects unchanged (byte-identical to what
+    live dispatched), calling ``on_event`` once per event in tick order — live
+    processes one dispatch per event, and stateful strategies must see every
+    dispatch — then aggregates the opportunities.  The replay clock is pinned to
+    ``now_us`` exactly as :func:`_run_detect_once` does, so wall-clock reads
+    inside ``on_event`` resolve to simulated event time."""
+    from utils import utcnow as _utcnow_mod
+
+    prev_instance = getattr(strategy, "_replay_now_us", None)
+    token = None
+    if now_us is not None:
+        try:
+            strategy.set_replay_clock(int(now_us))
+        except Exception:  # noqa: BLE001 — non-BaseStrategy duck types
+            try:
+                strategy._replay_now_us = int(now_us)
+            except Exception:  # noqa: BLE001
+                pass
+        token = _utcnow_mod.set_replay_clock_us(int(now_us))
+    try:
+        out: list[Any] = []
+        for ev in events or []:
+            res = await asyncio.wait_for(strategy.on_event(ev), timeout=timeout_seconds)
+            if res:
+                out.extend(res)
+        return out
     finally:
         if now_us is not None:
             try:
@@ -3091,17 +3160,30 @@ async def _replay_discover_opportunities(
     from sqlalchemy import text as _text
     from models.database import BacktestAsyncSessionLocal as _Sess
 
+    event_kind = _replay_event_kind_for_strategy(slug, strategy)
+    # CRYPTO_UPDATE strategies fire via ``on_event(event)`` LIVE (the base
+    # ``on_event`` returns [] for CRYPTO_UPDATE, so a crypto strategy MUST
+    # override it) — the live crypto dispatch never calls their ``detect()``.
+    # Replay them through the same ``on_event`` entry point so backtest runs
+    # identical code to live.  This also covers strategies that override
+    # ``on_event`` but implement NO detect at all (e.g. crypto_5m_midcycle,
+    # crypto_spike_reversion, crypto_distance_edge) — which is why the
+    # "nothing to replay" guard below must admit them.  Strategies WITHOUT an
+    # on_event override (e.g. detect_async-only crypto strategies) keep the
+    # detect path unchanged.
+    dispatch_via_on_event = event_kind == "crypto_update" and _has_custom_on_event(strategy)
+
     if (
         not _has_custom_detect_async(strategy)
         and not _has_custom_detect_sync(strategy)
         and not _has_custom_detect_plain(strategy)
+        and not dispatch_via_on_event
     ):
-        # Strategy uses none of the three detect methods — base class
-        # default ``detect()`` returns []; historical replay has nothing
-        # to do.  Hold-only / scheduler-driven strategies fall here.
+        # Strategy uses none of the three detect methods and is not an
+        # on_event-driven crypto strategy — base class default ``detect()``
+        # returns []; historical replay has nothing to do.  Hold-only /
+        # scheduler-driven strategies fall here.
         return []
-
-    event_kind = _replay_event_kind_for_strategy(slug, strategy)
 
     # Step 1: build the time grid.  Resolution = ``sample_interval_seconds``,
     # bounded only by ``max_ticks`` (the safety cap that stops a 30-day window
@@ -3486,53 +3568,62 @@ async def _replay_discover_opportunities(
             if not markets_at_tick:
                 continue
 
-        # Call strategy.detect_async with the reconstructed inputs.
-        # Wrap dict-shaped catalog markets into Market pydantic models
-        # because that's what strategies expect (verified — every
-        # detect_async signature in the repo annotates ``markets:
-        # list[Market]``).
+        # Call the strategy through the SAME entry point it uses LIVE.
+        #
+        # CRYPTO_UPDATE strategies that override on_event fire via
+        # ``on_event(event)`` live — their ``detect()`` is never called by the
+        # live crypto dispatch — so replay them the same way, forwarding the
+        # binned DataEvent(CRYPTO_UPDATE) objects unchanged (they already carry
+        # the byte-identical ``payload["markets"]`` live saw).  No hydrate /
+        # market_models / prices arg: on_event reads everything from
+        # ``event.payload``, exactly as live.
+        #
+        # Everything else runs through detect_async/detect with the
+        # reconstructed (events, markets, prices): dict-shaped catalog markets
+        # are wrapped into Market models (every detect signature in the repo
+        # annotates ``markets: list[Market]``), and for scanner_tick the
+        # embedded ``events`` are unwrapped into Event models so detect() sees
+        # the same shape live delivers (empty when the snapshot carried no event
+        # context — the strategy then classifies from market text alone, exactly
+        # as live does when the catalog refresh has no events array).
         try:
-            from services.strategy_inputs import hydrate_markets
-            market_models: list[Any] = hydrate_markets(markets_at_tick)
-        except Exception:
-            market_models = list(markets_at_tick)
+            if dispatch_via_on_event:
+                opps_at_tick = await _run_on_event_once(
+                    strategy,
+                    events_at_tick,
+                    timeout_seconds=8.0,
+                    now_us=int(tick_t.timestamp() * 1_000_000),
+                )
+            else:
+                try:
+                    from services.strategy_inputs import hydrate_markets
+                    market_models: list[Any] = hydrate_markets(markets_at_tick)
+                except Exception:
+                    market_models = list(markets_at_tick)
 
-        # Shape the ``events`` argument detect() receives.  In live, a
-        # MARKET_DATA_REFRESH fires ``detect(event.events, event.markets,
-        # event.prices)`` — the ``events`` arg is the DataEvent's ``events``
-        # field (Event objects the strategy maps market→event from), NOT the
-        # DataEvent itself.  The discovery loop otherwise forwards the raw
-        # DataEvent wrappers, whose ``.markets`` are plain dicts — a
-        # scanner-tick strategy that does ``for ev in events: ev.markets[*].id``
-        # then crashes.  For scanner_tick, unwrap the embedded ``events`` into
-        # Event models so detect() sees the same shape live delivers (empty
-        # when the projected/recorded snapshot carried no event context —
-        # the strategy then classifies from market text alone, exactly as
-        # live does when the catalog refresh has no events array).
-        events_for_detect: list[Any] = events_at_tick
-        if event_kind == "scanner_tick":
-            try:
-                from services.strategy_inputs import hydrate_events
-                _raw: list[Any] = []
-                for ev in events_at_tick:
-                    raw_events = getattr(ev, "events", None)
-                    if not raw_events:
-                        _pl = getattr(ev, "payload", None)
-                        raw_events = _pl.get("events") if isinstance(_pl, dict) else None
-                    _raw.extend(raw_events or [])
-                events_for_detect = hydrate_events(_raw)
-            except Exception:
-                events_for_detect = []
+                events_for_detect: list[Any] = events_at_tick
+                if event_kind == "scanner_tick":
+                    try:
+                        from services.strategy_inputs import hydrate_events
+                        _raw: list[Any] = []
+                        for ev in events_at_tick:
+                            raw_events = getattr(ev, "events", None)
+                            if not raw_events:
+                                _pl = getattr(ev, "payload", None)
+                                raw_events = _pl.get("events") if isinstance(_pl, dict) else None
+                            _raw.extend(raw_events or [])
+                        events_for_detect = hydrate_events(_raw)
+                    except Exception:
+                        events_for_detect = []
 
-        try:
-            opps_at_tick = await _run_detect_once(
-                strategy,
-                events=events_for_detect,
-                markets=market_models,
-                prices=prices_at_tick,
-                timeout_seconds=8.0,
-                now_us=int(tick_t.timestamp() * 1_000_000),
-            )
+                opps_at_tick = await _run_detect_once(
+                    strategy,
+                    events=events_for_detect,
+                    markets=market_models,
+                    prices=prices_at_tick,
+                    timeout_seconds=8.0,
+                    now_us=int(tick_t.timestamp() * 1_000_000),
+                )
         except Exception:
             detect_failures += 1
             continue

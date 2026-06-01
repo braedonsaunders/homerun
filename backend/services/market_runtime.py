@@ -12,6 +12,7 @@ from models.database import AsyncSessionLocal
 from services import shared_state, trader_binding_cache
 from services.crypto_service import get_crypto_service
 from services.data_events import DataEvent, EventType
+from services.strategy_inputs import build_crypto_update_inputs
 from services.event_bus import event_bus
 from services.event_dispatcher import event_dispatcher
 from services.intent_runtime import get_intent_runtime
@@ -1760,11 +1761,11 @@ class MarketRuntime:
                 # passed to every event_dispatcher handler and we don't
                 # want one slow handler to mutate the source list.
                 copied_for_event = await asyncio.to_thread(copy.deepcopy, payload)
-                event = DataEvent(
-                    event_type=EventType.CRYPTO_UPDATE,
+                event = build_crypto_update_inputs(
+                    markets=copied_for_event,
+                    trigger=trigger,
                     source="market_runtime",
                     timestamp=utcnow(),
-                    payload={"markets": copied_for_event, "trigger": str(trigger)},
                 )
                 # Tee to the recorded-event bus so the same CRYPTO_UPDATE
                 # event is captured for backtest replay.  Before this

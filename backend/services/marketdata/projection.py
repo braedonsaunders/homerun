@@ -402,7 +402,7 @@ async def project_market_data_refresh_events(
 
     Returns ``(events, stats)``.
     """
-    from services.data_events import DataEvent, EventType
+    from services.strategy_inputs import build_market_data_refresh_inputs
 
     scope = {str(t) for t in token_scope} if token_scope is not None else None
     exclude = exclude_market_keys or set()
@@ -459,8 +459,7 @@ async def project_market_data_refresh_events(
                     }
         if market_dicts:
             n_market_dicts += len(market_dicts)
-            events.append(DataEvent(
-                event_type=EventType.MARKET_DATA_REFRESH,
+            events.append(build_market_data_refresh_inputs(
                 source="marketdata.projection",
                 timestamp=tick,
                 payload={
@@ -510,7 +509,7 @@ async def project_crypto_update_events(
 
     Returns ``(events, stats)``.
     """
-    from services.data_events import DataEvent, EventType
+    from services.strategy_inputs import build_crypto_update_inputs
 
     scope = {str(t) for t in token_scope} if token_scope is not None else None
     exclude = exclude_market_keys or set()
@@ -554,15 +553,12 @@ async def project_crypto_update_events(
                 market_dicts.append(md)
         if market_dicts:
             n_market_dicts += len(market_dicts)
-            events.append(DataEvent(
-                event_type=EventType.CRYPTO_UPDATE,
+            events.append(build_crypto_update_inputs(
+                markets=market_dicts,
+                trigger="marketdata.projection",
                 source="marketdata.projection",
                 timestamp=tick,
-                payload={
-                    "markets": market_dicts,
-                    "trigger": "marketdata.projection",
-                    "event_source": "imported_parquet",
-                },
+                extra_payload={"event_source": "imported_parquet"},
             ))
         tick_us += cadence_us
 
