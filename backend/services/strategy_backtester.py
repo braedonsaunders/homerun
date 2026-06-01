@@ -3235,55 +3235,18 @@ async def _replay_discover_opportunities(
             if shaped is not None:
                 events_by_tick[idx].append(shaped)
 
-    # Step 5b: per-token price grid for event-driven crypto strategies.
-    # crypto_update events embed each market's tokens but only a market-level
-    # mid; a strategy that prices a marketable taker order needs the real
-    # per-token best_bid/best_ask (crossing off the mid misses the real ask on
-    # wide-spread books near resolution → the order is non-marketable and never
-    # fills, even though the trigger fired correctly).  Build the same canonical
-    # per-tick grid book-driven strategies get, over every token the events
-    # reference, so detect() sees the real book the matcher fills against.
-    # Strategies that only read the event payload are unaffected (additive).
-    if event_kind == "crypto_update" and not grid:
-        crypto_tokens: set[str] = set()
-        for _evs in events_by_tick:
-            for _ev in _evs:
-                _pl = getattr(_ev, "payload", None) or (_ev if isinstance(_ev, dict) else {})
-                if not isinstance(_pl, dict):
-                    continue
-                for _m in (_pl.get("markets") or []):
-                    if isinstance(_m, dict):
-                        for _t in (_m.get("clob_token_ids") or []):
-                            if _t:
-                                crypto_tokens.add(str(_t))
-        if crypto_tokens:
-            try:
-                grid = await _build_per_tick_prices_grid(
-                    token_ids=sorted(crypto_tokens),
-                    ticks=ticks,
-                    start_dt=start_dt,
-                    end_dt=end_dt,
-                )
-                logger.info(
-                    "replay_discover: crypto_update per-token grid built for %d tokens",
-                    len(crypto_tokens),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("replay_discover: crypto_update price grid build failed: %s", exc)
-                grid = {}
-
-    # Step 5c: per-token price grid for scanner-tick strategies on imported
-    # parquet.  Recorded catalog snapshots embed each market's last-known
-    # top-of-book, but imported book parquet only has the canonical book plane
-    # — so the scanner-tick branch augments each market's best_bid/best_ask
-    # from ``prices_at_tick`` (this grid).  Without it, the projected catalog's
-    # tokens have no per-tick prices and tail_end_carry's price read falls back
-    # to the (absent) market-level mid → no entry-band candidate ever fires.
-    # Build the grid over every token the projected/recorded catalog events
-    # reference, mirroring the crypto_update block above.  (When a recorded
-    # book-driven grid already exists we leave it untouched — additive.)
-    if event_kind == "scanner_tick" and not grid:
-        scanner_tokens: set[str] = set()
+    # Step 5b: per-token price grid for EVENT-DRIVEN strategies (crypto_update +
+    # scanner_tick).  These events embed each market's tokens but only a
+    # market-level mid; a strategy that prices a marketable taker order or reads
+    # per-token books needs the real best_bid/best_ask (crossing off the mid
+    # misses the real ask on wide-spread books → the order never fills even
+    # though the trigger fired).  Build the same canonical per-tick grid that
+    # book-driven strategies get, over every token the events reference (markets
+    # arrive on a ``.markets`` attr or in ``payload["markets"]``; tokens under
+    # clob_token_ids/clobTokenIds).  Additive — book-only strategies and any
+    # already-built grid are untouched.
+    if event_kind in ("crypto_update", "scanner_tick") and not grid:
+        ev_tokens: set[str] = set()
         for _evs in events_by_tick:
             for _ev in _evs:
                 _markets = getattr(_ev, "markets", None)
@@ -3294,21 +3257,21 @@ async def _replay_discover_opportunities(
                     if isinstance(_m, dict):
                         for _t in (_m.get("clob_token_ids") or _m.get("clobTokenIds") or []):
                             if _t:
-                                scanner_tokens.add(str(_t))
-        if scanner_tokens:
+                                ev_tokens.add(str(_t))
+        if ev_tokens:
             try:
                 grid = await _build_per_tick_prices_grid(
-                    token_ids=sorted(scanner_tokens),
+                    token_ids=sorted(ev_tokens),
                     ticks=ticks,
                     start_dt=start_dt,
                     end_dt=end_dt,
                 )
                 logger.info(
-                    "replay_discover: scanner_tick per-token grid built for %d tokens",
-                    len(scanner_tokens),
+                    "replay_discover: %s per-token grid built for %d tokens",
+                    event_kind, len(ev_tokens),
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("replay_discover: scanner_tick price grid build failed: %s", exc)
+                logger.warning("replay_discover: %s price grid build failed: %s", event_kind, exc)
                 grid = {}
 
     # Step 6: walk the time grid + run detect at each tick.
