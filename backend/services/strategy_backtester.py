@@ -2663,6 +2663,7 @@ async def _replay_bus_events_into_tick_grid(
 
     n_binned = 0
     real_crypto_market_keys: set[str] = set()
+    real_catalog_market_keys: set[str] = set()
     async for envelope in replay_events_for_strategy(
         strategy=strategy,
         start_dt=start_dt,
@@ -2690,6 +2691,13 @@ async def _replay_bus_events_into_tick_grid(
                     k = str(m.get("condition_id") or m.get("id") or m.get("slug") or "")
                     if k:
                         real_crypto_market_keys.add(k)
+        elif envelope.topic == "polymarket.catalog.snapshot":
+            payload = getattr(envelope, "payload", None) or {}
+            for m in (payload.get("markets") or []):
+                if isinstance(m, dict):
+                    k = str(m.get("condition_id") or m.get("id") or m.get("slug") or "")
+                    if k:
+                        real_catalog_market_keys.add(k)
 
     # ── Imported-parquet gap-fill for event-driven crypto strategies ──
     #
@@ -2732,6 +2740,50 @@ async def _replay_bus_events_into_tick_grid(
         except Exception:  # noqa: BLE001
             logger.warning(
                 "marketdata.projection: imported-parquet crypto_update projection failed",
+                exc_info=True,
+            )
+
+    # ── Imported-parquet gap-fill for scanner-tick strategies ──
+    #
+    # Strategies that subscribe to ``market_data_refresh`` (the live scanner
+    # pulse, e.g. tail_end_carry) read their market universe from the
+    # ``polymarket.catalog.snapshot`` topic.  Operator-imported book parquet
+    # has no recorded catalog snapshots, so the scanner-tick discovery loop
+    # would see zero markets and the strategy would never fire.  Project the
+    # same MARKET_DATA_REFRESH shape from the imported ProviderDataset
+    # metadata + point-in-time book — gap-filling only markets WITHOUT real
+    # recorded catalog coverage so recorded snapshots stay authoritative.
+    if "polymarket.catalog.snapshot" in topics:
+        try:
+            from services.marketdata.projection import project_market_data_refresh_events
+
+            window_end = ticks[-1] + (
+                ticks[-1] - ticks[-2] if len(ticks) >= 2 else timedelta(seconds=actual_interval)
+            )
+            proj_events, proj_stats = await project_market_data_refresh_events(
+                start=ticks[0],
+                end=window_end,
+                cadence_seconds=max(_MIN_DISCOVERY_INTERVAL_SECONDS, float(actual_interval)),
+                token_scope=candidate_token_ids,
+                exclude_market_keys=real_catalog_market_keys,
+            )
+            for ev in proj_events:
+                offset = (ev.timestamp - start_dt).total_seconds()
+                if offset < 0:
+                    continue
+                idx = min(n_ticks - 1, int(offset // max(actual_interval, 1e-9)))
+                events_by_tick[idx].append(ev)
+                n_binned += 1
+            if proj_stats.get("events"):
+                logger.info(
+                    "marketdata.projection: gap-filled %d market_data_refresh events from "
+                    "%d imported markets",
+                    proj_stats.get("events"),
+                    proj_stats.get("markets_active"),
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "marketdata.projection: imported-parquet market_data_refresh projection failed",
                 exc_info=True,
             )
 
@@ -3199,6 +3251,45 @@ async def _replay_discover_opportunities(
                 logger.warning("replay_discover: crypto_update price grid build failed: %s", exc)
                 grid = {}
 
+    # Step 5c: per-token price grid for scanner-tick strategies on imported
+    # parquet.  Recorded catalog snapshots embed each market's last-known
+    # top-of-book, but imported book parquet only has the canonical book plane
+    # — so the scanner-tick branch augments each market's best_bid/best_ask
+    # from ``prices_at_tick`` (this grid).  Without it, the projected catalog's
+    # tokens have no per-tick prices and tail_end_carry's price read falls back
+    # to the (absent) market-level mid → no entry-band candidate ever fires.
+    # Build the grid over every token the projected/recorded catalog events
+    # reference, mirroring the crypto_update block above.  (When a recorded
+    # book-driven grid already exists we leave it untouched — additive.)
+    if event_kind == "scanner_tick" and not grid:
+        scanner_tokens: set[str] = set()
+        for _evs in events_by_tick:
+            for _ev in _evs:
+                _markets = getattr(_ev, "markets", None)
+                if not _markets:
+                    _pl = getattr(_ev, "payload", None) or (_ev if isinstance(_ev, dict) else {})
+                    _markets = _pl.get("markets") if isinstance(_pl, dict) else None
+                for _m in (_markets or []):
+                    if isinstance(_m, dict):
+                        for _t in (_m.get("clob_token_ids") or _m.get("clobTokenIds") or []):
+                            if _t:
+                                scanner_tokens.add(str(_t))
+        if scanner_tokens:
+            try:
+                grid = await _build_per_tick_prices_grid(
+                    token_ids=sorted(scanner_tokens),
+                    ticks=ticks,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                )
+                logger.info(
+                    "replay_discover: scanner_tick per-token grid built for %d tokens",
+                    len(scanner_tokens),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("replay_discover: scanner_tick price grid build failed: %s", exc)
+                grid = {}
+
     # Step 6: walk the time grid + run detect at each tick.
     detected_total: list[_SyntheticOpp] = []
     detect_failures = 0
@@ -3356,10 +3447,44 @@ async def _replay_discover_opportunities(
         except Exception:
             market_models = list(markets_at_tick)
 
+        # Shape the ``events`` argument detect() receives.  In live, a
+        # MARKET_DATA_REFRESH fires ``detect(event.events, event.markets,
+        # event.prices)`` — the ``events`` arg is the DataEvent's ``events``
+        # field (Event objects the strategy maps market→event from), NOT the
+        # DataEvent itself.  The discovery loop otherwise forwards the raw
+        # DataEvent wrappers, whose ``.markets`` are plain dicts — a
+        # scanner-tick strategy that does ``for ev in events: ev.markets[*].id``
+        # then crashes.  For scanner_tick, unwrap the embedded ``events`` into
+        # Event models so detect() sees the same shape live delivers (empty
+        # when the projected/recorded snapshot carried no event context —
+        # the strategy then classifies from market text alone, exactly as
+        # live does when the catalog refresh has no events array).
+        events_for_detect: list[Any] = events_at_tick
+        if event_kind == "scanner_tick":
+            try:
+                from models.market import Event as _Event
+                _ev_models: list[Any] = []
+                for ev in events_at_tick:
+                    raw_events = getattr(ev, "events", None)
+                    if not raw_events:
+                        _pl = getattr(ev, "payload", None)
+                        raw_events = _pl.get("events") if isinstance(_pl, dict) else None
+                    for raw in (raw_events or []):
+                        if isinstance(raw, dict):
+                            try:
+                                _ev_models.append(_Event.from_gamma_response(raw))
+                            except Exception:
+                                continue
+                        else:
+                            _ev_models.append(raw)
+                events_for_detect = _ev_models
+            except Exception:
+                events_for_detect = []
+
         try:
             opps_at_tick = await _run_detect_once(
                 strategy,
-                events=events_at_tick,
+                events=events_for_detect,
                 markets=market_models,
                 prices=prices_at_tick,
                 timeout_seconds=8.0,
@@ -3368,6 +3493,40 @@ async def _replay_discover_opportunities(
         except Exception:
             detect_failures += 1
             continue
+
+        if event_kind == "scanner_tick":
+            # Dump any alive market whose up/down mid lands in the entry band
+            # so we can confirm whether band-eligible prices ever reach detect.
+            _now = tick_t
+            for _mm in market_models:
+                _ed = getattr(_mm, "end_date", None)
+                if _ed is not None and _ed.tzinfo is None:
+                    _ed = _ed.replace(tzinfo=timezone.utc)
+                if _ed is None or _ed <= _now:
+                    continue
+                _toks = list(getattr(_mm, "clob_token_ids", []) or [])
+                _up = (prices_at_tick.get(_toks[0]) or {}).get("mid") if _toks else None
+                _dn = (prices_at_tick.get(_toks[1]) or {}).get("mid") if len(_toks) > 1 else None
+                _hit = any(v is not None and 0.85 <= v <= 0.905 for v in (_up, _dn))
+                if _hit:
+                    from utils import utcnow as _un2
+                    _tk2 = _un2.set_replay_clock_us(int(tick_t.timestamp() * 1_000_000))
+                    try:
+                        _esb = strategy._extract_side_book(_mm, prices_at_tick, "YES")
+                        _nowin = _un2.utcnow()
+                        _eddt = getattr(_mm, "end_date", None)
+                        if _eddt is not None and _eddt.tzinfo is None:
+                            _eddt = _eddt.replace(tzinfo=timezone.utc)
+                        _dtr_in = (_eddt - _nowin.astimezone(timezone.utc)).total_seconds() / 86400.0 if _eddt else None
+                    finally:
+                        _un2.restore_replay_clock(_tk2)
+                    logger.warning(
+                        "    BAND-HIT tick %d mkt %s ESB_YES=%s now_in=%s end=%s dtr_in=%s tickdt=%s upx=%s",
+                        tick_i, getattr(_mm, "id", "")[:18], _esb,
+                        _nowin.isoformat(), _eddt, _dtr_in, tick_t.isoformat(),
+                        prices_at_tick.get(_toks[0]),
+                    )
+                    break  # one band-hit market per tick is enough to diagnose
 
         # Warm-up tick: detect ran (state built up) but we don't emit its
         # opportunities — only the measured window counts.
