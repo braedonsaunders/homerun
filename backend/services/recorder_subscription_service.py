@@ -26,11 +26,15 @@ truly-dead tokens from the subscription set so the cap stays
 saturated with markets that actually move.
 
 The cap exists because Polymarket CLOB tolerates a few thousand
-subscriptions per connection but not infinite.  Default 8000 covers
-the bulk of liquid markets (~80% of $100+ liquidity tier).  Operators
-can raise it via the ``HOMERUN_RECORDER_MAX_TOKENS`` env var or by
-patching the constant if they're willing to take the WS-bandwidth
-hit for full fidelity.
+subscriptions per connection but not infinite.  The default policy is
+deliberately BROAD and strategy-INDEPENDENT: ``max_tokens`` defaults to
+40000 (per clob token; ~37k tokens = the entire active universe with
+headroom — binary markets carry 2 tokens each) and ``min_liquidity_usd`` to
+1.0 (excluding only dead / no-book markets), so a strategy authored
+LATER can be backtested on markets that no strategy subscribed to at
+capture time.  Operators tune both via the recording config (Data Lab)
+or the ``HOMERUN_RECORDER_MAX_TOKENS`` / ``HOMERUN_RECORDER_MIN_LIQUIDITY``
+env vars.
 """
 from __future__ import annotations
 
@@ -46,8 +50,13 @@ logger = logging.getLogger("recorder_subscription_service")
 
 
 _LOOP_INTERVAL_SECONDS = 60.0  # tighter than catalog (5min) so new markets get subscribed fast
-_DEFAULT_MAX_TOKENS = int(os.environ.get("HOMERUN_RECORDER_MAX_TOKENS", "8000"))
-_MIN_LIQUIDITY_USD = float(os.environ.get("HOMERUN_RECORDER_MIN_LIQUIDITY", "10.0"))
+# These are only the FAILURE fallbacks used when the operator recording config
+# can't be read on a given tick.  The live source of truth for coverage is
+# ``recording_control._CONFIG_DEFAULTS`` (read each tick) — kept in sync here so
+# even a transient config-read error keeps capture broad rather than narrowing
+# the universe.  See recording_control for the broad-by-default rationale.
+_DEFAULT_MAX_TOKENS = int(os.environ.get("HOMERUN_RECORDER_MAX_TOKENS", "40000"))
+_MIN_LIQUIDITY_USD = float(os.environ.get("HOMERUN_RECORDER_MIN_LIQUIDITY", "1.0"))
 
 
 @dataclass

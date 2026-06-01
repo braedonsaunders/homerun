@@ -108,11 +108,18 @@ async def get_recording_enabled() -> bool:
 # subscription loop) pick up changes within ``_CONFIG_TTL`` seconds without
 # hitting the DB on every snapshot / tick.
 #
-# Defaults mirror the historical hardcoded constants:
-#   * depth_levels      -> market_data_ingestor._MAX_LEVELS_PER_SIDE (25)
-#   * max_tokens        -> recorder_subscription_service._DEFAULT_MAX_TOKENS (8000)
-#   * min_liquidity_usd -> recorder_subscription_service._MIN_LIQUIDITY_USD (10.0)
+# Defaults encode a BROAD, strategy-independent capture policy so a fresh
+# operator records the near-complete active Polymarket universe out of the box
+# (a strategy authored later can then be backtested on data that no strategy
+# subscribed to at capture time):
+#   * depth_levels      -> market_data_ingestor level truncation (25 = full book)
+#   * max_tokens        -> 40000 (per clob token; covers the whole active
+#                          universe — ~37k tokens, 2 per binary market — w/ headroom)
+#   * min_liquidity_usd -> 1.0 (near-floor; excludes only dead / no-book markets)
 #   * capture_books / capture_trades / capture_catalog default True.
+# The env-var fallbacks in ``recorder_subscription_service`` (_DEFAULT_MAX_TOKENS,
+# _MIN_LIQUIDITY_USD) are only used if a config read fails mid-tick; the live
+# source of truth for coverage is this blob, read each loop tick.
 
 # A touch longer than the master-switch TTL: these knobs change rarely and
 # the depth value is read on the per-snapshot hot path.
@@ -124,10 +131,28 @@ _DEPTH_MAX = 25
 # Authoritative key set + defaults.  Any persisted blob is filtered/merged
 # against this so a stray key can never leak into the config and a missing
 # key always falls back to the default.
+# NOTE on the broad-by-default coverage policy:
+#   * ``max_tokens`` = 40000 is the per-CLOB-TOKEN subscription cap (NOT a
+#     per-market cap).  Polymarket binary markets carry TWO clob tokens each, so
+#     the live active universe of ~18k markets is ~37k tokens (measured via the
+#     recorder funnel against the live catalog).  40000 covers the entire active
+#     universe today with headroom for growth, while still bounding the single
+#     shared WS connection so it can't be asked to track an unbounded set.  A
+#     fresh operator therefore records EVERY active market by default; the cap
+#     only bites in a catalog-explosion scenario well beyond today's universe.
+#   * ``min_liquidity_usd`` = 1.0 is intentionally near the floor.  A market
+#     with >= $1 of resting liquidity has a real two-sided book worth recording;
+#     genuinely dead / no-book markets report 0 liquidity and are excluded by
+#     ``_classify_market`` (no clob token / not accepting orders) and by this
+#     floor.  Recording broadly is the whole point: a strategy authored LATER
+#     must be backtestable on markets that no strategy subscribed to at capture
+#     time, so we capture the near-complete active universe rather than only the
+#     liquid head.  Idle tokens self-prune via the 10-min eviction in ws_feeds,
+#     so the low floor costs WS bandwidth only while a market is actually moving.
 _CONFIG_DEFAULTS: dict[str, object] = {
     "depth_levels": 25,
-    "max_tokens": 8000,
-    "min_liquidity_usd": 10.0,
+    "max_tokens": 40000,
+    "min_liquidity_usd": 1.0,
     "capture_books": True,
     "capture_trades": True,
     "capture_catalog": True,
