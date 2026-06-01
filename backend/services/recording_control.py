@@ -156,6 +156,18 @@ _CONFIG_DEFAULTS: dict[str, object] = {
     "capture_books": True,
     "capture_trades": True,
     "capture_catalog": True,
+    # Tee every live CRYPTO_UPDATE dispatch into the
+    # ``crypto.update.dispatch`` recorded-event-bus topic so RECORDED
+    # backtest windows replay event-driven crypto strategies
+    # (CRYPTO_UPDATE subscribers) byte-identically to live, instead of
+    # the backtester reconstructing them from the marketdata projection.
+    # Mirrors capture_books / capture_trades / capture_catalog: default
+    # True (strict-fidelity gold path on out of the box), operator-
+    # toggleable via Data Lab without touching the master switch.  Read
+    # live by ``market_runtime._publish_crypto_update_to_bus`` on every
+    # dispatch; turning it off stops the crypto tee while leaving book /
+    # trade / catalog recording running.
+    "capture_crypto_dispatch": True,
 }
 
 _config_cache: dict[str, object] = dict(_CONFIG_DEFAULTS)
@@ -188,7 +200,7 @@ def _coerce_config(raw: object) -> dict[str, object]:
             out["min_liquidity_usd"] = max(0.0, float(raw.get("min_liquidity_usd")))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             pass
-    for key in ("capture_books", "capture_trades", "capture_catalog"):
+    for key in ("capture_books", "capture_trades", "capture_catalog", "capture_crypto_dispatch"):
         if key in raw:
             out[key] = bool(raw.get(key))
     return out

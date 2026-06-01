@@ -2119,12 +2119,21 @@ async def _publish_crypto_update_to_bus(
     markets payload + trigger live in the bus payload; consumers
     re-shape it exactly as the live ``event_dispatcher`` handlers do.
     """
-    # Global recording master switch — when OFF, skip the bus tee so the
-    # crypto.update.dispatch topic (book/reference recording) stops too.
+    # Global recording master switch + per-feature capture toggle — when
+    # EITHER is OFF, skip the bus tee so the crypto.update.dispatch topic
+    # stops growing.  ``capture_crypto_dispatch`` lets an operator pause
+    # just this (high-volume) crypto tee from Data Lab while leaving book /
+    # trade / catalog recording running, exactly like the catalog tee
+    # gates on ``capture_catalog``.  Both reads are best-effort: a config
+    # blip must never break live crypto dispatch, so a read failure
+    # fails-OPEN (capture continues) and is swallowed.
     try:
-        from services.recording_control import is_recording_enabled
+        from services.recording_control import get_recorder_config, is_recording_enabled
 
         if not await is_recording_enabled():
+            return
+        cfg = await get_recorder_config()
+        if not cfg.get("capture_crypto_dispatch", True):
             return
     except Exception:  # pragma: no cover — never let the switch break dispatch
         pass

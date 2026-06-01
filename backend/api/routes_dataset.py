@@ -1103,6 +1103,10 @@ class _RecorderConfigUpdate(_PydBaseModel):
     capture_catalog: bool | None = Field(
         None, description="Tee the scanner catalog into the bus each scan"
     )
+    capture_crypto_dispatch: bool | None = Field(
+        None,
+        description="Tee every live CRYPTO_UPDATE dispatch into the bus (strict-fidelity crypto replay)",
+    )
 
 
 @router.get("/recorder/config")
@@ -1110,7 +1114,8 @@ async def get_recorder_config_state() -> dict[str, Any]:
     """Operator recording configuration (depth / coverage / capture toggles).
 
     Returns the full persisted config — depth_levels, max_tokens,
-    min_liquidity_usd, capture_books, capture_trades, capture_catalog — every
+    min_liquidity_usd, capture_books, capture_trades, capture_catalog,
+    capture_crypto_dispatch — every
     key always present (service defaults fill any unset).  Read live by the
     ingestor (depth + capture knobs) and the proactive subscription loop
     (max_tokens + liquidity floor); changes take effect within seconds, no
