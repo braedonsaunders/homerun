@@ -219,6 +219,48 @@ class TestBusStorageRoundTrip:
                 await delete_topic(slug)
 
     @pytest.mark.asyncio(loop_scope="module")
+    async def test_flush_loop_drains_partials_on_cadence(self, monkeypatch):
+        """Regression: the background flush loop must periodically drain PARTIAL
+        (sub-_FLUSH_BATCH_SIZE) buckets.  Otherwise low-volume topics (e.g.
+        polymarket.catalog.snapshot, ~1 event/scan) never reach a 500-event
+        batch and only ever flush on graceful shutdown — silent data loss + an
+        empty parquet stream for backtest replay (the bug this guards)."""
+        from services.recorded_event_bus.storage import parquet_backend as pb
+
+        # (a) drain contract — a single-event (partial) bucket is SKIPPED by the
+        # full-batch drain but CAUGHT by drain_all (the partial-cadence path).
+        ring = pb._WriteRing()
+        ring.offer(
+            RecordedEvent(topic="t.lv", entity_id="e", observed_at_us=1, payload={}),
+            storage_uri="/tmp/x",
+        )
+        assert ring.drain_full_batches() == [], "partial wrongly flushed by full-batch drain"
+        assert len(ring.drain_all()) == 1, "drain_all must flush partial buckets"
+
+        # (b) loop wiring — drain_all is invoked on a fixed cadence, never "never".
+        calls: list[bool] = []
+
+        class _Stop(Exception):
+            pass
+
+        async def _fake_flush_once(*, drain_all=False):
+            calls.append(drain_all)
+            if len(calls) >= 11:
+                raise _Stop()
+            return 0
+
+        monkeypatch.setattr(pb, "_flush_once", _fake_flush_once)
+        monkeypatch.setattr(pb, "_FLUSH_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(pb, "_PARTIAL_FLUSH_INTERVAL_SECONDS", 0.05)  # => every 5th tick
+        try:
+            await pb._flush_loop()
+        except _Stop:
+            pass
+        partial_ticks = [i for i, d in enumerate(calls, start=1) if d]
+        assert partial_ticks, "flush loop never drains partials (low-volume topics would never flush)"
+        assert partial_ticks == [5, 10], f"unexpected partial-drain cadence: {partial_ticks}"
+
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_live_subscribe_dedups_handlers(self):
         b = RecordedEventBus()  # isolated instance
         seen = []

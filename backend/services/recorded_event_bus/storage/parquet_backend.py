@@ -10,14 +10,17 @@ back up.  Layout on disk:
           events__{batch_id}.parquet
 
 Writes are batched and asynchronous.  The publish hot path enqueues
-into an in-memory ring; a background task flushes batches of up to
-``_FLUSH_BATCH_SIZE`` events every ``_FLUSH_INTERVAL_SECONDS`` to
-parquet.  This trades a tiny window of crash-vulnerability (the
-in-memory ring before flush) for hot-path throughput — the same
-trade-off the existing :mod:`services.market_data_ingestor` makes
-for snapshots / deltas.  Operators who want durability over
-throughput can lower ``_FLUSH_INTERVAL_SECONDS`` toward 0 (per-event
-flush) at the cost of one parquet write per envelope.
+into an in-memory ring; a background task flushes full
+(``_FLUSH_BATCH_SIZE``) batches every ``_FLUSH_INTERVAL_SECONDS``, and
+additionally drains PARTIAL (sub-batch) buckets every
+``_PARTIAL_FLUSH_INTERVAL_SECONDS`` so LOW-VOLUME topics are durable too
+(without it they would never reach a full batch and would only flush on
+graceful shutdown).  This trades a tiny window of crash-vulnerability (the
+in-memory ring before flush) for hot-path throughput — the same trade-off
+the existing :mod:`services.market_data_ingestor` makes for snapshots /
+deltas.  Operators who want durability over throughput can lower the flush
+intervals toward 0 (per-event flush) at the cost of one parquet write per
+envelope.
 
 File-level schema:
 
@@ -99,6 +102,13 @@ def _entity_order_key(ev: "RecordedEvent", time_attr: str) -> tuple:
 
 _FLUSH_BATCH_SIZE = 500
 _FLUSH_INTERVAL_SECONDS = 1.0
+# Full batches (>= _FLUSH_BATCH_SIZE) flush every _FLUSH_INTERVAL_SECONDS so
+# high-volume topics stay sub-second durable.  PARTIAL (sub-batch) buckets are
+# additionally drained every _PARTIAL_FLUSH_INTERVAL_SECONDS — without this,
+# LOW-VOLUME topics (e.g. polymarket.catalog.snapshot, ~1 event per scan) never
+# reach a 500-event batch and would only ever flush on graceful shutdown (lost
+# on a hard restart, and invisible to parquet replay in steady state).
+_PARTIAL_FLUSH_INTERVAL_SECONDS = 5.0
 _MAX_RING_SIZE = 5000
 
 
@@ -178,8 +188,9 @@ class _WriteRing:
         return out
 
     def drain_all(self) -> list[tuple[tuple[str, str, str], list[RecordedEvent], str]]:
-        """Flush every pending bucket regardless of size.  Called on
-        the interval timer and at shutdown."""
+        """Flush every pending bucket regardless of size.  Called on the
+        partial-flush cadence (_PARTIAL_FLUSH_INTERVAL_SECONDS, so low-volume
+        topics are durable) and at shutdown."""
         out: list[tuple[tuple[str, str, str], list[RecordedEvent], str]] = []
         for key, bucket in list(self._buckets.items()):
             if bucket:
@@ -242,12 +253,22 @@ async def _ensure_flush_task_running() -> None:
 
 
 async def _flush_loop() -> None:
-    """Background flusher.  Cancellable via shutdown_parquet_backend()."""
+    """Background flusher.  Cancellable via shutdown_parquet_backend().
+
+    Every tick flushes FULL batches (>= _FLUSH_BATCH_SIZE) so high-volume
+    topics stay sub-second durable.  Every _PARTIAL_FLUSH_INTERVAL_SECONDS we
+    additionally drain PARTIAL buckets so low-volume topics (e.g.
+    polymarket.catalog.snapshot) become durable within bounded latency instead
+    of waiting for a 500-event batch that never arrives.
+    """
     logger.info("recorded_event_bus parquet flush loop started")
+    partial_every = max(1, round(_PARTIAL_FLUSH_INTERVAL_SECONDS / _FLUSH_INTERVAL_SECONDS))
+    tick = 0
     try:
         while True:
             await asyncio.sleep(_FLUSH_INTERVAL_SECONDS)
-            await _flush_once()
+            tick += 1
+            await _flush_once(drain_all=(tick % partial_every == 0))
     except asyncio.CancelledError:
         # On shutdown, flush everything we have before exiting.
         await _flush_once(drain_all=True)
