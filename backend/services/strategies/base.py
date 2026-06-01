@@ -792,15 +792,19 @@ class BaseStrategy(ABC):
         ``subscriptions`` fires. Return a list of detected opportunities (may be
         empty).
 
-        **Default behaviour**: delegates ``MARKET_DATA_REFRESH`` events to
-        ``detect()`` (sync, run in a thread-pool executor) or ``detect_async()``
-        if the subclass overrides it. All other event types return ``[]``.
+        **Default behaviour**: routes BOTH ``MARKET_DATA_REFRESH`` and
+        ``CRYPTO_UPDATE`` to your ``detect()`` (or ``detect_async``/``detect_sync``
+        if overridden) so ``detect()`` is the universal primary — a crypto
+        strategy can be written with just ``detect()`` and it fires live exactly
+        as it does in backtest (it iterates the CRYPTO_UPDATE event in the
+        ``events`` arg, e.g. reads ``event.payload["markets"]``). All other event
+        types return ``[]``.
 
-        Scanner strategies that only implement ``detect()`` do **not** need to
-        override this method. Override only when your strategy needs custom
-        routing — for example, reacting to ``CRYPTO_UPDATE`` or ``NEWS_UPDATE``
-        events where the payload structure differs from the standard
-        market-data batch.
+        Strategies that only implement ``detect()`` (scanner OR crypto) do **not**
+        need to override this method. Override only when your strategy needs
+        custom routing — e.g. ``NEWS_UPDATE``/``TRADER_ACTIVITY`` whose payloads
+        differ, or a crypto strategy that wants a hand-tuned ``on_event`` hot path
+        (an override always takes precedence over this default).
 
         Args:
             event: Immutable DataEvent with event_type, source, payload, and
@@ -810,27 +814,59 @@ class BaseStrategy(ABC):
             list of Opportunity objects (empty list if no opportunities).
         """
         if event.event_type == EventType.MARKET_DATA_REFRESH:
-            # Priority:
-            # 1. detect_async() if the subclass provides its own override → run on event loop
-            # 2. detect_sync() if the subclass provides its own override → run in thread-pool
-            # 3. detect() (backward-compat name) → run in thread-pool
-            if _has_custom_detect_async(self):
-                opps = await self.detect_async(event.events or [], event.markets or [], event.prices or {})
-            else:
-                loop = asyncio.get_running_loop()
-                if _has_custom_detect_sync(self):
-                    opps = await loop.run_in_executor(
-                        None, self.detect_sync, event.events or [], event.markets or [], event.prices or {}
-                    )
-                else:
-                    opps = await loop.run_in_executor(
-                        None, self.detect, event.events or [], event.markets or [], event.prices or {}
-                    )
+            opps = await self._invoke_detect(
+                event.events or [], event.markets or [], event.prices or {}
+            )
             extra = await self._maybe_dispatch_timeframe_closes(event)
             if extra:
                 return list(opps) + list(extra)
             return opps
+        if event.event_type == EventType.CRYPTO_UPDATE:
+            # Universal detect(): a crypto strategy can implement the documented
+            # ``detect(events, markets, prices)`` instead of overriding on_event.
+            # Shape the inputs to MATCH the backtest crypto detect path exactly so
+            # live == backtest:
+            #   events  = [event]  — crypto detect strategies iterate the
+            #             CRYPTO_UPDATE DataEvent stream (reading
+            #             ``event.payload["markets"]``), which is precisely what
+            #             the backtest discovery loop bins into the ``events`` arg.
+            #   markets = hydrate_markets(payload["markets"]) — the same canonical
+            #             hydrator the backtest uses (best-effort Market models;
+            #             crypto detect strategies typically read the event stream,
+            #             not this arg).
+            #   prices  = event.prices or {}.
+            # A subclass that OVERRIDES on_event takes precedence over this base
+            # method, so existing crypto strategies are unaffected; this path only
+            # fires for detect()-only crypto strategies, which previously hit the
+            # ``return []`` below and so never fired live (the backtest=live gap
+            # behind "detect() is the primary SDK method").
+            from services.strategy_inputs import hydrate_markets
+
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            crypto_markets = hydrate_markets(payload.get("markets") or [])
+            return await self._invoke_detect([event], crypto_markets, event.prices or {})
         return []
+
+    async def _invoke_detect(
+        self,
+        events: list,
+        markets: list,
+        prices: dict,
+    ) -> list[Opportunity]:
+        """Run the strategy's detect, routing to the override the subclass
+        provides — detect_async() on the event loop, else detect_sync() in a
+        thread-pool, else detect() (backward-compat name) in a thread-pool.
+
+        Shared by the MARKET_DATA_REFRESH and CRYPTO_UPDATE branches of
+        ``on_event`` so both reach the documented ``detect()`` the same way (one
+        dispatch path, no duplication).
+        """
+        if _has_custom_detect_async(self):
+            return await self.detect_async(events, markets, prices)
+        loop = asyncio.get_running_loop()
+        if _has_custom_detect_sync(self):
+            return await loop.run_in_executor(None, self.detect_sync, events, markets, prices)
+        return await loop.run_in_executor(None, self.detect, events, markets, prices)
 
     async def _maybe_dispatch_timeframe_closes(self, event: DataEvent) -> list[Opportunity]:
         """Detect wall-clock boundary crossings since last refresh and fire

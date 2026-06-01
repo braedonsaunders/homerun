@@ -273,3 +273,49 @@ async def test_crypto_on_event_aggregates_multiple_dispatches_per_tick(monkeypat
     opps = await _run_crypto_replay(monkeypatch, strat, {1: [[{"id": "E1"}], [{"id": "E2"}]]})
 
     assert {o.event_id for o in opps} == {"E1", "E2"}
+
+
+# ── universal detect(): base on_event routes CRYPTO_UPDATE -> detect() (LIVE) ──
+
+
+@pytest.mark.asyncio
+async def test_base_on_event_routes_crypto_update_to_detect():
+    """Universal detect(): a detect-only crypto strategy (subscribes CRYPTO_UPDATE,
+    overrides detect_async, NO on_event) now fires via the BASE on_event for
+    CRYPTO_UPDATE — so the documented detect() primary works for crypto LIVE,
+    matching the backtest (which already runs its detect path). Previously base
+    on_event returned [] for CRYPTO_UPDATE so such a strategy never fired live."""
+    strat = _DetectAsyncOnlyCryptoStrategy()
+    ts = datetime(2026, 5, 1, 0, 10, 0, tzinfo=timezone.utc)
+    # event[s] arg: the strategy iterates the CRYPTO_UPDATE DataEvent stream.
+    opps = await strat.on_event(_crypto_event([{"id": "Z1"}], ts))
+    assert strat.detect_async_calls > 0, "base on_event did not route CRYPTO_UPDATE to detect"
+    assert {o.event_id for o in opps} == {"Z1"}
+
+
+@pytest.mark.asyncio
+async def test_base_on_event_crypto_without_detect_returns_empty():
+    """A crypto strategy with neither detect nor on_event override still yields []
+    (base detect() returns []) — the universal routing doesn't fabricate opps."""
+
+    class _BareCrypto(BaseStrategy):
+        strategy_type = "unit_bare_crypto"
+        name = "bare"
+        description = "unit"
+        subscriptions = [EventType.CRYPTO_UPDATE]
+
+    ts = datetime(2026, 5, 1, 0, 10, 0, tzinfo=timezone.utc)
+    opps = await _BareCrypto().on_event(_crypto_event([{"id": "Q"}], ts))
+    assert opps == []
+
+
+@pytest.mark.asyncio
+async def test_base_on_event_crypto_override_still_takes_precedence():
+    """A strategy that OVERRIDES on_event keeps its own routing (the universal
+    detect path is the BASE only) — existing crypto strategies are unaffected."""
+    strat = _OnEventWithDetectCryptoStrategy()  # on_event -> on_event_hit; detect -> WRONG_PATH
+    ts = datetime(2026, 5, 1, 0, 10, 0, tzinfo=timezone.utc)
+    opps = await strat.on_event(_crypto_event([{"id": "M9"}], ts))
+    ids = {o.event_id for o in opps}
+    assert ids == {"M9"}
+    assert all(o.title.startswith("on_event_hit") for o in opps)
