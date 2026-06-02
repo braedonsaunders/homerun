@@ -329,7 +329,11 @@ def test_trade_buffer_bounded():
 # ── Stats surface ─────────────────────────────────────────────────────
 
 
-def test_record_trade_sheds_persistence_under_db_pressure(monkeypatch):
+def test_record_does_not_shed_persistence_on_db_pressure(monkeypatch):
+    """Recording persists OFF Postgres (columnar parquet sink), so Postgres
+    pressure must NOT drop book rows: shedding here would relieve zero DB load
+    and only burn backtest fidelity.  Regression guard for the decoupling fix —
+    the shed gate must ignore is_db_pressure_active()."""
     ing = _ingestor_with_queues()
     monkeypatch.setattr("services.market_data_ingestor.is_db_pressure_active", lambda: True)
 
@@ -339,7 +343,32 @@ def test_record_trade_sheds_persistence_under_db_pressure(monkeypatch):
     )
 
     stats = ing.get_data_quality_stats()
-    assert ing._snapshot_queue.qsize() == 0
+    assert ing._snapshot_queue.qsize() == 1  # enqueued, NOT shed
+    assert stats["snapshot_queue_dropped"] == 0
+
+
+def test_record_sheds_persistence_on_own_queue_backlog(monkeypatch):
+    """The ONLY legitimate shed: our own parquet-write queue is backing up (the
+    sink can't keep up) -> drop to protect memory.  Independent of Postgres /
+    global backpressure."""
+    from services.market_data_ingestor import _QUEUE_HIGH_WATER_FRACTION
+
+    ing = _ingestor_with_queues()
+    monkeypatch.setattr("services.market_data_ingestor.is_db_pressure_active", lambda: False)
+    # Shrink the queue and fill it to the high-water mark so the next enqueue
+    # sheds on local depth alone (no DB / backpressure involvement).
+    ing._snapshot_queue = asyncio.Queue(maxsize=10)
+    for _ in range(int(10 * _QUEUE_HIGH_WATER_FRACTION)):
+        ing._snapshot_queue.put_nowait(object())
+    before = ing._snapshot_queue.qsize()
+
+    ing.record_trade(
+        token_id="tok",
+        trade={"price": 0.42, "size": 10, "side": "BUY", "timestamp": time.time()},
+    )
+
+    stats = ing.get_data_quality_stats()
+    assert ing._snapshot_queue.qsize() == before  # shed on depth, not enqueued
     assert stats["snapshot_queue_dropped"] == 1
 
 

@@ -118,9 +118,7 @@ _SNAPSHOT_FLUSH_BATCH = 250
 _DELTA_FLUSH_BATCH = 500
 _FLUSH_INTERVAL_SECONDS = 0.20
 _QUEUE_HIGH_WATER_FRACTION = 0.80
-_PRESSURE_SHED_LEVEL = 0.70
 _SLOW_FLUSH_BACKPRESSURE_MS = 1500.0
-_PRESSURE_PROBE_INTERVAL_SECONDS = 0.25
 _PRESSURE_SHED_CACHE_SECONDS = 0.50
 
 # Reject reasons surfaced via get_data_quality_stats().
@@ -282,7 +280,6 @@ class LiveMarketDataIngestor:
         self._sequence_gaps = 0
         self._flush_latency_samples: list[float] = []  # bounded sliding window
         self._last_pressure_log_mono = 0.0
-        self._last_pressure_probe_mono = 0.0
         self._pressure_shed_until_mono = 0.0
         # Columnar parquet sink — the OFF-Postgres persistence target for
         # books/deltas.  Instantiated in start(); see book_parquet_sink.
@@ -799,6 +796,23 @@ class LiveMarketDataIngestor:
                 )
 
     def _should_shed_persistence(self, queue: asyncio.Queue) -> bool:
+        """Shed (drop) recording persistence ONLY when our OWN parquet-write
+        queue is backing up toward OOM — never on Postgres pressure or global
+        backpressure.
+
+        Recording persists OFF Postgres (``_flush_batch`` hands the batch to the
+        columnar parquet sink, not the DB), so ``is_db_pressure_active()`` is
+        irrelevant here: dropping book rows relieves ZERO database load and only
+        burns backtest fidelity.  And reading ``current_backpressure_level()`` —
+        the MAX across components INCLUDING our own ``market_data_ingestor``
+        publication (0.85 on shed) — created a self-sustaining latch: one shed
+        published 0.85 >= the old trip level, which re-tripped this gate, which
+        re-published 0.85, refreshing the 30s decay forever, so a single
+        transient spike pinned recording into permanent shedding (and that 0.85
+        also throttled live traders via ``backpressure_extra_sleep_seconds``).
+        The only legitimate shed signal is local queue depth: the parquet sink
+        genuinely can't keep up -> drop to protect memory.
+        """
         now_mono = time.monotonic()
         if now_mono < self._pressure_shed_until_mono:
             return True
@@ -812,12 +826,6 @@ class LiveMarketDataIngestor:
                 return True
         except Exception:
             return False
-        if now_mono - self._last_pressure_probe_mono < _PRESSURE_PROBE_INTERVAL_SECONDS:
-            return False
-        self._last_pressure_probe_mono = now_mono
-        if is_db_pressure_active() or current_backpressure_level() >= _PRESSURE_SHED_LEVEL:
-            self._pressure_shed_until_mono = now_mono + _PRESSURE_SHED_CACHE_SECONDS
-            return True
         return False
 
     def _publish_queue_pressure(self, kind: str) -> None:
