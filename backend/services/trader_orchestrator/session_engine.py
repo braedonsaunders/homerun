@@ -269,12 +269,18 @@ def _requires_full_bundle_execution(signal: Any, legs: list[dict[str, Any]]) -> 
     if len(legs) < 2:
         return False
     payload = _signal_payload(signal)
-    strategy_type = str(
-        payload.get("strategy_type")
-        or getattr(signal, "strategy_type", "")
-        or ""
-    ).strip().lower()
-    if strategy_type == "prob_surface_arb":
+    execution_plan = payload.get("execution_plan")
+    execution_plan = execution_plan if isinstance(execution_plan, dict) else {}
+    metadata = execution_plan.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    market_coverage = metadata.get("market_coverage")
+    market_coverage = market_coverage if isinstance(market_coverage, dict) else {}
+    # Generic atomic-bundle signals (replacing the per-strategy slug hardcode):
+    #   * a strategy that declares requires_atomic_execution, or
+    #   * a guaranteed event-internal arb (requires_full_market_coverage).
+    if bool(metadata.get("requires_atomic_bundle")):
+        return True
+    if bool(market_coverage.get("requires_full_market_coverage")):
         return True
     if not bool(payload.get("is_guaranteed")):
         return False
@@ -284,13 +290,7 @@ def _requires_full_bundle_execution(signal: Any, legs: list[dict[str, Any]]) -> 
     roster = payload.get("market_roster")
     if isinstance(roster, dict) and str(roster.get("scope") or "").strip().lower() == "event":
         return len(_required_roster_market_ids(signal)) > 1
-    execution_plan = payload.get("execution_plan")
-    execution_plan = execution_plan if isinstance(execution_plan, dict) else {}
-    metadata = execution_plan.get("metadata")
-    metadata = metadata if isinstance(metadata, dict) else {}
-    market_coverage = metadata.get("market_coverage")
-    market_coverage = market_coverage if isinstance(market_coverage, dict) else {}
-    return bool(market_coverage.get("requires_full_market_coverage"))
+    return False
 
 
 def _required_roster_market_ids(signal: Any) -> list[str]:

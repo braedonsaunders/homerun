@@ -62,6 +62,7 @@ from services.backtest.venue_model import (
     TIF_GTC,
     TIF_IOC,
 )
+from services.backtest.settlement import TokenSettlement
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,19 @@ class BacktestConfig:
     seed: Optional[int] = 42
     log_progress_every: int = 0  # 0 = silent
     fill_model_snapshot: Optional[Any] = None
+    # Fill probability returned when a loaded model can't score an order;
+    # 1.0 = defer to the queue gate (see MatchingEngine).
+    fill_probability_fallback: float = 1.0
+    # Fraction of disappeared book depth attributed to trades (vs cancels)
+    # for FIFO maker-queue advancement; <1.0 avoids over-filling resting
+    # orders (see MatchingEngine.queue_progress_trade_fraction).
+    queue_progress_trade_fraction: float = 1.0
+    # Golden-source settlement map: token_id -> TokenSettlement.  A held
+    # position whose market resolves within the run window settles at the
+    # binary outcome ($1.00 winner / $0.00 loser) at resolution time, not
+    # at the last observed mid.  Populated OFFLINE by the settlement store
+    # (no decision-time look-ahead).  Empty => legacy mark-to-mid behavior.
+    settlements: dict[str, TokenSettlement] = field(default_factory=dict)
 
 
 @dataclass
@@ -156,6 +170,8 @@ class BacktestEngine:
             fees=fees,
             impact=self.config.impact or ImpactModel(),
             fill_model_snapshot=self.config.fill_model_snapshot,
+            fill_probability_fallback=self.config.fill_probability_fallback,
+            queue_progress_trade_fraction=self.config.queue_progress_trade_fraction,
         )
         # Snapshot of the "current best" book per token, used by the
         # exit-decision hook to feed market_state into should_exit().
@@ -173,6 +189,12 @@ class BacktestEngine:
         self._exit_orders_by_position: dict[tuple, list[str]] = {}
         # Snapshot count for periodic progress logging.
         self._snapshots_processed = 0
+        # Time-ordered (resolution_time, token_id) schedule driving the
+        # settlement sweep (see _settle_due).  Built at the start of run().
+        self._resolution_schedule: list[tuple[datetime, str]] = []
+        self._resolution_ptr: int = 0
+        self._settled_position_count: int = 0
+        self._marked_to_mid_count: int = 0
 
     # ── Public driver ─────────────────────────────────────────────────
 
@@ -215,6 +237,22 @@ class BacktestEngine:
         self._snapshots_processed = 0
         progress_every = max(1, int(progress_every))
 
+        # Settlement sweep schedule: a position whose market resolves
+        # mid-window is redeemed at $1/$0 at resolution time (capital
+        # recycles correctly) rather than deferred to run-end.  Only
+        # markets with a KNOWN winner (settle_price set) join the sweep;
+        # resolution-known-but-winner-unknown markets fall through to the
+        # strategy's own is_resolved-aware exit logic.
+        self._resolution_schedule = sorted(
+            (
+                (s.resolution_time, tid)
+                for tid, s in self.config.settlements.items()
+                if s.resolution_time is not None and s.settle_price is not None
+            ),
+            key=lambda x: x[0],
+        )
+        self._resolution_ptr = 0
+
         async for snapshot in book_source.iter_snapshots():
             await self._on_snapshot(snapshot)
             self._snapshots_processed += 1
@@ -256,6 +294,13 @@ class BacktestEngine:
     # ── Per-snapshot work ─────────────────────────────────────────────
 
     async def _on_snapshot(self, snapshot: BookSnapshot) -> None:
+        # Redeem any position whose market has resolved at-or-before this
+        # snapshot's time at $1/$0.  Runs BEFORE the fast-path bail and on
+        # every snapshot (O(1) when nothing is due) because a resolved
+        # market stops producing snapshots — settlement must be driven by
+        # the global sim clock, not by the resolved token's own (absent)
+        # ticks.
+        self._settle_due(now=snapshot.observed_at)
         # ── Fast-path bail ─────────────────────────────────────────────
         # When the snapshot is for a token with NO pending intents
         # ready to drain AND NO active orders (PENDING / WORKING /
@@ -485,11 +530,23 @@ class BacktestEngine:
         view.config = {}
         view.outcome_idx = 0
 
+        # Reflect real resolution state so hold-to-resolution strategies
+        # behave correctly: a resolved market is no longer tradable and its
+        # winning outcome is known.  (Markets with a known winner are
+        # redeemed by the settlement sweep before this runs; this path
+        # carries the resolution signal for markets resolved-but-winner-
+        # unknown, where the strategy should stop trading.)
+        settlement = self.config.settlements.get(pos.token_id)
+        resolved = bool(
+            settlement is not None
+            and settlement.resolution_time is not None
+            and snapshot.observed_at >= settlement.resolution_time
+        )
         market_state = {
             "current_price": view.current_price,
-            "market_tradable": True,
-            "is_resolved": False,
-            "winning_outcome": None,
+            "market_tradable": not resolved,
+            "is_resolved": resolved,
+            "winning_outcome": settlement.winning_outcome if resolved else None,
             "token_id": pos.token_id,
         }
         try:
@@ -632,46 +689,139 @@ class BacktestEngine:
 
     # ── Finalization ──────────────────────────────────────────────────
 
-    def _final_mark_to_market(self) -> None:
-        """Force-close remaining open positions at the last seen mid.
+    def _close_position_at(
+        self,
+        key,
+        pos,
+        *,
+        price: float,
+        at: datetime,
+        is_settlement: bool,
+        notes: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Close a position with a synthetic fill at ``price`` and apply the
+        resolution fee on any realized gain.
 
-        Production positions resolve at expiration (1.0 or 0.0); for a
-        backtest that ends mid-life we mark to the last observed mid.
-        This is a *book-keeping close* and does not produce fills — it
-        just realizes the unrealized PnL into the ledger. Resolution
-        fees apply to any winning positions, mirroring live behavior.
+        Single shared close path for both the mid-run settlement sweep
+        (:meth:`_settle_due`) and the final mark-to-market, so the close +
+        fee accounting lives in exactly one place.
         """
         fee_model = self.portfolio.config.fee_model
+        synthetic_fill = Fill(
+            order_id=f"{'settle' if is_settlement else 'final_mtm'}_{key[0]}",
+            token_id=pos.token_id,
+            side=("SELL" if pos.side == "BUY" else "BUY"),
+            price=float(price),
+            size=pos.size,
+            fee_usd=0.0,
+            occurred_at=at,
+            fill_index=0,
+            notes=notes or {},
+        )
+        prior_realized = pos.realized_pnl_usd
+        pos.apply_close_fill(synthetic_fill)
+        self.portfolio._on_cash_change_from_close(pos, synthetic_fill)
+        if fee_model is not None:
+            gained = pos.realized_pnl_usd - prior_realized
+            if gained > 0:
+                res_fee = fee_model.resolution_fee(gross_winnings_usd=gained)
+                if res_fee > 0:
+                    pos.fees_paid_usd += res_fee
+                    pos.realized_pnl_usd -= res_fee
+                    self.portfolio.cash_usd -= res_fee
+                    self.portfolio._resolution_fees_paid_usd += res_fee
+        self.portfolio.closed_positions.append(pos)
+        del self.portfolio.positions[key]
+
+    def _settle_due(self, *, now: datetime) -> None:
+        """Redeem open positions whose market has resolved at-or-before
+        ``now`` at the binary outcome ($1/$0).
+
+        Advances a time-ordered pointer so total work across the run is
+        O(#resolutions); the common case (nothing due this snapshot) is a
+        single comparison.
+        """
+        sched = self._resolution_schedule
+        while self._resolution_ptr < len(sched) and sched[self._resolution_ptr][0] <= now:
+            _, token_id = sched[self._resolution_ptr]
+            self._resolution_ptr += 1
+            settlement = self.config.settlements.get(token_id)
+            if settlement is None or settlement.settle_price is None:
+                continue
+            for key, pos in list(self.portfolio.positions.items()):
+                if key[0] != token_id or pos.size <= 1e-12:
+                    continue
+                self._close_position_at(
+                    key,
+                    pos,
+                    price=float(settlement.settle_price),
+                    at=settlement.resolution_time or now,
+                    is_settlement=True,
+                    notes={
+                        "settlement": True,
+                        "winning_outcome": settlement.winning_outcome,
+                        "settle_price": float(settlement.settle_price),
+                        "source": settlement.source,
+                    },
+                )
+                self._settled_position_count += 1
+
+    def _final_mark_to_market(self) -> None:
+        """Close positions still open at run end.
+
+        A position whose market RESOLVED within the run window settles at
+        the binary outcome ($1/$0); a position whose market is still
+        unresolved at window end is marked to the last observed mid — an
+        honest mark-to-market, explicitly flagged as NOT a settlement.  The
+        mid-run sweep (:meth:`_settle_due`) has already redeemed positions
+        that resolved before run end, so this handles the remainder: markets
+        still open at window end, and resolved markets whose position opened
+        after the sweep pointer had already advanced past resolution.
+        """
+        run_end = self.matching.now
         for key, pos in list(self.portfolio.positions.items()):
             if pos.size <= 1e-12:
                 continue
-            mark = pos.last_mark_price or pos.entry_price
-            close_at = pos.last_mark_at or pos.opened_at or datetime.now(timezone.utc)
-            synthetic_fill = Fill(
-                order_id=f"final_mtm_{key[0]}",
-                token_id=pos.token_id,
-                side=("SELL" if pos.side == "BUY" else "BUY"),
-                price=float(mark),
-                size=pos.size,
-                fee_usd=0.0,
-                occurred_at=close_at,
-                fill_index=0,
-                notes={"final_mark_to_market": True},
+            settlement = self.config.settlements.get(pos.token_id)
+            resolved_in_window = bool(
+                settlement is not None
+                and settlement.settle_price is not None
+                and settlement.resolution_time is not None
+                and run_end is not None
+                and run_end >= settlement.resolution_time
             )
-            prior_realized = pos.realized_pnl_usd
-            pos.apply_close_fill(synthetic_fill)
-            self.portfolio._on_cash_change_from_close(pos, synthetic_fill)
-            if fee_model is not None:
-                gained = pos.realized_pnl_usd - prior_realized
-                if gained > 0:
-                    res_fee = fee_model.resolution_fee(gross_winnings_usd=gained)
-                    if res_fee > 0:
-                        pos.fees_paid_usd += res_fee
-                        pos.realized_pnl_usd -= res_fee
-                        self.portfolio.cash_usd -= res_fee
-                        self.portfolio._resolution_fees_paid_usd += res_fee
-            self.portfolio.closed_positions.append(pos)
-            del self.portfolio.positions[key]
+            if resolved_in_window:
+                self._close_position_at(
+                    key,
+                    pos,
+                    price=float(settlement.settle_price),
+                    at=settlement.resolution_time or run_end,
+                    is_settlement=True,
+                    notes={
+                        "settlement": True,
+                        "winning_outcome": settlement.winning_outcome,
+                        "settle_price": float(settlement.settle_price),
+                        "source": settlement.source,
+                    },
+                )
+                self._settled_position_count += 1
+            else:
+                mark = pos.last_mark_price or pos.entry_price
+                close_at = (
+                    pos.last_mark_at
+                    or pos.opened_at
+                    or run_end
+                    or datetime.now(timezone.utc)
+                )
+                self._close_position_at(
+                    key,
+                    pos,
+                    price=float(mark),
+                    at=close_at,
+                    is_settlement=False,
+                    notes={"final_mark_to_market": True, "settlement_status": "unsettled"},
+                )
+                self._marked_to_mid_count += 1
 
         # Anchor the equity curve at the post-close-out value so the
         # displayed final equity matches ``portfolio.equity_usd()`` (the
@@ -777,6 +927,11 @@ class BacktestEngine:
             positions_summary=positions_summary,
             notes={
                 "snapshots_processed": self._snapshots_processed,
+                "settlement": {
+                    "settled_positions": self._settled_position_count,
+                    "marked_to_mid_positions": self._marked_to_mid_count,
+                    "settlements_available": len(self.config.settlements),
+                },
                 "fill_probability_model": (
                     {
                         "family": getattr(self.config.fill_model_snapshot, "family", None),

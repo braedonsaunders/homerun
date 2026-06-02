@@ -199,58 +199,14 @@ def _normalize_regime_scope(value: Any) -> set[str]:
 
 
 
-def _to_iso_utc(value: Optional[datetime]) -> Optional[str]:
-    if value is None:
-        return None
-    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _get_component_edge(payload: dict[str, Any], direction: str, mode: str) -> float:
-    component_edges = payload.get("component_edges")
-    if isinstance(component_edges, dict):
-        side_edges = component_edges.get(direction)
-        if isinstance(side_edges, dict):
-            return max(0.0, to_float(side_edges.get(mode), 0.0))
-        return max(0.0, to_float(component_edges.get(mode), 0.0))
-
-    mode_edges = payload.get("mode_edges")
-    if isinstance(mode_edges, dict):
-        side_mode_edges = mode_edges.get(direction)
-        if isinstance(side_mode_edges, dict):
-            return max(0.0, to_float(side_mode_edges.get(mode), 0.0))
-        return max(0.0, to_float(mode_edges.get(mode), 0.0))
-
-    per_mode_key = {
-        "directional": "directional_edge",
-        "maker_quote": "maker_quote_edge",
-        "convergence": "convergence_edge",
-    }.get(mode)
-    if per_mode_key is None:
-        return 0.0
-    return max(0.0, to_float(payload.get(per_mode_key), 0.0))
-
-
-def _get_net_edge(payload: dict[str, Any], direction: str, fallback: float) -> float:
-    net_edges = payload.get("net_edges")
-    if not isinstance(net_edges, dict):
-        return fallback
-    return to_float(net_edges.get(direction), fallback)
-
-
-def _json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, datetime):
-        return _to_iso_utc(value)
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            out[str(key)] = _json_safe(item)
-        return out
-    if isinstance(value, (list, tuple, set)):
-        return [_json_safe(item) for item in value]
-    return str(value)
+# Consolidated into services.strategy_helpers.crypto_strategy_utils (one home,
+# reachable via StrategySDK.crypto); aliased to keep local call sites intact.
+from services.strategy_helpers.crypto_strategy_utils import (  # noqa: E402
+    get_component_edge as _get_component_edge,
+    get_net_edge as _get_net_edge,
+    json_safe as _json_safe,
+    to_iso_utc as _to_iso_utc,
+)
 
 
 

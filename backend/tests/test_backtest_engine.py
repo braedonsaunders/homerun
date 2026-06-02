@@ -673,7 +673,7 @@ class _LadderExitStrategy(BaseStrategy):
 class TestFees:
     def test_per_fill_gas_charged_on_each_fill(self):
         from services.backtest.matching_engine import FeeModel
-        fees = FeeModel(per_fill_gas_usd=0.10, resolution_fee_rate=0.0)
+        fees = FeeModel(per_fill_gas_usd=0.10, resolution_fee_rate=0.0, use_taker_fee_curve=False)
         # 10 contracts × $0.50 with 5 contracts on top, 5 next level → 2 fills
         me = MatchingEngine(
             venue=PolymarketVenue(),
@@ -733,7 +733,9 @@ class TestFees:
             config=BacktestConfig(
                 portfolio=PortfolioConfig(initial_capital_usd=1000.0),
                 latency=LatencyModel.deterministic(submit_ms=100, cancel_ms=50),
-                fees=FeeModel(per_fill_gas_usd=0.0, resolution_fee_rate=0.02),
+                fees=FeeModel(
+                    per_fill_gas_usd=0.0, resolution_fee_rate=0.02, use_taker_fee_curve=False
+                ),
                 seed=42,
             ),
             strategy=_ProfitTaker(),
@@ -742,6 +744,54 @@ class TestFees:
         # Some fees should have been paid (gas=0, so all fees are resolution fees)
         assert result.fees_resolution_usd > 0
         assert result.fees_per_fill_usd == pytest.approx(0.0)
+
+    def test_taker_fee_curve_charged_on_taker_fills(self):
+        from services.backtest.matching_engine import FeeModel
+        from utils.kelly import polymarket_taker_fee
+
+        fees = FeeModel(per_fill_gas_usd=0.0)  # taker-fee curve on by default
+        me = MatchingEngine(
+            venue=PolymarketVenue(),
+            latency=LatencyModel.deterministic(submit_ms=100, cancel_ms=50),
+            fees=fees,
+        )
+        me.advance_to(_snap(T0, bid=0.50, ask=0.51, depth=2, qty=20))
+        order = BacktestOrder(
+            order_id=make_order_id(), token_id="tok", side="BUY",
+            price=0.51, size=10, tif=TIF_IOC, post_only=False, submitted_at=T0,
+        )
+        me.submit(order)
+        me.advance_to(_snap(T0 + timedelta(milliseconds=200), bid=0.50, ask=0.51, depth=2, qty=20))
+        assert order.fills
+        expected = sum(polymarket_taker_fee(f.price) * f.size for f in order.fills)
+        assert expected > 0
+        assert sum(f.fee_usd for f in order.fills) == pytest.approx(expected)
+
+    def test_queue_progress_trade_fraction_slows_resting_fill(self):
+        from services.backtest.matching_engine import FeeModel
+
+        def _residual_queue(frac: float) -> float:
+            me = MatchingEngine(
+                venue=PolymarketVenue(),
+                latency=LatencyModel.deterministic(submit_ms=100, cancel_ms=50),
+                fees=FeeModel(per_fill_gas_usd=0.0, use_taker_fee_curve=False),
+                queue_progress_trade_fraction=frac,
+            )
+            # Rest a BUY at the top bid (0.49) behind a 100-share queue.
+            me.advance_to(_snap(T0, bid=0.49, ask=0.51, depth=3, qty=100))
+            order = BacktestOrder(
+                order_id=make_order_id(), token_id="tok", side="BUY",
+                price=0.49, size=10, tif=TIF_GTC, post_only=False, submitted_at=T0,
+            )
+            me.submit(order)
+            me.advance_to(_snap(T0 + timedelta(milliseconds=200), bid=0.49, ask=0.51, depth=3, qty=100))
+            # 40 shares disappear at our level (trades + cancels).
+            me.advance_to(_snap(T0 + timedelta(seconds=1), bid=0.49, ask=0.51, depth=3, qty=60))
+            return float(order.queue_ahead_shares)
+
+        # Crediting only a fraction of disappeared depth as trades leaves us
+        # FURTHER back in the queue than crediting all of it.
+        assert _residual_queue(0.5) > _residual_queue(1.0)
 
 
 class TestEndToEnd:

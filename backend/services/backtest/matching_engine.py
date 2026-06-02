@@ -167,10 +167,15 @@ class FeeModel:
 
     Defaults match Polymarket as of 2026:
 
-    * ``taker_bps = 0.0`` — CLOB trades pay no taker fee
-    * ``maker_bps = 0.0`` — CLOB trades pay no maker fee
+    * taker fills pay Polymarket's quadratic TAKER fee curve (~1.56% of
+      price at p=0.50, tapering to ~0.2% at the tails) via the canonical
+      ``utils.kelly.polymarket_taker_fee`` — the SAME curve the strategies
+      gate on, so backtest fees match the strategy's own assumptions.
+    * ``maker_bps = 0.0`` — Polymarket makers pay no fee
     * ``per_fill_gas_usd = 0.005`` — Polygon proxy-wallet tx cost
-    * ``resolution_fee_rate = 0.02`` — 2% on winning proceeds at settlement
+    * ``resolution_fee_rate = 0.0`` — Polymarket's cost is the per-fill
+      taker fee, not a separate winner/settlement fee; kept as a knob for
+      venues that DO charge one (applied on winning proceeds at settlement)
     * ``negrisk_conversion_gas_usd = 0.01`` — additional gas when a
       negative-risk multi-outcome leg requires CTF↔NegRisk conversion
     * ``maker_rebate_bps = 0.0`` — Polymarket-specific liquidity-reward
@@ -195,10 +200,18 @@ class FeeModel:
     taker_bps: float = 0.0
     maker_bps: float = 0.0
     per_fill_gas_usd: float = 0.005
-    resolution_fee_rate: float = 0.02
+    resolution_fee_rate: float = 0.0
     negrisk_conversion_gas_usd: float = 0.01
     maker_rebate_bps: float = 0.0
     maker_rebate_max_spread_bps: float = 50.0
+    # Charge taker fills from Polymarket's published quadratic taker-fee
+    # curve (utils.kelly.polymarket_taker_fee) — the SAME curve the
+    # strategies gate on, so backtest fees match what the strategy assumed.
+    # ``crypto_fee_multiplier`` scales it for any market-specific surcharge.
+    # Set ``use_taker_fee_curve=False`` to fall back to the flat
+    # ``taker_bps`` (non-Polymarket venues / fee-isolated unit tests).
+    use_taker_fee_curve: bool = True
+    crypto_fee_multiplier: float = 1.0
 
     def fill_fee(
         self,
@@ -220,25 +233,42 @@ class FeeModel:
         the rebate model better matches the live program's
         inside-band-only payment.
         """
-        bps = self.maker_bps if is_maker else self.taker_bps
-        bps_fee = 0.0
-        if bps > 0:
-            bps_fee = float(price) * float(size) * (bps / 10_000.0)
         gas = max(0.0, float(self.per_fill_gas_usd))
         if is_negrisk:
             gas += max(0.0, float(self.negrisk_conversion_gas_usd))
-        rebate_credit = 0.0
-        if is_maker and float(self.maker_rebate_bps or 0.0) > 0:
-            inside_band = True
-            if mid_price is not None and float(mid_price) > 0:
-                # Distance from mid as bps of mid.
-                dist_bps = abs(float(price) - float(mid_price)) / float(mid_price) * 10_000.0
-                inside_band = dist_bps <= float(self.maker_rebate_max_spread_bps or 0.0)
-            if inside_band:
-                rebate_credit = (
-                    float(price) * float(size) * (float(self.maker_rebate_bps) / 10_000.0)
-                )
-        return bps_fee + gas - rebate_credit
+
+        if is_maker:
+            # Polymarket makers pay zero; optional flat maker_bps for other
+            # venues, minus an in-band liquidity rebate.
+            maker_fee = 0.0
+            if float(self.maker_bps or 0.0) > 0:
+                maker_fee = float(price) * float(size) * (float(self.maker_bps) / 10_000.0)
+            rebate_credit = 0.0
+            if float(self.maker_rebate_bps or 0.0) > 0:
+                inside_band = True
+                if mid_price is not None and float(mid_price) > 0:
+                    # Distance from mid as bps of mid.
+                    dist_bps = abs(float(price) - float(mid_price)) / float(mid_price) * 10_000.0
+                    inside_band = dist_bps <= float(self.maker_rebate_max_spread_bps or 0.0)
+                if inside_band:
+                    rebate_credit = (
+                        float(price) * float(size) * (float(self.maker_rebate_bps) / 10_000.0)
+                    )
+            return maker_fee + gas - rebate_credit
+
+        # Taker fill: real Polymarket taker fee from the canonical curve
+        # (per-share USD), scaled by any market-specific surcharge.
+        if self.use_taker_fee_curve:
+            from utils.kelly import polymarket_taker_fee
+
+            taker_fee = (
+                polymarket_taker_fee(float(price))
+                * float(size)
+                * max(0.0, float(self.crypto_fee_multiplier))
+            )
+        else:
+            taker_fee = float(price) * float(size) * (float(self.taker_bps) / 10_000.0)
+        return taker_fee + gas
 
     # ------------------------------------------------------------------
     # Adversarial book impact — see ``ImpactModel`` below.  The
@@ -423,12 +453,30 @@ class MatchingEngine:
         fees: Optional[FeeModel] = None,
         impact: Optional[ImpactModel] = None,
         fill_model_snapshot: Optional[Any] = None,
+        fill_probability_fallback: float = 1.0,
+        queue_progress_trade_fraction: float = 1.0,
     ):
         self.venue: Venue = venue or PolymarketVenue()
         self.latency: LatencyModel = latency or LatencyModel()
         self.fees: FeeModel = fees or FeeModel()
         self.impact: ImpactModel = impact or ImpactModel()
         self.fill_model_snapshot = fill_model_snapshot
+        # Probability returned when a LOADED fill model can't score an order
+        # (e.g. missing covariates).  1.0 = "defer to the queue gate" (the
+        # queue already decided this order is front-of-queue and crossable);
+        # lower values haircut even queue-cleared orders.  Exposed so it's a
+        # tunable, not a hidden constant.
+        self.fill_probability_fallback = float(fill_probability_fallback)
+        # Fraction of disappeared at-or-better depth attributed to actual
+        # TRADES (vs cancels) for FIFO queue advancement.  1.0 treats ALL
+        # disappeared depth as traded-ahead, which over-fills resting orders
+        # because most book decreases are cancellations (a maker ahead of
+        # you cancelling does NOT pull incoming aggressor flow toward you).
+        # <1.0 is conservative; the production runner sets a calibrated
+        # value (calibrate vs realized maker fills — fill_calibration).
+        self.queue_progress_trade_fraction = max(
+            0.0, min(1.0, float(queue_progress_trade_fraction))
+        )
 
         self._orders: dict[str, BacktestOrder] = {}
         self._working_by_token: dict[str, list[str]] = {}
@@ -617,6 +665,12 @@ class MatchingEngine:
                         continue
                     own_consumed += max(0.0, float(size or 0.0))
                 external_consumed = max(0.0, old_eligible_depth - new_eligible_depth - own_consumed)
+                # Disappeared depth is trades + cancels; only TRADED volume
+                # actually advances our queue position relative to incoming
+                # aggressor flow.  Without a per-snapshot trade tape we
+                # attribute a calibrated fraction to trades (conservative
+                # <1.0) so cancels don't over-credit queue progress.
+                external_consumed *= self.queue_progress_trade_fraction
                 ord_.queue_ahead_shares = max(
                     0.0,
                     float(ord_.queue_ahead_shares) - external_consumed,
@@ -946,7 +1000,7 @@ class MatchingEngine:
             snapshot=self.fill_model_snapshot,
             covariates=order.survival_covariates,
             horizon_seconds=horizon_seconds,
-            fallback_probability=1.0,
+            fallback_probability=self.fill_probability_fallback,
         )
         probability = max(float(order.fill_probability_cumulative), float(probability))
         probability = max(0.0, min(1.0, probability))

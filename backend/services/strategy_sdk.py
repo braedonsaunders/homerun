@@ -240,6 +240,28 @@ class StrategySDK:
 
     crypto = _CryptoDescriptor()
 
+    class _OptimizationDescriptor:
+        """Lazy proxy for ``services.strategy_helpers.optimization_utils`` —
+        the strategy-facing facade over the Frank-Wolfe + Bregman arbitrage
+        research modules.
+
+        Opt-in math for strategies that trade dependent / cross-market
+        arbitrage (``StrategySDK.optimization.cross_market_profit_guarantee``,
+        ``...optimal_sizing``).  Lazy so the solver import chain (numpy +
+        the optimization package) isn't pulled at SDK module-load time, and
+        so the orchestrator never loads it.
+        """
+
+        _resolved = None
+
+        def __get__(self, obj, objtype=None):
+            if StrategySDK._OptimizationDescriptor._resolved is None:
+                from services.strategy_helpers import optimization_utils as _module
+                StrategySDK._OptimizationDescriptor._resolved = _module
+            return StrategySDK._OptimizationDescriptor._resolved
+
+    optimization = _OptimizationDescriptor()
+
     _ai_instance = None
 
     class _AIDescriptor:
@@ -2457,6 +2479,32 @@ class StrategySDK:
         return max(floor, min(ceiling, confidence)), agreeing, voting
 
     # ------------------------------------------------------------------
+    # Fees (generic, platform-aware) — exposed on the SDK root so any
+    # strategy reaches them without the crypto namespace or base-class
+    # inheritance.  Thin delegators to the single canonical implementations
+    # (no duplicated fee math).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def fee_adjusted_edge_pct(
+        edge_pct: float, entry_price: float, platform: str = "polymarket"
+    ) -> float:
+        """Edge percent after platform taker fees (canonical impl on
+        BaseStrategy)."""
+        from services.strategies.base import BaseStrategy
+
+        return BaseStrategy.fee_adjusted_edge_pct(edge_pct, entry_price, platform)
+
+    @staticmethod
+    def fee_aware_min_edge_pct(*args: Any, **kwargs: Any) -> float:
+        """Minimum edge-percent needed to clear taker fees by a multiplier
+        (generic; canonical impl in crypto_strategy_utils)."""
+        from services.strategy_helpers.crypto_strategy_utils import (
+            fee_aware_min_edge_pct as _impl,
+        )
+
+        return _impl(*args, **kwargs)
+
+    # ------------------------------------------------------------------
     # Sizing (Kelly-fraction-from-edge, broadly applicable to directional bets)
     # ------------------------------------------------------------------
     @staticmethod
@@ -2465,6 +2513,7 @@ class StrategySDK:
         max_size: float,
         *,
         edge_price: float,
+        market_price: float | None = None,
         confidence: float,
         risk_score: float,
         kelly_fraction: float = 0.25,
@@ -2474,9 +2523,11 @@ class StrategySDK:
     ) -> float:
         """Quarter-Kelly position sizing from a price-space edge.
 
-        For any directional binary-market strategy. Approximates the Kelly
-        fraction as ``f* = edge_price / (1 - edge_price)`` (the optimal
-        fraction for a 1:1 binary contract with edge ``edge_price``), then:
+        For any directional binary-market strategy. Computes the true
+        binary-market Kelly fraction ``f* = edge / (1 - market_price)`` via
+        the canonical ``utils.kelly.kelly_fraction`` when ``market_price``
+        is supplied (falling back to an even-money edge proxy when it is
+        not), then:
 
           1. Caps to ``kelly_fraction`` (default 0.25 = quarter-Kelly) so a
              model error doesn't overstake.
@@ -2512,7 +2563,17 @@ class StrategySDK:
             Position size in USD, clipped to ``[1.0, max_size]``.
         """
         edge_price = max(0.0, min(0.99, abs(float(edge_price))))
-        f_star = edge_price / max(1e-3, 1.0 - edge_price)
+        # True binary-market Kelly f* = edge / (1 - market_price) via the
+        # canonical helper when the market price is known; even-money edge
+        # proxy otherwise.  ``edge_price`` should already be net of taker
+        # fees (see utils.kelly.fee_adjusted_edge).
+        if market_price is not None and 0.0 < float(market_price) < 1.0:
+            from utils.kelly import kelly_fraction as _canonical_kelly_fraction
+
+            m = float(market_price)
+            f_star = _canonical_kelly_fraction(min(0.999, m + edge_price), m, fraction=1.0)
+        else:
+            f_star = edge_price
         f_capped = max(0.0, min(float(kelly_fraction), f_star * float(kelly_fraction)))
         conf_scale = max(float(confidence_floor),
                          min(1.0, float(confidence) + 0.15))

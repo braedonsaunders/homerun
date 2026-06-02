@@ -20,13 +20,14 @@ not whether parameter choices generalize.  In Karpathy's autoresearch
 loop this matters: an iteration that pumps Sharpe in one CPCV path
 but degrades in others is overfit to that subset.
 
-Purging + embargo: the engine pulls historical opportunities by
-``detected_at``.  Positions that open in a train window may close
-inside a test window — a future-leak.  We mitigate by passing an
-``embargo_seconds`` gap between any train fold's right edge and
-any test fold's left edge; the engine itself evaluates only events
-inside its requested ``[start, end]`` window so the embargo is
-sufficient when ``embargo_seconds >= max_position_holding_period``.
+Purging + embargo: each selected test fold is run as its OWN disjoint
+backtest window and the per-fold returns are pooled — NOT as a single
+outer span from the first test fold to the last.  The outer-span approach
+silently fed interior non-test folds into the evaluation (a leak); running
+folds separately confines each path strictly to its test data.  Each test
+fold's left edge is additionally trimmed by ``embargo_seconds`` to
+decorrelate it from the prior fold's tail (positions are force-settled at
+each fold's right edge, so none carries across a fold boundary).
 
 Computationally expensive: C(N, K) backtest runs.  Default N=6, K=2
 gives 15 combinations.  Defaults are conservative; operators can
@@ -40,6 +41,14 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+from services.backtest.metrics import (
+    ANN_CALENDAR_SECONDS,
+    infer_periods_per_year,
+    resample_equity_returns,
+    sharpe_of_returns,
+    sortino_of_returns,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,26 +115,46 @@ def _build_folds(*, start: datetime, end: datetime, n_folds: int) -> list[CPCVFo
     return folds
 
 
-def _embargo_safe_test_windows(
+def _test_fold_windows(
     *,
     folds: list[CPCVFold],
     test_indices: tuple[int, ...],
     embargo_seconds: float,
-) -> tuple[datetime, datetime]:
-    """Compute the effective [test_start, test_end] for a path.  When
-    test folds are non-contiguous the engine runs a single window
-    spanning the earliest test_start through the latest test_end —
-    we use the OUTER bounds and let the engine's per-opportunity
-    ``detected_at`` filter clip events to the actual test region.
-    Embargo trims the outer start by ``embargo_seconds`` if any
-    train fold immediately precedes the first test fold.
+) -> list[tuple[datetime, datetime]]:
+    """Return the DISJOINT ``[start, end]`` window for each selected test
+    fold (not the outer span), each trimmed at the left by
+    ``embargo_seconds`` to decorrelate from the prior fold's tail.
+
+    Running each test fold separately is what prevents interior non-test
+    folds from leaking into the evaluation.
     """
-    test_indices = tuple(sorted(set(test_indices)))
-    first = folds[test_indices[0]]
-    last = folds[test_indices[-1]]
-    test_start = first.start + timedelta(seconds=max(0.0, embargo_seconds))
-    test_end = last.end
-    return test_start, test_end
+    emb = timedelta(seconds=max(0.0, embargo_seconds))
+    windows: list[tuple[datetime, datetime]] = []
+    for i in sorted(set(test_indices)):
+        f = folds[i]
+        start = (f.start + emb) if i > 0 else f.start
+        if start < f.end:
+            windows.append((start, f.end))
+    return windows
+
+
+def _curve_from_result(d: dict[str, Any]) -> list[tuple[datetime, float]]:
+    """Extract a ``(timestamp, equity_usd)`` series from an execution
+    backtest result's downsampled equity curve."""
+    out: list[tuple[datetime, float]] = []
+    for p in d.get("equity_curve_sample") or []:
+        if not (isinstance(p, dict) and isinstance(p.get("equity_usd"), (int, float))):
+            continue
+        at = p.get("at")
+        ts: Optional[datetime] = None
+        if isinstance(at, str):
+            try:
+                ts = datetime.fromisoformat(at)
+            except ValueError:
+                ts = None
+        if ts is not None:
+            out.append((ts, float(p["equity_usd"])))
+    return out
 
 
 def _summarize_paths(paths: list[CPCVPath]) -> dict[str, Any]:
@@ -134,19 +163,14 @@ def _summarize_paths(paths: list[CPCVPath]) -> dict[str, Any]:
     returns = [p.total_return_pct for p in succeeded]
     dd = [p.max_drawdown_pct for p in succeeded]
 
-    pbo = None
-    if len(sharpes) >= 4:
-        # Probability of Backtest Overfitting (Lopez de Prado, JoPM 2014).
-        # Simplified form for implicit-training CPCV: rank-based
-        # measure of how often a path that is "in the top half"
-        # by realized Sharpe ends up there by luck rather than edge.
-        # We compute the fraction of paths with Sharpe < 0 given
-        # the median Sharpe is positive — a calibration check that
-        # turns into a stricter test as N grows.
-        sorted_sr = sorted(sharpes)
-        median = sorted_sr[len(sorted_sr) // 2]
-        if median > 0:
-            pbo = sum(1 for s in sharpes if s < 0) / len(sharpes)
+    # Classic López de Prado PBO requires an IS-best-config selection across
+    # a parameter search; single-config CPCV has no config dimension, so
+    # reporting a "PBO" here would be a mislabel.  We report path robustness
+    # (fraction of paths with negative OOS Sharpe) instead; config-level
+    # overfitting is gated separately by the deflated Sharpe in autoresearch.
+    fraction_negative_sharpe = (
+        sum(1 for s in sharpes if s < 0) / len(sharpes) if sharpes else None
+    )
 
     def _pct(xs: list[float], q: float) -> Optional[float]:
         if not xs:
@@ -169,7 +193,7 @@ def _summarize_paths(paths: list[CPCVPath]) -> dict[str, Any]:
         "return_max_pct": max(returns) if returns else None,
         "max_dd_mean_pct": (sum(dd) / len(dd)) if dd else None,
         "max_dd_worst_pct": max(dd) if dd else None,
-        "pbo": pbo,
+        "fraction_negative_sharpe": fraction_negative_sharpe,
         "stable_path_pct": (
             sum(1 for r in returns if r >= 0) / len(returns) * 100.0 if returns else 0.0
         ),
@@ -228,60 +252,105 @@ async def run_cpcv(
 
     semaphore = asyncio.Semaphore(max(1, int(concurrency)))
 
+    def _exec_kwargs_for(w_start: datetime, w_end: datetime) -> dict[str, Any]:
+        kw: dict[str, Any] = {
+            "source_code": source_code,
+            "slug": slug,
+            "config": config,
+            "token_ids": token_ids,
+            "start": w_start,
+            "end": w_end,
+            "initial_capital_usd": initial_capital_usd,
+        }
+        if submit_p50_ms is not None:
+            kw["submit_latency_p50_ms"] = float(submit_p50_ms)
+        if submit_p95_ms is not None:
+            kw["submit_latency_p95_ms"] = float(submit_p95_ms)
+        if cancel_p50_ms is not None:
+            kw["cancel_latency_p50_ms"] = float(cancel_p50_ms)
+        if cancel_p95_ms is not None:
+            kw["cancel_latency_p95_ms"] = float(cancel_p95_ms)
+        if seed is not None:
+            kw["seed"] = int(seed)
+        return kw
+
     async def _run_one(idx: int, test_indices: tuple[int, ...]) -> CPCVPath:
         async with semaphore:
-            test_start, test_end = _embargo_safe_test_windows(
+            windows = _test_fold_windows(
                 folds=folds, test_indices=test_indices, embargo_seconds=embargo_seconds
             )
-            try:
-                exec_kwargs: dict[str, Any] = {
-                    "source_code": source_code,
-                    "slug": slug,
-                    "config": config,
-                    "token_ids": token_ids,
-                    "start": test_start,
-                    "end": test_end,
-                    "initial_capital_usd": initial_capital_usd,
-                }
-                if submit_p50_ms is not None:
-                    exec_kwargs["submit_latency_p50_ms"] = float(submit_p50_ms)
-                if submit_p95_ms is not None:
-                    exec_kwargs["submit_latency_p95_ms"] = float(submit_p95_ms)
-                if cancel_p50_ms is not None:
-                    exec_kwargs["cancel_latency_p50_ms"] = float(cancel_p50_ms)
-                if cancel_p95_ms is not None:
-                    exec_kwargs["cancel_latency_p95_ms"] = float(cancel_p95_ms)
-                if seed is not None:
-                    exec_kwargs["seed"] = int(seed)
-                exec_result: ExecutionBacktestResult = await run_execution_backtest(**exec_kwargs)
-                d = exec_result.to_dict()
-                sharpe = (d.get("sharpe") or {}).get("value")
-                sortino = (d.get("sortino") or {}).get("value")
+            tindices = tuple(sorted(set(test_indices)))
+            if not windows:
                 return CPCVPath(
-                    path_index=idx,
-                    test_fold_indices=test_indices,
-                    test_start_iso=test_start.isoformat(),
-                    test_end_iso=test_end.isoformat(),
-                    n_intents=int(d.get("n_intents") or 0),
-                    trade_count=int(d.get("trade_count") or 0),
-                    total_fills=int(d.get("total_fills") or 0),
-                    success=bool(d.get("success")),
-                    runtime_error=d.get("runtime_error"),
-                    total_return_pct=float(d.get("total_return_pct") or 0.0),
-                    sharpe=float(sharpe) if isinstance(sharpe, (int, float)) else None,
-                    sortino=float(sortino) if isinstance(sortino, (int, float)) else None,
-                    max_drawdown_pct=float(d.get("max_drawdown_pct") or 0.0),
+                    path_index=idx, test_fold_indices=tindices,
+                    test_start_iso="", test_end_iso="",
+                    success=False, runtime_error="no test window after embargo",
                 )
-            except Exception as exc:
-                logger.exception("CPCV path %d failed", idx)
-                return CPCVPath(
-                    path_index=idx,
-                    test_fold_indices=test_indices,
-                    test_start_iso=test_start.isoformat(),
-                    test_end_iso=test_end.isoformat(),
-                    success=False,
-                    runtime_error=str(exc),
-                )
+            pooled: list[float] = []
+            ppy: Optional[int] = None
+            n_intents = trade_count = total_fills = 0
+            ok = True
+            last_err: Optional[str] = None
+            # Run EACH test fold as its own disjoint backtest (no outer-span
+            # leak) and pool the per-fold returns.
+            for (w_start, w_end) in windows:
+                try:
+                    res: ExecutionBacktestResult = await run_execution_backtest(
+                        **_exec_kwargs_for(w_start, w_end)
+                    )
+                    d = res.to_dict()
+                    n_intents += int(d.get("n_intents") or 0)
+                    trade_count += int(d.get("trade_count") or 0)
+                    total_fills += int(d.get("total_fills") or 0)
+                    if not d.get("success"):
+                        ok = False
+                        last_err = last_err or d.get("runtime_error")
+                    hist = _curve_from_result(d)
+                    if len(hist) >= 3:
+                        fold_ppy = infer_periods_per_year(hist)
+                        ppy = fold_ppy if ppy is None else max(ppy, fold_ppy)
+                        pooled.extend(
+                            resample_equity_returns(
+                                hist, bar_seconds=ANN_CALENDAR_SECONDS / max(1, fold_ppy)
+                            )
+                        )
+                except Exception as exc:
+                    ok = False
+                    last_err = str(exc)
+                    logger.exception(
+                        "CPCV path %d window [%s, %s] failed", idx, w_start, w_end
+                    )
+            # Path metrics from the pooled OOS returns (frequency-correct).
+            sharpe: Optional[float] = None
+            sortino: Optional[float] = None
+            total_ret = dd_pct = 0.0
+            if pooled and ppy:
+                sharpe = sharpe_of_returns(pooled, periods_per_year=ppy)
+                sortino = sortino_of_returns(pooled, periods_per_year=ppy)
+                comp = peak = 1.0
+                worst = 0.0
+                for r in pooled:
+                    comp *= (1.0 + r)
+                    peak = max(peak, comp)
+                    if peak > 0:
+                        worst = max(worst, (peak - comp) / peak)
+                total_ret = (comp - 1.0) * 100.0
+                dd_pct = worst * 100.0
+            return CPCVPath(
+                path_index=idx,
+                test_fold_indices=tindices,
+                test_start_iso=windows[0][0].isoformat(),
+                test_end_iso=windows[-1][1].isoformat(),
+                n_intents=n_intents,
+                trade_count=trade_count,
+                total_fills=total_fills,
+                success=ok,
+                runtime_error=last_err,
+                total_return_pct=total_ret,
+                sharpe=sharpe,
+                sortino=sortino,
+                max_drawdown_pct=dd_pct,
+            )
 
     paths = await asyncio.gather(
         *[_run_one(i, combo) for i, combo in enumerate(combinations)]

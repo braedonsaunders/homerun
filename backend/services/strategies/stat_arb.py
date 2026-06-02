@@ -973,7 +973,7 @@ class StatArbStrategy(BaseStrategy):
                 days_until = (resolution_aware - utcnow()).days
                 if days_until > settings.MAX_RESOLUTION_MONTHS * 30:
                     continue
-                annualized_roi = roi * (365.0 / max(days_until, 1))
+                annualized_roi = self._calculate_annualized_roi(roi, market.end_date) or 0.0
                 if annualized_roi < settings.MIN_ANNUALIZED_ROI:
                     continue
 

@@ -555,6 +555,16 @@ class BaseStrategy(ABC):
     # Source key — which data pipeline feeds this strategy
     source_key: str = "scanner"  # "scanner", "crypto", "news", "weather", "traders", "manual"
 
+    # Snapshot lane: when True the scanner always gives this strategy the FULL
+    # market snapshot (not the incremental lane), regardless of mispricing_type.
+    # Generic replacement for the scanner hardcoding specific strategy slugs.
+    wants_full_snapshot: bool = False
+
+    # When True, this strategy's multi-leg signals MUST execute as one atomic
+    # bundle even when the arb isn't "guaranteed".  Generic replacement for the
+    # orchestrator hardcoding a specific strategy slug (see session_engine).
+    requires_atomic_execution: bool = False
+
     # Worker affinity — which worker should run this strategy's detect()
 
     # Opportunity TTL — how long detected opportunities stay valid (minutes)
@@ -1777,6 +1787,28 @@ class BaseStrategy(ABC):
             fee = 0.0
         return edge_pct - (fee * 100.0)
 
+    @staticmethod
+    def _side_spread(bid: Optional[float], ask: Optional[float]) -> float:
+        """Absolute bid-ask spread on one side; 0.0 when either quote is
+        missing or non-positive.  Shared across strategies (de-duplicated)."""
+        if bid is None or ask is None:
+            return 0.0
+        if bid <= 0.0 or ask <= 0.0:
+            return 0.0
+        return max(0.0, ask - bid)
+
+    def priority_market_filter(self, market: Any, now: datetime) -> bool:
+        """Override to mark a market HIGH-PRIORITY for this strategy's snapshot
+        lanes (the scanner fast-lanes / seeds these markets first).  Default:
+        no priority markets — the scanner consults this generically instead of
+        hardcoding which strategy cares about which markets."""
+        return False
+
+    def priority_market_sort_key(self, market: Any, now: datetime) -> tuple:
+        """Descending sort key for this strategy's priority markets; consulted
+        only for markets where ``priority_market_filter`` returns True."""
+        return (0.0,)
+
     def _build_execution_plan(
         self,
         *,
@@ -1860,6 +1892,10 @@ class BaseStrategy(ABC):
         metadata: dict[str, Any] = {
             "strategy_type": self.strategy_type,
             "generated_by": "base_strategy.create_opportunity",
+            # Generic atomic-bundle signal consumed by the execution session
+            # engine — set by any strategy that declares requires_atomic_execution
+            # (replaces the orchestrator hardcoding a specific strategy slug).
+            "requires_atomic_bundle": bool(getattr(self, "requires_atomic_execution", False)),
         }
         if isinstance(market_roster, dict):
             roster_scope = str(market_roster.get("scope") or "").strip().lower()

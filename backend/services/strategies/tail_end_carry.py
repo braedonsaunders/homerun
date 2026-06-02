@@ -149,6 +149,39 @@ class TailEndCarryStrategy(BaseStrategy):
     mispricing_type = "within_market"
     requires_resolution_date = True
     subscriptions = ["market_data_refresh"]
+    # within_market by classification, but still needs the FULL snapshot lane
+    # (generic flag the scanner honors instead of hardcoding this slug).
+    wants_full_snapshot = True
+
+    def priority_market_filter(self, market: Any, now: datetime) -> bool:
+        """High-priority = near resolution (<=2 days) AND a dominant side
+        (>=0.85).  This is tail-end-carry's OWN edge — declared here so the
+        generic scanner prioritizes these markets without hardcoding the slug."""
+        end_date = make_aware(getattr(market, "end_date", None))
+        if end_date is None:
+            return False
+        days = (end_date - now).total_seconds() / 86400.0
+        if days <= 0.0 or days > 2.0:
+            return False
+        prices = [safe_float(p) for p in (getattr(market, "outcome_prices", None) or [])]
+        prices = [p for p in prices if isinstance(p, (int, float))]
+        if not prices:
+            return False
+        return max(prices) >= 0.85
+
+    def priority_market_sort_key(self, market: Any, now: datetime) -> tuple:
+        end_date = make_aware(getattr(market, "end_date", None))
+        if end_date is None:
+            days = 9999.0
+        else:
+            days = max(0.0, (end_date - now).total_seconds() / 86400.0)
+        prices = [safe_float(p) for p in (getattr(market, "outcome_prices", None) or [])]
+        prices = [p for p in prices if isinstance(p, (int, float))]
+        side_probability = max(prices) if prices else 0.0
+        liquidity = safe_float(getattr(market, "liquidity", 0.0)) or 0.0
+        volume = safe_float(getattr(market, "volume", 0.0)) or 0.0
+        time_priority = 1.0 / max(days, 1e-6)
+        return (time_priority, side_probability, liquidity, volume)
 
     quality_filter_overrides = QualityFilterOverrides(
         min_roi=1.0,

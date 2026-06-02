@@ -23,11 +23,15 @@ from datetime import datetime
 from typing import Optional, Sequence
 
 
-# Annualization constants. Polymarket markets resolve discretely; we use
-# trading-day-style annualization (252) for risk-adjusted ratios and
-# calendar-day (365) for drawdown duration.
+# Annualization. The equity curve is marked in EVENT TIME — one mark per
+# book snapshot while a position is open — NOT on fixed daily bars. A
+# hardcoded sqrt(252) is therefore wrong by orders of magnitude for the
+# sub-second sampling of crypto markets. Risk-adjusted ratios derive their
+# periods-per-year from the equity curve's own sampling frequency via
+# ``infer_periods_per_year`` / ``resample_equity_returns``. ANN_TRADING_DAYS
+# survives only as the degenerate fallback when the curve is too short to
+# infer a frequency.
 ANN_TRADING_DAYS = 252
-SECONDS_PER_TRADING_DAY = 6.5 * 3600  # ignored — we use periods returned
 ANN_CALENDAR_SECONDS = 365 * 24 * 3600
 
 # Sentinel for ratios whose denominator is zero (winning streak with
@@ -128,6 +132,13 @@ def bootstrap_ci(
         if math.isnan(v) or math.isinf(v):
             continue
         stats.append(v)
+    return _ci_from_stats(stats, confidence)
+
+
+def _ci_from_stats(
+    stats: list[float], confidence: float
+) -> tuple[Optional[float], Optional[float]]:
+    """Percentile CI bounds from a list of bootstrap replicate statistics."""
     if not stats:
         return None, None
     stats.sort()
@@ -135,6 +146,88 @@ def bootstrap_ci(
     lo_idx = max(0, int(math.floor(alpha * len(stats))))
     hi_idx = min(len(stats) - 1, int(math.ceil((1.0 - alpha) * len(stats))) - 1)
     return stats[lo_idx], stats[hi_idx]
+
+
+def _autocorrelation(xs: Sequence[float], lag: int) -> float:
+    n = len(xs)
+    if lag < 1 or lag >= n:
+        return 0.0
+    m = _mean(xs)
+    denom = sum((x - m) ** 2 for x in xs)
+    if denom <= 0:
+        return 0.0
+    num = sum((xs[i] - m) * (xs[i - lag] - m) for i in range(lag, n))
+    return num / denom
+
+
+def _mean_block_length(xs: Sequence[float]) -> float:
+    """Decorrelation-informed mean block length for the stationary bootstrap.
+
+    Uses the first lag at which the sample autocorrelation falls below the
+    ~95% white-noise band (|rho| < 2/sqrt(n)); falls back to the n**(1/3)
+    rule of thumb when the series shows no significant autocorrelation.
+    """
+    n = len(xs)
+    if n < 8:
+        return 1.0
+    threshold = 2.0 / math.sqrt(n)
+    decor = 0
+    for lag in range(1, min(n // 2, 64) + 1):
+        if abs(_autocorrelation(xs, lag)) < threshold:
+            decor = lag
+            break
+    if decor <= 0:
+        decor = max(1, round(n ** (1.0 / 3.0)))
+    return float(min(max(1, decor), max(1, n // 2)))
+
+
+def block_bootstrap_ci(
+    series: Sequence[float],
+    statistic,
+    *,
+    n_resamples: int = 2000,
+    confidence: float = 0.95,
+    seed: Optional[int] = None,
+    max_resample_draws: int = 8_000_000,
+) -> tuple[Optional[float], Optional[float]]:
+    """Stationary (Politis-Romano 1994) block-bootstrap CI for a statistic of
+    an AUTOCORRELATED series.
+
+    Equity returns are serially dependent (overlapping holding periods,
+    trending equity), so an IID percentile bootstrap understates CI width.
+    The stationary bootstrap resamples geometrically-distributed, wrapped
+    blocks — preserving the local dependence structure — with a mean block
+    length inferred from the series' own autocorrelation.  Use this for
+    return-series statistics (Sharpe, Sortino, tail metrics); the IID
+    ``bootstrap_ci`` remains correct for exchangeable trade outcomes.
+    """
+    n = len(series)
+    if n < 8:
+        return None, None
+    s = list(series)
+    if max_resample_draws > 0:
+        n_resamples = max(100, min(int(n_resamples), int(max_resample_draws // max(1, n))))
+    mean_block = _mean_block_length(s)
+    p_new_block = 1.0 / mean_block  # geometric block-length parameter
+    rng = random.Random(seed)
+    stats: list[float] = []
+    for _ in range(int(n_resamples)):
+        resample: list[float] = []
+        idx = rng.randrange(n)
+        for _ in range(n):
+            resample.append(s[idx])
+            if rng.random() < p_new_block:
+                idx = rng.randrange(n)
+            else:
+                idx = (idx + 1) % n
+        try:
+            v = float(statistic(resample))
+        except Exception:
+            continue
+        if math.isnan(v) or math.isinf(v):
+            continue
+        stats.append(v)
+    return _ci_from_stats(stats, confidence)
 
 
 # ── Statistic helpers ────────────────────────────────────────────────────
@@ -193,6 +286,75 @@ def _kurtosis(xs: Sequence[float]) -> float:
     return g2
 
 
+def deflated_sharpe_from_moments(
+    *,
+    annualized_sharpe: float,
+    skew: float,
+    excess_kurtosis: float,
+    n_observations: int,
+    n_trials: int,
+    periods_per_year: int = ANN_TRADING_DAYS,
+) -> dict[str, float]:
+    """Deflated Sharpe Ratio from precomputed return moments.
+
+    DSR is a closed-form function of the (annualized) Sharpe, the return
+    distribution's skew / excess-kurtosis, the observation count, the
+    number of trials searched, and the annualization factor.  Exposing the
+    moment form lets a caller that knows ``n_trials`` (the search size)
+    deflate a run's Sharpe without re-shipping or re-sampling its full
+    return series — so the deflation uses the SAME frequency-correct basis
+    as the headline Sharpe rather than a downsampled curve.
+    """
+    from math import sqrt as _sqrt
+    from statistics import NormalDist as _Normal
+
+    n = int(n_observations)
+    if n < 4:
+        return {
+            "observed_sharpe": float(annualized_sharpe),
+            "sr_zero": 0.0,
+            "probabilistic_sharpe": 0.0,
+            "deflated_sharpe": 0.0,
+            "n_observations": n,
+            "n_trials": int(max(1, n_trials)),
+        }
+    n_trials = max(1, int(n_trials))
+    sr = float(annualized_sharpe)
+    normal = _Normal()
+    # SR0: expected max of n_trials draws of pure-noise Sharpe (López de
+    # Prado eq. 9, Euler-Mascheroni form), converted to the annualisation.
+    if n_trials == 1:
+        sr_zero = 0.0
+    else:
+        emc = 0.5772156649015329
+        z_max = (1 - emc) * normal.inv_cdf(1.0 - 1.0 / n_trials) + emc * normal.inv_cdf(
+            1.0 - 1.0 / (n_trials * math.e)
+        )
+        sr_zero = z_max / _sqrt(max(1, n)) * _sqrt(periods_per_year)
+    # Standard error of the observed Sharpe (Mertens 2002).
+    sr_var = (1.0 - skew * sr + (excess_kurtosis / 4.0) * sr * sr) / max(1, n - 1)
+    if sr_var <= 0:
+        return {
+            "observed_sharpe": float(sr),
+            "sr_zero": float(sr_zero),
+            "probabilistic_sharpe": 1.0 if sr > 0 else 0.0,
+            "deflated_sharpe": 1.0 if sr > sr_zero else 0.0,
+            "n_observations": n,
+            "n_trials": n_trials,
+        }
+    sr_se = _sqrt(sr_var)
+    psr = float(normal.cdf((sr - 0.0) / sr_se))
+    dsr = float(normal.cdf((sr - sr_zero) / sr_se))
+    return {
+        "observed_sharpe": float(sr),
+        "sr_zero": float(sr_zero),
+        "probabilistic_sharpe": psr,
+        "deflated_sharpe": dsr,
+        "n_observations": n,
+        "n_trials": n_trials,
+    }
+
+
 def deflated_sharpe_ratio(
     returns: Sequence[float],
     *,
@@ -220,65 +382,15 @@ def deflated_sharpe_ratio(
     knobs you tuned.
     """
     n = len(returns)
-    if n < 4:
-        return {
-            "observed_sharpe": 0.0,
-            "sr_zero": 0.0,
-            "probabilistic_sharpe": 0.0,
-            "deflated_sharpe": 0.0,
-            "n_observations": n,
-            "n_trials": int(max(1, n_trials)),
-        }
-    n_trials = max(1, int(n_trials))
-    sr = sharpe_of_returns(returns, periods_per_year=periods_per_year)
-    skew = _skewness(returns)
-    excess_kurt = _kurtosis(returns)
-
-    # SR0: expected max of n_trials draws from N(0, 1) annualised SR.
-    # López de Prado eq. 9: SR0 = sqrt(V) * ((1 - γ)·Φ⁻¹(1-1/N) + γ·Φ⁻¹(1-1/(N·e)))
-    # where V is the variance of trial Sharpes (assumed = 1/T if not
-    # estimated) and γ ≈ 0.5772 (Euler-Mascheroni).  We approximate
-    # V = 1.0 and use a simpler form widely used in practice:
-    # SR0 ≈ Φ⁻¹(1 - 1/N) / sqrt(T)  scaled to the annualisation.
-    from math import sqrt as _sqrt
-    from statistics import NormalDist as _Normal
-
-    normal = _Normal()
-    # Quantile of the max of N normal draws — Bonferroni-style.
-    if n_trials == 1:
-        sr_zero = 0.0
-    else:
-        emc = 0.5772156649015329
-        z_max = (1 - emc) * normal.inv_cdf(1.0 - 1.0 / n_trials) + emc * normal.inv_cdf(
-            1.0 - 1.0 / (n_trials * math.e)
-        )
-        # Convert per-period SR0 to annualised.
-        sr_zero = z_max / _sqrt(max(1, n)) * _sqrt(periods_per_year)
-
-    # Standard error of the observed Sharpe (Mertens 2002):
-    sr_var = (1.0 - skew * sr + (excess_kurt / 4.0) * sr * sr) / max(1, n - 1)
-    if sr_var <= 0:
-        return {
-            "observed_sharpe": float(sr),
-            "sr_zero": float(sr_zero),
-            "probabilistic_sharpe": 1.0 if sr > 0 else 0.0,
-            "deflated_sharpe": 1.0 if sr > sr_zero else 0.0,
-            "n_observations": n,
-            "n_trials": n_trials,
-        }
-    sr_se = _sqrt(sr_var)
-    # PSR: probability that the true SR exceeds 0.
-    psr = float(normal.cdf((sr - 0.0) / sr_se))
-    # DSR: probability that the true SR exceeds SR0 (the max-of-N floor).
-    dsr = float(normal.cdf((sr - sr_zero) / sr_se))
-    return {
-        "observed_sharpe": float(sr),
-        "sr_zero": float(sr_zero),
-        "probabilistic_sharpe": psr,
-        "deflated_sharpe": dsr,
-        "n_observations": n,
-        "n_trials": n_trials,
-    }
+    sr = sharpe_of_returns(returns, periods_per_year=periods_per_year) if n >= 2 else 0.0
+    return deflated_sharpe_from_moments(
+        annualized_sharpe=sr,
+        skew=_skewness(returns),
+        excess_kurtosis=_kurtosis(returns),
+        n_observations=n,
+        n_trials=n_trials,
+        periods_per_year=periods_per_year,
+    )
 
 
 def sortino_of_returns(returns: Sequence[float], *, periods_per_year: int = 252) -> float:
@@ -395,6 +507,129 @@ def equity_returns(equity_history: Sequence[tuple[datetime, float]]) -> list[flo
     return rets
 
 
+def _infer_bar_seconds(
+    equity_history: Sequence[tuple[datetime, float]]
+) -> Optional[float]:
+    """Median spacing (seconds) between equity marks, clamped to [1s, 1d].
+
+    Returns None when there are too few marks to estimate a frequency.
+    """
+    if len(equity_history) < 3:
+        return None
+    deltas = sorted(
+        d
+        for d in (
+            (equity_history[i][0] - equity_history[i - 1][0]).total_seconds()
+            for i in range(1, len(equity_history))
+        )
+        if d > 0
+    )
+    if not deltas:
+        return None
+    median = deltas[len(deltas) // 2]
+    return min(max(median, 1.0), 86400.0)
+
+
+def infer_periods_per_year(
+    equity_history: Sequence[tuple[datetime, float]]
+) -> int:
+    """Annualization factor implied by the equity curve's own sampling
+    frequency.  Falls back to ``ANN_TRADING_DAYS`` for degenerate curves.
+    """
+    bar_seconds = _infer_bar_seconds(equity_history)
+    if not bar_seconds:
+        return ANN_TRADING_DAYS
+    return max(1, int(round(ANN_CALENDAR_SECONDS / bar_seconds)))
+
+
+def resample_equity_returns(
+    equity_history: Sequence[tuple[datetime, float]],
+    *,
+    bar_seconds: float,
+    max_bars: int = 200_000,
+) -> list[float]:
+    """Returns on a UNIFORM time grid built from the (event-time) equity
+    curve via last-observation-carried-forward.
+
+    Idle stretches with no marks become flat (zero-return) bars, so
+    volatility isn't over-estimated by sampling only while a position is
+    open, and the uniform spacing makes sqrt(periods_per_year)
+    annualization valid.  The grid is capped at ``max_bars`` (the bar is
+    widened if a run is long enough to exceed it).
+    """
+    n = len(equity_history)
+    if n < 2 or bar_seconds <= 0:
+        return []
+    t0 = equity_history[0][0]
+    span = (equity_history[-1][0] - t0).total_seconds()
+    if span <= 0:
+        return []
+    n_bars = max(1, math.ceil(span / bar_seconds))
+    if n_bars > max_bars:
+        bar_seconds = span / max_bars
+        n_bars = max_bars
+    eq_times = [(t - t0).total_seconds() for (t, _) in equity_history]
+    eq_vals = [float(v) for (_, v) in equity_history]
+    rets: list[float] = []
+    j = 0
+    prev_val = eq_vals[0]
+    for k in range(1, n_bars + 1):
+        grid_t = min(k * bar_seconds, span)
+        while j + 1 < len(eq_times) and eq_times[j + 1] <= grid_t:
+            j += 1
+        curr_val = eq_vals[j]
+        if prev_val > 0:
+            rets.append((curr_val - prev_val) / prev_val)
+        prev_val = curr_val
+    return rets
+
+
+def _derive_returns_and_ppy(
+    equity_history: Sequence[tuple[datetime, float]],
+    periods_per_year: Optional[int] = None,
+) -> tuple[list[float], int]:
+    """Frequency-correct (returns, periods_per_year) for an equity curve.
+
+    Single source of truth for annualization: resample the event-time
+    equity curve onto a uniform grid and derive periods-per-year from that
+    grid, unless an explicit ``periods_per_year`` override is supplied.
+    """
+    bar_seconds = _infer_bar_seconds(equity_history)
+    if periods_per_year is None:
+        periods_per_year = (
+            max(1, int(round(ANN_CALENDAR_SECONDS / bar_seconds)))
+            if bar_seconds
+            else ANN_TRADING_DAYS
+        )
+    rets = (
+        resample_equity_returns(equity_history, bar_seconds=bar_seconds)
+        if bar_seconds
+        else equity_returns(equity_history)
+    )
+    return rets, int(periods_per_year)
+
+
+def annualization_moments(
+    equity_history: Sequence[tuple[datetime, float]]
+) -> dict[str, float]:
+    """Return-distribution moments + annualization factor for an equity
+    curve, computed on the frequency-correct resampled returns.
+
+    Lets a downstream caller that knows the search size (``n_trials``)
+    compute the Deflated Sharpe via ``deflated_sharpe_from_moments``
+    without the full return series (which is large / downsampled in
+    transit).
+    """
+    rets, ppy = _derive_returns_and_ppy(equity_history)
+    return {
+        "periods_per_year": int(ppy),
+        "n_obs": len(rets),
+        "skew": _skewness(rets),
+        "kurtosis": _kurtosis(rets),
+        "annualized_sharpe": sharpe_of_returns(rets, periods_per_year=ppy),
+    }
+
+
 def max_drawdown(equity_history: Sequence[tuple[datetime, float]]) -> tuple[float, float, float]:
     """Return (max_dd_usd, max_dd_pct, duration_seconds)."""
     if not equity_history:
@@ -431,7 +666,7 @@ def compute_metrics(
     equity_history: Sequence[tuple[datetime, float]],
     trades: Sequence[TradeOutcome],
     fees_paid_usd: float,
-    periods_per_year: int = 252,
+    periods_per_year: Optional[int] = None,
     bootstrap_resamples: int = 2000,
     seed: Optional[int] = 42,
 ) -> BacktestMetrics:
@@ -461,18 +696,24 @@ def compute_metrics(
         else:
             annualized_pct = total_pct
 
-    rets = equity_returns(equity_history)
-    sharpe_pt = sharpe_of_returns(rets, periods_per_year=periods_per_year)
-    sortino_pt = sortino_of_returns(rets, periods_per_year=periods_per_year)
-    sharpe_lo, sharpe_hi = bootstrap_ci(
+    # Annualize from the equity curve's own sampling frequency, not a
+    # hardcoded daily clock (single source of truth: _derive_returns_and_ppy).
+    rets, periods_per_year = _derive_returns_and_ppy(equity_history, periods_per_year)
+    ppy = periods_per_year
+    sharpe_pt = sharpe_of_returns(rets, periods_per_year=ppy)
+    sortino_pt = sortino_of_returns(rets, periods_per_year=ppy)
+    # Return-series statistics use the stationary block bootstrap (returns
+    # are autocorrelated); trade-level statistics below keep the IID
+    # bootstrap (trade outcomes are exchangeable).
+    sharpe_lo, sharpe_hi = block_bootstrap_ci(
         rets,
-        lambda r: sharpe_of_returns(r, periods_per_year=periods_per_year),
+        lambda r: sharpe_of_returns(r, periods_per_year=ppy),
         n_resamples=bootstrap_resamples,
         seed=seed,
     )
-    sortino_lo, sortino_hi = bootstrap_ci(
+    sortino_lo, sortino_hi = block_bootstrap_ci(
         rets,
-        lambda r: sortino_of_returns(r, periods_per_year=periods_per_year),
+        lambda r: sortino_of_returns(r, periods_per_year=ppy),
         n_resamples=bootstrap_resamples,
         seed=seed,
     )
@@ -503,7 +744,7 @@ def compute_metrics(
                 local_ann = (eq[-1] / initial_capital_usd - 1.0) * 100.0
             return (local_ann / 100.0) / local_dd
         try:
-            calmar_lo, calmar_hi = bootstrap_ci(
+            calmar_lo, calmar_hi = block_bootstrap_ci(
                 rets, _calmar_resample, n_resamples=bootstrap_resamples, seed=seed,
             )
         except Exception:
@@ -549,19 +790,19 @@ def compute_metrics(
     es_1_pt = expected_shortfall(rets, alpha=0.01)
     tail_pt = tail_ratio(rets, alpha=0.05)
     g2p_pt = gain_to_pain(rets)
-    es_5_lo, es_5_hi = bootstrap_ci(
+    es_5_lo, es_5_hi = block_bootstrap_ci(
         rets, lambda r: expected_shortfall(r, alpha=0.05),
         n_resamples=bootstrap_resamples, seed=seed,
     )
-    es_1_lo, es_1_hi = bootstrap_ci(
+    es_1_lo, es_1_hi = block_bootstrap_ci(
         rets, lambda r: expected_shortfall(r, alpha=0.01),
         n_resamples=bootstrap_resamples, seed=seed,
     )
-    tail_lo, tail_hi = bootstrap_ci(
+    tail_lo, tail_hi = block_bootstrap_ci(
         rets, lambda r: tail_ratio(r, alpha=0.05),
         n_resamples=bootstrap_resamples, seed=seed,
     )
-    g2p_lo, g2p_hi = bootstrap_ci(
+    g2p_lo, g2p_hi = block_bootstrap_ci(
         rets, gain_to_pain, n_resamples=bootstrap_resamples, seed=seed,
     )
 
@@ -596,8 +837,13 @@ __all__ = [
     "MetricCI",
     "BacktestMetrics",
     "bootstrap_ci",
+    "block_bootstrap_ci",
+    "infer_periods_per_year",
+    "resample_equity_returns",
     "compute_metrics",
     "deflated_sharpe_ratio",
+    "deflated_sharpe_from_moments",
+    "annualization_moments",
     "sharpe_of_returns",
     "sortino_of_returns",
     "hit_rate_of",

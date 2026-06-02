@@ -341,17 +341,6 @@ class NewsMomentumBreakoutStrategy(BaseStrategy):
 
         return yes, no, yes_bid, yes_ask, no_bid, no_ask
 
-    def _side_spread(
-        self,
-        bid: Optional[float],
-        ask: Optional[float],
-    ) -> float:
-        if bid is None or ask is None:
-            return 0.0
-        if bid <= 0.0 or ask <= 0.0:
-            return 0.0
-        return max(0.0, ask - bid)
-
     def detect(
         self,
         events: list[Event],

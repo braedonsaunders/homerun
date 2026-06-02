@@ -1208,31 +1208,55 @@ class ArbitrageScanner:
         has_tokens = 1.0 if list(getattr(market, "clob_token_ids", None) or []) else 0.0
         return (volume, liquidity, has_tokens)
 
-    def _is_tail_end_priority_market(self, market: object, now: datetime) -> bool:
-        end_date = _make_aware(getattr(market, "end_date", None))
-        if end_date is None:
-            return False
-        days_to_resolution = (end_date - now).total_seconds() / 86400.0
-        if days_to_resolution <= 0.0 or days_to_resolution > 2.0:
-            return False
+    def _priority_filter_strategies(self) -> list:
+        """Loaded scanner strategies that OVERRIDE ``priority_market_filter``
+        (declare some markets high-priority).  Generic replacement for the
+        scanner knowing about specific strategy slugs / edges."""
+        from services.strategies.base import BaseStrategy
 
-        yes, no = self._extract_market_yes_no_prices(market, {})
-        if yes is None or no is None:
-            return False
-        return max(float(yes), float(no)) >= 0.85
-
-    def _tail_end_priority_key(self, market: object, now: datetime) -> tuple[float, float, float, float]:
-        end_date = _make_aware(getattr(market, "end_date", None))
-        if end_date is None:
-            days_to_resolution = 9999.0
+        if self._strategy_overrides is not None:
+            instances = list(self._strategy_overrides)
         else:
-            days_to_resolution = max(0.0, (end_date - now).total_seconds() / 86400.0)
-        yes, no = self._extract_market_yes_no_prices(market, {})
-        side_probability = max(float(yes or 0.0), float(no or 0.0))
-        liquidity = float(getattr(market, "liquidity", 0.0) or 0.0)
-        volume = float(getattr(market, "volume", 0.0) or 0.0)
-        time_priority = 1.0 / max(days_to_resolution, 1e-6)
-        return (time_priority, side_probability, liquidity, volume)
+            instances = [loaded.instance for loaded in strategy_loader._loaded.values()]
+        out = []
+        for inst in instances:
+            fn = getattr(type(inst), "priority_market_filter", None)
+            if fn is not None and fn is not BaseStrategy.priority_market_filter:
+                out.append(inst)
+        return out
+
+    def _is_priority_market(self, market: object, now: datetime) -> bool:
+        for inst in self._priority_filter_strategies():
+            try:
+                if inst.priority_market_filter(market, now):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _priority_market_sort_key(self, market: object, now: datetime) -> tuple:
+        best: tuple | None = None
+        for inst in self._priority_filter_strategies():
+            try:
+                if inst.priority_market_filter(market, now):
+                    key = inst.priority_market_sort_key(market, now)
+                    if best is None or key > best:
+                        best = key
+            except Exception:
+                continue
+        return best if best is not None else (0.0,)
+
+    def _heavy_has_priority_filter(self, heavy_slugs) -> bool:
+        wanted = {str(s).strip().lower() for s in (heavy_slugs or [])}
+        for inst in self._priority_filter_strategies():
+            slug = (
+                getattr(inst, "slug", None)
+                or getattr(inst, "strategy_type", None)
+                or getattr(inst, "name", None)
+            )
+            if slug and str(slug).strip().lower() in wanted:
+                return True
+        return False
 
     def _enforce_catalog_caps(self, events: list, markets: list) -> tuple[list, list]:
         if bool(getattr(settings, "SCANNER_FORCE_FULL_UNIVERSE", True)):
@@ -1906,7 +1930,6 @@ class ArbitrageScanner:
         """Split scanner market_data_refresh strategies into incremental vs full sets."""
         incremental: set[str] = set()
         full_snapshot: set[str] = set()
-        forced_full_snapshot = {"tail_end_carry"}
         within_market = str(MispricingType.WITHIN_MARKET.value).lower()
 
         # When strategy overrides are active (e.g. in tests), partition from those
@@ -1918,7 +1941,7 @@ class ArbitrageScanner:
                 strategy_key = str(getattr(instance, "strategy_type", slug) or slug).strip().lower()
                 if str(getattr(instance, "source_key", "scanner") or "").strip().lower() != "scanner":
                     continue
-                if strategy_key in forced_full_snapshot:
+                if getattr(instance, "wants_full_snapshot", False):
                     full_snapshot.add(slug)
                     continue
                 subscriptions = set(getattr(instance, "subscriptions", None) or [])
@@ -2894,28 +2917,22 @@ class ArbitrageScanner:
                 return True
         return False
 
-    @staticmethod
-    def _default_mispricing_for_strategy(strategy_key: str) -> Optional[MispricingType]:
-        slug = str(strategy_key or "").strip().lower()
-        if not slug:
-            return None
-        if slug == "settlement_lag":
-            return MispricingType.SETTLEMENT_LAG
-        if slug in {"combinatorial", "cross_market"}:
-            return MispricingType.CROSS_MARKET
-        if slug == "news_edge":
-            return MispricingType.NEWS_INFORMATION
-        return MispricingType.WITHIN_MARKET
-
     def _hydrate_opportunity_defaults(self, opportunity: Opportunity, strategy: object) -> None:
         if not opportunity.strategy:
             opportunity.strategy = str(self._strategy_key(strategy) or "")
         if opportunity.mispricing_type is None:
-            default_mispricing = self._default_mispricing_for_strategy(
-                str(opportunity.strategy or self._strategy_key(strategy) or "")
-            )
-            if default_mispricing is not None:
-                opportunity.mispricing_type = default_mispricing
+            # Read the strategy's OWN declared ``mispricing_type`` (a generic
+            # capability BaseStrategy exposes) rather than a per-slug map
+            # hardcoded in the generic scanner; fall back to the generic
+            # within-market default.
+            declared = getattr(strategy, "mispricing_type", None)
+            if declared:
+                try:
+                    opportunity.mispricing_type = MispricingType(str(declared))
+                except ValueError:
+                    opportunity.mispricing_type = MispricingType.WITHIN_MARKET
+            else:
+                opportunity.mispricing_type = MispricingType.WITHIN_MARKET
 
     async def _run_override_strategies(
         self,
@@ -3918,17 +3935,16 @@ class ArbitrageScanner:
 
                 await self._ensure_runtime_strategies_loaded()
                 incremental_slugs, _ = self._partition_market_refresh_strategies()
-                tail_end_fast_strategy = strategy_loader.get_instance("tail_end_carry")
                 tail_end_fast_markets: list = []
-                if tail_end_fast_strategy is not None:
+                if self._priority_filter_strategies():
                     tail_end_fast_markets = [
                         market
                         for market in self._cached_markets
-                        if self._is_market_active(market, now) and self._is_tail_end_priority_market(market, now)
+                        if self._is_market_active(market, now) and self._is_priority_market(market, now)
                     ]
                     if tail_end_fast_markets:
                         tail_end_fast_markets.sort(
-                            key=lambda market: self._tail_end_priority_key(market, now),
+                            key=lambda market: self._priority_market_sort_key(market, now),
                             reverse=True,
                         )
                         tail_end_fast_markets = tail_end_fast_markets[:2000]
@@ -4215,11 +4231,11 @@ class ArbitrageScanner:
                     else:
                         cap = int(getattr(settings, "SCANNER_FULL_SNAPSHOT_MAX_MARKETS", 0) or 0)
                     active_markets = [market for market in cached_markets_snapshot if self._is_market_active(market, now)]
-                    if "tail_end_carry" in heavy_slugs:
+                    if self._heavy_has_priority_filter(heavy_slugs):
                         tail_priority = [
-                            market for market in active_markets if self._is_tail_end_priority_market(market, now)
+                            market for market in active_markets if self._is_priority_market(market, now)
                         ]
-                        tail_priority.sort(key=lambda market: self._tail_end_priority_key(market, now), reverse=True)
+                        tail_priority.sort(key=lambda market: self._priority_market_sort_key(market, now), reverse=True)
                         if cap > 0 and len(tail_priority) >= cap:
                             seed_markets = tail_priority[:cap]
                         else:

@@ -582,8 +582,9 @@ async def run_cpcv_route(req: CPCVRequest):
     """Combinatorial Purged Cross-Validation (Lopez de Prado).
 
     Evaluates the strategy on every C(n_folds, k_test_folds) combination
-    of test windows, producing a distribution of out-of-sample Sharpes
-    plus a Probability of Backtest Overfitting (PBO) estimate.  More
+    of test windows (each run as its own DISJOINT, purged+embargoed
+    backtest), producing a distribution of out-of-sample Sharpes plus a
+    path-robustness summary (fraction of negative-Sharpe paths).  More
     rigorous than walk-forward: catches edges that hold up against an
     arbitrary subset of history, not just a single chronological path.
     """
@@ -613,6 +614,108 @@ async def run_cpcv_route(req: CPCVRequest):
         logger.exception("CPCV run failed")
         raise HTTPException(status_code=500, detail=f"cpcv failed: {exc}") from exc
     return _sanitize_floats(result.to_dict())
+
+
+class ParityRequest(BaseModel):
+    slug: str = Field(..., min_length=1)
+    start: datetime
+    end: datetime
+    token_ids: list[str] | None = None
+    check_determinism: bool = True
+    sample_interval_seconds: int = Field(default=1800, ge=1)
+    max_ticks: int = Field(default=96, ge=1, le=1000)
+    warmup_seconds: int = Field(default=0, ge=0)
+
+
+@router.post("/parity")
+async def run_parity_route(req: ParityRequest):
+    """Backtest↔live decision parity for one strategy + window.
+
+    Re-derives decisions via the replay path and diffs them against the
+    recorded live decision tee — the check that proves the core invariant
+    (a strategy is a pure function of its recorded inputs) — plus a
+    determinism double-run.  Vacuous until the decision tee has run live
+    over the window (surfaced in notes).
+    """
+    from services.backtest.decision_parity import run_parity_report
+
+    try:
+        rep = await run_parity_report(
+            slug=req.slug,
+            start=req.start,
+            end=req.end,
+            token_ids=req.token_ids,
+            check_determinism=req.check_determinism,
+            sample_interval_seconds=req.sample_interval_seconds,
+            max_ticks=req.max_ticks,
+            warmup_seconds=req.warmup_seconds,
+        )
+    except Exception as exc:
+        logger.exception("parity run failed")
+        raise HTTPException(status_code=500, detail=f"parity failed: {exc}") from exc
+
+    def _count(x: Any) -> Any:
+        return len(x) if isinstance(x, (list, tuple, set)) else x
+
+    return _sanitize_floats(
+        {
+            "strategy_slug": getattr(rep, "strategy_slug", req.slug),
+            "window_start": req.start.isoformat(),
+            "window_end": req.end.isoformat(),
+            "deterministic": getattr(rep, "deterministic", None),
+            "replayed_count": getattr(rep, "replayed_count", 0),
+            "recorded_count": getattr(rep, "recorded_count", 0),
+            "matched": _count(getattr(rep, "matched", 0)),
+            "missing_from_replay": _count(getattr(rep, "missing_from_replay", [])),
+            "extra_in_replay": _count(getattr(rep, "extra_in_replay", [])),
+            "notes": getattr(rep, "notes", []),
+        }
+    )
+
+
+class FillCalibrationRequest(BaseModel):
+    start: datetime
+    end: datetime
+    token_ids: list[str] | None = None
+    model_predicted_fill_rate: float | None = None
+
+
+@router.post("/fill-calibration")
+async def run_fill_calibration_route(req: FillCalibrationRequest):
+    """Compare the backtest fill model to realized live fills (the
+    ``order.fill`` topic) over a window — an error band, not pass/fail.
+    Reports 'uncalibrated' when no live fills exist for the window."""
+    from services.backtest.fill_calibration import calibration_report
+
+    try:
+        rep = await calibration_report(
+            start=req.start,
+            end=req.end,
+            token_ids=req.token_ids,
+            model_predicted_fill_rate=req.model_predicted_fill_rate,
+        )
+    except Exception as exc:
+        logger.exception("fill calibration failed")
+        raise HTTPException(
+            status_code=500, detail=f"fill-calibration failed: {exc}"
+        ) from exc
+    return _sanitize_floats(
+        {
+            "window_start": req.start.isoformat(),
+            "window_end": req.end.isoformat(),
+            "realized_n": rep.realized_n,
+            "realized_fill_rate_mean": rep.realized_fill_rate_mean,
+            "realized_partial_rate": rep.realized_partial_rate,
+            "realized_fee_mean": rep.realized_fee_mean,
+            "fill_percent_p10": rep.fill_percent_p10,
+            "fill_percent_p50": rep.fill_percent_p50,
+            "fill_percent_p90": rep.fill_percent_p90,
+            "model_fill_rate": rep.model_fill_rate,
+            "fill_rate_abs_error": rep.fill_rate_abs_error,
+            "notes": rep.notes,
+            "summary": rep.summary(),
+        }
+    )
 
 
 class MonteCarloLatencyRequest(BaseModel):

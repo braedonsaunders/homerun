@@ -3714,6 +3714,41 @@ class ProviderDataset(Base):
     )
 
 
+class MarketSettlement(Base):
+    """Golden-source market resolution / settlement record (one per market).
+
+    The single source of truth for "which outcome won", keyed by
+    ``condition_id``.  Populated OFFLINE — at polybacktest import time (the
+    winner is known then) and via the resolution resolver
+    (``services.strategy_reverse_engineer.market_resolution``) as a
+    write-through backfill — and read by the backtester at SETTLEMENT time
+    ONLY (never at decision time), so it cannot leak look-ahead.
+
+    Records the winning TOKEN id (not just an outcome label) so settling a
+    held position is a direct token-id equality check, robust to the
+    mislabeled outcome strings (hardcoded "Yes"/"No") that crypto Up/Down
+    markets carry in the catalog.  ``resolved=False`` with a
+    ``resolution_time`` set means "known to resolve, winner not yet
+    sourced" — the backtester then surfaces ``is_resolved`` to the strategy
+    instead of auto-redeeming.
+    """
+
+    __tablename__ = "market_settlements"
+
+    condition_id = Column(String, primary_key=True)
+    slug = Column(String, nullable=True, index=True)
+    winning_token_id = Column(String, nullable=True)
+    winning_outcome = Column(String, nullable=True)  # label: Up/Down/Yes/No/...
+    token_ids_json = Column(JSON, nullable=True, default=list)
+    coin_price_start = Column(Float, nullable=True)
+    coin_price_end = Column(Float, nullable=True)
+    resolution_time = Column(DateTime, nullable=True, index=True)
+    resolved = Column(Boolean, nullable=False, default=False)
+    source = Column(String, nullable=False, default="")  # provenance tag
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
 class TopicCatalog(Base):
     """The single source of truth for "what data topics exist in this
     system" — the centerpiece of the recorded-event-bus architecture.

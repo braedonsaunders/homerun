@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 # Re-export everything from the canonical location so importers of
 # services.strategy_helpers.crypto_strategy_utils get the same symbols.
@@ -32,7 +32,72 @@ from services.strategies.crypto_strategy_utils import (  # noqa: F401
     timeframe_seconds,
 )
 from utils.kelly import polymarket_taker_fee_pct  # noqa: F401
-from utils.converters import safe_float as _safe_float
+from utils.converters import safe_float as _safe_float, to_float
+
+
+# ---------------------------------------------------------------------------
+# Shared crypto signal-edge + JSON helpers (consolidated from the btc_eth_*
+# strategies so they live in one place, reachable via StrategySDK.crypto).
+# ---------------------------------------------------------------------------
+
+
+def to_iso_utc(value: Optional[datetime]) -> Optional[str]:
+    """UTC ISO-8601 (Z-suffixed) string for a datetime, or None."""
+    if value is None:
+        return None
+    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def get_component_edge(payload: dict[str, Any], direction: str, mode: str) -> float:
+    """Per-mode (directional / maker_quote / convergence) component edge for a
+    crypto signal, read from the strategy payload's edge breakdown."""
+    component_edges = payload.get("component_edges")
+    if isinstance(component_edges, dict):
+        side_edges = component_edges.get(direction)
+        if isinstance(side_edges, dict):
+            return max(0.0, to_float(side_edges.get(mode), 0.0))
+        return max(0.0, to_float(component_edges.get(mode), 0.0))
+
+    mode_edges = payload.get("mode_edges")
+    if isinstance(mode_edges, dict):
+        side_mode_edges = mode_edges.get(direction)
+        if isinstance(side_mode_edges, dict):
+            return max(0.0, to_float(side_mode_edges.get(mode), 0.0))
+        return max(0.0, to_float(mode_edges.get(mode), 0.0))
+
+    per_mode_key = {
+        "directional": "directional_edge",
+        "maker_quote": "maker_quote_edge",
+        "convergence": "convergence_edge",
+    }.get(mode)
+    if per_mode_key is None:
+        return 0.0
+    return max(0.0, to_float(payload.get(per_mode_key), 0.0))
+
+
+def get_net_edge(payload: dict[str, Any], direction: str, fallback: float) -> float:
+    """Net (post-fee) edge for a direction from the payload, else fallback."""
+    net_edges = payload.get("net_edges")
+    if not isinstance(net_edges, dict):
+        return fallback
+    return to_float(net_edges.get(direction), fallback)
+
+
+def json_safe(value: Any) -> Any:
+    """Recursively coerce a value into JSON-serialisable form."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return to_iso_utc(value)
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            out[str(key)] = json_safe(item)
+        return out
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(item) for item in value]
+    return str(value)
 
 
 # ---------------------------------------------------------------------------

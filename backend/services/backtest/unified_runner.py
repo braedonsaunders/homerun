@@ -559,34 +559,95 @@ def _compute_regime_breakdown(exec_dict: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compute_deflated_sharpe(exec_dict: dict[str, Any], *, n_trials: int) -> dict[str, Any]:
-    """Derive López de Prado's deflated Sharpe from the equity-curve
-    sample.  Falls back to zero-noise output when the curve is too
-    short for a meaningful return distribution."""
-    from services.backtest.metrics import deflated_sharpe_ratio
+    """López de Prado's Deflated Sharpe on the run's frequency-correct
+    annualization basis.
 
-    curve = exec_dict.get("equity_curve_sample") or []
-    equities: list[float] = []
-    for point in curve:
-        if isinstance(point, dict):
-            v = point.get("equity_usd")
-            if isinstance(v, (int, float)):
-                equities.append(float(v))
-    if len(equities) < 4:
+    Uses the return-distribution moments captured at run time
+    (``risk_annualization``), so the deflation matches the headline Sharpe
+    rather than a hardcoded sqrt(252) applied to a downsampled equity
+    sample.  Legacy results that predate the moments field fall back to a
+    best-effort estimate derived from the equity sample's own timestamps.
+    """
+    from services.backtest.metrics import (
+        annualization_moments,
+        deflated_sharpe_from_moments,
+    )
+
+    basis = exec_dict.get("risk_annualization") or {}
+    if not (int(basis.get("n_obs") or 0) >= 4 and basis.get("periods_per_year")):
+        # Legacy fallback: reconstruct an equity history from the
+        # (downsampled) sample's timestamps and derive the moments the
+        # same way, so both paths flow through one DSR implementation.
+        from datetime import datetime as _dt
+
+        hist: list[tuple[Any, float]] = []
+        for point in exec_dict.get("equity_curve_sample") or []:
+            if not (isinstance(point, dict) and isinstance(point.get("equity_usd"), (int, float))):
+                continue
+            at = point.get("at")
+            ts = None
+            if isinstance(at, str):
+                try:
+                    ts = _dt.fromisoformat(at)
+                except ValueError:
+                    ts = None
+            if ts is not None:
+                hist.append((ts, float(point["equity_usd"])))
+        basis = annualization_moments(hist) if len(hist) >= 4 else {}
+
+    if int(basis.get("n_obs") or 0) < 4:
         return {
-            "observed_sharpe": float(exec_dict.get("sharpe", {}).get("value") or 0.0),
+            "observed_sharpe": float((exec_dict.get("sharpe") or {}).get("value") or 0.0),
             "sr_zero": 0.0,
             "probabilistic_sharpe": 0.0,
             "deflated_sharpe": 0.0,
-            "n_observations": len(equities),
+            "n_observations": int(basis.get("n_obs") or 0),
             "n_trials": int(max(1, n_trials)),
         }
-    returns = []
-    prev = equities[0]
-    for v in equities[1:]:
-        if prev > 0:
-            returns.append((v - prev) / prev)
-        prev = v
-    return deflated_sharpe_ratio(returns, n_trials=n_trials, periods_per_year=252)
+    return deflated_sharpe_from_moments(
+        annualized_sharpe=float(basis.get("annualized_sharpe") or 0.0),
+        skew=float(basis.get("skew") or 0.0),
+        excess_kurtosis=float(basis.get("kurtosis") or 0.0),
+        n_observations=int(basis["n_obs"]),
+        n_trials=n_trials,
+        periods_per_year=int(basis["periods_per_year"]),
+    )
+
+
+async def _compute_fill_calibration(
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    token_ids: list[str] | None,
+) -> dict[str, Any]:
+    """Fill-model calibration vs realized live fills over the run window.
+
+    Wired into every unified run (the validator was previously orphaned).
+    Honest by design: reports 'uncalibrated' when the window has no recorded
+    live fills, rather than implying a calibrated model.
+    """
+    if start is None or end is None:
+        return {}
+    try:
+        from services.backtest.fill_calibration import calibration_report
+
+        rep = await calibration_report(start=start, end=end, token_ids=token_ids)
+        return {
+            "realized_n": rep.realized_n,
+            "realized_fill_rate_mean": rep.realized_fill_rate_mean,
+            "realized_partial_rate": rep.realized_partial_rate,
+            "realized_fee_mean": rep.realized_fee_mean,
+            "fill_percent_p10": rep.fill_percent_p10,
+            "fill_percent_p50": rep.fill_percent_p50,
+            "fill_percent_p90": rep.fill_percent_p90,
+            "model_fill_rate": rep.model_fill_rate,
+            "fill_rate_abs_error": rep.fill_rate_abs_error,
+            "notes": rep.notes,
+            "summary": rep.summary(),
+        }
+    except Exception:
+        logger.debug("fill calibration skipped", exc_info=True)
+        return {}
 
 
 async def _capture_fill_model_snapshot() -> dict[str, Any]:
@@ -1230,6 +1291,9 @@ async def run_unified_backtest(
     deflated = _compute_deflated_sharpe(exec_dict, n_trials=max(1, int(n_trials)))
     regime = _compute_regime_breakdown(exec_dict)
     partial_fills = _compute_partial_fill_aggregates(exec_dict)
+    fill_calibration = await _compute_fill_calibration(
+        start=start, end=end, token_ids=token_ids
+    )
 
     out = {
         "run_id": run_id,
@@ -1242,6 +1306,7 @@ async def run_unified_backtest(
         "deflated_sharpe": deflated,
         "regime_breakdown": regime,
         "partial_fills": partial_fills,
+        "fill_calibration": fill_calibration,
         "fill_model": fill_model,
         "empirical_constants": constants,
         "latency": latency,

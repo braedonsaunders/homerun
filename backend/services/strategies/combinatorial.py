@@ -1394,13 +1394,41 @@ class CombinatorialStrategy(BaseStrategy):
             f"{accuracy_info}"
         )
 
-        return self.create_opportunity(
+        opp = self.create_opportunity(
             title=f"Combinatorial: {market_a.question[:30]}... + {market_b.question[:30]}...",
             description=description,
             total_cost=result.total_cost,
             markets=[market_a, market_b],
             positions=positions,
         )
+
+        # Frank-Wolfe (Proposition 4.1) profit guarantee + capture ratio,
+        # computed via the SDK facade (StrategySDK.optimization) — the
+        # producer side of the guaranteed_profit / capture_ratio plumbing
+        # that signal_bus serializes and opportunity_judge consumes.  This
+        # is opt-in strategy math; the orchestrator never computes it.
+        if opp is not None and dependencies:
+            try:
+                from services.strategy_sdk import StrategySDK
+
+                deps_tuples = [
+                    (
+                        int(d.outcome_a_idx),
+                        int(d.outcome_b_idx),
+                        "excludes" if d.dep_type == DependencyType.EXCLUDES else "implies",
+                    )
+                    for d in dependencies
+                ]
+                fw = StrategySDK.optimization.cross_market_profit_guarantee(
+                    prices_a=prices_a,
+                    prices_b=prices_b,
+                    dependencies=deps_tuples,
+                )
+                opp.guaranteed_profit = fw.get("guaranteed_profit")
+                opp.capture_ratio = fw.get("capture_ratio")
+            except Exception:
+                logger.debug("Frank-Wolfe profit guarantee skipped", exc_info=True)
+        return opp
 
     async def detect_async(
         self, events: list[Event], markets: list[Market], prices: dict[str, dict]

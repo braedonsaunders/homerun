@@ -2640,6 +2640,168 @@ def _build_token_to_market_lookup(catalog_markets: list[Any]) -> dict[str, dict[
     return out
 
 
+def _us_to_dt(us: Any) -> Optional[datetime]:
+    if us is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(us) / 1_000_000, tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _parse_iso_dt(s: Any) -> Optional[datetime]:
+    if not s:
+        return None
+    if isinstance(s, datetime):
+        return s if s.tzinfo else s.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+async def collect_settlement_metadata(
+    *,
+    start_dt: datetime,
+    end_dt: datetime,
+    token_scope: Optional[set[str]] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Collect token->market metadata + per-market resolve hints for a
+    window from the AS-OF catalog (recorded-live) + projected markets
+    (imported).
+
+    Returns ``(token_meta_by_token_id, hints_by_condition_id)``.  Shared by
+    the run-time settlement-map build and the offline backfill so the
+    metadata-collection logic lives in exactly one place.
+    ``token_scope=None`` collects every market in the window (backfill); a
+    set restricts ``token_meta`` to those tokens (a run's universe).
+    """
+    import json as _json
+
+    from services.backtest.settlement_store import MarketResolveHint, TokenMarketMeta
+
+    token_meta: dict[str, TokenMarketMeta] = {}
+    hints: dict[str, MarketResolveHint] = {}
+
+    # ── Imported (polybacktest) markets: explicit up/down tokens ────────
+    try:
+        from services.marketdata.projection import load_projected_markets
+
+        projected = await load_projected_markets(
+            start=start_dt, end=end_dt, token_scope=token_scope
+        )
+    except Exception:
+        logger.debug("settlement: projected-market load skipped", exc_info=True)
+        projected = []
+    for pm in projected:
+        cond = str(pm.condition_id or pm.market_id or pm.slug or "").strip()
+        if not cond:
+            continue
+        rt = _us_to_dt(pm.end_us)
+        toks = tuple(str(t) for t in pm.tokens if t)
+        outcomes: dict[str, str] = {}
+        if pm.up_token:
+            outcomes[str(pm.up_token)] = "Up"
+        if pm.down_token:
+            outcomes[str(pm.down_token)] = "Down"
+        hints[cond] = MarketResolveHint(
+            condition_id=cond,
+            slug=pm.slug,
+            token_ids=toks,
+            up_token=(str(pm.up_token) if pm.up_token else None),
+            down_token=(str(pm.down_token) if pm.down_token else None),
+            token_outcomes=outcomes,
+            resolution_time=rt,
+        )
+        for t in toks:
+            if token_scope is None or t in token_scope:
+                token_meta[t] = TokenMarketMeta(
+                    token_id=t, condition_id=cond, slug=pm.slug, resolution_time=rt
+                )
+
+    # ── Recorded-live catalog markets ───────────────────────────────────
+    try:
+        catalog = await _load_asof_catalog_markets(start_dt, end_dt)
+    except Exception:
+        logger.debug("settlement: as-of catalog load skipped", exc_info=True)
+        catalog = None
+    if catalog is not None:
+        _events, markets, _meta = catalog
+        for m in markets or []:
+            if not isinstance(m, dict):
+                continue
+            cond = str(m.get("condition_id") or m.get("id") or "").strip()
+            if not cond:
+                continue
+            slug = str(m.get("event_slug") or m.get("slug") or "").strip() or None
+            rt = _parse_iso_dt(m.get("end_date") or m.get("end_date_iso"))
+            tids_raw = m.get("clob_token_ids")
+            if isinstance(tids_raw, str):
+                try:
+                    tids_raw = _json.loads(tids_raw)
+                except (_json.JSONDecodeError, TypeError):
+                    tids_raw = []
+            outs_raw = m.get("outcomes")
+            if isinstance(outs_raw, str):
+                try:
+                    outs_raw = _json.loads(outs_raw)
+                except (_json.JSONDecodeError, TypeError):
+                    outs_raw = []
+            tids = [str(t).strip() for t in (tids_raw or []) if t]
+            outs = [str(o).strip() for o in (outs_raw or [])]
+            if not tids:
+                continue
+            tok_outcomes = {tids[i]: outs[i] for i in range(min(len(tids), len(outs)))}
+            # Don't clobber a projected (imported) hint for the same market.
+            if cond not in hints:
+                hints[cond] = MarketResolveHint(
+                    condition_id=cond,
+                    slug=slug,
+                    token_ids=tuple(tids),
+                    token_outcomes=tok_outcomes,
+                    resolution_time=rt,
+                )
+            for t in tids:
+                if (token_scope is None or t in token_scope) and t not in token_meta:
+                    token_meta[t] = TokenMarketMeta(
+                        token_id=t, condition_id=cond, slug=slug, resolution_time=rt
+                    )
+
+    return token_meta, hints
+
+
+async def _build_settlements_for_tokens(
+    *,
+    tokens: list[str],
+    start_dt: datetime,
+    end_dt: datetime,
+    allow_network: bool,
+) -> dict[str, Any]:
+    """Build the engine's ``token_id -> TokenSettlement`` map for a run.
+
+    Winners come from the offline golden settlement store (no
+    decision-time look-ahead), with a resolver backfill when
+    ``allow_network``.  Best-effort: any failure leaves the affected tokens
+    absent, so the engine falls back to honest mark-to-mid.
+    """
+    from services.backtest.settlement_store import load_token_settlements
+
+    token_set = {str(t) for t in tokens if t}
+    if not token_set:
+        return {}
+    token_meta, hints = await collect_settlement_metadata(
+        start_dt=start_dt, end_dt=end_dt, token_scope=token_set
+    )
+    if not token_meta:
+        return {}
+    return await load_token_settlements(
+        list(token_meta.values()),
+        hints=list(hints.values()),
+        allow_network=allow_network,
+    )
+
+
 async def _replay_bus_events_into_tick_grid(
     *,
     strategy: Any,
@@ -3931,9 +4093,17 @@ async def run_execution_backtest(
     fills_sample_size: int = 200,
     equity_sample_size: int = 500,
     bootstrap_resamples: int = 2000,
-    impact_strength_bps: float = 0.0,
+    # Small non-zero square-root impact by default so taker fills pay a
+    # realistic cancel-in-flight / book-shift haircut instead of assuming
+    # static displayed depth (exposed; tune per venue).
+    impact_strength_bps: float = 5.0,
     impact_capacity_threshold: float = 0.5,
     impact_capacity_exponent: float = 1.5,
+    # Fraction of disappeared book depth attributed to trades (vs cancels)
+    # for FIFO maker-queue advancement; <1.0 avoids over-filling resting
+    # orders (most book decreases are cancels, which don't advance you vs
+    # incoming aggressor flow).
+    queue_progress_trade_fraction: float = 0.5,
     maker_rebate_bps: float = 0.0,
     maker_rebate_max_spread_bps: float = 50.0,
     latency_correlation_window_ms: float = 5.0,
@@ -3970,6 +4140,11 @@ async def run_execution_backtest(
     # (each tick = one strategy.detect_async call).
     discovery_sample_interval_seconds: float = 1800.0,
     discovery_max_ticks: int = 96,
+    # When True, the offline settlement store may backfill missing market
+    # winners via the resolution resolver (one network call per missing
+    # market, cached write-through).  Set False for strictly-offline,
+    # fully-reproducible runs that settle only from already-stored winners.
+    settle_resolution_allow_network: bool = True,
 ) -> ExecutionBacktestResult:
     """Execution-realistic backtest using full L2 replay + bootstrap CIs.
 
@@ -5291,6 +5466,32 @@ async def run_execution_backtest(
             f"n={getattr(fill_model_snapshot, 'n_events', 0)}."
         )
 
+    # ── Settlement map (offline golden store) ───────────────────────────
+    # Held positions whose market resolves in-window settle at the binary
+    # outcome ($1/$0), not the last observed mid.  Winners come from the
+    # offline settlement store (no decision-time look-ahead); token->market
+    # metadata from the AS-OF catalog (recorded) + projected markets
+    # (imported).  Failure degrades to honest mark-to-mid.
+    settlements: dict[str, Any] = {}
+    try:
+        settlements = await _build_settlements_for_tokens(
+            tokens=tokens,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            allow_network=bool(settle_resolution_allow_network),
+        )
+    except Exception:
+        logger.warning(
+            "settlement map build failed; positions will mark-to-mid", exc_info=True
+        )
+        settlements = {}
+    if settlements:
+        n_resolved = sum(1 for s in settlements.values() if s.settle_price is not None)
+        result.validation_warnings.append(
+            f"Settlement: {n_resolved}/{len(settlements)} held-token outcomes resolved "
+            f"({len(tokens)} tokens in window)."
+        )
+
     engine_config = BacktestConfig(
         portfolio=PortfolioConfig(
             initial_capital_usd=float(initial_capital_usd),
@@ -5338,6 +5539,8 @@ async def run_execution_backtest(
         ),
         seed=seed,
         fill_model_snapshot=fill_model_snapshot,
+        settlements=settlements,
+        queue_progress_trade_fraction=queue_progress_trade_fraction,
     )
     engine = BacktestEngine(config=engine_config, strategy=strategy)
 

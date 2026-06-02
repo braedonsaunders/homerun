@@ -695,6 +695,48 @@ async def _register_polybacktest_parquet_dataset(
         "schema_version": "snapshots_v2",
     }
 
+    # Settlement capture (golden store, OFFLINE).  The winner IS known at
+    # import for historical markets but is deliberately kept OUT of the
+    # decision-time ``payload`` above (it would be lookahead).  Persist it
+    # to the SEPARATE settlement store — read only at settlement time — so
+    # backtests redeem held positions at $1/$0 with zero per-run network and
+    # full reproducibility.  Best-effort: never fail an import on a
+    # settlement-write hiccup.
+    try:
+        _winner = getattr(market, "winner", None)
+        if _winner:
+            from services.backtest.settlement_store import (
+                SettlementRecord,
+                upsert_settlement,
+            )
+
+            _up = getattr(market, "clob_token_up", None)
+            _down = getattr(market, "clob_token_down", None)
+            _wnorm = str(_winner).strip().upper()
+            _win_token = (
+                str(_up) if (_wnorm == "UP" and _up)
+                else str(_down) if (_wnorm == "DOWN" and _down)
+                else None
+            )
+            _cond = str(getattr(market, "condition_id", None) or market_id or "").strip()
+            if _cond and _win_token:
+                await upsert_settlement(
+                    SettlementRecord(
+                        condition_id=_cond,
+                        slug=getattr(market, "slug", None),
+                        winning_token_id=_win_token,
+                        winning_outcome=str(_winner),
+                        token_ids=tuple(str(t) for t in (_up, _down) if t),
+                        resolution_time=getattr(market, "end_time", None),
+                        coin_price_start=getattr(market, "coin_price_start", None),
+                        coin_price_end=getattr(market, "coin_price_end", None),
+                        resolved=True,
+                        source="polybacktest_import",
+                    )
+                )
+    except Exception:
+        logger.debug("settlement capture at import skipped", exc_info=True)
+
     external_id = str(market_id)
     dataset_id = "polybacktest:" + hashlib.sha1(
         f"{PROVIDER_POLYBACKTEST}|{external_id}".encode("utf-8")

@@ -98,6 +98,10 @@ class ProbSurfaceArbStrategy(BaseStrategy):
     description = "Arbitrage deviations from monotonic probability surfaces across contract families"
     mispricing_type = "cross_market"
     subscriptions = ["market_data_refresh"]
+    # Surface-arb legs are NOT a guaranteed arb (is_guaranteed=False) but MUST
+    # still fill as one atomic bundle.  Declares the generic flag the execution
+    # session engine honors (replaces the orchestrator hardcoding this slug).
+    requires_atomic_execution = True
 
     quality_filter_overrides = QualityFilterOverrides(
         min_roi=2.0,
