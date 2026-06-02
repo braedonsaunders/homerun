@@ -13,6 +13,7 @@ import asyncio
 import itertools
 import time
 import traceback
+from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,18 @@ _DEFAULT_REPLAY_LOOKBACK_HOURS = 24
 _DEFAULT_REPLAY_TIMEFRAME = "30m"
 _DEFAULT_REPLAY_MAX_MARKETS = 80
 _DEFAULT_REPLAY_MAX_STEPS = 72
+
+# Bounded, process-local memo of as-of catalog reconstructions, keyed by window
+# (start_us, end_us).  A backtest replays a FROZEN historical window, so the
+# recorded ``polymarket.catalog.snapshot`` envelopes for a fully-past window are
+# immutable — memoizing avoids re-reading ~300 envelopes (~22k markets each,
+# ~225s measured) on every backtest of the same window (the Studio "iterate
+# params" loop + parameter-research loops hammer one window repeatedly).  Bounded
+# to a handful of entries and ONLY populated by the backtest path — the live
+# orchestrator never calls ``_load_asof_catalog_markets`` — so it can never grow
+# into the trading hot path or pressure the trading process.
+_ASOF_CATALOG_CACHE: "OrderedDict[tuple[int, int], tuple]" = OrderedDict()
+_ASOF_CATALOG_CACHE_MAX = 4
 
 
 @dataclass
@@ -2545,6 +2558,24 @@ async def _load_asof_catalog_markets(
     publishes active markets, so a market's first in-window snapshot is its
     tradeable state.  Returns ``None`` when no catalog snapshot covers the window
     (caller falls back to the current file — e.g. imported-only data)."""
+    cache_key = (
+        int(start_dt.timestamp() * 1_000_000),
+        int(end_dt.timestamp() * 1_000_000),
+    )
+    # Only fully-PAST windows are cacheable: a window ending at/near "now" is
+    # still being recorded, so a later catalog.snapshot could change the merge.
+    # Callers treat the result tuple as read-only (filter it into fresh lists).
+    cacheable = end_dt < datetime.now(timezone.utc) - timedelta(minutes=5)
+    if cacheable:
+        hit = _ASOF_CATALOG_CACHE.get(cache_key)
+        if hit is not None:
+            _ASOF_CATALOG_CACHE.move_to_end(cache_key)
+            logger.info(
+                "replay_discover: as-of catalog CACHE HIT (%d markets) for %s..%s",
+                len(hit[1]), start_dt.isoformat(), end_dt.isoformat(),
+            )
+            return hit
+    t0 = time.monotonic()
     try:
         from services.recorded_event_bus import bus, ReplayWindow
         import services.recorded_event_bus.storage  # noqa: F401 — attach parquet backend
@@ -2581,11 +2612,17 @@ async def _load_asof_catalog_markets(
         "market_count": len(markets_by_key),
         "event_count": len(events_by_key),
     }
+    result = (list(events_by_key.values()), list(markets_by_key.values()), meta)
     logger.info(
-        "replay_discover: as-of catalog from %d catalog.snapshot envelopes -> %d markets",
-        n_env, len(markets_by_key),
+        "replay_discover: as-of catalog from %d catalog.snapshot envelopes -> %d markets in %.1fs",
+        n_env, len(markets_by_key), time.monotonic() - t0,
     )
-    return (list(events_by_key.values()), list(markets_by_key.values()), meta)
+    if cacheable:
+        _ASOF_CATALOG_CACHE[cache_key] = result
+        _ASOF_CATALOG_CACHE.move_to_end(cache_key)
+        while len(_ASOF_CATALOG_CACHE) > _ASOF_CATALOG_CACHE_MAX:
+            _ASOF_CATALOG_CACHE.popitem(last=False)
+    return result
 
 
 def _build_token_to_market_lookup(catalog_markets: list[Any]) -> dict[str, dict[str, Any]]:
