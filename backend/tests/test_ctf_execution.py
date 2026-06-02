@@ -146,7 +146,7 @@ async def test_send_safe_call_uses_pending_owner_nonce(monkeypatch):
 # ── Redeemer guard math ─────────────────────────────────────────────
 #
 # These tests cover the pure-function payout math used by the redeemer
-# guard. They lock in the world-class invariant that the bot never
+# guard. They lock in the invariant that the bot never
 # auto-burns gas on $0-payout redemptions, and that fractional / scalar
 # resolutions allocate proceeds proportionally to the slot numerators.
 

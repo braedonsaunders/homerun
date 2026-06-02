@@ -2102,8 +2102,8 @@ async def run_worker_loop() -> None:
                 # Reconcile reported realized P&L against Polymarket truth.
                 # Walks today's closed orders, fetches actual on-chain SELL
                 # trades from the data API, FIFO-matches and writes the
-                # verified P&L back to each row. World-class financial
-                # accuracy — Polymarket's wallet trades are the SINGLE
+                # verified P&L back to each row. Polymarket's wallet
+                # trades are the SINGLE
                 # source of truth for realized P&L (covers bot SELLs,
                 # manual user sells via the Polymarket UI, and any other
                 # on-chain exit that touches the proxy wallet).

@@ -4,7 +4,7 @@ Revision ID: 202604300003
 Revises: 202604300002
 Create Date: 2026-04-30
 
-Two new tables backing the world-class shadow simulator.
+Two new tables backing the shadow simulator.
 
 ``book_delta_events``: tick-by-tick decomposition of order book updates
 into ``trade`` events (depth cleared with a matching trade print) and

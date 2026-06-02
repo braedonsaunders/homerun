@@ -65,7 +65,7 @@ async def _run_with_bounded_workers(
     order is not guaranteed.  Failed items are logged via
     ``on_error`` (if provided) and skipped.
 
-    World-class scheduling for I/O-bound fan-out:
+    Bounded-concurrency scheduling for I/O-bound fan-out:
       * Constant memory footprint regardless of input size
       * Constant scheduling overhead — the loop only manages N tasks
       * No semaphore queue starvation (semaphore + gather puts every

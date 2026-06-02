@@ -1,4 +1,4 @@
-"""World-class shadow-trading fill simulator.
+"""Shadow-trading fill simulator.
 
 This package owns the parts of the simulator that go past the
 "depth-ahead-must-clear" heuristic everyone else uses:

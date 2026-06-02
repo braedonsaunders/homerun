@@ -7,7 +7,7 @@ Create Date: 2026-04-28
 The CTF redeemer worker needs operator-tunable policy:
 
   * ``redeemer_min_payout_usd`` — skip redemption when expected payout
-    is below this floor. This is the world-class guard against burning
+    is below this floor. This is the guard against burning
     gas to redeem $0-payout positions (lost binary outcomes).
   * ``redeemer_max_gas_price_gwei`` — skip redemption when network gas
     is elevated above this ceiling. Defers cleanup to a cheaper window.
