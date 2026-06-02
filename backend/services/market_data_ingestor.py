@@ -68,11 +68,6 @@ from services.external_data.book_parquet_sink import (
     BookDeltaRow,
     BookSnapshotRow,
 )
-from services.live_pressure import (
-    current_backpressure_level,
-    is_db_pressure_active,
-    publish_backpressure,
-)
 from utils.logger import get_logger
 
 
@@ -758,13 +753,13 @@ class LiveMarketDataIngestor:
             return
         if self._should_shed_persistence(queue):
             self._snapshot_dropped += 1
-            self._publish_queue_pressure("snapshot")
+            self._note_persistence_shed("snapshot")
             return
         try:
             queue.put_nowait(row)
         except asyncio.QueueFull:
             self._snapshot_dropped += 1
-            self._publish_queue_pressure("snapshot")
+            self._note_persistence_shed("snapshot")
             if self._snapshot_dropped % 1000 == 1:
                 logger.warning(
                     "LiveMarketDataIngestor snapshot queue full",
@@ -782,13 +777,13 @@ class LiveMarketDataIngestor:
             return
         if self._should_shed_persistence(queue):
             self._delta_dropped += 1
-            self._publish_queue_pressure("delta")
+            self._note_persistence_shed("delta")
             return
         try:
             queue.put_nowait(row)
         except asyncio.QueueFull:
             self._delta_dropped += 1
-            self._publish_queue_pressure("delta")
+            self._note_persistence_shed("delta")
             if self._delta_dropped % 1000 == 1:
                 logger.warning(
                     "LiveMarketDataIngestor delta queue full",
@@ -828,23 +823,23 @@ class LiveMarketDataIngestor:
             return False
         return False
 
-    def _publish_queue_pressure(self, kind: str) -> None:
-        publish_backpressure(
-            "market_data_ingestor",
-            level=0.85,
-            reason=f"{kind}_persistence_shed",
-        )
+    def _note_persistence_shed(self, kind: str) -> None:
+        """Record a local recording-persistence shed (our own parquet queue
+        backed up).  Deliberately does NOT publish global backpressure: recording
+        is decoupled from trading and must never throttle live traders.  A slow
+        parquet writer cannot be relieved by traders backing off, and trading
+        always outranks recording.  Local drop counters + a rate-limited log keep
+        it observable via get_data_quality_stats()."""
         now_mono = time.monotonic()
         if now_mono - self._last_pressure_log_mono < 30.0:
             return
         self._last_pressure_log_mono = now_mono
         logger.warning(
-            "LiveMarketDataIngestor shedding persistence under pressure",
+            "LiveMarketDataIngestor shedding recording persistence "
+            "(own parquet queue backed up; live trading unaffected)",
             kind=kind,
             snapshot_dropped=self._snapshot_dropped,
             delta_dropped=self._delta_dropped,
-            backpressure_level=current_backpressure_level(),
-            db_pressure_active=is_db_pressure_active(),
         )
 
     # ── Persistence ─────────────────────────────────────────────────────
@@ -906,7 +901,7 @@ class LiveMarketDataIngestor:
                     self._snapshot_dropped += dropped
                 elif kind == "delta":
                     self._delta_dropped += dropped
-                self._publish_queue_pressure(kind)
+                self._note_persistence_shed(kind)
             return
         while len(rows) < batch and not queue.empty():
             rows.append(queue.get_nowait())
@@ -950,11 +945,18 @@ class LiveMarketDataIngestor:
         if len(self._flush_latency_samples) > 100:
             self._flush_latency_samples = self._flush_latency_samples[-100:]
         if latency_ms >= _SLOW_FLUSH_BACKPRESSURE_MS:
-            publish_backpressure(
-                "market_data_ingestor",
-                level=min(1.0, latency_ms / 5000.0),
-                reason=f"{kind}_flush_slow:{int(latency_ms)}ms",
-            )
+            # Recording-only signal — deliberately NOT a global backpressure
+            # publish (that would throttle live traders for a slow parquet
+            # writer).  Local, rate-limited log keeps it observable.
+            now_mono = time.monotonic()
+            if now_mono - self._last_pressure_log_mono >= 30.0:
+                self._last_pressure_log_mono = now_mono
+                logger.warning(
+                    "LiveMarketDataIngestor: slow parquet flush "
+                    "(recording only; live trading unaffected)",
+                    kind=kind,
+                    latency_ms=round(latency_ms, 1),
+                )
 
     async def _drain(self, queue: asyncio.Queue | None, *, kind: str) -> None:
         if queue is None:
