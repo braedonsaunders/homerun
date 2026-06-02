@@ -332,19 +332,61 @@ def _has_custom_on_event(strategy: "BaseStrategy") -> bool:
     return method is not base_method
 
 
+# Attribute/name loads that mean an overriding ``on_event`` dispatches into the
+# detect pipeline (so ``detect()`` is NOT dead): the three detect entry points,
+# the shared ``_invoke_detect`` dispatcher, and ``on_event`` itself (a
+# ``super().on_event(...)`` delegation, which routes to detect in the base).
+_DETECT_DISPATCH_NAMES = frozenset(
+    {"detect", "detect_async", "detect_sync", "_invoke_detect", "on_event"}
+)
+
+
+def _code_references_detect_dispatch(code) -> bool:
+    """True if *code* — or any nested code object (comprehension/closure) —
+    loads one of the detect-dispatch names.  Operates on the compiled bytecode
+    (``co_names``), so it inspects DB-compiled strategies too, where
+    ``inspect.getsource`` raises (no backing source file).  Matches exact
+    attribute names, so a helper like ``self._detect_from_rows`` (name
+    ``_detect_from_rows``) does NOT count as reaching the SDK ``detect()``."""
+    try:
+        if set(code.co_names) & _DETECT_DISPATCH_NAMES:
+            return True
+    except AttributeError:
+        return False
+    for const in getattr(code, "co_consts", ()) or ():
+        if hasattr(const, "co_names") and _code_references_detect_dispatch(const):
+            return True
+    return False
+
+
+def _on_event_reaches_detect(strategy: "BaseStrategy") -> bool:
+    """True if the strategy's overriding ``on_event`` dispatches into a detect
+    method, so ``detect()`` is reachable (not dead).  Bytecode-based on purpose:
+    it must work for strategies compiled from the DB ``source_code`` master,
+    which have no source file for ``inspect.getsource``."""
+    code = getattr(getattr(type(strategy), "on_event", None), "__code__", None)
+    return _code_references_detect_dispatch(code) if code is not None else False
+
+
 def divergent_detection_warning(strategy: "BaseStrategy") -> Optional[str]:
     """Return a warning string if *strategy* has the divergent-detection footgun
-    — overriding BOTH ``on_event`` and a ``detect*`` method — else ``None``.
+    — overriding ``on_event`` AND a ``detect*`` method WHERE the on_event never
+    dispatches into detect — else ``None``.
 
     ``on_event`` is the live + backtest entry point, so a separately-overridden
-    ``detect()`` is dead code unless ``on_event`` calls it.  ``strategy_loader``
-    logs this at registration; returning the string (rather than logging here)
-    keeps it pure and unit-testable."""
+    ``detect()`` is dead code unless ``on_event`` calls it.  Custom routing that
+    still dispatches to detect (e.g. ``self.detect`` via ``run_in_executor``, or
+    ``super().on_event(...)``) is the blessed pattern, NOT a footgun, so we
+    suppress the warning when on_event's bytecode reaches a detect dispatch.
+    ``strategy_loader`` logs this at registration; returning the string (rather
+    than logging here) keeps it pure and unit-testable."""
     if _has_custom_on_event(strategy) and (
         _has_custom_detect_async(strategy)
         or _has_custom_detect_sync(strategy)
         or _has_custom_detect_plain(strategy)
     ):
+        if _on_event_reaches_detect(strategy):
+            return None
         return (
             "overrides BOTH on_event() and detect(): on_event is the live + backtest "
             "entry point, so detect() will NOT run unless your on_event() calls it. Use "

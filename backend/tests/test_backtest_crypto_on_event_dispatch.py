@@ -350,3 +350,56 @@ def test_divergent_detection_warning_flags_only_both_overrides():
     assert divergent_detection_warning(_OnEventNoDetectCryptoStrategy()) is None  # on_event only
     assert divergent_detection_warning(_DetectAsyncOnlyCryptoStrategy()) is None  # detect_async only
     assert divergent_detection_warning(_PlainScannerStrategy()) is None  # plain detect only
+
+
+def test_divergent_warning_suppressed_when_on_event_dispatches_to_detect():
+    """The blessed pattern — custom on_event routing that STILL dispatches to
+    detect (combinatorial / vpin_toxicity hand ``self.detect`` to a thread-pool) —
+    must NOT warn.  The guardrail inspects on_event's BYTECODE (co_names), so it
+    works for DB-compiled strategies where ``inspect.getsource`` raises."""
+    from services.strategies.base import (
+        divergent_detection_warning,
+        _on_event_reaches_detect,
+    )
+
+    class _RoutesToDetect(BaseStrategy):
+        strategy_type = "unit_routes_to_detect"
+        name = "routes"
+        description = "unit"
+        subscriptions = [EventType.MARKET_DATA_REFRESH]
+
+        def detect(self, events, markets, prices):
+            return []
+
+        async def on_event(self, event):
+            import asyncio
+
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self.detect, [], [], {})
+
+    routes = _RoutesToDetect()
+    assert _on_event_reaches_detect(routes) is True
+    assert divergent_detection_warning(routes) is None  # reaches detect → not divergent
+
+    class _RoutesToHelperNotDetect(BaseStrategy):
+        """on_event calls a helper named ``_detect_from_rows`` — NOT the SDK
+        ``detect()`` — so detect() is genuinely dead and MUST still warn (a bare
+        'detect' substring match would wrongly silence this)."""
+
+        strategy_type = "unit_routes_to_helper"
+        name = "helper"
+        description = "unit"
+        subscriptions = [EventType.CRYPTO_UPDATE]
+
+        def detect(self, events, markets, prices):
+            return [_crypto_opp("DEAD", "detect")]
+
+        def _detect_from_rows(self, rows):
+            return []
+
+        async def on_event(self, event):
+            return self._detect_from_rows([])
+
+    helper = _RoutesToHelperNotDetect()
+    assert _on_event_reaches_detect(helper) is False
+    assert divergent_detection_warning(helper) is not None  # dead detect → still warns
