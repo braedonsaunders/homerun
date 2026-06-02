@@ -1,3 +1,6 @@
+# SEED TEMPLATE — not the live strategy. The DB `strategies.source_code` is the
+# runtime master (loaded by the orchestrator + backtester); edits here only seed
+# fresh installs / reset-to-factory. See services/opportunity_strategy_catalog.py.
 """Tail-end carry opportunity filter.
 
 Portable pattern adapted from public tail-end Polymarket bots: filter for

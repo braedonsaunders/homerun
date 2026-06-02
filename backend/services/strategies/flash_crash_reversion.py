@@ -1,3 +1,6 @@
+# SEED TEMPLATE — not the live strategy. The DB `strategies.source_code` is the
+# runtime master (loaded by the orchestrator + backtester); edits here only seed
+# fresh installs / reset-to-factory. See services/opportunity_strategy_catalog.py.
 """Flash-crash reversion opportunity filter.
 
 Portable pattern adapted from open-source Polymarket flash-crash bots:

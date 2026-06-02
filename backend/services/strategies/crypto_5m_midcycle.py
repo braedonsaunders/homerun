@@ -1,3 +1,6 @@
+# SEED TEMPLATE — not the live strategy. The DB `strategies.source_code` is the
+# runtime master (loaded by the orchestrator + backtester); edits here only seed
+# fresh installs / reset-to-factory. See services/opportunity_strategy_catalog.py.
 """Crypto 5m midcycle continuation strategy.
 
 At the 2.5-minute mark of each Polymarket 5-minute crypto over-under

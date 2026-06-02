@@ -1,3 +1,6 @@
+# SEED TEMPLATE — not the live strategy. The DB `strategies.source_code` is the
+# runtime master (loaded by the orchestrator + backtester); edits here only seed
+# fresh installs / reset-to-factory. See services/opportunity_strategy_catalog.py.
 """Sports overreaction fader strategy.
 
 Detects rapid price movements in live sports markets and fades the
