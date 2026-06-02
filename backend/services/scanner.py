@@ -1938,7 +1938,6 @@ class ArbitrageScanner:
         if self._strategy_overrides is not None:
             for instance in self._strategy_overrides:
                 slug = getattr(instance, "slug", None) or getattr(instance, "name", "__override__")
-                strategy_key = str(getattr(instance, "strategy_type", slug) or slug).strip().lower()
                 if str(getattr(instance, "source_key", "scanner") or "").strip().lower() != "scanner":
                     continue
                 if getattr(instance, "wants_full_snapshot", False):
@@ -1963,10 +1962,9 @@ class ArbitrageScanner:
 
         for slug, loaded in strategy_loader._loaded.items():
             instance = loaded.instance
-            strategy_key = str(getattr(instance, "strategy_type", slug) or slug).strip().lower()
             if str(getattr(instance, "source_key", "scanner") or "").strip().lower() != "scanner":
                 continue
-            if strategy_key in forced_full_snapshot:
+            if getattr(instance, "wants_full_snapshot", False):
                 full_snapshot.add(slug)
                 continue
             subscriptions = set(getattr(instance, "subscriptions", None) or [])
@@ -3935,8 +3933,10 @@ class ArbitrageScanner:
 
                 await self._ensure_runtime_strategies_loaded()
                 incremental_slugs, _ = self._partition_market_refresh_strategies()
+                _priority_strats = self._priority_filter_strategies()
+                tail_end_fast_strategy = _priority_strats[0] if _priority_strats else None
                 tail_end_fast_markets: list = []
-                if self._priority_filter_strategies():
+                if _priority_strats:
                     tail_end_fast_markets = [
                         market
                         for market in self._cached_markets

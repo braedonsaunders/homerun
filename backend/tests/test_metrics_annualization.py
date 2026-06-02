@@ -105,7 +105,8 @@ def test_block_bootstrap_wider_on_autocorrelated_series():
     for _ in range(600):
         xs.append(0.9 * xs[-1] + rng.gauss(0, 1))  # AR(1), phi=0.9
     xs = xs[1:]
-    mean_stat = lambda s: sum(s) / len(s)
+    def mean_stat(s):
+        return sum(s) / len(s)
     iid_lo, iid_hi = bootstrap_ci(xs, mean_stat, n_resamples=600, seed=7)
     blk_lo, blk_hi = block_bootstrap_ci(xs, mean_stat, n_resamples=600, seed=7)
     assert None not in (iid_lo, iid_hi, blk_lo, blk_hi)
@@ -139,7 +140,8 @@ def test_block_bootstrap_matches_iid_on_independent_series():
     it stays in the same ballpark as the IID bootstrap (mean block ~1)."""
     rng = random.Random(11)
     xs = [rng.gauss(0, 1) for _ in range(600)]
-    mean_stat = lambda s: sum(s) / len(s)
+    def mean_stat(s):
+        return sum(s) / len(s)
     iid_lo, iid_hi = bootstrap_ci(xs, mean_stat, n_resamples=600, seed=5)
     blk_lo, blk_hi = block_bootstrap_ci(xs, mean_stat, n_resamples=600, seed=5)
     iid_w = iid_hi - iid_lo

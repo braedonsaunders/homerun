@@ -31,7 +31,10 @@ dance.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from services.data_events import DataEvent
 
 from models.market import Event, Market
 
