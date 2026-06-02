@@ -1806,17 +1806,14 @@ class FeedManager:
                 pass
 
     def _on_trade(self, token_id: str, trade: "TradeRecord") -> None:
-        """Dispatch a TRADE_EXECUTION DataEvent for each trade."""
-        try:
-            # Order matters — feed the trade BEFORE the post-trade book
-            # update arrives so the ingestor's delta classifier can
-            # match the depth decrease against this print (trade vs
-            # cancel disambiguation).  Single in-memory call now.
-            from services.market_data_ingestor import get_market_data_ingestor
+        """Dispatch a TRADE_EXECUTION DataEvent for each trade.
 
-            get_market_data_ingestor().record_trade(token_id=token_id, trade=trade)
-        except Exception as exc:
-            logger.debug("Market data ingestor trade record failed", exc_info=exc)
+        Recording (``record_trade``) is NOT done here — book/trade persistence
+        rides the separate RecordingFeedManager pool (services.recording_feed),
+        so the broad recording set never loads this trading-critical feed.  This
+        handler keeps only the live concern: the TRADE_EXECUTION dispatch (+
+        backtest bus tee) for trade-driven strategies.
+        """
         if self._loop is None:
             return
         try:
@@ -1857,26 +1854,12 @@ class FeedManager:
 
         Accumulates updates for the coalescing window, then a background task
         flushes them to registered WS clients.
-        """
-        try:
-            from services.market_data_ingestor import get_market_data_ingestor
 
-            order_book_snapshot = self._cache.get_order_book(token_id)
-            # Single unified call: validates, classifies deltas, throttles
-            # snapshot writes, persists both off the hot path.  The
-            # previous double-call (recorder + decomposer) walked the
-            # same level list twice and duplicated validation work.
-            get_market_data_ingestor().record_book(
-                token_id=token_id,
-                order_book=order_book_snapshot,
-                best_bid=bid,
-                best_ask=ask,
-                exchange_ts=exchange_ts,
-                ingest_ts=ingest_ts,
-                sequence=sequence,
-            )
-        except Exception as exc:
-            logger.debug("Market data ingestor book record failed", exc_info=exc)
+        Recording (``record_book``) is NOT done here — book/trade persistence
+        rides the separate RecordingFeedManager pool (services.recording_feed),
+        so the broad recording set never loads this trading-critical feed.  This
+        handler keeps only the frontend WS price-push coalescing.
+        """
         should_schedule = False
         ws_ids = self._token_to_ws_clients.get(token_id)
         if not ws_ids:

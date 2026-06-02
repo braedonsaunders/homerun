@@ -208,54 +208,53 @@ async def _gather_target_tokens(
     return [t for t, _ in selected], stats
 
 
+def _trading_subscribed_tokens() -> list[str]:
+    """The TRADING feed's current subscription set — the markets the
+    orchestrator is actively watching/trading (open positions, hot
+    opportunities, crypto), put there by the trading subscribers.  Read-only;
+    recording unions these in so we always record what we trade.  Best-effort —
+    never raises into the loop."""
+    try:
+        from services.ws_feeds import get_feed_manager
+
+        feed = getattr(get_feed_manager(), "polymarket_feed", None)
+        if feed is None:
+            return []
+        assets = getattr(feed, "_subscribed_assets", None)
+        if isinstance(assets, (set, frozenset)):
+            return [str(t) for t in assets]
+        getter = getattr(feed, "get_subscribed_assets", None)
+        if callable(getter):
+            res = getter()
+            if isinstance(res, (set, list, tuple)):
+                return [str(t) for t in res]
+    except Exception:  # noqa: BLE001
+        return []
+    return []
+
+
 async def _ensure_subscribed(target_tokens: list[str]) -> tuple[int, int]:
-    """Subscribe ``target_tokens`` via the existing PolymarketWSFeed,
-    skipping the ones already in the subscription set.
+    """Subscribe ``target_tokens`` onto the ISOLATED RecordingFeedManager pool
+    (services.recording_feed) — NOT the trading feed.  Recording rides its own
+    sharded connection pool + cache, so the broad recording set can never load
+    the orchestrator's low-latency trading socket.  Skips already-subscribed.
 
     Returns ``(newly_subscribed, already_subscribed)``.
     """
     if not target_tokens:
         return 0, 0
     try:
-        from services.ws_feeds import get_feed_manager
+        from services.recording_feed import get_recording_feed_manager
 
-        feed_mgr = get_feed_manager()
-        feed = getattr(feed_mgr, "polymarket_feed", None)
-        if feed is None:
-            logger.debug("No polymarket_feed on feed manager; skipping")
-            return 0, 0
-        # Polite dedupe — read the feed's existing subscription set
-        # so we only send subscribe messages for new tokens.  Falls
-        # back to subscribing the full set if the introspection isn't
-        # available (the underlying ws_feeds.subscribe() is itself
-        # idempotent — it appends to a set).
-        already: set[str] = set()
-        for attr in ("get_subscribed_assets", "_subscribed_assets"):
-            v = getattr(feed, attr, None)
-            if callable(v):
-                try:
-                    res = v()
-                    if asyncio.iscoroutine(res):
-                        res = await res
-                    if isinstance(res, (set, list, tuple)):
-                        already = {str(x) for x in res}
-                        break
-                except Exception:
-                    continue
-            elif isinstance(v, (set, frozenset)):
-                already = {str(x) for x in v}
-                break
+        pool = get_recording_feed_manager()
+        already = pool.get_subscribed_assets()
         new_tokens = [t for t in target_tokens if t not in already]
         if new_tokens:
-            try:
-                # ws_feeds.subscribe accepts list[str]; chunks
-                # internally at 100/batch with a 50ms throttle.
-                await feed.subscribe(new_tokens)
-            except Exception as exc:
-                logger.warning("subscribe call raised %s", exc, exc_info=False)
+            # pool.subscribe shards across connections + dedupes per feed.
+            await pool.subscribe(new_tokens)
         return len(new_tokens), len(target_tokens) - len(new_tokens)
     except Exception as exc:
-        logger.exception("Subscribe failed")
+        logger.exception("Recording-pool subscribe failed")
         _state.last_error = str(exc)
         return 0, 0
 
@@ -296,6 +295,15 @@ async def loop_tick() -> None:
             max_tokens=cap,
             min_liquidity_usd=liq_floor,
         )
+        # Backtest-fidelity guarantee: ALWAYS record what the orchestrator is
+        # actually trading, even when those markets are too illiquid to make the
+        # liquidity-ranked broad set (e.g. tail_end_carry's near-resolution
+        # favorites — the exact gap that produced 0 backtest fills).  Union the
+        # trading feed's live subscription set (open positions + hot opps +
+        # crypto) into the recording target.
+        traded = _trading_subscribed_tokens()
+        if traded:
+            target_tokens = list(dict.fromkeys([*target_tokens, *traded]))
         newly, already = await _ensure_subscribed(target_tokens)
 
         _state.last_run_at = time.time()

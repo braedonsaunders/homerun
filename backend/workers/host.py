@@ -634,7 +634,15 @@ class WorkerHost:
         """
         try:
             from services.recorder_subscription_service import run_loop
+            from services.recording_feed import get_recording_feed_manager
 
+            # Start the ISOLATED recording WS pool (its own connections + cache,
+            # decoupled from the trading feed) before the recorder begins
+            # subscribing the broad set onto it.  The ingestor's record_book /
+            # record_trade callbacks are bound to the pool's cache, so book/trade
+            # persistence rides these connections — never the trading-critical
+            # feed the orchestrator reads prices + fires stop-losses from.
+            await get_recording_feed_manager().start()
             await run_loop()
         except asyncio.CancelledError:
             raise
