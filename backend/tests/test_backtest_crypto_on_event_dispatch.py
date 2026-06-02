@@ -319,3 +319,34 @@ async def test_base_on_event_crypto_override_still_takes_precedence():
     ids = {o.event_id for o in opps}
     assert ids == {"M9"}
     assert all(o.title.startswith("on_event_hit") for o in opps)
+
+
+# ── SDK guardrail: divergent-detection footgun (overrides both) ───────────────
+
+
+def test_base_introspection_helpers_are_canonical():
+    """The strategy-introspection helpers live canonically in base; the backtester
+    delegates to them. Spot-check both surfaces agree."""
+    from services.strategies import base as _base
+
+    assert _base._has_custom_on_event(_OnEventNoDetectCryptoStrategy()) is True
+    assert _base._has_custom_detect_plain(_PlainScannerStrategy()) is True
+    assert _base._has_custom_detect_async(_DetectAsyncOnlyCryptoStrategy()) is True
+    assert _base._has_custom_on_event(_PlainScannerStrategy()) is False
+    # backtester delegates to base — same answers
+    assert strategy_backtester._has_custom_on_event(_OnEventNoDetectCryptoStrategy()) is True
+    assert strategy_backtester._has_custom_detect_plain(_PlainScannerStrategy()) is True
+
+
+def test_divergent_detection_warning_flags_only_both_overrides():
+    """The SDK guardrail warns ONLY when a strategy overrides BOTH on_event and a
+    detect* method (the footgun where detect() silently becomes dead code)."""
+    from services.strategies.base import divergent_detection_warning
+
+    # both on_event + detect → footgun → warning
+    warn = divergent_detection_warning(_OnEventWithDetectCryptoStrategy())
+    assert warn is not None and "on_event" in warn and "detect()" in warn
+    # single entry points → no warning
+    assert divergent_detection_warning(_OnEventNoDetectCryptoStrategy()) is None  # on_event only
+    assert divergent_detection_warning(_DetectAsyncOnlyCryptoStrategy()) is None  # detect_async only
+    assert divergent_detection_warning(_PlainScannerStrategy()) is None  # plain detect only

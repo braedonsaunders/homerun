@@ -806,6 +806,23 @@ class StrategyLoader:
                 for event_type in subs:
                     event_dispatcher.subscribe(slug, event_type, instance.on_event)
 
+            # SDK guardrail — divergent-detection footgun.  ``on_event`` is the
+            # live AND backtest entry point (it's the handler we subscribe just
+            # above).  If a strategy overrides BOTH ``on_event`` and a ``detect*``
+            # method, its ``detect()`` will NOT run unless its ``on_event`` calls
+            # back into it — a common mistake that silently strands the user's
+            # detect() logic and surfaces as a confusing zero-fills backtest.
+            # Flag it at load time so it's caught before production, never let the
+            # diagnostic itself break loading.
+            try:
+                from services.strategies.base import divergent_detection_warning
+
+                _divergence_warning = divergent_detection_warning(instance)
+                if _divergence_warning:
+                    logger.warning("Strategy '%s' %s", slug, _divergence_warning)
+            except Exception:  # noqa: BLE001 — a diagnostic must never break loading
+                pass
+
             caps = validation.get("capabilities") or {}
             cap_parts = [k.replace("has_", "") for k, v in caps.items() if v]
             logger.info(

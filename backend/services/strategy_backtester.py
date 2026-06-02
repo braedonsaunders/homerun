@@ -77,61 +77,30 @@ class ReplayDetectRun:
     step_errors: int = 0
 
 
+# Strategy-introspection helpers ("does this strategy override X?") live
+# canonically in services.strategies.base — the single source of truth shared by
+# the backtester, strategy_loader, and the base on_event router.  Re-exported as
+# thin delegators here so the backtester's existing call sites keep working; the
+# import stays lazy (inside each call) to preserve this module's load-order
+# safety (importing base pulls in the full strategy stack).
 def _has_custom_detect_async(strategy) -> bool:
-    """Check if strategy implements its own detect_async (not just inherited)."""
-    method = getattr(type(strategy), "detect_async", None)
-    if method is None:
-        return False
-    from services.strategies.base import BaseStrategy
-
-    base_method = getattr(BaseStrategy, "detect_async", None)
-    return method is not base_method
+    from services.strategies.base import _has_custom_detect_async as _impl
+    return _impl(strategy)
 
 
 def _has_custom_detect_sync(strategy) -> bool:
-    """Check if strategy implements its own detect_sync (not just inherited)."""
-    method = getattr(type(strategy), "detect_sync", None)
-    if method is None:
-        return False
-    from services.strategies.base import BaseStrategy
-
-    base_method = getattr(BaseStrategy, "detect_sync", None)
-    return method is not base_method
+    from services.strategies.base import _has_custom_detect_sync as _impl
+    return _impl(strategy)
 
 
 def _has_custom_detect_plain(strategy) -> bool:
-    """Check if strategy implements its own ``detect()`` (the
-    backwards-compatible name).  Most strategies in this codebase
-    override the plain method rather than ``detect_sync``/``detect_async``,
-    and ``_run_detect_once`` already knows how to route to it.  Replay
-    discovery must recognise this override too — historically it didn't,
-    which silently skipped 20+ scanner strategies (tail_end_carry,
-    stat_arb, news_edge, every BTC/ETH variant, etc.).
-    """
-    method = getattr(type(strategy), "detect", None)
-    if method is None:
-        return False
-    from services.strategies.base import BaseStrategy
-
-    base_method = getattr(BaseStrategy, "detect", None)
-    return method is not base_method
+    from services.strategies.base import _has_custom_detect_plain as _impl
+    return _impl(strategy)
 
 
 def _has_custom_on_event(strategy) -> bool:
-    """Check if strategy overrides ``on_event`` (the LIVE event-driven entry
-    point).  The base ``on_event`` routes MARKET_DATA_REFRESH to ``detect`` but
-    returns ``[]`` for CRYPTO_UPDATE, so a crypto strategy MUST override
-    ``on_event`` to fire live — and is therefore NOT reachable via ``detect()``.
-    Replay discovery uses this to dispatch such strategies through ``on_event``
-    instead of ``detect()`` (else backtest runs different code than live).
-    """
-    method = getattr(type(strategy), "on_event", None)
-    if method is None:
-        return False
-    from services.strategies.base import BaseStrategy
-
-    base_method = getattr(BaseStrategy, "on_event", None)
-    return method is not base_method
+    from services.strategies.base import _has_custom_on_event as _impl
+    return _impl(strategy)
 
 
 def _timeframe_to_seconds(value: str | int | None, *, default_seconds: int = 1800) -> int:
@@ -1728,6 +1697,12 @@ class ExecutionBacktestResult:
     correlation_pairs: list[dict[str, Any]] = field(default_factory=list)
     fills_sample: list[dict[str, Any]] = field(default_factory=list)
     equity_curve_sample: list[dict[str, Any]] = field(default_factory=list)
+    # Frequency-correct annualization basis captured at run time:
+    # periods_per_year + return-distribution moments on the resampled
+    # equity curve.  Lets downstream consumers (deflated Sharpe) deflate
+    # for the search size without re-sampling the full curve, on the SAME
+    # basis as the headline Sharpe.  See metrics.annualization_moments.
+    risk_annualization: dict[str, Any] = field(default_factory=dict)
     positions_summary: list[dict[str, Any]] = field(default_factory=list)
     load_time_ms: float = 0.0
     data_fetch_time_ms: float = 0.0
@@ -5525,6 +5500,15 @@ async def run_execution_backtest(
     result.equity_curve_sample = [
         {"at": ts.isoformat(), "equity_usd": float(value)} for ts, value in eq
     ]
+    # Capture the annualization basis from the FULL equity history (not the
+    # downsampled sample above) so the Deflated Sharpe deflates the same
+    # frequency-correct Sharpe the headline metrics report.
+    try:
+        from services.backtest.metrics import annualization_moments
+
+        result.risk_annualization = annualization_moments(eq_full)
+    except Exception:
+        result.risk_annualization = {}
     result.positions_summary = list(getattr(bt_result, "positions_summary", []) or [])
 
     try:

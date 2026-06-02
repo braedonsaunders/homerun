@@ -650,6 +650,14 @@ async def get_unified_docs():
                 "sync": {
                     "signature": "detect(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]",
                     "when_to_use": "CPU-bound strategies with no async I/O needed",
+                    "note": (
+                        "THE primary entry point. detect() runs identically in LIVE and in "
+                        "BACKTEST for every event type you subscribe to (market_data_refresh, "
+                        "crypto_update, …) — the platform guarantees the backtest replays the "
+                        "same (events, markets, prices) your strategy sees live. Implement "
+                        "detect() (or detect_async) and you're done; only reach for on_event "
+                        "for custom event routing."
+                    ),
                 },
                 "async": {
                     "signature": "async detect_async(self, events: list[Event], markets: list[Market], prices: dict[str, dict]) -> list[Opportunity]",
@@ -1076,9 +1084,16 @@ async def get_unified_docs():
             "on_event_method": {
                 "signature": "async on_event(self, event: DataEvent) -> list[Opportunity]",
                 "description": (
-                    "Called by the event dispatcher when a subscribed event fires. "
-                    "Return a list of detected opportunities (may be empty). "
-                    "Default: no-op (returns empty list)."
+                    "ADVANCED escape hatch — most strategies never override this. By "
+                    "default the base on_event routes BOTH market_data_refresh and "
+                    "crypto_update to your detect()/detect_async(), so just implementing "
+                    "detect() is enough and it runs identically live and in backtest. "
+                    "Override on_event ONLY for custom per-event routing (different logic "
+                    "per event type, or stateful event handling). IMPORTANT: if you "
+                    "override on_event it becomes your live + backtest entry point and your "
+                    "detect() will NOT run unless your on_event calls it — don't leave a "
+                    "separate detect() with divergent logic (it becomes dead code; the "
+                    "platform warns you at load time)."
                 ),
             },
         },

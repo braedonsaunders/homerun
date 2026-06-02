@@ -303,6 +303,59 @@ def _has_custom_detect_sync(strategy: "BaseStrategy") -> bool:
     return method is not base_method
 
 
+def _has_custom_detect_plain(strategy: "BaseStrategy") -> bool:
+    """Return True if *strategy* overrides the plain ``detect()`` — the
+    backwards-compatible name most strategies implement.  Canonical home for the
+    strategy-introspection helpers (the backtester + strategy_loader import
+    these so there is one source of truth for "what does this strategy override")."""
+    method = getattr(type(strategy), "detect", None)
+    if method is None:
+        return False
+    base_method = getattr(BaseStrategy, "detect", None)
+    return method is not base_method
+
+
+def _has_custom_on_event(strategy: "BaseStrategy") -> bool:
+    """Return True if *strategy* overrides ``on_event`` — the ADVANCED
+    event-routing escape hatch.
+
+    When a strategy overrides ``on_event``, THAT is its live entry point (the
+    base ``on_event``, which routes MARKET_DATA_REFRESH and CRYPTO_UPDATE to
+    ``detect()``, is bypassed), so its ``detect()`` only runs if its ``on_event``
+    calls back into it.  The backtest mirrors this (dispatches via ``on_event``
+    when overridden), and ``strategy_loader`` uses this to warn when a strategy
+    overrides BOTH (a divergent-detection footgun)."""
+    method = getattr(type(strategy), "on_event", None)
+    if method is None:
+        return False
+    base_method = getattr(BaseStrategy, "on_event", None)
+    return method is not base_method
+
+
+def divergent_detection_warning(strategy: "BaseStrategy") -> Optional[str]:
+    """Return a warning string if *strategy* has the divergent-detection footgun
+    — overriding BOTH ``on_event`` and a ``detect*`` method — else ``None``.
+
+    ``on_event`` is the live + backtest entry point, so a separately-overridden
+    ``detect()`` is dead code unless ``on_event`` calls it.  ``strategy_loader``
+    logs this at registration; returning the string (rather than logging here)
+    keeps it pure and unit-testable."""
+    if _has_custom_on_event(strategy) and (
+        _has_custom_detect_async(strategy)
+        or _has_custom_detect_sync(strategy)
+        or _has_custom_detect_plain(strategy)
+    ):
+        return (
+            "overrides BOTH on_event() and detect(): on_event is the live + backtest "
+            "entry point, so detect() will NOT run unless your on_event() calls it. Use "
+            "ONE detection entry — implement detect() (it runs identically live and in "
+            "backtest for every event you subscribe to), or if you need custom event "
+            "routing keep on_event() and remove/fold detect() so it isn't dead, "
+            "divergent code."
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Timeframe-close hook helpers
 # ---------------------------------------------------------------------------
