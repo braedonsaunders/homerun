@@ -3804,7 +3804,7 @@ class ArbitrageScanner:
                         if warm_candidates:
                             warm_candidates.sort(
                                 key=lambda market: (
-                                    1.0 if self._is_tail_end_priority_market(market, now) else 0.0,
+                                    1.0 if self._is_priority_market(market, now) else 0.0,
                                     *self._market_priority_key(market),
                                 ),
                                 reverse=True,
@@ -3934,20 +3934,20 @@ class ArbitrageScanner:
                 await self._ensure_runtime_strategies_loaded()
                 incremental_slugs, _ = self._partition_market_refresh_strategies()
                 _priority_strats = self._priority_filter_strategies()
-                tail_end_fast_strategy = _priority_strats[0] if _priority_strats else None
-                tail_end_fast_markets: list = []
+                priority_fast_strategy = _priority_strats[0] if _priority_strats else None
+                priority_fast_markets: list = []
                 if _priority_strats:
-                    tail_end_fast_markets = [
+                    priority_fast_markets = [
                         market
                         for market in self._cached_markets
                         if self._is_market_active(market, now) and self._is_priority_market(market, now)
                     ]
-                    if tail_end_fast_markets:
-                        tail_end_fast_markets.sort(
+                    if priority_fast_markets:
+                        priority_fast_markets.sort(
                             key=lambda market: self._priority_market_sort_key(market, now),
                             reverse=True,
                         )
-                        tail_end_fast_markets = tail_end_fast_markets[:2000]
+                        priority_fast_markets = priority_fast_markets[:2000]
                 if not incremental_slugs or not markets_for_strategies:
                     logger.info("  Fast scan dispatch skipped: no eligible strategies or no verified market batch")
                     self._opportunities = await self.refresh_opportunity_prices(
@@ -3987,16 +3987,16 @@ class ArbitrageScanner:
                     full_slugs=set(),
                     handler_timeout_seconds=self._fast_strategy_timeout_seconds(),
                 )
-                if tail_end_fast_strategy is not None and tail_end_fast_markets:
-                    tail_end_fast_opportunities = await loop.run_in_executor(
+                if priority_fast_strategy is not None and priority_fast_markets:
+                    priority_fast_opportunities = await loop.run_in_executor(
                         None,
-                        tail_end_fast_strategy.detect,
+                        priority_fast_strategy.detect,
                         list(self._cached_events),
-                        list(tail_end_fast_markets),
+                        list(priority_fast_markets),
                         dict(self._cached_prices),
                     )
-                    if tail_end_fast_opportunities:
-                        fast_opportunities.extend(tail_end_fast_opportunities)
+                    if priority_fast_opportunities:
+                        fast_opportunities.extend(priority_fast_opportunities)
 
                 fast_quality_reports, fast_actionable = self._filter_actionable_opportunities(fast_opportunities)
 
