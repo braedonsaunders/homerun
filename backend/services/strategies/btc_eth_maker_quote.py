@@ -16,8 +16,6 @@ btc_eth_convergence as a complementary trio if you want full coverage.
 from __future__ import annotations
 
 import re
-import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Optional
@@ -26,7 +24,7 @@ from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim
 
 import math
 
-from models import Market, Event, Opportunity
+from models import Market, Opportunity
 from config import settings as _cfg
 from ._firehose import (
     GateResult,
@@ -430,257 +428,11 @@ _MAX_HISTORY_ENTRIES = 200  # Maximum price snapshots per market
 # ---------------------------------------------------------------------------
 
 
-class _CryptoMarketFetcher:
-    """Sync HTTP fetcher that queries Polymarket's Gamma API for crypto markets
-    using series_id-based discovery (the same approach used by
-    PolymarketBTC15mAssistant and other production bots).
-
-    Each crypto asset/timeframe has a stable ``series_id`` on the Gamma API.
-    Querying ``GET /events?series_id=X&active=true&closed=false`` reliably
-    returns the currently-live and upcoming 15-minute (or hourly) markets
-    with correct ``endDate`` values, real-time ``bestBid``/``bestAsk``
-    pricing, CLOB token IDs, and liquidity data.
-
-    Results are cached for ``ttl_seconds`` to avoid hammering the API.
-    """
-
-    def __init__(self, gamma_url: str = "", ttl_seconds: int = 15):
-        self._gamma_url = gamma_url or _cfg.GAMMA_API_URL
-        self._ttl = ttl_seconds
-        self._markets: list[Market] = []
-        self._last_fetch: float = 0.0
-        self._shared_client = None
-
-    @property
-    def is_stale(self) -> bool:
-        return (time.monotonic() - self._last_fetch) > self._ttl
-
-    def get_markets(self) -> list[Market]:
-        """Return cached crypto markets, refreshing if stale."""
-        if self.is_stale:
-            fetched = self._fetch()
-            if fetched is not None:
-                self._markets = fetched
-                self._last_fetch = time.monotonic()
-                # Subscribe new market tokens to the WS feed for real-time prices
-                self._subscribe_tokens_to_ws(fetched)
-        return self._markets
-
-    @staticmethod
-    def _subscribe_tokens_to_ws(markets: list[Market]) -> None:
-        """Fire-and-forget: subscribe crypto market CLOB tokens to the
-        WebSocket price feed so we get real-time bid/ask updates instead
-        of relying on stale HTTP polling."""
-        import asyncio
-
-        token_ids = []
-        for m in markets:
-            token_ids.extend(t for t in m.clob_token_ids if len(t) > 20)
-        if not token_ids:
-            return
-
-        try:
-            from services.ws_feeds import get_feed_manager
-
-            feed_mgr = get_feed_manager()
-            if not feed_mgr._started:
-                return
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
-            else:
-                loop.run_until_complete(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
-            logger.debug(
-                "BtcEthMakerQuote: subscribed %d crypto tokens to WS feed",
-                len(token_ids),
-            )
-        except Exception as e:
-            logger.debug("BtcEthMakerQuote: WS subscription failed (non-critical): %s", e)
-
-    @staticmethod
-    def _is_currently_live(event: dict, now_ms: float) -> bool:
-        """Check if an event's market window is currently live.
-
-        A 15-minute market is live when:
-          startTime <= now < endDate
-        The event-level ``startTime`` is when the 15-min window opens;
-        ``endDate`` is when it resolves.
-        """
-        start_str = event.get("startTime") or event.get("startDate")
-        end_str = event.get("endDate")
-        if not end_str:
-            return False
-
-        try:
-            end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
-        except (ValueError, AttributeError):
-            return False
-
-        if now_ms >= end_ms:
-            return False  # Already resolved
-
-        if start_str:
-            try:
-                start_ms = datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp() * 1000
-                if now_ms < start_ms:
-                    return False  # Not started yet
-            except (ValueError, AttributeError):
-                pass
-
-        return True
-
-    @staticmethod
-    def _pick_live_and_upcoming(events: list[dict], max_upcoming: int = 2) -> list[dict]:
-        """From a list of events, return the currently-live one plus next upcoming.
-
-        This mirrors the reference bot's ``pickLatestLiveMarket`` logic but
-        returns multiple events so we can show upcoming opportunities too.
-        """
-        now_ms = utcnow().timestamp() * 1000
-        live: list[dict] = []
-        upcoming: list[dict] = []
-
-        for evt in events:
-            if evt.get("closed"):
-                continue
-            start_str = evt.get("startTime") or evt.get("startDate")
-            end_str = evt.get("endDate")
-            if not end_str:
-                continue
-            try:
-                end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
-            except (ValueError, AttributeError):
-                continue
-            if end_ms <= now_ms:
-                continue  # Already resolved
-
-            start_ms = None
-            if start_str:
-                try:
-                    start_ms = datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp() * 1000
-                except (ValueError, AttributeError):
-                    pass
-
-            if start_ms is not None and start_ms <= now_ms:
-                live.append((end_ms, evt))
-            else:
-                upcoming.append((end_ms, evt))
-
-        # Sort by end time (soonest first)
-        live.sort(key=lambda x: x[0])
-        upcoming.sort(key=lambda x: x[0])
-
-        result = [e for _, e in live]
-        result.extend(e for _, e in upcoming[:max_upcoming])
-        return result
-
-    def _fetch(self) -> list[Market]:
-        """Fetch live crypto markets from Gamma API using series_id.
-
-        For each crypto series (BTC 15m, ETH 15m, etc.), queries the
-        events endpoint to get active events, then picks the currently-live
-        and next-upcoming markets.
-        """
-        import httpx
-
-        all_markets: list[Market] = []
-        seen_ids: set[str] = set()
-
-        def _market_id(mkt: dict) -> str:
-            return str(mkt.get("conditionId") or mkt.get("condition_id") or mkt.get("id", ""))
-
-        try:
-            series = _get_crypto_series()
-            now_iso = utcnow().replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            if self._shared_client is None or self._shared_client.is_closed:
-                self._shared_client = httpx.Client(timeout=10.0, follow_redirects=True)
-            client = self._shared_client
-            for series_id, asset, timeframe in series:
-                try:
-                    resp = client.get(
-                        f"{self._gamma_url}/events",
-                        params={
-                            "series_id": series_id,
-                            "active": "true",
-                            "closed": "false",
-                            # Exclude stale unresolved history and walk forward
-                            # from now for live/nearest-upcoming selection.
-                            "end_date_min": now_iso,
-                            "order": "endDate",
-                            "ascending": "true",
-                            "limit": 10,
-                        },
-                    )
-                    if resp.status_code != 200:
-                        logger.debug(
-                            "BtcEthMakerQuote: Gamma series_id=%s returned %s",
-                            series_id,
-                            resp.status_code,
-                        )
-                        continue
-
-                    events = resp.json()
-                    if not isinstance(events, list):
-                        continue
-
-                    # Pick live + upcoming events
-                    selected = self._pick_live_and_upcoming(events)
-
-                    for event_data in selected:
-                        for mkt_data in event_data.get("markets", []):
-                            mid = _market_id(mkt_data)
-                            if mid and mid not in seen_ids:
-                                try:
-                                    m = Market.from_gamma_response(mkt_data)
-                                    all_markets.append(m)
-                                    seen_ids.add(mid)
-                                except Exception as e:
-                                    logger.debug(
-                                        "BtcEthMakerQuote: failed to parse market %s: %s",
-                                        mid,
-                                        e,
-                                    )
-
-                    time.sleep(0.05)  # Rate limit between series
-                except Exception as e:
-                    logger.debug(
-                        "BtcEthMakerQuote: series_id=%s fetch failed: %s",
-                        series_id,
-                        e,
-                    )
-
-        except Exception as exc:
-            logger.warning(
-                "Crypto market fetch failed: %s",
-                str(exc),
-                exc_info=True,
-            )
-
-        if all_markets:
-            logger.info(
-                "BtcEthMakerQuote: fetched %d live crypto markets via Gamma series API (%s)",
-                len(all_markets),
-                ", ".join(f"{a} {tf}" for _, a, tf in series),
-            )
-        else:
-            logger.debug(
-                "BtcEthMakerQuote: no live crypto markets found across %d series",
-                len(series),
-            )
-        return all_markets
 
 
 # Module-level crypto market fetcher (lazy-initialized)
-_crypto_fetcher: Optional[_CryptoMarketFetcher] = None
 
 
-def _get_crypto_fetcher() -> _CryptoMarketFetcher:
-    """Get or create the singleton crypto market fetcher."""
-    global _crypto_fetcher
-    if _crypto_fetcher is None:
-        _crypto_fetcher = _CryptoMarketFetcher()
-    return _crypto_fetcher
 
 
 # ---------------------------------------------------------------------------
@@ -765,7 +517,6 @@ def _resolve_enabled_active_modes(config: Any) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-from services.strategy_helpers.price_window import PriceWindow  # noqa: E402,F401
 
 # Pure timeframe utilities (no defaults coupling) — imported back for the
 # strategy's evaluate-path normalization. Each strategy owns its own
@@ -782,17 +533,6 @@ from services.strategy_helpers.crypto_scope import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class HighFreqCandidate:
-    """A market identified as a BTC/ETH high-frequency binary market."""
-
-    market: Market
-    asset: str  # "BTC", "ETH", "SOL", or "XRP"
-    timeframe: str  # "5min", "15min", "1hr", or "4hr"
-    yes_price: float
-    no_price: float
-    oracle_price: Optional[float] = None
-    price_to_beat: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -800,14 +540,6 @@ class HighFreqCandidate:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class SubStrategyScore:
-    """Score and metadata for a candidate sub-strategy."""
-
-    strategy: SubStrategy
-    score: float  # Higher is better (0-100 scale)
-    reason: str
-    params: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -924,7 +656,6 @@ class BtcEthMakerQuoteStrategy(BaseStrategy):
         # so the detect path just needs to pass every market through.
         self.min_profit = 0.0
         # Per-market price history keyed by market ID
-        self._price_windows: dict[str, PriceWindow] = {}
         # Keyed by CLOB token id (one window per outcome stream) so a 3+ outcome
         # market would just track more entries; binary markets get exactly 2.
         # Runtime anti-churn controls used by evaluate().
@@ -992,383 +723,32 @@ class BtcEthMakerQuoteStrategy(BaseStrategy):
         text = market.question.lower()
         return any(kw in text for kw in _DIRECTION_KEYWORDS)
 
-    @staticmethod
-    def _resolve_prices(
-        market: Market,
-        prices: dict[str, dict],
-    ) -> tuple[float, float]:
-        """Return (yes_price, no_price) using live CLOB prices when available."""
-        yes_price = market.yes_price
-        no_price = market.no_price
-
-        if market.clob_token_ids:
-            if len(market.clob_token_ids) > 0:
-                token = market.clob_token_ids[0]
-                if token in prices:
-                    yes_price = prices[token].get("mid", yes_price)
-            if len(market.clob_token_ids) > 1:
-                token = market.clob_token_ids[1]
-                if token in prices:
-                    no_price = prices[token].get("mid", no_price)
-
-        return yes_price, no_price
 
     # ------------------------------------------------------------------
     # Price history
     # ------------------------------------------------------------------
 
-    def _update_price_history(self, candidate: HighFreqCandidate) -> None:
-        """Record latest outcome prices into per-token PriceWindows.
 
-        One :class:`PriceWindow` per CLOB token id. Binary markets get two
-        windows (yes + no); a future 3+ outcome market would naturally
-        produce N windows without any code change.
-        """
-        if candidate.timeframe == "4hr":
-            window = _4HR_HISTORY_WINDOW_SEC
-        elif candidate.timeframe == "1hr":
-            window = _1HR_HISTORY_WINDOW_SEC
-        elif candidate.timeframe == "5min":
-            window = 120  # 2 min for 5-min markets
-        else:
-            window = _DEFAULT_HISTORY_WINDOW_SEC
-
-        token_ids = list(candidate.market.clob_token_ids or [])
-        prices = [candidate.yes_price, candidate.no_price]
-        for token_id, price in zip(token_ids, prices):
-            if not token_id:
-                continue
-            existing = self._price_windows.get(token_id)
-            if existing is None or existing.window_seconds != window:
-                existing = PriceWindow(window_seconds=window)
-                self._price_windows[token_id] = existing
-            existing.record(price)
-
-    def _get_price_window(self, token_id: str) -> Optional[PriceWindow]:
-        """Return the rolling :class:`PriceWindow` for a specific token id.
-
-        Returns None when no observations have been recorded for that
-        token. Strategies that need yes-side or no-side stats should
-        look up the relevant token id (``market.clob_token_ids[0]`` for
-        YES, ``[1]`` for NO on a binary market) and call methods on the
-        returned window.
-        """
-        return self._price_windows.get(token_id)
 
     # ------------------------------------------------------------------
     # Dynamic strategy selector
     # ------------------------------------------------------------------
 
-    def _select_sub_strategy(
-        self,
-        candidate: HighFreqCandidate,
-        enabled_sub_strategies: set[SubStrategy],
-    ) -> tuple[Optional[SubStrategyScore], list[SubStrategyScore]]:
-        """Always select the maker-quote sub-strategy.
-
-        This clone is pinned to the maker-quote sub-strategy. The
-        score is still computed so the diagnostic ``reason`` and
-        ``params`` propagate to logging and downstream consumers. A
-        non-viable score (<=0) yields ``(None, [score])`` exactly like
-        the original multi-mode selector did.
-        """
-        maker_score = self._score_maker_quote(candidate)
-        if SubStrategy.MAKER_QUOTE not in enabled_sub_strategies:
-            disabled = SubStrategyScore(
-                strategy=maker_score.strategy,
-                score=0.0,
-                reason="disabled_by_config",
-                params=maker_score.params,
-            )
-            return None, [disabled]
-        best = maker_score if maker_score.score > 0 else None
-        return best, [maker_score]
 
     # -- Sub-strategy: Maker Quote scoring (Layer 1 - PRIMARY) --
 
-    def _score_maker_quote(self, c: HighFreqCandidate) -> SubStrategyScore:
-        """Score two-sided maker quoting opportunity (Layer 1).
-
-        Places post_only limit buy orders on BOTH YES and NO sides.
-        Primary strategy: earns bid-ask spread + maker rebates.
-        When oracle data available, skews quotes for directional edge.
-        """
-        cfg = self.config or {}
-        min_spread = float(cfg.get("maker_quote_min_spread", 0.01) or 0.01)
-        min_liq = float(cfg.get("maker_quote_min_liquidity", 200.0) or 200.0)
-        min_secs_left = float(cfg.get("maker_quote_min_seconds_left", 30.0) or 30.0)
-        base_score = float(cfg.get("maker_quote_base_score", 25.0) or 25.0)
-        spread_score_scale = float(cfg.get("maker_quote_spread_score_scale", 400.0) or 400.0)
-        max_score = float(cfg.get("maker_quote_max_score", 90.0) or 90.0)
-        thin_book_usd = float(cfg.get("maker_quote_thin_book_usd", 1000.0) or 1000.0)
-        thin_book_bonus = float(cfg.get("maker_quote_thin_book_bonus", 15.0) or 15.0)
-        min_size_usd = float(cfg.get("maker_quote_min_size_usd", 5.0) or 5.0)
-        max_size_usd = float(cfg.get("maker_quote_max_size_usd", 25.0) or 25.0)
-        resolution_risk_secs = float(cfg.get("maker_quote_resolution_risk_seconds", 45.0) or 45.0)
-        skew_max = float(cfg.get("maker_quote_skew_max", 0.03) or 0.03)
-
-        spread = abs(1.0 - c.yes_price - c.no_price)
-        if spread < min_spread:
-            return SubStrategyScore(
-                strategy=SubStrategy.MAKER_QUOTE,
-                score=0.0,
-                reason=f"Spread too narrow ({spread:.4f} < {min_spread})",
-            )
-
-        liquidity = c.market.liquidity
-        if liquidity < min_liq:
-            return SubStrategyScore(
-                strategy=SubStrategy.MAKER_QUOTE,
-                score=0.0,
-                reason=f"Liquidity too low (${liquidity:.0f} < ${min_liq:.0f})",
-            )
-
-        # Calculate seconds remaining
-        remaining_secs = self._remaining_seconds(c)
-
-        if remaining_secs is not None and remaining_secs < min_secs_left:
-            return SubStrategyScore(
-                strategy=SubStrategy.MAKER_QUOTE,
-                score=0.0,
-                reason=f"Too close to resolution ({remaining_secs:.0f}s < {min_secs_left:.0f}s)",
-            )
-
-        # Base quote prices: 1 tick below each side's current ask
-        base_quote_yes = c.yes_price - _MAKER_QUOTE_TICK_SIZE
-        base_quote_no = c.no_price - _MAKER_QUOTE_TICK_SIZE
-
-        if base_quote_yes <= 0.01 or base_quote_no <= 0.01:
-            return SubStrategyScore(
-                strategy=SubStrategy.MAKER_QUOTE,
-                score=0.0,
-                reason="Quote price too low after tick adjustment",
-            )
-
-        # Oracle-gated inventory skew (Layer 2 integration)
-        oracle_skew = 0.0
-        oracle_direction = None
-        oracle_price = c.oracle_price
-        price_to_beat = c.price_to_beat
-        if oracle_price is not None and price_to_beat is not None and price_to_beat > 0:
-            diff_pct = ((oracle_price - price_to_beat) / price_to_beat) * 100.0
-            oracle_skew = clamp(diff_pct * 0.015, -skew_max, skew_max)
-            oracle_direction = "up" if diff_pct > 0 else "down"
-
-        # Apply skew: if oracle says UP, tighten YES quote (more aggressive), widen NO quote
-        quote_yes = clamp(base_quote_yes - oracle_skew, 0.01, 0.99)
-        quote_no = clamp(base_quote_no + oracle_skew, 0.01, 0.99)
-
-        combined_cost = quote_yes + quote_no
-        spread_capture = max(0.0, 1.0 - combined_cost)
-
-        # Fill probability
-        if liquidity < thin_book_usd:
-            fill_prob = clamp(0.6 + 0.3 * (1.0 - liquidity / thin_book_usd), 0.3, 0.9)
-        else:
-            fill_prob = clamp(0.5 - 0.2 * (liquidity / 10000.0), 0.1, 0.5)
-
-        # Resolution risk
-        if remaining_secs is not None and remaining_secs < resolution_risk_secs:
-            resolution_risk = 0.10 * (1.0 - remaining_secs / resolution_risk_secs)
-        else:
-            resolution_risk = 0.0
-
-        # Binary risk: near-50/50 prices have maximum binary resolution exposure
-        midpoint_distance = abs(0.5 - min(c.yes_price, c.no_price))
-        if midpoint_distance < 0.15:  # Within $0.35-$0.65 range
-            resolution_risk += 0.08 * (1.0 - midpoint_distance / 0.15)
-
-        expected_profit = spread_capture * fill_prob - resolution_risk
-        if expected_profit <= 0.0:
-            return SubStrategyScore(
-                strategy=SubStrategy.MAKER_QUOTE,
-                score=0.0,
-                reason=f"Negative EV: spread_capture={spread_capture:.4f}, fill_prob={fill_prob:.2f}, resolution_risk={resolution_risk:.4f}",
-            )
-
-        score = base_score + spread_capture * spread_score_scale
-        if liquidity < thin_book_usd:
-            score += thin_book_bonus
-        # Oracle skew bonus: having directional edge on top of spread is extra valuable
-        if abs(oracle_skew) > 0.005:
-            score += 10.0
-        score = min(score, max_score)
-
-        size_ratio = clamp(spread_capture / 0.06, 0.0, 1.0)
-        size_usd = min_size_usd + size_ratio * (max_size_usd - min_size_usd)
-
-        return SubStrategyScore(
-            strategy=SubStrategy.MAKER_QUOTE,
-            score=score,
-            reason=(
-                f"Maker quote: spread={spread:.4f}, combined=${combined_cost:.4f}, "
-                f"spread_capture=${spread_capture:.4f}, fill_prob={fill_prob:.2f}, "
-                f"EV=${expected_profit:.4f}, liq=${liquidity:.0f}, "
-                f"oracle_skew={oracle_skew:+.4f}, size=${size_usd:.1f}/side"
-            ),
-            params={
-                "quote_yes": quote_yes,
-                "quote_no": quote_no,
-                "combined_cost": combined_cost,
-                "spread_capture": spread_capture,
-                "fill_probability": fill_prob,
-                "expected_profit": expected_profit,
-                "resolution_risk": resolution_risk,
-                "size_usd": size_usd,
-                "liquidity": liquidity,
-                "remaining_seconds": remaining_secs,
-                "oracle_skew": oracle_skew,
-                "oracle_direction": oracle_direction,
-            },
-        )
 
     # -- Helper: remaining seconds until resolution --
 
-    def _remaining_seconds(self, c: HighFreqCandidate) -> Optional[float]:
-        if c.market.end_date:
-            try:
-                if hasattr(c.market.end_date, "timestamp"):
-                    end_ts = c.market.end_date.timestamp()
-                else:
-                    end_str = str(c.market.end_date)
-                    end_ts = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp()
-                return max(0.0, end_ts - utcnow().timestamp())
-            except (ValueError, AttributeError):
-                pass
-        return None
     # ------------------------------------------------------------------
     # Opportunity generation
     # ------------------------------------------------------------------
 
-    def _generate_opportunity(
-        self,
-        candidate: HighFreqCandidate,
-        selected: SubStrategyScore,
-    ) -> Optional[Opportunity]:
-        """Turn a scored sub-strategy into an Opportunity via the base
-        class ``create_opportunity`` (which applies all hard filters)."""
 
-        market = candidate.market
-        sub = selected.strategy
-        params = selected.params
-
-        if sub == SubStrategy.MAKER_QUOTE:
-            return self._generate_maker_quote(candidate, params)
-
-        logger.warning(
-            "BtcEthMakerQuote: unsupported sub-strategy %s for market %s",
-            sub,
-            market.id,
-        )
-        return None
-
-    def _generate_maker_quote(
-        self,
-        c: HighFreqCandidate,
-        params: dict,
-    ) -> Optional[Opportunity]:
-        """Generate opportunity for Layer 1: Maker Quote.
-
-        Places post_only limit buy orders on BOTH YES and NO sides,
-        1 tick below each side's current ask.  Earns the bid-ask spread
-        plus maker rebates when both sides fill.  Oracle skew tilts quotes
-        toward the predicted winner for additional directional edge.
-        """
-        market = c.market
-        quote_yes = params["quote_yes"]
-        quote_no = params["quote_no"]
-        combined_cost = params["combined_cost"]
-        size_usd = params["size_usd"]
-
-        positions: list[dict] = []
-        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
-            positions = [
-                {
-                    "action": "LIMIT_BUY",
-                    "outcome": "YES",
-                    "price": quote_yes,
-                    "token_id": market.clob_token_ids[0],
-                    "post_only": True,
-                    "_maker_mode": True,
-                    "_maker_price": quote_yes,
-                    "note": f"Maker quote YES @ ${quote_yes:.2f}",
-                },
-                {
-                    "action": "LIMIT_BUY",
-                    "outcome": "NO",
-                    "price": quote_no,
-                    "token_id": market.clob_token_ids[1],
-                    "post_only": True,
-                    "_maker_mode": True,
-                    "_maker_price": quote_no,
-                    "note": f"Maker quote NO @ ${quote_no:.2f}",
-                },
-            ]
-
-        spread_capture = params["spread_capture"]
-        oracle_skew = params.get("oracle_skew", 0.0)
-
-        opp = self.create_opportunity(
-            title=(
-                f"BTC/ETH HF Maker Quote: {c.asset} {c.timeframe} "
-                f"(spread ${spread_capture:.3f})"
-            ),
-            description=(
-                f"Two-sided maker quoting on {c.asset} {c.timeframe} market. "
-                f"Quote YES@${quote_yes:.2f} + NO@${quote_no:.2f} = "
-                f"${combined_cost:.4f} for $1.00 payout. "
-                f"Spread capture: ${spread_capture:.4f}. "
-                f"Oracle skew: {oracle_skew:+.4f}. "
-                f"Post-only maker orders (0% taker fee + rebates)."
-            ),
-            total_cost=combined_cost,
-            expected_payout=1.0,
-            markets=[market],
-            positions=positions,
-            is_guaranteed=False,
-            min_liquidity_hard=0.0,
-            min_position_size=0.0,
-            min_absolute_profit=0.0,
-        )
-
-        if opp is not None:
-            opp.max_position_size = max(opp.max_position_size, size_usd * 2.0)
-            self._attach_substrategy_metadata(
-                opp,
-                c,
-                SubStrategy.MAKER_QUOTE,
-                params,
-            )
-            opp.risk_factors.insert(
-                0,
-                "Maker quote: profit requires BOTH sides filling; "
-                "single-side fill creates directional exposure",
-            )
-        return opp
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _attach_substrategy_metadata(
-        opp: Opportunity,
-        candidate: HighFreqCandidate,
-        sub_strategy: SubStrategy,
-        params: dict,
-    ) -> None:
-        """Attach BTC/ETH high-freq metadata to the opportunity for
-        downstream consumers (execution engine, dashboard, logging)."""
-        # Store in the existing positions_to_take metadata (which is a list
-        # of dicts). We append a metadata entry at the end.
-        opp.positions_to_take.append(
-            {
-                "_substrategy_metadata": True,
-                "asset": candidate.asset,
-                "timeframe": candidate.timeframe,
-                "sub_strategy": sub_strategy.value,
-                "sub_strategy_params": params,
-            }
-        )
 
     # ------------------------------------------------------------------
     # Evaluate / Should-Exit  (unified strategy interface)

@@ -14,8 +14,6 @@ high-frequency strategy.
 from __future__ import annotations
 
 import re
-import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Optional
@@ -24,7 +22,7 @@ from utils.utcnow import utcnow  # replay-clock-aware "now" (honors backtest sim
 
 import math
 
-from models import Market, Event, Opportunity
+from models import Market, Opportunity
 from config import settings as _cfg
 from ._firehose import (
     GateResult,
@@ -443,257 +441,11 @@ _MAX_HISTORY_ENTRIES = 200  # Maximum price snapshots per market
 # ---------------------------------------------------------------------------
 
 
-class _CryptoMarketFetcher:
-    """Sync HTTP fetcher that queries Polymarket's Gamma API for crypto markets
-    using series_id-based discovery (the same approach used by
-    PolymarketBTC15mAssistant and other production bots).
-
-    Each crypto asset/timeframe has a stable ``series_id`` on the Gamma API.
-    Querying ``GET /events?series_id=X&active=true&closed=false`` reliably
-    returns the currently-live and upcoming 15-minute (or hourly) markets
-    with correct ``endDate`` values, real-time ``bestBid``/``bestAsk``
-    pricing, CLOB token IDs, and liquidity data.
-
-    Results are cached for ``ttl_seconds`` to avoid hammering the API.
-    """
-
-    def __init__(self, gamma_url: str = "", ttl_seconds: int = 15):
-        self._gamma_url = gamma_url or _cfg.GAMMA_API_URL
-        self._ttl = ttl_seconds
-        self._markets: list[Market] = []
-        self._last_fetch: float = 0.0
-        self._shared_client = None
-
-    @property
-    def is_stale(self) -> bool:
-        return (time.monotonic() - self._last_fetch) > self._ttl
-
-    def get_markets(self) -> list[Market]:
-        """Return cached crypto markets, refreshing if stale."""
-        if self.is_stale:
-            fetched = self._fetch()
-            if fetched is not None:
-                self._markets = fetched
-                self._last_fetch = time.monotonic()
-                # Subscribe new market tokens to the WS feed for real-time prices
-                self._subscribe_tokens_to_ws(fetched)
-        return self._markets
-
-    @staticmethod
-    def _subscribe_tokens_to_ws(markets: list[Market]) -> None:
-        """Fire-and-forget: subscribe crypto market CLOB tokens to the
-        WebSocket price feed so we get real-time bid/ask updates instead
-        of relying on stale HTTP polling."""
-        import asyncio
-
-        token_ids = []
-        for m in markets:
-            token_ids.extend(t for t in m.clob_token_ids if len(t) > 20)
-        if not token_ids:
-            return
-
-        try:
-            from services.ws_feeds import get_feed_manager
-
-            feed_mgr = get_feed_manager()
-            if not feed_mgr._started:
-                return
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
-            else:
-                loop.run_until_complete(feed_mgr.polymarket_feed.subscribe(token_ids=token_ids))
-            logger.debug(
-                "BtcEthConvergence: subscribed %d crypto tokens to WS feed",
-                len(token_ids),
-            )
-        except Exception as e:
-            logger.debug("BtcEthConvergence: WS subscription failed (non-critical): %s", e)
-
-    @staticmethod
-    def _is_currently_live(event: dict, now_ms: float) -> bool:
-        """Check if an event's market window is currently live.
-
-        A 15-minute market is live when:
-          startTime <= now < endDate
-        The event-level ``startTime`` is when the 15-min window opens;
-        ``endDate`` is when it resolves.
-        """
-        start_str = event.get("startTime") or event.get("startDate")
-        end_str = event.get("endDate")
-        if not end_str:
-            return False
-
-        try:
-            end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
-        except (ValueError, AttributeError):
-            return False
-
-        if now_ms >= end_ms:
-            return False  # Already resolved
-
-        if start_str:
-            try:
-                start_ms = datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp() * 1000
-                if now_ms < start_ms:
-                    return False  # Not started yet
-            except (ValueError, AttributeError):
-                pass
-
-        return True
-
-    @staticmethod
-    def _pick_live_and_upcoming(events: list[dict], max_upcoming: int = 2) -> list[dict]:
-        """From a list of events, return the currently-live one plus next upcoming.
-
-        This mirrors the reference bot's ``pickLatestLiveMarket`` logic but
-        returns multiple events so we can show upcoming opportunities too.
-        """
-        now_ms = utcnow().timestamp() * 1000
-        live: list[dict] = []
-        upcoming: list[dict] = []
-
-        for evt in events:
-            if evt.get("closed"):
-                continue
-            start_str = evt.get("startTime") or evt.get("startDate")
-            end_str = evt.get("endDate")
-            if not end_str:
-                continue
-            try:
-                end_ms = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp() * 1000
-            except (ValueError, AttributeError):
-                continue
-            if end_ms <= now_ms:
-                continue  # Already resolved
-
-            start_ms = None
-            if start_str:
-                try:
-                    start_ms = datetime.fromisoformat(start_str.replace("Z", "+00:00")).timestamp() * 1000
-                except (ValueError, AttributeError):
-                    pass
-
-            if start_ms is not None and start_ms <= now_ms:
-                live.append((end_ms, evt))
-            else:
-                upcoming.append((end_ms, evt))
-
-        # Sort by end time (soonest first)
-        live.sort(key=lambda x: x[0])
-        upcoming.sort(key=lambda x: x[0])
-
-        result = [e for _, e in live]
-        result.extend(e for _, e in upcoming[:max_upcoming])
-        return result
-
-    def _fetch(self) -> list[Market]:
-        """Fetch live crypto markets from Gamma API using series_id.
-
-        For each crypto series (BTC 15m, ETH 15m, etc.), queries the
-        events endpoint to get active events, then picks the currently-live
-        and next-upcoming markets.
-        """
-        import httpx
-
-        all_markets: list[Market] = []
-        seen_ids: set[str] = set()
-
-        def _market_id(mkt: dict) -> str:
-            return str(mkt.get("conditionId") or mkt.get("condition_id") or mkt.get("id", ""))
-
-        try:
-            series = _get_crypto_series()
-            now_iso = utcnow().replace(microsecond=0).isoformat().replace("+00:00", "Z")
-            if self._shared_client is None or self._shared_client.is_closed:
-                self._shared_client = httpx.Client(timeout=10.0, follow_redirects=True)
-            client = self._shared_client
-            for series_id, asset, timeframe in series:
-                try:
-                    resp = client.get(
-                        f"{self._gamma_url}/events",
-                        params={
-                            "series_id": series_id,
-                            "active": "true",
-                            "closed": "false",
-                            # Exclude stale unresolved history and walk forward
-                            # from now for live/nearest-upcoming selection.
-                            "end_date_min": now_iso,
-                            "order": "endDate",
-                            "ascending": "true",
-                            "limit": 10,
-                        },
-                    )
-                    if resp.status_code != 200:
-                        logger.debug(
-                            "BtcEthConvergence: Gamma series_id=%s returned %s",
-                            series_id,
-                            resp.status_code,
-                        )
-                        continue
-
-                    events = resp.json()
-                    if not isinstance(events, list):
-                        continue
-
-                    # Pick live + upcoming events
-                    selected = self._pick_live_and_upcoming(events)
-
-                    for event_data in selected:
-                        for mkt_data in event_data.get("markets", []):
-                            mid = _market_id(mkt_data)
-                            if mid and mid not in seen_ids:
-                                try:
-                                    m = Market.from_gamma_response(mkt_data)
-                                    all_markets.append(m)
-                                    seen_ids.add(mid)
-                                except Exception as e:
-                                    logger.debug(
-                                        "BtcEthConvergence: failed to parse market %s: %s",
-                                        mid,
-                                        e,
-                                    )
-
-                    time.sleep(0.05)  # Rate limit between series
-                except Exception as e:
-                    logger.debug(
-                        "BtcEthConvergence: series_id=%s fetch failed: %s",
-                        series_id,
-                        e,
-                    )
-
-        except Exception as exc:
-            logger.warning(
-                "Crypto market fetch failed: %s",
-                str(exc),
-                exc_info=True,
-            )
-
-        if all_markets:
-            logger.info(
-                "BtcEthConvergence: fetched %d live crypto markets via Gamma series API (%s)",
-                len(all_markets),
-                ", ".join(f"{a} {tf}" for _, a, tf in series),
-            )
-        else:
-            logger.debug(
-                "BtcEthConvergence: no live crypto markets found across %d series",
-                len(series),
-            )
-        return all_markets
 
 
 # Module-level crypto market fetcher (lazy-initialized)
-_crypto_fetcher: Optional[_CryptoMarketFetcher] = None
 
 
-def _get_crypto_fetcher() -> _CryptoMarketFetcher:
-    """Get or create the singleton crypto market fetcher."""
-    global _crypto_fetcher
-    if _crypto_fetcher is None:
-        _crypto_fetcher = _CryptoMarketFetcher()
-    return _crypto_fetcher
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +530,6 @@ def _resolve_enabled_active_modes(config: Any) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-from services.strategy_helpers.price_window import PriceWindow  # noqa: E402,F401
 
 # Pure timeframe utilities (no defaults coupling) — imported back for the
 # strategy's evaluate-path normalization. Each strategy owns its own
@@ -795,17 +546,6 @@ from services.strategy_helpers.crypto_scope import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class HighFreqCandidate:
-    """A market identified as a BTC/ETH high-frequency binary market."""
-
-    market: Market
-    asset: str  # "BTC", "ETH", "SOL", or "XRP"
-    timeframe: str  # "5min", "15min", "1hr", or "4hr"
-    yes_price: float
-    no_price: float
-    oracle_price: Optional[float] = None
-    price_to_beat: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -813,14 +553,6 @@ class HighFreqCandidate:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class SubStrategyScore:
-    """Score and metadata for a candidate sub-strategy."""
-
-    strategy: SubStrategy
-    score: float  # Higher is better (0-100 scale)
-    reason: str
-    params: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -934,7 +666,6 @@ class BtcEthConvergenceStrategy(BaseStrategy):
         # so the detect path just needs to pass every market through.
         self.min_profit = 0.0
         # Per-market price history keyed by market ID
-        self._price_windows: dict[str, PriceWindow] = {}
         # Keyed by CLOB token id (one window per outcome stream) so a 3+ outcome
         # market would just track more entries; binary markets get exactly 2.
         # Runtime anti-churn controls used by evaluate().
@@ -1002,317 +733,35 @@ class BtcEthConvergenceStrategy(BaseStrategy):
         text = market.question.lower()
         return any(kw in text for kw in _DIRECTION_KEYWORDS)
 
-    @staticmethod
-    def _resolve_prices(
-        market: Market,
-        prices: dict[str, dict],
-    ) -> tuple[float, float]:
-        """Return (yes_price, no_price) using live CLOB prices when available."""
-        yes_price = market.yes_price
-        no_price = market.no_price
-
-        if market.clob_token_ids:
-            if len(market.clob_token_ids) > 0:
-                token = market.clob_token_ids[0]
-                if token in prices:
-                    yes_price = prices[token].get("mid", yes_price)
-            if len(market.clob_token_ids) > 1:
-                token = market.clob_token_ids[1]
-                if token in prices:
-                    no_price = prices[token].get("mid", no_price)
-
-        return yes_price, no_price
 
     # ------------------------------------------------------------------
     # Price history
     # ------------------------------------------------------------------
 
-    def _update_price_history(self, candidate: HighFreqCandidate) -> None:
-        """Record latest outcome prices into per-token PriceWindows.
 
-        One :class:`PriceWindow` per CLOB token id. Binary markets get two
-        windows (yes + no); a future 3+ outcome market would naturally
-        produce N windows without any code change.
-        """
-        if candidate.timeframe == "4hr":
-            window = _4HR_HISTORY_WINDOW_SEC
-        elif candidate.timeframe == "1hr":
-            window = _1HR_HISTORY_WINDOW_SEC
-        elif candidate.timeframe == "5min":
-            window = 120  # 2 min for 5-min markets
-        else:
-            window = _DEFAULT_HISTORY_WINDOW_SEC
-
-        token_ids = list(candidate.market.clob_token_ids or [])
-        prices = [candidate.yes_price, candidate.no_price]
-        for token_id, price in zip(token_ids, prices):
-            if not token_id:
-                continue
-            existing = self._price_windows.get(token_id)
-            if existing is None or existing.window_seconds != window:
-                existing = PriceWindow(window_seconds=window)
-                self._price_windows[token_id] = existing
-            existing.record(price)
-
-    def _get_price_window(self, token_id: str) -> Optional[PriceWindow]:
-        """Return the rolling :class:`PriceWindow` for a specific token id.
-
-        Returns None when no observations have been recorded for that
-        token. Strategies that need yes-side or no-side stats should
-        look up the relevant token id (``market.clob_token_ids[0]`` for
-        YES, ``[1]`` for NO on a binary market) and call methods on the
-        returned window.
-        """
-        return self._price_windows.get(token_id)
 
     # ------------------------------------------------------------------
     # Dynamic strategy selector
     # ------------------------------------------------------------------
 
-    def _select_sub_strategy(
-        self,
-        candidate: HighFreqCandidate,
-        enabled_sub_strategies: set[SubStrategy],
-    ) -> tuple[Optional[SubStrategyScore], list[SubStrategyScore]]:
-        """Always score and select the convergence sub-strategy.
-
-        This strategy is pinned to convergence — the directional and maker_quote
-        layers live in sibling strategy modules. We still respect the caller's
-        ``enabled_sub_strategies`` set: if convergence isn't in it, return None.
-        """
-        convergence_score = self._score_convergence(candidate)
-        if SubStrategy.CONVERGENCE not in enabled_sub_strategies:
-            convergence_score = SubStrategyScore(
-                strategy=SubStrategy.CONVERGENCE,
-                score=0.0,
-                reason="disabled_by_config",
-                params=convergence_score.params,
-            )
-        scores = [convergence_score]
-        best = convergence_score if convergence_score.score > 0 else None
-        return best, scores
 
 
     # -- Helper: remaining seconds until resolution --
 
-    def _remaining_seconds(self, c: HighFreqCandidate) -> Optional[float]:
-        if c.market.end_date:
-            try:
-                if hasattr(c.market.end_date, "timestamp"):
-                    end_ts = c.market.end_date.timestamp()
-                else:
-                    end_str = str(c.market.end_date)
-                    end_ts = datetime.fromisoformat(end_str.replace("Z", "+00:00")).timestamp()
-                return max(0.0, end_ts - utcnow().timestamp())
-            except (ValueError, AttributeError):
-                pass
-        return None
 
     # -- Sub-strategy: Convergence scoring (Layer 3) --
 
-    def _score_convergence(self, c: HighFreqCandidate) -> SubStrategyScore:
-        """Score near-expiry convergence opportunity (Layer 3).
-
-        In the final 5-45 seconds before resolution, if the oracle strongly
-        indicates a direction (diff > 0.3%), place a maker order at $0.85-$0.95
-        on the winning side. The market converges to $1.00/$0.00 at resolution,
-        so any fill below $0.95 is profitable.
-        """
-        remaining_secs = self._remaining_seconds(c)
-        if remaining_secs is None:
-            return SubStrategyScore(
-                strategy=SubStrategy.CONVERGENCE,
-                score=0.0,
-                reason="Cannot determine seconds remaining",
-            )
-
-        cfg = self.config or {}
-        min_secs = float(cfg.get("convergence_min_seconds_left", 5.0) or 5.0)
-        max_secs = float(cfg.get("convergence_max_seconds_left", 45.0) or 45.0)
-        min_diff_pct = float(cfg.get("convergence_min_oracle_diff_pct", 0.30) or 0.30)
-        base_score = float(cfg.get("convergence_base_score", 20.0) or 20.0)
-        max_score = float(cfg.get("convergence_max_score", 85.0) or 85.0)
-        min_price = float(cfg.get("convergence_min_price", 0.85) or 0.85)
-        max_entry_price = float(cfg.get("convergence_max_entry_price", 0.95) or 0.95)
-
-        if remaining_secs > max_secs or remaining_secs < min_secs:
-            return SubStrategyScore(
-                strategy=SubStrategy.CONVERGENCE,
-                score=0.0,
-                reason=f"Not in convergence window ({remaining_secs:.0f}s, need {min_secs}-{max_secs}s)",
-            )
-
-        # Need oracle data to determine winning side
-        oracle_price = c.oracle_price
-        price_to_beat = c.price_to_beat
-        if oracle_price is None or price_to_beat is None or price_to_beat <= 0:
-            return SubStrategyScore(
-                strategy=SubStrategy.CONVERGENCE,
-                score=0.0,
-                reason="No oracle data for convergence",
-            )
-
-        diff_pct = abs((oracle_price - price_to_beat) / price_to_beat) * 100.0
-        if diff_pct < min_diff_pct:
-            return SubStrategyScore(
-                strategy=SubStrategy.CONVERGENCE,
-                score=0.0,
-                reason=f"Oracle diff too small ({diff_pct:.3f}% < {min_diff_pct}%)",
-            )
-
-        # Determine winning side
-        oracle_says_up = oracle_price > price_to_beat
-        winning_side = "YES" if oracle_says_up else "NO"
-        winning_price = c.yes_price if oracle_says_up else c.no_price
-
-        # Entry price must be reasonable: between min_price and max_entry_price
-        if winning_price < min_price:
-            return SubStrategyScore(
-                strategy=SubStrategy.CONVERGENCE,
-                score=0.0,
-                reason=f"Winning side price too low ({winning_price:.3f} < {min_price})",
-            )
-        if winning_price > max_entry_price:
-            return SubStrategyScore(
-                strategy=SubStrategy.CONVERGENCE,
-                score=0.0,
-                reason=f"Winning side already converged ({winning_price:.3f} > {max_entry_price})",
-            )
-
-        # Edge: expected $1.00 payout minus entry price
-        edge = 1.0 - winning_price
-
-        # Score based on edge and time to expiry (less time = more certainty)
-        time_certainty = clamp(1.0 - remaining_secs / max_secs, 0.0, 1.0)
-        oracle_strength = clamp(diff_pct / 1.0, 0.0, 1.0)
-        score = base_score + edge * 200.0 * time_certainty + oracle_strength * 20.0
-        score = min(score, max_score)
-
-        # Quote price: 1 tick below current winning side (maker order)
-        entry_price = winning_price - _MAKER_QUOTE_TICK_SIZE
-        entry_price = clamp(entry_price, 0.01, 0.99)
-
-        return SubStrategyScore(
-            strategy=SubStrategy.CONVERGENCE,
-            score=score,
-            reason=(
-                f"Convergence: {winning_side} @ ${winning_price:.3f}, "
-                f"edge={edge:.3f}, diff={diff_pct:.3f}%, "
-                f"{remaining_secs:.0f}s left, oracle_strength={oracle_strength:.2f}"
-            ),
-            params={
-                "winning_side": winning_side,
-                "winning_price": winning_price,
-                "entry_price": entry_price,
-                "edge": edge,
-                "diff_pct": diff_pct,
-                "remaining_seconds": remaining_secs,
-                "oracle_says_up": oracle_says_up,
-                "time_certainty": time_certainty,
-                "oracle_strength": oracle_strength,
-            },
-        )
 
     # ------------------------------------------------------------------
     # Opportunity generation
     # ------------------------------------------------------------------
 
-    def _generate_opportunity(
-        self,
-        candidate: HighFreqCandidate,
-        selected: SubStrategyScore,
-    ) -> Optional[Opportunity]:
-        """Turn a scored convergence sub-strategy into an Opportunity via the
-        base class ``create_opportunity`` (which applies all hard filters)."""
 
-        market = candidate.market
-        sub = selected.strategy
-        params = selected.params
-
-        if sub == SubStrategy.CONVERGENCE:
-            return self._generate_convergence(candidate, params)
-
-        logger.warning(
-            "BtcEthConvergence: unsupported sub-strategy %s for market %s",
-            sub,
-            market.id,
-        )
-        return None
-
-    def _generate_convergence(
-        self,
-        c: HighFreqCandidate,
-        params: dict,
-    ) -> Optional[Opportunity]:
-        """Generate opportunity for Layer 3: Near-expiry convergence."""
-        market = c.market
-        winning_side = params["winning_side"]
-        entry_price = params["entry_price"]
-        edge = params["edge"]
-
-        positions: list[dict] = []
-        if market.clob_token_ids and len(market.clob_token_ids) >= 2:
-            token_idx = 0 if winning_side == "YES" else 1
-            positions = [
-                {
-                    "action": "LIMIT_BUY",
-                    "outcome": winning_side,
-                    "price": entry_price,
-                    "token_id": market.clob_token_ids[token_idx],
-                    "post_only": True,
-                    "_maker_mode": True,
-                    "_maker_price": entry_price,
-                    "note": f"Convergence {winning_side} @ ${entry_price:.3f} ({params['remaining_seconds']:.0f}s left)",
-                }
-            ]
-
-        opp = self.create_opportunity(
-            title=f"BTC/ETH HF Convergence: {c.asset} {c.timeframe} ({winning_side} @ ${entry_price:.2f})",
-            description=(
-                f"Near-expiry convergence on {c.asset} {c.timeframe}. "
-                f"Oracle diff {params['diff_pct']:.2f}%, {winning_side} @ ${entry_price:.2f}, "
-                f"{params['remaining_seconds']:.0f}s to resolution. "
-                f"Edge: {edge:.1%}. Post-only maker order."
-            ),
-            total_cost=entry_price,
-            expected_payout=1.0,
-            markets=[market],
-            positions=positions,
-            is_guaranteed=False,
-            min_liquidity_hard=0.0,
-            min_position_size=0.0,
-            min_absolute_profit=0.0,
-        )
-
-        if opp is not None:
-            self._attach_substrategy_metadata(opp, c, SubStrategy.CONVERGENCE, params)
-            opp.risk_factors.insert(0, f"Convergence bet: {params['remaining_seconds']:.0f}s to resolution")
-        return opp
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _attach_substrategy_metadata(
-        opp: Opportunity,
-        candidate: HighFreqCandidate,
-        sub_strategy: SubStrategy,
-        params: dict,
-    ) -> None:
-        """Attach BTC/ETH high-freq metadata to the opportunity for
-        downstream consumers (execution engine, dashboard, logging)."""
-        # Store in the existing positions_to_take metadata (which is a list
-        # of dicts). We append a metadata entry at the end.
-        opp.positions_to_take.append(
-            {
-                "_substrategy_metadata": True,
-                "asset": candidate.asset,
-                "timeframe": candidate.timeframe,
-                "sub_strategy": sub_strategy.value,
-                "sub_strategy_params": params,
-            }
-        )
 
     # ------------------------------------------------------------------
     # Evaluate / Should-Exit  (unified strategy interface)
