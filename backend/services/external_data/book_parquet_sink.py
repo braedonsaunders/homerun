@@ -54,7 +54,9 @@ _CATALOG_INTERVAL_SECONDS = 30.0
 _PRUNE_INTERVAL_SECONDS = 300.0
 _MAX_BUFFERED_ROWS = 200_000  # drop-oldest backstop
 _DEFAULT_RETENTION_DAYS = 7
-_DEFAULT_MAX_BYTES = 6 * 1024 * 1024 * 1024  # 6 GB
+_DEFAULT_MAX_BYTES = 50 * 1024 * 1024 * 1024  # 50 GB — the denser REST-baseline
+# recording (every active market every ~10 min) needs a larger budget to retain
+# a full backtest window; operator-tunable live via the recording config.
 
 
 # ── In-memory row carriers ────────────────────────────────────────────
@@ -301,7 +303,26 @@ class BookParquetSink:
 
     def _prune(self) -> None:
         """Bound the on-disk footprint: drop window dirs older than
-        retention_days, then trim oldest until under max_bytes."""
+        retention_days, then trim oldest until under max_bytes.
+
+        Both are read LIVE from the recording config (``book_retention_days`` /
+        ``book_max_bytes``) each pass so an operator can size the disk budget for
+        the denser REST-baseline recording from the UI without a restart; they
+        fall back to the construction-time defaults when unset."""
+        retention_days = self._retention_days
+        max_bytes = self._max_bytes
+        try:
+            from services.recording_control import get_recorder_config_cached
+
+            _cfg = get_recorder_config_cached()
+            _rd = _cfg.get("book_retention_days")
+            _mb = _cfg.get("book_max_bytes")
+            if isinstance(_rd, (int, float)) and _rd > 0:
+                retention_days = int(_rd)
+            if isinstance(_mb, (int, float)) and _mb > 0:
+                max_bytes = int(_mb)
+        except Exception:
+            pass
         base = (self._root or parquet_root()) / PROVIDER / "_"
         if not base.exists():
             return
@@ -336,15 +357,15 @@ class BookParquetSink:
         now = datetime.now(timezone.utc)
         kept: list[tuple[datetime, Path, int]] = []
         for end, d, sz in dirs:
-            if (now - end).total_seconds() > self._retention_days * 86400 and not _protected(d):
+            if (now - end).total_seconds() > retention_days * 86400 and not _protected(d):
                 shutil.rmtree(d, ignore_errors=True)
             else:
                 kept.append((end, d, sz))
         total = sum(s for _, _, s in kept)
-        if total > self._max_bytes:
+        if total > max_bytes:
             kept.sort(key=lambda x: x[0])  # oldest first
             for end, d, sz in kept:
-                if total <= self._max_bytes:
+                if total <= max_bytes:
                     break
                 if _protected(d):
                     continue

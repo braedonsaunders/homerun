@@ -168,6 +168,12 @@ _CONFIG_DEFAULTS: dict[str, object] = {
     # dispatch; turning it off stops the crypto tee while leaving book /
     # trade / catalog recording running.
     "capture_crypto_dispatch": True,
+    # On-disk budget for the live_ingestor book parquet (book_parquet_sink's
+    # self-prune reads these live).  The denser REST-baseline recording (every
+    # active market every ~10 min) needs a larger budget to retain a full
+    # backtest window; operator-tunable so disk can be sized to the host.
+    "book_retention_days": 7,
+    "book_max_bytes": 50 * 1024 * 1024 * 1024,
 }
 
 _config_cache: dict[str, object] = dict(_CONFIG_DEFAULTS)
@@ -203,6 +209,16 @@ def _coerce_config(raw: object) -> dict[str, object]:
     for key in ("capture_books", "capture_trades", "capture_catalog", "capture_crypto_dispatch"):
         if key in raw:
             out[key] = bool(raw.get(key))
+    if "book_retention_days" in raw:
+        try:
+            out["book_retention_days"] = max(1, int(raw.get("book_retention_days")))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pass
+    if "book_max_bytes" in raw:
+        try:
+            out["book_max_bytes"] = max(1024 * 1024 * 1024, int(raw.get("book_max_bytes")))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pass
     return out
 
 
