@@ -6,7 +6,7 @@ Handles cleanup of old trades, expiration of stale data, and database maintenanc
 
 import asyncio
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from utils.utcnow import utcnow
 from sqlalchemy import select, delete, func, and_, text
@@ -580,8 +580,6 @@ LIMIT 20
         Deletes in batched chunks of 50 000 with a short pause between
         batches to avoid holding locks on the high-churn table.
         """
-        from models.database import TraderEvent
-
         if firehose_older_than_days <= 0 and other_older_than_days <= 0:
             return {
                 "status": "disabled",
@@ -589,64 +587,23 @@ LIMIT 20
                 "other_deleted": 0,
             }
 
-        batch_size = 50_000
+        firehose_types = list(self.FIREHOSE_EVENT_TYPES)
         firehose_deleted = 0
         other_deleted = 0
-        firehose_types = list(self.FIREHOSE_EVENT_TYPES)
 
         if firehose_older_than_days > 0:
             cutoff = utcnow() - timedelta(days=firehose_older_than_days)
-            while True:
-                async with AsyncSessionLocal() as session:
-                    await session.execute(text("SET LOCAL statement_timeout = 0"))
-                    batch_ids = (
-                        await session.execute(
-                            select(TraderEvent.id)
-                            .where(
-                                TraderEvent.event_type.in_(firehose_types),
-                                TraderEvent.created_at < cutoff,
-                            )
-                            .limit(batch_size)
-                        )
-                    ).scalars().all()
-                    if not batch_ids:
-                        break
-                    result = await session.execute(
-                        delete(TraderEvent).where(TraderEvent.id.in_(batch_ids))
-                    )
-                    await session.commit()
-                    n = int(result.rowcount or 0)
-                    firehose_deleted += n
-                    if n < batch_size:
-                        break
-                await asyncio.sleep(0.1)
+            firehose_deleted = await self._purge_trader_events_batches(
+                where_sql="event_type = ANY(:types) AND created_at < :cutoff",
+                params={"types": firehose_types, "cutoff": cutoff},
+            )
 
         if other_older_than_days > 0:
             cutoff = utcnow() - timedelta(days=other_older_than_days)
-            while True:
-                async with AsyncSessionLocal() as session:
-                    await session.execute(text("SET LOCAL statement_timeout = 0"))
-                    batch_ids = (
-                        await session.execute(
-                            select(TraderEvent.id)
-                            .where(
-                                TraderEvent.event_type.not_in(firehose_types),
-                                TraderEvent.created_at < cutoff,
-                            )
-                            .limit(batch_size)
-                        )
-                    ).scalars().all()
-                    if not batch_ids:
-                        break
-                    result = await session.execute(
-                        delete(TraderEvent).where(TraderEvent.id.in_(batch_ids))
-                    )
-                    await session.commit()
-                    n = int(result.rowcount or 0)
-                    other_deleted += n
-                    if n < batch_size:
-                        break
-                await asyncio.sleep(0.1)
+            other_deleted = await self._purge_trader_events_batches(
+                where_sql="event_type <> ALL(:types) AND created_at < :cutoff",
+                params={"types": firehose_types, "cutoff": cutoff},
+            )
 
         logger.info(
             "Cleaned up trader_events",
@@ -662,6 +619,68 @@ LIMIT 20
             "firehose_retention_days": firehose_older_than_days,
             "other_retention_days": other_older_than_days,
         }
+
+    async def _purge_trader_events_batches(
+        self,
+        *,
+        where_sql: str,
+        params: dict,
+        batch_size: int = 50_000,
+    ) -> int:
+        """Batched, lock-bounded delete of trader_events rows matching ``where_sql``.
+
+        ``where_sql`` is an internal literal predicate (never user input).  The
+        LIMIT selection is pushed into a subquery so matched row ids never cross
+        the wire as bound parameters: asyncpg caps a single statement at 32767
+        parameters, so the previous "materialise 50k ids then DELETE ... WHERE id
+        IN (:id1..:id50000)" form raised ``InterfaceError: the number of query
+        arguments cannot exceed 32767`` and failed every sweep — which is why the
+        firehose backlog never actually pruned.  Each batch runs in its own short
+        transaction with a 2s ``lock_timeout`` so it can never block the
+        orchestrator's concurrent writes to this high-churn table; a batch that
+        loses a lock race (or hits a transient error) is retried after a short
+        pause rather than aborting the whole sweep.
+        """
+        deleted = 0
+        consecutive_errors = 0
+        sql = text(
+            f"DELETE FROM trader_events WHERE id IN ("  # noqa: S608 - where_sql is an internal literal
+            f"SELECT id FROM trader_events WHERE {where_sql} LIMIT :batch)"
+        )
+        # trader_events.created_at is TIMESTAMP WITHOUT TIME ZONE; asyncpg rejects
+        # tz-aware datetimes for a naive column, and utcnow() returns aware — so
+        # normalise any aware datetime param to naive UTC before binding.
+        bound_params = {
+            key: (
+                value.astimezone(timezone.utc).replace(tzinfo=None)
+                if isinstance(value, datetime) and value.tzinfo is not None
+                else value
+            )
+            for key, value in params.items()
+        }
+        while True:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await session.execute(text("SET LOCAL lock_timeout = '2000ms'"))
+                    result = await session.execute(sql, {**bound_params, "batch": batch_size})
+                    await session.commit()
+                consecutive_errors = 0
+                n = int(result.rowcount or 0)
+                deleted += n
+                if n < batch_size:
+                    break
+                await asyncio.sleep(0.1)
+            except Exception as exc:  # noqa: BLE001
+                consecutive_errors += 1
+                if consecutive_errors >= 10:
+                    logger.warning(
+                        "trader_events purge aborting after repeated errors",
+                        where=where_sql,
+                        error=str(exc),
+                    )
+                    break
+                await asyncio.sleep(1.0)
+        return deleted
 
     async def _trader_events_retention_settings(self) -> dict:
         config = {
