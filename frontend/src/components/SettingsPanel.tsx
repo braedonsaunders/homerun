@@ -773,21 +773,24 @@ export default function SettingsPanel({
   // Non-trading subsystems that can be shed via the is_enabled master switch.
   // Only subsystems whose worker loop actually gates on is_enabled are listed
   // (scanner/orchestrator/reconciliation are trading-critical and excluded).
-  const TOGGLEABLE_SUBSYSTEMS: { name: string; label: string; desc: string }[] = [
+  const TOGGLEABLE_SUBSYSTEMS: { name: string; label: string; desc: string; enableHint: string }[] = [
     {
       name: 'discovery',
       label: 'Wallet discovery',
       desc: 'Scans Polymarket for new trader wallets to track and copy. Disabling stops new-wallet discovery; already-tracked traders keep trading.',
+      enableHint: 'Off by default. Turn on if you run a copy-trading strategy that follows trader wallets.',
     },
     {
       name: 'news',
       label: 'News ingestion',
       desc: 'Polls news sources and emits news-driven signals. Disabling stops all news polling and any news-based strategies.',
+      enableHint: 'Off by default. Turn on if you run a news-driven strategy.',
     },
     {
       name: 'weather',
       label: 'Weather ingestion',
       desc: 'Polls weather data and emits weather-driven signals. Disabling stops all weather polling and any weather-based strategies.',
+      enableHint: 'Off by default. Turn on if you run a weather-driven strategy.',
     },
   ]
 
@@ -2361,10 +2364,11 @@ export default function SettingsPanel({
                           <div>
                             <p className="font-medium text-sm">Background Subsystems</p>
                             <p className="text-xs text-muted-foreground">
-                              Turn non-trading subsystems off to shed load. Disabling idles the
-                              subsystem's loop and persists across restarts and Resume All (unlike
-                              Pause, which is transient). The process stays resident, so this frees
-                              CPU, not RAM.
+                              These ship <span className="font-medium">off</span> by default — only the
+                              market scanner and crypto lane run out of the box. Turn one on if you build
+                              a strategy that needs its signals. Disabling idles the subsystem's loop and
+                              persists across restarts and Resume All (unlike Pause, which is transient).
+                              The process stays resident, so this frees CPU, not RAM.
                             </p>
                           </div>
                           <div className="space-y-2">
@@ -2402,6 +2406,11 @@ export default function SettingsPanel({
                                       />
                                     </div>
                                   </div>
+                                  {!enabled && (
+                                    <p className="mt-2 text-[11px] leading-snug text-amber-500/90">
+                                      {sub.enableHint}
+                                    </p>
+                                  )}
                                 </div>
                               )
                             })}

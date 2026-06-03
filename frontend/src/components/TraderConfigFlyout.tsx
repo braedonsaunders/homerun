@@ -1,8 +1,9 @@
 import { memo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useAtom, useAtomValue } from 'jotai'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, Clock3, Sparkles, Zap } from 'lucide-react'
-import type { Trader, TraderLatencyClass } from '../services/apiTraders'
+import { getWorkersStatus, type Trader, type TraderLatencyClass, type WorkerStatus } from '../services/apiTraders'
 import { draftDescriptionAtom, draftNameAtom, draftTradingScheduleAtom } from '../store/atoms'
 import { AtomInput } from './AtomInput'
 import { Badge } from './ui/badge'
@@ -144,6 +145,27 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
   const detail = effectiveDraftStrategyDetail
   const sourceKey = effectiveDraftSourceKey
   const sourceLabel = draftStrategyOption?.sourceLabel || sourceKey.toUpperCase()
+  // Off-by-default subsystems a strategy can depend on. If the selected
+  // strategy's source maps to a disabled subsystem, warn the user to enable it
+  // (mirrors Settings > Maintenance > Background Subsystems).
+  const workersStatusQuery = useQuery({
+    queryKey: ['workers-status'],
+    queryFn: getWorkersStatus,
+    enabled: open,
+    staleTime: 15_000,
+  })
+  const sourceDependency = ({
+    news: { worker: 'news', label: 'News ingestion' },
+    weather: { worker: 'weather', label: 'Weather ingestion' },
+    traders: { worker: 'discovery', label: 'Wallet discovery' },
+  } as Record<string, { worker: string; label: string }>)[(sourceKey || '').toLowerCase()]
+  const sourceDependencyEnabled = (() => {
+    if (!sourceDependency) return true
+    const w = workersStatusQuery.data?.workers?.find((x: WorkerStatus) => x.worker_name === sourceDependency.worker)
+    const ctrl = w?.control as Record<string, any> | undefined
+    return ctrl?.is_enabled ?? true
+  })()
+  const showSubsystemDisabledWarning = Boolean(sourceDependency) && !sourceDependencyEnabled
   const latestVersion = detail?.latestVersion ?? detail?.version ?? null
   const selectedVersion = effectiveDraftStrategyVersion
   const selectedVersionToken = selectedVersion == null ? 'latest' : `v${selectedVersion}`
@@ -344,6 +366,15 @@ function TraderConfigFlyoutImpl(props: TraderConfigFlyoutProps) {
                     </Badge>
                     <span className="text-muted-foreground/60">{t('traderConfigFlyout.autoDerived')}</span>
                   </div>
+                  {showSubsystemDisabledWarning && sourceDependency && (
+                    <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5">
+                      <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" />
+                      <p className="text-[10px] leading-snug text-amber-300">
+                        {sourceDependency.label} is off, so this strategy won't receive signals. Enable it in
+                        Settings → Maintenance → Background Subsystems.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {detail ? (
