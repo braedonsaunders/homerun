@@ -55,3 +55,21 @@ def test_recording_pool_status_shape():
     assert st["pool_size"] == 2
     assert st["subscribed_tokens"] == 0
     assert len(st["per_connection"]) == 2
+
+
+def test_record_rest_baseline_lands_book_in_cache():
+    """The REST-baseline path (record_rest_baseline) must route a fetched book
+    through the SAME parse -> cache -> record_book pipeline the WS uses, so quiet
+    markets get a recorded baseline. Verify a POST /books-shaped book lands in
+    the recording cache."""
+    RecordingFeedManager.reset_instance()
+    rfm = RecordingFeedManager(pool_size=2)
+    book = {
+        "asset_id": "tokX",
+        "bids": [{"price": "0.40", "size": "100"}],
+        "asks": [{"price": "0.42", "size": "80"}],
+        "timestamp": "1700000000000",
+    }
+    n = rfm.record_rest_baseline({"tokX": book})
+    assert n == 1
+    assert rfm.cache.get_order_book("tokX") is not None  # landed in recording cache

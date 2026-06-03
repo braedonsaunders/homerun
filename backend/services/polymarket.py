@@ -2015,6 +2015,56 @@ class PolymarketClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_order_books_batch(self, token_ids: list[str]) -> dict[str, dict]:
+        """Batch FULL order-book fetch via POST /books — one HTTP call for N
+        tokens instead of N single-token GET /book calls.
+
+        Polymarket's CLOB ``/books`` endpoint accepts a JSON array of
+        ``{"token_id": "..."}`` and returns a LIST of book objects, each
+        ``{"asset_id", "bids": [{"price","size"}...], "asks": [...],
+        "timestamp", "tick_size", ...}``.  Confirmed live against
+        ``https://clob.polymarket.com/books``.  Returns ``{token_id: book_dict}``;
+        tokens the endpoint omits (no live book) are simply absent.  Falls back
+        to per-token ``get_order_book`` on a batch failure.  This is the cheap
+        path the recording-baseline writer uses to snapshot the WHOLE active
+        universe (~18k markets ≈ ~180 batched calls) so every market — not just
+        the WS-ticking head — has a recorded book for backtest carry-forward.
+        """
+        ids: list[str] = []
+        seen: set[str] = set()
+        for tid in token_ids:
+            t = str(tid or "").strip()
+            if t and t not in seen:
+                seen.add(t)
+                ids.append(t)
+        if not ids:
+            return {}
+        client = await self._get_client()
+        endpoint = f"{self.clob_url}/books"
+        payload = [{"token_id": t} for t in ids]
+        await rate_limiter.acquire(endpoint_for_url(endpoint))
+        try:
+            response = await client.post(endpoint, json=payload, timeout=20.0)
+            response.raise_for_status()
+            raw = response.json()
+        except Exception as exc:
+            _logger.warning("Order-book batch fetch failed; falling back to per-token", error=str(exc))
+            out: dict[str, dict] = {}
+            for t in ids:
+                try:
+                    out[t] = await self.get_order_book(t)
+                except Exception:
+                    pass
+            return out
+        out: dict[str, dict] = {}
+        if isinstance(raw, list):
+            for book in raw:
+                if isinstance(book, dict):
+                    aid = str(book.get("asset_id") or book.get("token_id") or "").strip()
+                    if aid:
+                        out[aid] = book
+        return out
+
     async def get_prices_history(
         self,
         token_id: str,
