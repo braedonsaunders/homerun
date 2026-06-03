@@ -59,6 +59,7 @@ import {
   type MicrostructureRecorderStatus,
   type ProactiveSubscriptionStatus,
   type RecorderConfig,
+  type RecordedToken,
   type RecordingCaptureType,
   type RecordingSession,
   type RecordingTargetKind,
@@ -69,6 +70,7 @@ import {
   getDatasetStorageSummary,
   getMicrostructureRecorderStatus,
   getProactiveSubscriptionStatus,
+  getRecordedTokens,
   getRecorderConfig,
   getRecordingState,
   setRecordingState,
@@ -195,6 +197,131 @@ function DatasetPicker({
 
 // ─── Filter bar ─────────────────────────────────────────────────────────
 
+// Searchable picker of recently-recorded tokens for parquet per-token datasets.
+// Replaces the raw token_id free-text field so an operator can pick a market by
+// name instead of pasting a 77-digit CLOB id.  Still accepts a pasted id.
+function RecordedTokenPicker({
+  options,
+  value,
+  onChange,
+  loading,
+}: {
+  options: RecordedToken[]
+  value: string
+  onChange: (tokenId: string | undefined) => void
+  loading?: boolean
+}) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const selected = options.find((o) => o.token_id === value)
+  const q = draft.trim().toLowerCase()
+  const filtered = q
+    ? options.filter(
+        (o) =>
+          o.token_id.toLowerCase().includes(q) ||
+          (o.label ?? '').toLowerCase().includes(q),
+      )
+    : options
+  const shortId = (id: string) =>
+    id.length > 22 ? `${id.slice(0, 14)}…${id.slice(-6)}` : id
+  const display = selected?.label || (value ? shortId(value) : '')
+  const rawIdTyped = /^\d{12,}$/.test(draft.trim())
+  return (
+    <div className="relative flex flex-col gap-0.5">
+      <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
+        {t('dataLab.recordedToken', { defaultValue: 'Recorded token' })}
+      </Label>
+      <div className="relative">
+        <Search className="absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={open ? draft : display}
+          onChange={(e) => {
+            setDraft(e.target.value)
+            setOpen(true)
+          }}
+          onFocus={() => {
+            setDraft('')
+            setOpen(true)
+          }}
+          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          placeholder={
+            loading
+              ? t('dataLab.loading')
+              : t('dataLab.recordedTokenPlaceholder', {
+                  defaultValue: 'Search recorded markets…',
+                })
+          }
+          className="h-7 w-64 pl-6 pr-6 text-[11px]"
+        />
+        {value ? (
+          <button
+            onMouseDown={(e) => {
+              e.preventDefault()
+              onChange(undefined)
+              setDraft('')
+            }}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            title={t('dataLab.reset')}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        ) : null}
+      </div>
+      {open ? (
+        <div className="absolute top-full z-30 mt-1 max-h-72 w-80 overflow-auto rounded-md border border-border/60 bg-popover shadow-lg">
+          {filtered.length === 0 ? (
+            <div className="px-2 py-3 text-center text-[10px] text-muted-foreground">
+              {rawIdTyped ? (
+                <button
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    onChange(draft.trim())
+                    setOpen(false)
+                  }}
+                  className="text-violet-600 hover:underline dark:text-violet-300"
+                >
+                  {t('dataLab.useTokenId', { defaultValue: 'Use this token ID' })}
+                </button>
+              ) : loading ? (
+                t('dataLab.loading')
+              ) : (
+                t('dataLab.noRecordedTokens', {
+                  defaultValue: 'No recorded tokens match',
+                })
+              )}
+            </div>
+          ) : (
+            filtered.slice(0, 100).map((o) => (
+              <button
+                key={o.token_id}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  onChange(o.token_id)
+                  setOpen(false)
+                  setDraft('')
+                }}
+                className={cn(
+                  'flex w-full flex-col items-start gap-0 border-b border-border/20 px-2 py-1 text-left last:border-0 hover:bg-muted/40',
+                  o.token_id === value && 'bg-violet-500/10',
+                )}
+              >
+                <span className="w-full truncate text-[11px] text-foreground">
+                  {o.label || o.token_id}
+                </span>
+                <span className="font-mono text-[9px] text-muted-foreground">
+                  {shortId(o.token_id)}
+                  {o.last_recorded_at ? ` · ${fmtDateTime(o.last_recorded_at)}` : ''}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function FilterBar({
   filters,
   values,
@@ -202,6 +329,8 @@ function FilterBar({
   onReset,
   timePreset,
   onTimePreset,
+  tokenOptions,
+  tokenOptionsLoading,
 }: {
   filters: DatasetFilter[]
   values: DatasetFilterValues
@@ -209,6 +338,10 @@ function FilterBar({
   onReset: () => void
   timePreset: string | null
   onTimePreset: (label: string | null) => void
+  // When provided (parquet per-token datasets), the token_id filter renders as
+  // a searchable recorded-token picker instead of a raw free-text field.
+  tokenOptions?: RecordedToken[] | null
+  tokenOptionsLoading?: boolean
 }) {
   const { t } = useTranslation()
   const hasTimeStart = filters.some((f) => f.kind === 'time_range_start')
@@ -247,6 +380,17 @@ function FilterBar({
         .map((f) => {
           const v = values[f.key]
           if (f.kind === 'eq' || f.kind === 'contains') {
+            if (f.key === 'token_id' && tokenOptions != null) {
+              return (
+                <RecordedTokenPicker
+                  key={f.key}
+                  options={tokenOptions}
+                  value={typeof v === 'string' ? v : ''}
+                  onChange={(tid) => onChange('token_id', tid)}
+                  loading={tokenOptionsLoading}
+                />
+              )
+            }
             return (
               <div key={f.key} className="flex flex-col gap-0.5">
                 <Label className="text-[9px] uppercase tracking-wide text-muted-foreground">
@@ -2240,6 +2384,17 @@ export default function DataLab() {
   const total = result?.total ?? 0
   const rows = result?.rows ?? []
   const allCols = result?.columns ?? activeSpec?.columns ?? []
+
+  // Parquet per-token datasets: fetch recently-recorded tokens to power the
+  // searchable picker so the operator never has to paste a raw token_id.
+  const isParquet = activeSpec?.source === 'parquet'
+  const recordedTokensQuery = useQuery({
+    queryKey: ['data-lab', 'recorded-tokens', active],
+    queryFn: () => (active ? getRecordedTokens(active, 200) : Promise.resolve([])),
+    enabled: !!active && isParquet,
+    staleTime: 60_000,
+  })
+  const tokenOptions = isParquet ? (recordedTokensQuery.data ?? []) : null
   const renderedCols = allCols.filter((c) => visibleCols.has(c.key))
 
   // True until we have a definitive response for the active dataset.
@@ -2417,6 +2572,8 @@ export default function DataLab() {
             setTimePreset(label)
             setOffset(0)
           }}
+          tokenOptions={tokenOptions}
+          tokenOptionsLoading={recordedTokensQuery.isLoading}
         />
       ) : null}
 
@@ -2562,7 +2719,12 @@ export default function DataLab() {
                     className="px-2 py-6 text-center text-[11px] text-muted-foreground"
                   >
                     <Filter className="mx-auto mb-1 h-4 w-4 opacity-40" />
-                    {t('dataLab.noRowsMatch')}
+                    {isParquet && !filtersWithTime.token_id
+                      ? t('dataLab.pickTokenToLoad', {
+                          defaultValue:
+                            'Pick a recorded token above to load its book history.',
+                        })
+                      : result?.note || t('dataLab.noRowsMatch')}
                   </td>
                 </tr>
               ) : (

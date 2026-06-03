@@ -55,6 +55,29 @@ export interface DatasetQueryResult {
   columns: DatasetColumn[]
   filters: DatasetFilter[]
   rows: Array<Record<string, unknown>>
+  // Parquet per-token datasets return a guidance note when no token is
+  // selected (e.g. "Select a token_id to browse parquet book snapshots.").
+  note?: string | null
+}
+
+export interface RecordedToken {
+  token_id: string
+  /** "<market question> · <outcome>" when resolvable from the catalog. */
+  label: string | null
+  last_recorded_at: string | null
+}
+
+/** Recently-recorded tokens for a parquet per-token dataset (recency-ranked,
+ *  labelled). Feeds the Data Lab token picker. Empty for SQL datasets. */
+export async function getRecordedTokens(
+  name: string,
+  limit = 200,
+): Promise<RecordedToken[]> {
+  const { data } = await api.get<{ tokens: RecordedToken[] }>(
+    `/dataset/${encodeURIComponent(name)}/recorded-tokens`,
+    { params: { limit } },
+  )
+  return data.tokens ?? []
 }
 
 export type DatasetFilterValues = Record<string, string | string[] | undefined>

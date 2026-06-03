@@ -30,6 +30,7 @@ import csv
 import io
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -1347,3 +1348,108 @@ async def dataset_distinct_values(
         stmt = select(col).distinct().limit(int(limit))
         rows = (await session.execute(stmt)).scalars().all()
     return {"column": column, "values": [v for v in rows if v is not None]}
+
+
+# ── Recorded-token picker (parquet per-token datasets) ───────────────────
+#
+# Parquet book datasets are per-token: a read needs a token_id, but a raw
+# 77-digit CLOB id is not something an operator has memorised.  The
+# /{name}/recorded-tokens endpoint lists the most-recently-recorded tokens
+# (recency-ranked, straight from the provider_datasets window index) with
+# best-effort market labels, so the browser offers a searchable pick-list
+# instead of an empty free-text field.
+
+_TOKEN_LABEL_CACHE: dict[str, str] = {}
+_TOKEN_LABEL_CACHE_TS: float = 0.0
+_TOKEN_LABEL_TTL_SECONDS = 300.0
+
+
+def _market_token_labels() -> dict[str, str]:
+    """``token_id -> "<question> · <outcome>"`` from the market catalog file.
+
+    Cached for ``_TOKEN_LABEL_TTL_SECONDS`` — the catalog is large and changes
+    slowly, so it is rebuilt at most once per 5 min.  Best-effort: tokens absent
+    from the catalog simply get no label (the picker falls back to the id).
+    """
+    global _TOKEN_LABEL_CACHE, _TOKEN_LABEL_CACHE_TS
+    now = time.monotonic()
+    if _TOKEN_LABEL_CACHE and (now - _TOKEN_LABEL_CACHE_TS) < _TOKEN_LABEL_TTL_SECONDS:
+        return _TOKEN_LABEL_CACHE
+    labels: dict[str, str] = {}
+    try:
+        from services.shared_state import _read_market_catalog_file
+
+        cat = _read_market_catalog_file()
+    except Exception:  # noqa: BLE001
+        cat = None
+    if cat:
+        _events, markets, _meta = cat
+        for m in markets or []:
+            if not isinstance(m, dict):
+                continue
+            question = str(m.get("question") or m.get("title") or "").strip()
+            raw = m.get("clob_token_ids") or []
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = []
+            outcomes = m.get("outcomes") or []
+            if isinstance(outcomes, str):
+                try:
+                    outcomes = json.loads(outcomes)
+                except Exception:
+                    outcomes = []
+            for idx, tok in enumerate(raw or []):
+                ts = str(tok).strip()
+                if not ts:
+                    continue
+                outcome = str(outcomes[idx]).strip() if idx < len(outcomes) else ""
+                labels[ts] = f"{question} · {outcome}" if (question and outcome) else question
+    _TOKEN_LABEL_CACHE = labels
+    _TOKEN_LABEL_CACHE_TS = now
+    return labels
+
+
+@router.get("/{name}/recorded-tokens")
+async def dataset_recorded_tokens(
+    name: str,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict[str, Any]:
+    """Recently-recorded tokens for a parquet per-token dataset, recency-ranked
+    with best-effort market labels.  Feeds the Data Lab token picker so browsing
+    book snapshots doesn't require pasting a raw token_id.  Empty for SQL
+    datasets (their filters use the standard distinct-values dropdowns)."""
+    spec = _resolve_dataset(name)
+    if spec.source != "parquet":
+        return {"tokens": []}
+    # Unnest the token_ids of the 30 newest recorded windows server-side, then
+    # rank distinct tokens by most-recent appearance — returns only ``limit``
+    # rows regardless of how broad each window's token set is.
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT token, max(updated_at) AS last_at FROM ("
+                    "  SELECT json_array_elements_text(t.token_ids_json) AS token, t.updated_at"
+                    "  FROM ("
+                    "    SELECT token_ids_json, updated_at FROM provider_datasets"
+                    "    WHERE token_ids_json IS NOT NULL"
+                    "      AND json_typeof(token_ids_json) = 'array'"
+                    "    ORDER BY updated_at DESC LIMIT 30"
+                    "  ) t"
+                    ") sub GROUP BY token ORDER BY last_at DESC LIMIT :lim"
+                ),
+                {"lim": int(limit)},
+            )
+        ).all()
+    labels = _market_token_labels()
+    tokens = [
+        {
+            "token_id": r.token,
+            "label": labels.get(r.token) or None,
+            "last_recorded_at": (r.last_at.isoformat() if r.last_at else None),
+        }
+        for r in rows
+    ]
+    return {"tokens": tokens}
