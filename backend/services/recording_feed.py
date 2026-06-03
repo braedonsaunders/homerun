@@ -50,6 +50,14 @@ _EVICTION_MAX_AGE_SECONDS = 600.0
 _BASELINE_INTERVAL_SECONDS = float(os.environ.get("HOMERUN_RECORDER_BASELINE_INTERVAL_S", "600"))
 _BASELINE_BATCH = 200
 _BASELINE_STARTUP_DELAY_SECONDS = 30.0
+# The baseline pass is PACED across the interval rather than fired as one burst:
+# dumping ~37k books into the ingestor's persistence queue at once overflows it
+# (the writes get shed) and the resulting parquet-encode storm starves the event
+# loop.  Spreading the batched fetches across most of the interval — yielding
+# between each — keeps the sink's flush loop draining and the orchestrator's loop
+# responsive.  The floor guarantees a yield between every batch.
+_BASELINE_PASS_SPREAD_FRACTION = 0.7
+_BASELINE_MIN_PACE_SECONDS = 0.5
 
 
 class RecordingFeedManager:
@@ -284,8 +292,18 @@ class RecordingFeedManager:
         return out
 
     async def _run_baseline_pass(self, tokens: list[str]) -> int:
+        """Snapshot every token's book, PACED so the burst never floods the
+        ingestor persistence queue.  Spreads the batched fetches across most of
+        the baseline interval and yields between each, so the sink's flush loop
+        drains continuously and the orchestrator's event loop is never starved by
+        a 37k-write parquet-encode storm."""
         from services.polymarket import polymarket_client
 
+        n_batches = max(1, (len(tokens) + _BASELINE_BATCH - 1) // _BASELINE_BATCH)
+        pace_s = max(
+            _BASELINE_MIN_PACE_SECONDS,
+            (_BASELINE_INTERVAL_SECONDS * _BASELINE_PASS_SPREAD_FRACTION) / n_batches,
+        )
         recorded = 0
         for i in range(0, len(tokens), _BASELINE_BATCH):
             batch = tokens[i : i + _BASELINE_BATCH]
@@ -293,8 +311,10 @@ class RecordingFeedManager:
                 books = await polymarket_client.get_order_books_batch(batch)
             except Exception:  # noqa: BLE001
                 logger.debug("baseline batch fetch failed", exc_info=True)
-                continue
-            recorded += self.record_rest_baseline(books)
+            else:
+                recorded += self.record_rest_baseline(books)
+            # Pace: yield + let the sink drain before the next batch.
+            await asyncio.sleep(pace_s)
         return recorded
 
     async def _baseline_loop(self) -> None:

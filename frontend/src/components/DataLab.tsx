@@ -1184,6 +1184,7 @@ function RecordingConfigSection() {
       // Narrow per-field so the union stays type-safe under strict mode.
       if (k === 'depth_levels') patch.depth_levels = draft.depth_levels
       else if (k === 'max_tokens') patch.max_tokens = draft.max_tokens
+      else if (k === 'ws_max_tokens') patch.ws_max_tokens = draft.ws_max_tokens
       else if (k === 'min_liquidity_usd') patch.min_liquidity_usd = draft.min_liquidity_usd
       else if (k === 'capture_books') patch.capture_books = draft.capture_books
       else if (k === 'capture_trades') patch.capture_trades = draft.capture_trades
@@ -1192,7 +1193,10 @@ function RecordingConfigSection() {
     return patch
   }
 
-  const setNum = (key: 'depth_levels' | 'max_tokens' | 'min_liquidity_usd', raw: string) => {
+  const setNum = (
+    key: 'depth_levels' | 'max_tokens' | 'ws_max_tokens' | 'min_liquidity_usd',
+    raw: string,
+  ) => {
     setSavedAt(null)
     const n = Number(raw)
     setDraft((d) => (d ? { ...d, [key]: Number.isFinite(n) ? n : 0 } : d))
@@ -1306,7 +1310,7 @@ function RecordingConfigSection() {
 
             <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
               <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                {t('dataLab.maxTokens', { defaultValue: 'Max tokens' })}
+                {t('dataLab.maxTokens', { defaultValue: 'Baseline breadth' })}
               </Label>
               <Input
                 type="number"
@@ -1318,7 +1322,30 @@ function RecordingConfigSection() {
                 className="mt-1 h-7 text-[12px]"
               />
               <div className="mt-1 text-[9px] text-muted-foreground">
-                {t('dataLab.maxTokensHint', { defaultValue: 'Cap on distinct tokens recorded' })}
+                {t('dataLab.maxTokensHint', {
+                  defaultValue: 'Markets the REST baseline snapshots (carry-forward)',
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {t('dataLab.wsMaxTokens', { defaultValue: 'WS fidelity cap' })}
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step={100}
+                value={String(draft.ws_max_tokens)}
+                onChange={(e) => setNum('ws_max_tokens', e.target.value)}
+                disabled={saving}
+                className="mt-1 h-7 text-[12px]"
+              />
+              <div className="mt-1 text-[9px] text-muted-foreground">
+                {t('dataLab.wsMaxTokensHint', {
+                  defaultValue:
+                    'Top-N liquid markets live-subscribed via WS; bounds load on the orchestrator',
+                })}
               </div>
             </div>
 

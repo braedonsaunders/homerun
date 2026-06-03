@@ -1094,7 +1094,12 @@ class _RecorderConfigUpdate(_PydBaseModel):
         None, ge=1, le=25, description="L2 levels per side persisted (1..25)"
     )
     max_tokens: int | None = Field(
-        None, ge=0, description="Proactive-subscription token cap"
+        None, ge=0, description="REST-baseline breadth cap (markets snapshotted for carry-forward)"
+    )
+    ws_max_tokens: int | None = Field(
+        None,
+        ge=0,
+        description="Live WS tick-fidelity cap — only the top N liquidity-ranked markets get a WS subscription; the tail is covered by the REST baseline. Bounds delta volume so recording can't starve the orchestrator.",
     )
     min_liquidity_usd: float | None = Field(
         None, ge=0.0, description="Liquidity floor (USD) before the cap"

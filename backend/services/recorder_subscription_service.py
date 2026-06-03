@@ -17,24 +17,30 @@ on the trading plane that:
      closed/archived/resolved, with at least one clob_token_id.
   3. Ranks by liquidity (so when the cap bites, we keep the
      markets that actually trade).
-  4. Subscribes the top ``MAX_RECORDED_TOKENS`` tokens via the
-     existing single PolymarketWSFeed — same connection live
-     trading uses; no separate WS pool, no auth duplication.
+  4. Subscribes the top ``ws_max_tokens`` liquidity-ranked tokens
+     (plus everything the orchestrator is actively trading) onto the
+     ISOLATED RecordingFeedManager pool (services.recording_feed) — a
+     sharded WS connection pool + cache fully decoupled from the
+     orchestrator's low-latency trading socket.  The long tail is covered
+     by the pool's periodic REST baseline pass (carry-forward), so every
+     active market is recorded without live-subscribing the whole universe.
 
-Existing 10-minute idle eviction in ``ws_feeds`` automatically prunes
+Existing 10-minute idle eviction in the recording pool automatically prunes
 truly-dead tokens from the subscription set so the cap stays
 saturated with markets that actually move.
 
-The cap exists because Polymarket CLOB tolerates a few thousand
-subscriptions per connection but not infinite.  The default policy is
-deliberately BROAD and strategy-INDEPENDENT: ``max_tokens`` defaults to
-40000 (per clob token; ~37k tokens = the entire active universe with
-headroom — binary markets carry 2 tokens each) and ``min_liquidity_usd`` to
-1.0 (excluding only dead / no-book markets), so a strategy authored
-LATER can be backtested on markets that no strategy subscribed to at
-capture time.  Operators tune both via the recording config (Data Lab)
-or the ``HOMERUN_RECORDER_MAX_TOKENS`` / ``HOMERUN_RECORDER_MIN_LIQUIDITY``
-env vars.
+The WS cap exists because live-subscribing the whole ~37k-token universe
+floods the parquet sink — the delta volume saturates the encoder and starves
+the event loop / DB pool, which can harm the orchestrator.  So the policy
+SPLITS breadth from fidelity: ``ws_max_tokens`` (default 5000) bounds the LIVE
+WS subscription to the liquidity-ranked head that actually moves, while the
+REST baseline (recording_feed) still snapshots EVERY active market on a
+periodic, paced pass for carry-forward.  A strategy authored LATER can still
+be backtested on markets no strategy subscribed to at capture time — at
+baseline (carry-forward) fidelity for the tail, full WS fidelity for the head
+plus anything traded.  Operators tune ``ws_max_tokens`` / ``min_liquidity_usd``
+via the recording config (Data Lab) or the ``HOMERUN_RECORDER_WS_MAX_TOKENS`` /
+``HOMERUN_RECORDER_MIN_LIQUIDITY`` env vars.
 """
 from __future__ import annotations
 
@@ -57,6 +63,13 @@ _LOOP_INTERVAL_SECONDS = 60.0  # tighter than catalog (5min) so new markets get 
 # the universe.  See recording_control for the broad-by-default rationale.
 _DEFAULT_MAX_TOKENS = int(os.environ.get("HOMERUN_RECORDER_MAX_TOKENS", "40000"))
 _MIN_LIQUIDITY_USD = float(os.environ.get("HOMERUN_RECORDER_MIN_LIQUIDITY", "1.0"))
+# WS tick-fidelity cap (NOT the broad breadth).  Only the top
+# ``ws_max_tokens`` liquidity-ranked markets get a LIVE WS subscription; the
+# long tail is covered by the periodic REST baseline (carry-forward) instead.
+# Bounding the live WS set is what keeps broad recording from flooding the
+# parquet sink and starving the orchestrator.  Live source of truth is the
+# recording config (Data Lab); this env value is only the config-read fallback.
+_DEFAULT_WS_MAX_TOKENS = int(os.environ.get("HOMERUN_RECORDER_WS_MAX_TOKENS", "5000"))
 
 
 @dataclass
@@ -280,11 +293,15 @@ async def loop_tick() -> None:
 
         # Read operator coverage knobs live each tick (fallback to env
         # defaults on any error) so changes take effect without a restart.
-        cap = _DEFAULT_MAX_TOKENS
+        # The LIVE WS subscription is bounded by ``ws_max_tokens`` (NOT
+        # ``max_tokens``, which is the broad REST-baseline breadth).  Bounding the
+        # WS set is what keeps the delta volume off the orchestrator's back; the
+        # baseline still records the long tail via carry-forward.
+        cap = _DEFAULT_WS_MAX_TOKENS
         liq_floor = _MIN_LIQUIDITY_USD
         try:
             cfg = await get_recorder_config()
-            cap = int(cfg.get("max_tokens", _DEFAULT_MAX_TOKENS))
+            cap = int(cfg.get("ws_max_tokens", _DEFAULT_WS_MAX_TOKENS))
             liq_floor = float(cfg.get("min_liquidity_usd", _MIN_LIQUIDITY_USD))
         except Exception:  # pragma: no cover — keep env defaults on config error
             pass

@@ -363,7 +363,12 @@ export async function setRecordingState(enabled: boolean): Promise<{ enabled: bo
  */
 export interface RecorderConfig {
   depth_levels: number
+  // REST-baseline breadth cap (markets snapshotted for carry-forward).
   max_tokens: number
+  // Live WS tick-fidelity cap: only the top N liquidity-ranked markets get a WS
+  // subscription; the tail is covered by the REST baseline. Bounds delta volume
+  // so broad recording can never starve the orchestrator.
+  ws_max_tokens: number
   min_liquidity_usd: number
   capture_books: boolean
   capture_trades: boolean

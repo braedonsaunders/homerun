@@ -152,6 +152,16 @@ _DEPTH_MAX = 25
 _CONFIG_DEFAULTS: dict[str, object] = {
     "depth_levels": 25,
     "max_tokens": 40000,
+    # WS tick-fidelity cap.  The recorder pool LIVE-subscribes only the top
+    # ``ws_max_tokens`` liquidity-ranked markets (plus everything the
+    # orchestrator is actively trading) for full WS delta/snapshot fidelity.
+    # The long tail still gets a recorded baseline via the periodic REST
+    # snapshot pass (carry-forward), so EVERY active market is recorded — but
+    # the live WS delta volume is BOUNDED so broad recording can never flood the
+    # parquet sink, starve the event loop / DB pool, and harm the orchestrator.
+    # ``max_tokens`` remains the breadth ceiling for the REST baseline.
+    # Operator-tunable in Data Lab.
+    "ws_max_tokens": 5000,
     "min_liquidity_usd": 1.0,
     "capture_books": True,
     "capture_trades": True,
@@ -199,6 +209,11 @@ def _coerce_config(raw: object) -> dict[str, object]:
     if "max_tokens" in raw:
         try:
             out["max_tokens"] = max(0, int(raw.get("max_tokens")))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pass
+    if "ws_max_tokens" in raw:
+        try:
+            out["ws_max_tokens"] = max(0, int(raw.get("ws_max_tokens")))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             pass
     if "min_liquidity_usd" in raw:
