@@ -1687,7 +1687,7 @@ class AppSettings(Base):
     cleanup_wallet_activity_dedupe_enabled = Column(Boolean, default=True)
     llm_usage_retention_days = Column(Integer, default=30)
     trader_events_firehose_retention_days = Column(Integer, default=7)
-    trader_events_other_retention_days = Column(Integer, default=90)
+    trader_events_other_retention_days = Column(Integer, default=30)
     # 2026-05-26: retention for previously-unbounded high-volume tables
     # that were filling the disk (no prior DELETE retention).  These are
     # ephemeral per-decision audit / wallet-event tables; 0 disables the

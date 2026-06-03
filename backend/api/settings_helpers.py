@@ -417,7 +417,7 @@ def maintenance_payload(settings: AppSettings) -> dict[str, Any]:
         "cleanup_wallet_activity_dedupe_enabled": _with_default(settings.cleanup_wallet_activity_dedupe_enabled, True),
         "llm_usage_retention_days": _with_default(settings.llm_usage_retention_days, 30),
         "trader_events_firehose_retention_days": _with_default(settings.trader_events_firehose_retention_days, 7),
-        "trader_events_other_retention_days": _with_default(settings.trader_events_other_retention_days, 90),
+        "trader_events_other_retention_days": _with_default(settings.trader_events_other_retention_days, 30),
         "cleanup_wallet_monitor_events_days": _with_default(getattr(settings, "cleanup_wallet_monitor_events_days", None), 14),
         "cleanup_trader_decision_checks_days": _with_default(getattr(settings, "cleanup_trader_decision_checks_days", None), 14),
         "cleanup_trader_decisions_days": _with_default(getattr(settings, "cleanup_trader_decisions_days", None), 30),

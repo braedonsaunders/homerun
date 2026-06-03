@@ -568,7 +568,7 @@ LIMIT 20
     async def cleanup_trader_events(
         self,
         firehose_older_than_days: int = 7,
-        other_older_than_days: int = 90,
+        other_older_than_days: int = 30,
     ) -> dict:
         """Delete old trader_events rows with two-tier retention.
 

@@ -318,6 +318,13 @@ _AUDIT_OVERFLOW_LOGGED_AT: float = 0.0
 # them back).  This routing drops that dead write and adds a genuine
 # bounded-history stream the terminal can replay on reload.
 _FIREHOSE_EVENT_TYPES = frozenset({"firehose_evaluation", "firehose_emit", "firehose_gate"})
+# Liveness pulses belong on the live Redis pub/sub (so the terminal shows the
+# trader breathing) but NOT in Postgres: at once-per-second-per-trader,
+# cycle_heartbeat was the dominant trader_events row source (~86k rows/trader/day)
+# with no durable reader — trader liveness is authoritative on Trader.last_* (see
+# trader_orchestrator_worker._persist_trader_cycle_heartbeat).  Skip the durable
+# audit write for these; they still fan out in real time.
+_EPHEMERAL_EVENT_TYPES = frozenset({"cycle_heartbeat"})
 _FIREHOSE_STREAM = "trader_firehose"
 # ~50k events × ~1 KB ≈ 50 MB Redis, capped forever.  Approximate trim
 # (MAXLEN ~) keeps XADD cheap.
@@ -1503,13 +1510,16 @@ async def buffer_trader_event(
     payload_json = payload or {}
     norm_event_type = str(event_type or "")
     is_firehose = norm_event_type in _FIREHOSE_EVENT_TYPES
+    # Ephemeral = skips the durable Postgres audit write (firehose telemetry +
+    # per-second liveness heartbeats); still fans out on the live Redis pub/sub.
+    is_ephemeral = is_firehose or norm_event_type in _EPHEMERAL_EVENT_TYPES
 
-    # Data-class split: firehose telemetry NEVER persists to Postgres.
-    # It lives only in Redis (pub/sub for the live terminal, capped
-    # stream for bounded reload history).  Business-of-record events
-    # (decisions, orders, executions, errors, etc.) still flow through
-    # the durable audit buffer as before.
-    if not is_firehose:
+    # Data-class split: firehose telemetry + liveness heartbeats NEVER persist to
+    # Postgres.  They live only in Redis (pub/sub for the live terminal, plus a
+    # capped stream for firehose's bounded reload history).  Business-of-record
+    # events (decisions, orders, executions, errors, etc.) still flow through the
+    # durable audit buffer as before.
+    if not is_ephemeral:
         entry = _AuditEntry(
             kind="trader_event",
             payload={

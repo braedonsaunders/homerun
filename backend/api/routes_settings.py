@@ -629,7 +629,7 @@ class MaintenanceSettings(BaseModel):
         description="Delete firehose_evaluation trader_events older than this many days",
     )
     trader_events_other_retention_days: int = Field(
-        default=90,
+        default=30,
         ge=1,
         le=3650,
         description="Delete non-firehose trader_events older than this many days",
