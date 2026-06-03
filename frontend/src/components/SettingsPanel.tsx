@@ -36,12 +36,15 @@ import { Badge } from './ui/badge'
 import {
   flushDatabaseData,
   getDatabaseMaintenanceStats,
+  getWorkersStatus,
   runVacuumAnalyze,
   runReindexTables,
   runWorkerOnce,
   pauseWorker,
+  setWorkerEnabled,
   startWorker,
   type DatabaseFlushTarget,
+  type WorkerStatus,
 } from '../services/apiTraders'
 import {
   getProviderSettings,
@@ -263,6 +266,10 @@ export default function SettingsPanel({
   const [cryptoLaneToggling, setCryptoLaneToggling] = useState(false)
   const [cryptoLaneError, setCryptoLaneError] = useState<string | null>(null)
 
+  const [subsystemToggling, setSubsystemToggling] = useState<string | null>(null)
+  const [subsystemError, setSubsystemError] = useState<string | null>(null)
+  const [subsystemOverride, setSubsystemOverride] = useState<Record<string, boolean>>({})
+
   const [maintenanceForm, setMaintenanceForm] = useState({
     auto_cleanup_enabled: false,
     cleanup_interval_hours: 24,
@@ -414,6 +421,13 @@ export default function SettingsPanel({
   const maintenanceStatsQuery = useQuery({
     queryKey: ['maintenance-stats'],
     queryFn: getDatabaseMaintenanceStats,
+    enabled: expandedSections.has('maintenance'),
+    refetchInterval: expandedSections.has('maintenance') ? 30_000 : false,
+  })
+
+  const workersStatusQuery = useQuery({
+    queryKey: ['workers-status'],
+    queryFn: getWorkersStatus,
     enabled: expandedSections.has('maintenance'),
     refetchInterval: expandedSections.has('maintenance') ? 30_000 : false,
   })
@@ -753,6 +767,51 @@ export default function SettingsPanel({
       setScannerForm((p) => ({ ...p, crypto_lane_enabled: !next }))
     } finally {
       setCryptoLaneToggling(false)
+    }
+  }
+
+  // Non-trading subsystems that can be shed via the is_enabled master switch.
+  // Only subsystems whose worker loop actually gates on is_enabled are listed
+  // (scanner/orchestrator/reconciliation are trading-critical and excluded).
+  const TOGGLEABLE_SUBSYSTEMS: { name: string; label: string; desc: string }[] = [
+    {
+      name: 'discovery',
+      label: 'Wallet discovery',
+      desc: 'Scans Polymarket for new trader wallets to track and copy. Disabling stops new-wallet discovery; already-tracked traders keep trading.',
+    },
+    {
+      name: 'news',
+      label: 'News ingestion',
+      desc: 'Polls news sources and emits news-driven signals. Disabling stops all news polling and any news-based strategies.',
+    },
+    {
+      name: 'weather',
+      label: 'Weather ingestion',
+      desc: 'Polls weather data and emits weather-driven signals. Disabling stops all weather polling and any weather-based strategies.',
+    },
+  ]
+
+  const isSubsystemEnabled = (name: string): boolean => {
+    if (name in subsystemOverride) return subsystemOverride[name]
+    const worker = workersStatusQuery.data?.workers?.find((w: WorkerStatus) => w.worker_name === name)
+    const ctrl = worker?.control as Record<string, any> | undefined
+    return ctrl?.is_enabled ?? true
+  }
+
+  const handleSubsystemToggle = async (name: string, next: boolean) => {
+    setSubsystemError(null)
+    setSubsystemToggling(name)
+    setSubsystemOverride((p) => ({ ...p, [name]: next }))
+    try {
+      await setWorkerEnabled(name, next)
+      await queryClient.invalidateQueries({ queryKey: ['workers-status'] })
+    } catch (err: any) {
+      setSubsystemError(
+        err?.response?.data?.detail || err?.message || `Failed to ${next ? 'enable' : 'disable'} ${name}`,
+      )
+      setSubsystemOverride((p) => ({ ...p, [name]: !next }))
+    } finally {
+      setSubsystemToggling(null)
     }
   }
 
@@ -2296,6 +2355,63 @@ export default function SettingsPanel({
 
                   {section.id === 'maintenance' && (
                     <div className="space-y-4">
+                      {/* Background Subsystems — is_enabled master switches */}
+                      <Card className="bg-muted">
+                        <CardContent className="p-3 space-y-3">
+                          <div>
+                            <p className="font-medium text-sm">Background Subsystems</p>
+                            <p className="text-xs text-muted-foreground">
+                              Turn non-trading subsystems off to shed load. Disabling idles the
+                              subsystem's loop and persists across restarts and Resume All (unlike
+                              Pause, which is transient). The process stays resident, so this frees
+                              CPU, not RAM.
+                            </p>
+                          </div>
+                          <div className="space-y-2">
+                            {TOGGLEABLE_SUBSYSTEMS.map((sub) => {
+                              const enabled = isSubsystemEnabled(sub.name)
+                              return (
+                                <div
+                                  key={sub.name}
+                                  className="rounded-md border border-border/60 bg-card/40 p-3"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="space-y-1">
+                                      <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                                        {sub.label}
+                                      </p>
+                                      <p className="text-[11px] text-muted-foreground/80 leading-snug">
+                                        {sub.desc}
+                                      </p>
+                                    </div>
+                                    <div className="flex items-center gap-2 pt-0.5">
+                                      <span
+                                        className={cn(
+                                          'text-[11px] font-medium tabular-nums',
+                                          enabled ? 'text-emerald-500' : 'text-muted-foreground',
+                                        )}
+                                      >
+                                        {enabled ? 'On' : 'Off'}
+                                      </span>
+                                      <Switch
+                                        checked={enabled}
+                                        disabled={subsystemToggling === sub.name}
+                                        onCheckedChange={(checked) => {
+                                          void handleSubsystemToggle(sub.name, Boolean(checked))
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                          {subsystemError && (
+                            <p className="text-[11px] text-destructive">{subsystemError}</p>
+                          )}
+                        </CardContent>
+                      </Card>
+
                       <div className="space-y-3">
                         <Card className="bg-muted">
                           <CardContent className="p-3 space-y-3">

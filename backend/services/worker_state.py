@@ -791,6 +791,22 @@ async def set_worker_paused(
     await session.commit()
 
 
+async def set_worker_enabled(
+    session: AsyncSession,
+    worker_name: str,
+    enabled: bool,
+) -> None:
+    """Operator master switch (is_enabled) for a generic WorkerControl worker.
+
+    Distinct from set_worker_paused (is_paused, transient): the generic worker
+    loops gate on ``(not enabled or paused)``, so a disabled worker idles across
+    restarts and global resume-all until explicitly re-enabled."""
+    row = await ensure_worker_control(session, worker_name)
+    row.is_enabled = bool(enabled)
+    row.updated_at = _now()
+    await session.commit()
+
+
 async def set_worker_interval(
     session: AsyncSession,
     worker_name: str,

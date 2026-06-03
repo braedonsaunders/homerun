@@ -419,6 +419,16 @@ async def set_weather_paused(session: AsyncSession, paused: bool) -> None:
     await session.commit()
 
 
+async def set_weather_enabled(session: AsyncSession, enabled: bool) -> None:
+    """Operator master switch. Distinct from is_paused (transient): when
+    is_enabled is False the weather worker loop idles across restarts and
+    global resume-all until explicitly re-enabled (see weather_worker gate)."""
+    row = await ensure_weather_control(session)
+    row.is_enabled = bool(enabled)
+    row.updated_at = utcnow()
+    await session.commit()
+
+
 async def set_weather_interval(session: AsyncSession, interval_seconds: int) -> None:
     row = await ensure_weather_control(session)
     row.scan_interval_seconds = max(300, min(86400, interval_seconds))

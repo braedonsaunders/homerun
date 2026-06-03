@@ -128,6 +128,16 @@ async def set_discovery_paused(session: AsyncSession, paused: bool) -> None:
     await session.commit()
 
 
+async def set_discovery_enabled(session: AsyncSession, enabled: bool) -> None:
+    """Operator master switch. Distinct from is_paused (transient): when
+    is_enabled is False the discovery worker loop idles across restarts and
+    global resume-all until explicitly re-enabled (see discovery_worker gate)."""
+    row = await ensure_discovery_control(session)
+    row.is_enabled = bool(enabled)
+    row.updated_at = utcnow()
+    await session.commit()
+
+
 async def set_discovery_interval(session: AsyncSession, interval_minutes: int) -> None:
     row = await ensure_discovery_control(session)
     row.run_interval_minutes = max(5, min(1440, int(interval_minutes)))

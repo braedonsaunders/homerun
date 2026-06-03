@@ -33,6 +33,7 @@ from services.worker_state import (
     clear_worker_run_request,
     list_worker_snapshots,
     request_worker_run,
+    set_worker_enabled,
     set_worker_interval,
     set_worker_paused,
     summarize_worker_snapshot,
@@ -460,6 +461,48 @@ async def pause_worker(worker: str, session: AsyncSession = Depends(get_db_sessi
         await set_worker_paused(session, name, True)
 
     return {"status": "paused", "worker": await _worker_detail(session, name)}
+
+
+@router.post("/{worker}/enable")
+async def set_worker_master_enabled(
+    worker: str,
+    enabled: bool = Query(..., description="True to enable the subsystem, False to disable it (operator master switch)."),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Operator master switch (``is_enabled``) for a background subsystem.
+
+    Distinct from pause/start (``is_paused``, transient): a disabled subsystem
+    stays off across restarts and global resume-all until explicitly re-enabled,
+    and sheds its compute by idling its loop.  Only subsystems whose worker loop
+    actually honours ``is_enabled`` are accepted — scanner is rejected because its
+    loop does not yet gate on ScannerControl.is_enabled (use pause/start there).
+    """
+    name = _normalize_worker_name(worker)
+    _assert_supported_worker(name)
+
+    if name == "discovery":
+        await discovery_shared_state.set_discovery_enabled(session, enabled)
+    elif name == "news":
+        await news_shared_state.set_news_enabled(session, enabled)
+    elif name == "weather":
+        await weather_shared_state.set_weather_enabled(session, enabled)
+    elif name == "trader_orchestrator":
+        await update_orchestrator_control(session, is_enabled=enabled)
+    elif name in GENERIC_WORKERS:
+        await set_worker_enabled(session, name, enabled)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Worker '{name}' does not support the enable/disable master switch "
+                "(its loop does not gate on is_enabled). Use pause/start instead."
+            ),
+        )
+
+    return {
+        "status": "enabled" if enabled else "disabled",
+        "worker": await _worker_detail(session, name),
+    }
 
 
 @router.post("/{worker}/run-once")

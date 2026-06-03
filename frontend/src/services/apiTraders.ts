@@ -2028,6 +2028,15 @@ export const pauseWorker = async (worker: string) => {
   return unwrapApiData(data)
 }
 
+// Operator master switch (is_enabled): persists across restarts and global
+// resume-all, unlike pause/start (is_paused, transient).
+export const setWorkerEnabled = async (worker: string, enabled: boolean) => {
+  const { data } = await api.post(`/workers/${worker}/enable`, null, {
+    params: { enabled },
+  })
+  return unwrapApiData(data)
+}
+
 export const runWorkerOnce = async (worker: string) => {
   const { data } = await api.post(`/workers/${worker}/run-once`)
   return unwrapApiData(data)

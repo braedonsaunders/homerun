@@ -112,7 +112,11 @@ async def _run_loop() -> None:
         )
         paused = bool(control.get("is_paused", False))
         requested = control.get("requested_scan_at") is not None
-        enabled = bool(wf_settings.get("enabled", True))
+        # Honour the operator master switch (WeatherControl.is_enabled) alongside
+        # the workflow-settings enable flag, mirroring news_worker. Without this
+        # the WeatherControl.is_enabled column was half-wired (settable but never
+        # read), so disabling weather had no effect on the loop.
+        enabled = bool(wf_settings.get("enabled", True)) and bool(control.get("is_enabled", True))
         auto_run = bool(wf_settings.get("auto_run", True))
         now = datetime.now(timezone.utc)
 

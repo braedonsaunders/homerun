@@ -180,6 +180,16 @@ async def set_news_paused(session: AsyncSession, paused: bool) -> None:
     await _commit_with_retry(session)
 
 
+async def set_news_enabled(session: AsyncSession, enabled: bool) -> None:
+    """Operator master switch. Distinct from is_paused (transient): when
+    is_enabled is False the news worker loop idles across restarts and global
+    resume-all until explicitly re-enabled (see news_worker gate at line ~229)."""
+    row = await ensure_news_control(session)
+    row.is_enabled = bool(enabled)
+    row.updated_at = utcnow()
+    await _commit_with_retry(session)
+
+
 async def set_news_interval(session: AsyncSession, interval_seconds: int) -> None:
     row = await ensure_news_control(session)
     row.scan_interval_seconds = max(30, min(3600, int(interval_seconds)))
