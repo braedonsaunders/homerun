@@ -50,7 +50,7 @@ logger = get_logger("book_parquet_sink")
 PROVIDER = "live_ingestor"
 _WINDOW_SECONDS = 900
 _FLUSH_INTERVAL_SECONDS = 2.0
-_CATALOG_INTERVAL_SECONDS = 30.0
+_CATALOG_INTERVAL_SECONDS = 60.0
 _PRUNE_INTERVAL_SECONDS = 300.0
 _MAX_BUFFERED_ROWS = 200_000  # drop-oldest backstop
 _DEFAULT_RETENTION_DAYS = 7
@@ -182,6 +182,9 @@ class BookParquetSink:
         self._stopped = False
         self._last_catalog = 0.0
         self._last_prune = 0.0
+        # Window dirs written since the last catalog pass; registered
+        # incrementally (only these) instead of via a full-tree rescan.
+        self._pending_catalog: set[Path] = set()
 
     @property
     def started(self) -> bool:
@@ -267,8 +270,10 @@ class BookParquetSink:
                 continue
             snapshot = list(rows)
             try:
-                await asyncio.to_thread(self._write_file, key, snapshot)
+                written_dir = await asyncio.to_thread(self._write_file, key, snapshot)
                 self._written += len(snapshot)
+                if written_dir is not None:
+                    self._pending_catalog.add(written_dir)
             except Exception:
                 logger.exception("book_parquet_sink: write failed %s", key)
                 continue
@@ -278,7 +283,7 @@ class BookParquetSink:
                 self._buffered_rows -= len(self._buf.get(key, []))
                 self._buf.pop(key, None)
 
-    def _write_file(self, key: tuple[str, str, int], rows: list[dict]) -> None:
+    def _write_file(self, key: tuple[str, str, int], rows: list[dict]) -> Path | None:
         pkind, token, bucket = key
         schema = SNAPSHOT_SCHEMA if pkind == "snapshots" else DELTA_SCHEMA
         start = datetime.fromtimestamp(bucket, tz=timezone.utc)
@@ -290,16 +295,28 @@ class BookParquetSink:
         table = pa.table(cols, schema=schema)
         # Single canonical writer: schema-validates + lineage-stamps + atomic.
         write_canonical_table(table, dest_path=pp.file_path, kind=pkind, provider=PROVIDER)
+        # Return the window dir so the flush loop registers just this window in
+        # the catalog (incremental), instead of re-scanning the whole tree.
+        return pp.file_path.parent
 
     async def _catalog(self) -> None:
         try:
             from services.live_pressure import is_db_pressure_active
             if is_db_pressure_active():
                 return
-            from services.external_data.parquet_scanner import rescan_parquet_root
-            await (rescan_parquet_root(root=self._root) if self._root else rescan_parquet_root())
+            if not self._pending_catalog:
+                return
+            # Register ONLY the windows written since the last pass — never a
+            # full-tree rescan (that re-validated + re-UPSERTed every historical
+            # window every cycle, making a parquet-only recorder the busiest
+            # Postgres writer).  Snapshot + remove exactly those, so writes that
+            # land during the await stay queued and a failure leaves them to retry.
+            pending = list(self._pending_catalog)
+            from services.external_data.parquet_scanner import register_window_dirs
+            await register_window_dirs(pending)
+            self._pending_catalog.difference_update(pending)
         except Exception:
-            logger.debug("book_parquet_sink: catalog rescan skipped", exc_info=True)
+            logger.debug("book_parquet_sink: incremental catalog skipped", exc_info=True)
 
     def _prune(self) -> None:
         """Bound the on-disk footprint: drop window dirs older than

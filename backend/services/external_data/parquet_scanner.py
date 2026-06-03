@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
@@ -147,32 +147,90 @@ def _walk_parquet_root(root: Path) -> list[_DatasetGroup]:
     return list(groups.values())
 
 
-# ── Schema validation (cheap; reads footer only) ─────────────────────
+def _group_for_window_dir(window_dir: Path) -> _DatasetGroup | None:
+    """Build a single ``_DatasetGroup`` from one window dir without walking the
+    whole tree.  Used by the live sink's incremental catalog path so only the
+    windows it just wrote get re-UPSERTed (not every historical window).
 
-
-def _validate_schema(file_path: Path, kind: str) -> tuple[bool, str | None]:
-    """Open the file's footer and check column names match the
-    expected schema.  ~1ms per file; doesn't read row data.
+    Layout: ``{root}/{provider}/{coin}/{window_slug}/{kind}__{token}.parquet``.
     """
-    import pyarrow.parquet as pq
-
     try:
-        meta = pq.read_metadata(str(file_path))
-    except Exception as exc:
-        return False, f"unreadable: {str(exc)[:120]}"
-    expected = SNAPSHOT_SCHEMA if kind == "snapshots" else DELTA_SCHEMA
-    file_schema_arrow = pq.read_schema(str(file_path))
-    expected_names = set(expected.names)
-    file_names = set(file_schema_arrow.names)
-    missing = expected_names - file_names
-    if missing:
-        return False, f"missing columns: {sorted(missing)}"
-    if meta.num_rows <= 0:
-        return False, "empty file (0 rows)"
-    return True, None
+        if not window_dir.is_dir():
+            return None
+    except OSError:
+        return None
+    window = _parse_window_dir(window_dir.name)
+    if window is None:
+        return None
+    start, end = window
+    group = _DatasetGroup(
+        provider=window_dir.parent.parent.name,
+        coin=window_dir.parent.name,
+        window_dir=window_dir,
+        start=start,
+        end=end,
+    )
+    for f in window_dir.iterdir():
+        if not f.is_file() or not f.name.endswith(".parquet"):
+            continue
+        parsed = _parse_filename(f.name)
+        if parsed is None:
+            continue
+        kind, token_id = parsed
+        if kind == "snapshots":
+            group.snapshot_files[token_id] = f
+        elif kind == "deltas":
+            group.delta_files[token_id] = f
+    if not group.snapshot_files and not group.delta_files:
+        return None
+    return group
 
 
 # ── DB upsert ────────────────────────────────────────────────────────
+
+
+def _validate_and_count_group(
+    group: _DatasetGroup,
+) -> tuple[list[str], list[str], int, int, list[str]]:
+    """Synchronous parquet validation + row counting for a group.  Reads file
+    footers, so async callers offload it via ``asyncio.to_thread`` to keep the
+    event loop free — an active recording window can carry tens of token files
+    and several seconds of footer reads.
+    """
+    import pyarrow.parquet as pq
+
+    valid_snap_tokens: list[str] = []
+    valid_delta_tokens: list[str] = []
+    errors: list[str] = []
+    snapshot_count = 0
+    trade_count = 0
+    for kind, files, valid_list in (
+        ("snapshots", group.snapshot_files, valid_snap_tokens),
+        ("deltas", group.delta_files, valid_delta_tokens),
+    ):
+        expected_names = set((SNAPSHOT_SCHEMA if kind == "snapshots" else DELTA_SCHEMA).names)
+        for token_id, fp in files.items():
+            # One footer read per file: validates column names + row count
+            # (the old path read the footer three times per file).
+            try:
+                meta = pq.read_metadata(str(fp))
+                file_names = set(meta.schema.to_arrow_schema().names)
+            except Exception as exc:
+                errors.append(f"{fp.name}: unreadable: {str(exc)[:120]}")
+                continue
+            missing = expected_names - file_names
+            if missing:
+                errors.append(f"{fp.name}: missing columns: {sorted(missing)}")
+                continue
+            if meta.num_rows <= 0:
+                errors.append(f"{fp.name}: empty file (0 rows)")
+                continue
+            valid_list.append(token_id)
+            if kind == "snapshots":
+                snapshot_count += meta.num_rows
+            else:
+                trade_count += meta.num_rows
+    return valid_snap_tokens, valid_delta_tokens, snapshot_count, trade_count, errors
 
 
 async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
@@ -183,33 +241,11 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
     from sqlalchemy.dialects.postgresql import insert as _pg_insert
     from models.database import AsyncSessionLocal, ProviderDataset
 
-    valid_snap_tokens: list[str] = []
-    valid_delta_tokens: list[str] = []
-    errors: list[str] = []
-    snapshot_count = 0
-    trade_count = 0
-    import pyarrow.parquet as pq
-
-    for token_id, fp in group.snapshot_files.items():
-        ok, reason = _validate_schema(fp, "snapshots")
-        if not ok:
-            errors.append(f"{fp.name}: {reason}")
-            continue
-        valid_snap_tokens.append(token_id)
-        try:
-            snapshot_count += pq.read_metadata(str(fp)).num_rows
-        except Exception:
-            pass
-    for token_id, fp in group.delta_files.items():
-        ok, reason = _validate_schema(fp, "deltas")
-        if not ok:
-            errors.append(f"{fp.name}: {reason}")
-            continue
-        valid_delta_tokens.append(token_id)
-        try:
-            trade_count += pq.read_metadata(str(fp)).num_rows
-        except Exception:
-            pass
+    # Validate + count OFF the event loop — reading footers for an active
+    # window's token files is pure file IO and can take seconds.
+    valid_snap_tokens, valid_delta_tokens, snapshot_count, trade_count, errors = (
+        await asyncio.to_thread(_validate_and_count_group, group)
+    )
 
     if not valid_snap_tokens and not valid_delta_tokens:
         return {
@@ -389,6 +425,52 @@ async def rescan_parquet_root(*, root: Path | None = None) -> dict[str, Any]:
         }
 
 
+async def register_window_dirs(window_dirs: Iterable[Path]) -> dict[str, Any]:
+    """Incrementally UPSERT ``provider_datasets`` rows for ONLY the given window
+    dirs — the windows the live sink just wrote.
+
+    The live recording sink calls this each catalog cycle with the handful of
+    windows it actually touched, instead of ``rescan_parquet_root`` re-walking,
+    re-validating, and re-UPSERTing every historical window on disk every pass
+    (which made a parquet-only recorder the busiest Postgres writer + churned the
+    connection pool).  Idempotent; shares ``_RESCAN_LOCK`` with the full rescan so
+    the two can never double-write the same row.
+    """
+    started = time.monotonic()
+    seen: set[Path] = set()
+    groups: list[_DatasetGroup] = []
+    for wd in window_dirs:
+        try:
+            resolved = Path(wd).resolve()
+        except Exception:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        group = _group_for_window_dir(resolved)
+        if group is not None:
+            groups.append(group)
+    results: list[dict[str, Any]] = []
+    if groups:
+        async with _RESCAN_LOCK:
+            for g in groups:
+                try:
+                    results.append(await _upsert_group(g))
+                except Exception as exc:
+                    logger.exception("parquet_scanner: incremental group upsert raised")
+                    results.append({
+                        "provider": g.provider,
+                        "coin": g.coin,
+                        "window": g.window_dir.name,
+                        "error": str(exc)[:300],
+                    })
+    return {
+        "groups_seen": len(groups),
+        "results": results,
+        "elapsed_ms": (time.monotonic() - started) * 1000.0,
+    }
+
+
 async def ensure_recent_scan(*, max_age_seconds: float = 60.0) -> bool:
     """Invoke ``rescan_parquet_root`` if the cached scan is older than
     ``max_age_seconds``.  Cheap fast-path: if a recent scan already
@@ -449,6 +531,7 @@ async def list_parquet_datasets() -> list[dict[str, Any]]:
 
 __all__ = [
     "rescan_parquet_root",
+    "register_window_dirs",
     "ensure_recent_scan",
     "list_parquet_datasets",
 ]
