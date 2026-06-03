@@ -2,108 +2,6 @@
   "version": 1,
   "runs": [
     {
-      "at": "2026-05-23T04:14:04.191Z",
-      "sha": "384ef30f691dbe678c3c12b0e05f8ea0a4c47630",
-      "pr": null,
-      "actor": "braedonsaunders",
-      "files": 1014,
-      "functions": 14698,
-      "loc": 599829,
-      "languages": 22,
-      "topLanguages": [
-        {
-          "ext": "py",
-          "pct": 70,
-          "lines": 422285
-        },
-        {
-          "ext": "tsx",
-          "pct": 15,
-          "lines": 88908
-        },
-        {
-          "ext": "json",
-          "pct": 11,
-          "lines": 64566
-        },
-        {
-          "ext": "ts",
-          "pct": 2,
-          "lines": 13078
-        },
-        {
-          "ext": "md",
-          "pct": 1,
-          "lines": 3293
-        }
-      ],
-      "dead": 141,
-      "deadPct": 1,
-      "circular": 1,
-      "godObjects": 1,
-      "avgCoupling": 8.8,
-      "securityIssues": 89,
-      "patterns": 12,
-      "duplicates": 118,
-      "layerViolations": 1668,
-      "connections": 8907,
-      "avgFnLines": 10.9,
-      "longestFn": 16,
-      "testFiles": 224,
-      "testRatio": 22.1,
-      "topFolders": [
-        {
-          "name": "backend",
-          "count": 812
-        },
-        {
-          "name": "frontend",
-          "count": 161
-        },
-        {
-          "name": "scripts",
-          "count": 26
-        },
-        {
-          "name": "root",
-          "count": 9
-        },
-        {
-          "name": "docs",
-          "count": 2
-        }
-      ],
-      "folders": 5,
-      "grade": "F",
-      "score": 59,
-      "topBlast": {
-        "path": "backend/services/strategy_helpers/persistent_state.py",
-        "direct": 573,
-        "transitive": 907,
-        "total": 1480
-      },
-      "fragility": [
-        {
-          "path": "backend/services/strategy_helpers/persistent_state.py",
-          "direct": 573,
-          "transitive": 907,
-          "total": 1480
-        },
-        {
-          "path": "backend/tests/test_trader_orchestrator_worker.py",
-          "direct": 359,
-          "transitive": 903,
-          "total": 1262
-        },
-        {
-          "path": "frontend/src/services/apiProviders.ts",
-          "direct": 307,
-          "transitive": 906,
-          "total": 1213
-        }
-      ]
-    },
-    {
       "at": "2026-05-24T16:17:03.007Z",
       "sha": "d7919a5952a05186e3531ca1e6f3a026110938fa",
       "pr": null,
@@ -3005,6 +2903,108 @@
       "duplicates": 119,
       "layerViolations": 1803,
       "connections": 9452,
+      "avgFnLines": 10.9,
+      "longestFn": 16,
+      "testFiles": 246,
+      "testRatio": 23.1,
+      "topFolders": [
+        {
+          "name": "backend",
+          "count": 869
+        },
+        {
+          "name": "frontend",
+          "count": 161
+        },
+        {
+          "name": "scripts",
+          "count": 19
+        },
+        {
+          "name": "root",
+          "count": 10
+        },
+        {
+          "name": "docs",
+          "count": 2
+        }
+      ],
+      "folders": 5,
+      "grade": "F",
+      "score": 59,
+      "topBlast": {
+        "path": "backend/services/strategy_helpers/persistent_state.py",
+        "direct": 597,
+        "transitive": 956,
+        "total": 1553
+      },
+      "fragility": [
+        {
+          "path": "backend/services/strategy_helpers/persistent_state.py",
+          "direct": 597,
+          "transitive": 956,
+          "total": 1553
+        },
+        {
+          "path": "backend/tests/test_trader_orchestrator_worker.py",
+          "direct": 372,
+          "transitive": 953,
+          "total": 1325
+        },
+        {
+          "path": "frontend/src/services/apiProviders.ts",
+          "direct": 327,
+          "transitive": 956,
+          "total": 1283
+        }
+      ]
+    },
+    {
+      "at": "2026-06-03T01:14:03.641Z",
+      "sha": "666e9b4d0203d259bbf182fb42d135600ef91e57",
+      "pr": null,
+      "actor": "braedonsaunders",
+      "files": 1065,
+      "functions": 15218,
+      "loc": 608868,
+      "languages": 22,
+      "topLanguages": [
+        {
+          "ext": "py",
+          "pct": 71,
+          "lines": 432047
+        },
+        {
+          "ext": "tsx",
+          "pct": 15,
+          "lines": 89340
+        },
+        {
+          "ext": "json",
+          "pct": 11,
+          "lines": 64528
+        },
+        {
+          "ext": "ts",
+          "pct": 2,
+          "lines": 13175
+        },
+        {
+          "ext": "md",
+          "pct": 1,
+          "lines": 3293
+        }
+      ],
+      "dead": 149,
+      "deadPct": 1,
+      "circular": 1,
+      "godObjects": 1,
+      "avgCoupling": 8.9,
+      "securityIssues": 85,
+      "patterns": 12,
+      "duplicates": 119,
+      "layerViolations": 1805,
+      "connections": 9457,
       "avgFnLines": 10.9,
       "longestFn": 16,
       "testFiles": 246,
