@@ -133,7 +133,16 @@ _cache: dict[str, _CacheEntry] = {}
 # in practice (the cache is process-local with single-digit µs holds).
 _cache_lock = _threading.Lock()
 
-_TOUCH_PUBLISHED_FLUSH_DELAY_SECONDS = 1.0
+# Debounce window for the topic-stat counter flush.  last_published_at /
+# event_count / bytes_on_disk are NON-critical stats, but EVERY plane (5+
+# processes) runs this flush and they all UPDATE the same hot topic rows
+# (crypto.update.dispatch etc.) with read-modify-write counter bumps.  At a 1s
+# window every plane serialised on those rows ~once/sec, and a plane that
+# stalled between the UPDATE and the commit pinned the row lock for everyone
+# (the cross-plane lock-contention the lock observer caught in production).  A
+# long window collapses that to a rare, fully-coalesced write; the only cost is
+# the stats lagging by up to this delay, which nothing critical depends on.
+_TOUCH_PUBLISHED_FLUSH_DELAY_SECONDS = 30.0
 _touch_published_lock = _threading.Lock()
 _touch_published_pending: dict[str, dict[str, Any]] = {}
 _touch_published_task: asyncio.Task | None = None
@@ -153,8 +162,19 @@ def _requeue_touch_published_batch(batch: Mapping[str, Mapping[str, Any]]) -> No
 
 
 async def _persist_touch_published_batch(batch: Mapping[str, Mapping[str, Any]]) -> list[str]:
-    slugs = list(batch)
+    # Deterministic slug order so concurrent cross-plane batches lock the shared
+    # topic rows in the same sequence (no deadlocks between planes).
+    slugs = sorted(batch)
     async with AsyncSessionLocal() as session:
+        # Bound the row-lock wait, and never sit idle-in-transaction holding a
+        # hot topic row if this plane's loop stalls between UPDATE and commit; on
+        # timeout the flush loop's except requeues + backs off (db-pressure
+        # gate).  These stats are non-critical, so failing fast and retrying
+        # beats blocking every other plane on a pinned row.
+        await session.execute(_sa_text("SET LOCAL lock_timeout = '2000ms'"))
+        await session.execute(
+            _sa_text("SET LOCAL idle_in_transaction_session_timeout = '5000ms'")
+        )
         await session.execute(
             _sa_text(
                 """
