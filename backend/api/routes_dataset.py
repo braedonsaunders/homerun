@@ -1107,6 +1107,13 @@ class _RecorderConfigUpdate(_PydBaseModel):
         None,
         description="Tee every live CRYPTO_UPDATE dispatch into the bus (strict-fidelity crypto replay)",
     )
+    book_retention_days: int | None = Field(
+        None, ge=1, le=365, description="Days of recorded book parquet to retain (disk budget)"
+    )
+    book_max_bytes: int | None = Field(
+        None, ge=1024 * 1024 * 1024,
+        description="Max on-disk bytes for recorded book parquet (>=1 GB); the denser REST-baseline recording needs headroom",
+    )
 
 
 @router.get("/recorder/config")
