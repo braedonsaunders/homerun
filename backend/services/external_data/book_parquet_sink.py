@@ -54,7 +54,7 @@ _CATALOG_INTERVAL_SECONDS = 30.0
 _PRUNE_INTERVAL_SECONDS = 300.0
 _MAX_BUFFERED_ROWS = 200_000  # drop-oldest backstop
 _DEFAULT_RETENTION_DAYS = 7
-_DEFAULT_MAX_BYTES = 50 * 1024 * 1024 * 1024  # 50 GB — the denser REST-baseline
+_DEFAULT_MAX_BYTES = 40 * 1024 * 1024 * 1024  # 40 GB — the denser REST-baseline
 # recording (every active market every ~10 min) needs a larger budget to retain
 # a full backtest window; operator-tunable live via the recording config.
 

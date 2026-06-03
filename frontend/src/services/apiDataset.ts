@@ -345,6 +345,10 @@ export interface RecorderConfig {
   capture_books: boolean
   capture_trades: boolean
   capture_catalog: boolean
+  // On-disk budget for recorded book parquet (live_ingestor). The denser
+  // REST-baseline recording needs headroom to retain a full backtest window.
+  book_retention_days: number
+  book_max_bytes: number
 }
 
 export async function getRecorderConfig(): Promise<RecorderConfig> {

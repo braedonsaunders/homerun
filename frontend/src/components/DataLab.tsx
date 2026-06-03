@@ -2023,16 +2023,120 @@ function RecordView() {
   )
 }
 
+// Recorded-book retention — the live_ingestor L2 book parquet (the backtest
+// replay source) self-prunes by days + a disk cap.  Surfaced HERE (Storage &
+// Retention) next to dataset sizes + bus-topic retention, so storage + retention
+// live in ONE place rather than scattered across Record / Storage / Topics.
+function BookRetentionSection() {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const configQuery = useQuery<RecorderConfig>({
+    queryKey: ['data-lab', 'recorder-config'],
+    queryFn: getRecorderConfig,
+    refetchInterval: 30000,
+  })
+  const [days, setDays] = useState<string>('')
+  const [gb, setGb] = useState<string>('')
+  useEffect(() => {
+    if (configQuery.data) {
+      setDays(String(configQuery.data.book_retention_days ?? 7))
+      setGb(String(Math.round((configQuery.data.book_max_bytes ?? 0) / (1024 * 1024 * 1024))))
+    }
+  }, [configQuery.data])
+  const save = useMutation({
+    mutationFn: (patch: Partial<RecorderConfig>) => updateRecorderConfig(patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['data-lab', 'recorder-config'] }),
+  })
+  const server = configQuery.data
+  const dirty =
+    server != null &&
+    ((Number(days) || 0) !== server.book_retention_days ||
+      Math.round((server.book_max_bytes ?? 0) / (1024 * 1024 * 1024)) !== (Number(gb) || 0))
+  const onSave = () => {
+    const patch: Partial<RecorderConfig> = {}
+    const d = Number(days)
+    const g = Number(gb)
+    if (Number.isFinite(d) && d > 0) patch.book_retention_days = Math.round(d)
+    if (Number.isFinite(g) && g > 0) patch.book_max_bytes = Math.round(g * 1024 * 1024 * 1024)
+    save.mutate(patch)
+  }
+  return (
+    <div className="rounded-md border border-border/40 bg-card/30">
+      <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
+        <HardDrive className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
+        <span className="text-xs font-semibold">
+          {t('dataLab.bookRetentionTitle', { defaultValue: 'Recorded-book retention' })}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          {t('dataLab.bookRetentionSub', {
+            defaultValue: 'Disk budget for the live_ingestor L2 book parquet — the backtest replay source',
+          })}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3">
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {t('dataLab.bookRetentionDays', { defaultValue: 'Retention (days)' })}
+          </Label>
+          <Input
+            type="number"
+            min={1}
+            step={1}
+            value={days}
+            onChange={(e) => setDays(e.target.value.replace(/[^0-9]/g, ''))}
+            disabled={save.isPending}
+            className="mt-1 h-7 text-[12px]"
+          />
+          <div className="mt-1 text-[9px] text-muted-foreground">
+            {t('dataLab.bookRetentionDaysHint', { defaultValue: 'Days of recorded book parquet to keep' })}
+          </div>
+        </div>
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {t('dataLab.bookMaxGb', { defaultValue: 'Disk budget (GB)' })}
+          </Label>
+          <Input
+            type="number"
+            min={1}
+            step={1}
+            value={gb}
+            onChange={(e) => setGb(e.target.value.replace(/[^0-9]/g, ''))}
+            disabled={save.isPending}
+            className="mt-1 h-7 text-[12px]"
+          />
+          <div className="mt-1 text-[9px] text-muted-foreground">
+            {t('dataLab.bookMaxGbHint', { defaultValue: 'Oldest book windows pruned past this' })}
+          </div>
+        </div>
+        <div className="flex items-end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 text-[11px]"
+            onClick={onSave}
+            disabled={!dirty || save.isPending}
+          >
+            {save.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {t('dataLab.save', { defaultValue: 'Save' })}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StorageView() {
   return (
     <div className="flex flex-col gap-3 p-3">
+      <BookRetentionSection />
       <StorageOverviewSection />
+      <DataLabTopics />
     </div>
   )
 }
 
 
-type DataLabMode = 'browse' | 'record' | 'storage' | 'providers' | 'topics'
+type DataLabMode = 'browse' | 'record' | 'storage' | 'providers'
 
 export default function DataLab() {
   const { t } = useTranslation()
@@ -2246,19 +2350,6 @@ export default function DataLab() {
               <Download className="h-3 w-3" />
               {t('dataLab.modeProviders')}
             </button>
-            <button
-              onClick={() => setMode('topics')}
-              className={cn(
-                'flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors',
-                mode === 'topics'
-                  ? 'bg-violet-500/15 text-violet-700 dark:text-violet-200'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-              title="Recorded-event-bus topic catalog"
-            >
-              <Layers3 className="h-3 w-3" />
-              Topics
-            </button>
           </div>
           <Button
             size="sm"
@@ -2280,7 +2371,8 @@ export default function DataLab() {
         </ScrollArea>
       ) : null}
 
-      {/* STORAGE MODE — per-dataset on-disk size + age window */}
+      {/* STORAGE & RETENTION MODE — book-retention budget + per-dataset on-disk
+          sizes + recorded-event-bus topic retention, unified in one place. */}
       {mode === 'storage' ? (
         <ScrollArea className="flex-1 min-h-0">
           <StorageView />
@@ -2291,13 +2383,6 @@ export default function DataLab() {
       {mode === 'providers' ? (
         <ScrollArea className="flex-1 min-h-0">
           <DataLabProviders />
-        </ScrollArea>
-      ) : null}
-
-      {/* TOPICS MODE — recorded-event-bus topic catalog */}
-      {mode === 'topics' ? (
-        <ScrollArea className="flex-1 min-h-0">
-          <DataLabTopics />
         </ScrollArea>
       ) : null}
 

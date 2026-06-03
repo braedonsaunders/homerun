@@ -173,7 +173,7 @@ _CONFIG_DEFAULTS: dict[str, object] = {
     # active market every ~10 min) needs a larger budget to retain a full
     # backtest window; operator-tunable so disk can be sized to the host.
     "book_retention_days": 7,
-    "book_max_bytes": 50 * 1024 * 1024 * 1024,
+    "book_max_bytes": 40 * 1024 * 1024 * 1024,
 }
 
 _config_cache: dict[str, object] = dict(_CONFIG_DEFAULTS)

@@ -1778,7 +1778,7 @@
     "rowsCount": "{{n}} rows",
     "subtitleBrowse": "Browse data the orchestrator + scanner have already captured. Filter, preview, export, or hand it to the agent.",
     "subtitleRecord": "Live market-data ingestor status, proactive WS coverage, and on-demand capture sessions.",
-    "subtitleStorage": "Per-dataset row counts, on-disk sizes, and age windows for everything the system has captured.",
+    "subtitleStorage": "Recording retention budgets, per-dataset on-disk sizes, and event-bus topic retention — all storage in one place.",
     "subtitleProviders": "Pull historical market data on demand from third-party providers (polybacktest etc.) into your Data Lab.",
     "modeBrowse": "Browse",
     "modeRecord": "Record",
