@@ -165,22 +165,32 @@ class RateLimiter:
         return self._get_endpoint_inflight_semaphore(endpoint)
 
     async def acquire(self, endpoint: str, tokens: int = 1) -> float:
-        """
-        Acquire rate limit permission. Returns wait time (0 if immediate).
-        Blocks until permission is granted.
-        """
+        """Acquire rate-limit permission for ``endpoint``; returns total seconds
+        waited (0 if immediate).  Blocks until a token is available.
+
+        The token check + consume is done under a per-endpoint lock so concurrent
+        callers can't over-consume, but the WAIT (``asyncio.sleep``) is performed
+        OUTSIDE the lock.  Holding the lock across the backoff sleep serialised
+        every caller behind the first one's full wait — head-of-line blocking that
+        stretched trader-reconciliation's Polymarket reads to several seconds
+        whenever the scanner was mid-fan-out on the same bucket (e.g.
+        ``data_positions``).  Releasing the lock lets callers back off concurrently
+        and re-check atomically, so a caller only ever waits for the real token
+        rate, never for another caller's backoff.  The bucket math (rate + burst)
+        is unchanged, so the documented Polymarket ceiling is still respected —
+        this is a fairness/throughput fix, not a budget change (no 429 risk)."""
         lock = self._get_lock(endpoint)
-        async with lock:
-            bucket = self._get_bucket(endpoint)
-            wait_time = bucket.wait_time(tokens)
-
-            if wait_time > 0:
-                logger.debug("Rate limit wait", endpoint=endpoint, wait_seconds=wait_time)
-                await asyncio.sleep(wait_time)
-                bucket.refill()
-
-            bucket.consume(tokens)
-            return wait_time
+        total_waited = 0.0
+        while True:
+            async with lock:
+                bucket = self._get_bucket(endpoint)
+                wait_time = bucket.wait_time(tokens)
+                if wait_time <= 0:
+                    bucket.consume(tokens)
+                    return total_waited
+            logger.debug("Rate limit wait", endpoint=endpoint, wait_seconds=wait_time)
+            await asyncio.sleep(wait_time)
+            total_waited += wait_time
 
     def check(self, endpoint: str, tokens: int = 1) -> bool:
         """Check if a request would be allowed without consuming"""
