@@ -3148,7 +3148,9 @@ class NewsWorkflowControl(Base):
     __tablename__ = "news_workflow_control"
 
     id = Column(String, primary_key=True, default="default")
-    is_enabled = Column(Boolean, default=True)
+    # Ships disabled: news ingestion is opt-in. Enable it (Settings >
+    # Maintenance > Background Subsystems) when running a news-driven strategy.
+    is_enabled = Column(Boolean, default=False)
     is_paused = Column(Boolean, default=False)
     scan_interval_seconds = Column(Integer, default=120)
     requested_scan_at = Column(DateTime, nullable=True)
@@ -3182,7 +3184,9 @@ class DiscoveryControl(Base):
     __tablename__ = "discovery_control"
 
     id = Column(String, primary_key=True, default="default")
-    is_enabled = Column(Boolean, default=True)
+    # Ships disabled: wallet discovery is opt-in. Enable it (Settings >
+    # Maintenance > Background Subsystems) when running a copy-trading strategy.
+    is_enabled = Column(Boolean, default=False)
     is_paused = Column(Boolean, default=False)
     run_interval_minutes = Column(Integer, default=60)
     priority_backlog_mode = Column(Boolean, default=True)
@@ -3212,7 +3216,9 @@ class WeatherControl(Base):
     __tablename__ = "weather_control"
 
     id = Column(String, primary_key=True, default="default")
-    is_enabled = Column(Boolean, default=True)
+    # Ships disabled: weather ingestion is opt-in. Enable it (Settings >
+    # Maintenance > Background Subsystems) when running a weather-driven strategy.
+    is_enabled = Column(Boolean, default=False)
     is_paused = Column(Boolean, default=False)
     scan_interval_seconds = Column(Integer, default=14400)
     requested_scan_at = Column(DateTime, nullable=True)

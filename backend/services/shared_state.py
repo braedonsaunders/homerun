@@ -1944,6 +1944,17 @@ async def set_scanner_paused(session: AsyncSession, paused: bool) -> None:
     await _commit_with_retry(session)
 
 
+async def set_scanner_enabled(session: AsyncSession, enabled: bool) -> None:
+    """Operator master switch (is_enabled). Distinct from is_paused (transient):
+    when is_enabled is False the scanner loop idles across restarts and global
+    resume-all until explicitly re-enabled. Scanner ships enabled (trading-core),
+    so this is an advanced control, not exposed in the off-by-default UI card."""
+    row = await ensure_scanner_control(session)
+    row.is_enabled = bool(enabled)
+    row.updated_at = utcnow()
+    await _commit_with_retry(session)
+
+
 async def set_scanner_interval(session: AsyncSession, interval_seconds: int) -> None:
     """Set scan interval (API)."""
     row = await ensure_scanner_control(session)

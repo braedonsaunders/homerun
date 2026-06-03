@@ -156,7 +156,7 @@ async def read_news_control(session: AsyncSession) -> dict[str, Any]:
     row = result.scalar_one_or_none()
     if row is None:
         return {
-            "is_enabled": True,
+            "is_enabled": False,  # ships disabled; opt-in via Background Subsystems
             "is_paused": False,
             "scan_interval_seconds": 120,
             "requested_scan_at": None,

@@ -474,8 +474,9 @@ async def set_worker_master_enabled(
     Distinct from pause/start (``is_paused``, transient): a disabled subsystem
     stays off across restarts and global resume-all until explicitly re-enabled,
     and sheds its compute by idling its loop.  Only subsystems whose worker loop
-    actually honours ``is_enabled`` are accepted — scanner is rejected because its
-    loop does not yet gate on ScannerControl.is_enabled (use pause/start there).
+    actually honours ``is_enabled`` are accepted.  Scanner is supported but
+    trading-critical, so it ships enabled and is intentionally omitted from the
+    Settings UI card (advanced API control only).
     """
     name = _normalize_worker_name(worker)
     _assert_supported_worker(name)
@@ -486,6 +487,8 @@ async def set_worker_master_enabled(
         await news_shared_state.set_news_enabled(session, enabled)
     elif name == "weather":
         await weather_shared_state.set_weather_enabled(session, enabled)
+    elif name == "scanner":
+        await shared_state.set_scanner_enabled(session, enabled)
     elif name == "trader_orchestrator":
         await update_orchestrator_control(session, is_enabled=enabled)
     elif name in GENERIC_WORKERS:
@@ -494,8 +497,8 @@ async def set_worker_master_enabled(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Worker '{name}' does not support the enable/disable master switch "
-                "(its loop does not gate on is_enabled). Use pause/start instead."
+                f"Worker '{name}' does not support the enable/disable master switch. "
+                "Use pause/start instead."
             ),
         )
 

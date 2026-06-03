@@ -528,9 +528,13 @@ async def _run_scan_loop() -> None:
 
             interval = max(10, min(3600, int(control.get("scan_interval_seconds") or 60)))
             paused = bool(control.get("is_paused", False))
+            # Operator master switch: scanner ships enabled; honour an explicit
+            # disable (ScannerControl.is_enabled=False) the same way pause idles
+            # the loop. Default True keeps existing behaviour unchanged.
+            enabled = bool(control.get("is_enabled", True))
             requested = control.get("requested_scan_at")
-            scanner._enabled = not paused
-            heartbeat_state["enabled"] = not paused
+            scanner._enabled = enabled and not paused
+            heartbeat_state["enabled"] = enabled and not paused
             heartbeat_state["interval_seconds"] = interval
             heartbeat_state["heavy_lane_forced_degraded"] = bool(control.get("heavy_lane_forced_degraded", False))
             heartbeat_state["heavy_lane_degraded_reason"] = control.get("heavy_lane_degraded_reason")
@@ -545,7 +549,7 @@ async def _run_scan_loop() -> None:
                 int(getattr(settings, "SCANNER_FULL_SNAPSHOT_WATCHDOG_SECONDS", 180) or 180),
             )
 
-            if paused and not requested:
+            if (paused or not enabled) and not requested:
                 heartbeat_state["phase"] = "idle"
                 heartbeat_state["progress"] = 0.0
                 if heavy_scan_task is not None and not heavy_scan_task.done():

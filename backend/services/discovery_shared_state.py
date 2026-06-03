@@ -106,7 +106,7 @@ async def read_discovery_control(session: AsyncSession) -> dict[str, Any]:
     row = result.scalar_one_or_none()
     if row is None:
         return {
-            "is_enabled": True,
+            "is_enabled": False,  # ships disabled; opt-in via Background Subsystems
             "is_paused": False,
             "run_interval_minutes": settings.DISCOVERY_RUN_INTERVAL_MINUTES,
             "priority_backlog_mode": True,
