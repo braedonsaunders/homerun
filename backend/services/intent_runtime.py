@@ -12,7 +12,12 @@ from sqlalchemy import Text, and_, cast, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import settings
-from models.database import AsyncSessionLocal, TradeSignal, TradeSignalEmission
+from models.database import (
+    AsyncSessionLocal,
+    AuditAsyncSessionLocal,
+    TradeSignal,
+    TradeSignalEmission,
+)
 from models.opportunity import Opportunity
 from services.event_bus import event_bus
 from services.live_pressure import db_pressure_remaining_seconds, is_db_pressure_active, maybe_mark_db_pressure, publish_backpressure
@@ -71,6 +76,12 @@ _PROJECTION_RETRY_MAX_ATTEMPTS = 3
 _PROJECTION_RETRY_BASE_DELAY_SECONDS = 0.25
 _PROJECTION_DB_PRESSURE_TTL_SECONDS = 15.0
 _PROJECTION_STATEMENT_TIMEOUT_MS = 5000
+# Decoupled, batched trade_signal_emissions history writes (see
+# _run_emission_flush_loop). Append-only + loss-tolerant, so coalesce into one
+# bulk insert per interval off the projection hot path instead of an inline
+# insert+commit per status chunk (which held a main-pool connection 2-3.5s).
+_EMISSION_FLUSH_INTERVAL_SECONDS = 0.5
+_EMISSION_BUFFER_MAX = 50_000
 _PROJECTION_LOCK_TIMEOUT_MS = 3000  # ITER-?: 1000->3000ms gives more headroom for transient row-lock contention before the projection batch aborts and the signal ages out
 _RUNTIME_LANE_BY_SOURCE = {"crypto": "crypto"}
 _PREWARM_SOURCES = {"scanner"}
@@ -624,6 +635,17 @@ class IntentRuntime:
         # The pending map is accessed only from the event loop, so no lock
         # is needed.
         self._pending_upsert_buffers: dict[tuple[str, str], dict[str, Any]] = {}
+        # Decoupled emission-history writes. trade_signal_emissions is
+        # append-only + loss-tolerant (offline backtester only, no live reader).
+        # Writing it inline in the status projection held a main-pool connection
+        # 2-3.5s per chunk under contention (the #1 recurring slow_tx), starving
+        # orchestrator hot-path checkouts. Buffer here; a single background
+        # flusher batch-inserts it, so each chunk releases its connection right
+        # after the trade_signals UPDATE commits.
+        self._emission_buffer: list[dict[str, Any]] = []
+        self._emission_buffer_dropped: int = 0
+        self._emission_drop_log_at: float = 0.0
+        self._emission_flush_task: asyncio.Task[None] | None = None
 
     def _track_task(self, task: asyncio.Task[Any], *, name: str) -> asyncio.Task[Any]:
         self._background_tasks.add(task)
@@ -665,6 +687,10 @@ class IntentRuntime:
             self._run_signal_pruner_loop(),
             name="intent-runtime-signal-pruner",
         )
+        self._emission_flush_task = self._start_task(
+            self._run_emission_flush_loop(),
+            name="intent-runtime-emission-flush",
+        )
         self._register_ws_callback()
         await self.hydrate_from_db()
 
@@ -675,11 +701,17 @@ class IntentRuntime:
             if task is not self._projection_task
             and task is not self._deferred_timeout_task
             and task is not self._signal_pruner_task
+            and task is not self._emission_flush_task
             and not task.done()
         ]
         for task in background_tasks:
             task.cancel()
-        for managed_task in (self._projection_task, self._deferred_timeout_task, self._signal_pruner_task):
+        for managed_task in (
+            self._projection_task,
+            self._deferred_timeout_task,
+            self._signal_pruner_task,
+            self._emission_flush_task,
+        ):
             if managed_task is not None and not managed_task.done():
                 managed_task.cancel()
                 try:
@@ -691,6 +723,7 @@ class IntentRuntime:
         self._projection_task = None
         self._deferred_timeout_task = None
         self._signal_pruner_task = None
+        self._emission_flush_task = None
         self._loop = None
         self._started = False
 
@@ -3287,6 +3320,65 @@ class IntentRuntime:
     async def _project_status(self, payload: dict[str, Any]) -> None:
         await self._project_status_batch([payload])
 
+    def _buffer_emissions(self, emissions: list[dict[str, Any]]) -> None:
+        # Loss-tolerant drop guard so the buffer can't grow unbounded if the
+        # flusher ever falls behind (it shouldn't — one bulk insert per
+        # _EMISSION_FLUSH_INTERVAL_SECONDS). Runs only on the event loop, so the
+        # list ops are atomic with the flusher's swap below (no lock needed).
+        if len(self._emission_buffer) + len(emissions) > _EMISSION_BUFFER_MAX:
+            self._emission_buffer_dropped += len(emissions)
+            now = time.monotonic()
+            if (now - self._emission_drop_log_at) >= 5.0:
+                self._emission_drop_log_at = now
+                logger.warning(
+                    "Intent runtime emission buffer dropped at cap "
+                    "(loss-tolerant history; flusher fell behind)",
+                    buffer_size=len(self._emission_buffer),
+                    buffer_max=_EMISSION_BUFFER_MAX,
+                    dropped_now=len(emissions),
+                    cumulative_dropped=self._emission_buffer_dropped,
+                )
+            return
+        self._emission_buffer.extend(emissions)
+
+    async def _flush_emissions_once(self) -> None:
+        """Drain the emission buffer in a single bulk insert via the audit pool.
+        No-op when the buffer is empty. Loss-tolerant: a failed flush is logged
+        and dropped, never retried (retrying would re-introduce hot-path
+        pressure). Split out from the loop below so it is directly drivable in
+        tests without spinning the timer."""
+        if not self._emission_buffer:
+            return
+        # Atomic swap on the event loop: no await between read and reset.
+        batch = self._emission_buffer
+        self._emission_buffer = []
+        try:
+            # Audit pool: emissions are loss-tolerant + recoverable, so they
+            # ride the dedicated audit tier and never contend with the main
+            # (trading hot-path) pool — same isolation trader_hot_state uses.
+            async with AuditAsyncSessionLocal() as session:
+                await session.execute(TradeSignalEmission.__table__.insert(), batch)
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "intent_runtime: buffered emission flush failed (loss-tolerant)",
+                emission_count=len(batch),
+                error_type=type(exc).__name__,
+                exc_info=exc,
+            )
+
+    async def _run_emission_flush_loop(self) -> None:
+        """Batch-flush buffered trade_signal_emissions off the projection hot
+        path. Inline insert+commit per status chunk held a main-pool connection
+        2-3.5s under contention; coalescing into one periodic bulk insert frees
+        that connection right after the trade_signals UPDATE commits."""
+        while True:
+            try:
+                await asyncio.sleep(_EMISSION_FLUSH_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                raise
+            await self._flush_emissions_once()
+
     async def _project_status_batch(self, payloads: list[dict[str, Any]]) -> None:
         if not payloads:
             return
@@ -3435,8 +3527,10 @@ class IntentRuntime:
                 # trade_signals``.  Emissions are immutable append-only
                 # history with no FK to trade_signals and no live-trading
                 # reader (only the offline backtester / simulator), so
-                # writing them in a separate follow-up transaction is
-                # correctness-neutral and shortens the hot lock window.
+                # writing them out-of-band (buffered here, batch-flushed by
+                # _run_emission_flush_loop on the dedicated audit pool) is
+                # correctness-neutral and keeps the emission write off both the
+                # trade_signals lock window AND the main trading pool.
                 # ``updated_rows`` is already materialized, so it survives
                 # the commit.
                 await session.commit()
@@ -3465,21 +3559,14 @@ class IntentRuntime:
                     }
                     for row in updated_rows
                 ]
-                # Emission history is loss-tolerant (UNLOGGED, no live
-                # reader).  A failure here must NOT bubble up and trigger a
-                # projection retry of the already-committed status UPDATE.
-                try:
-                    await session.execute(TradeSignalEmission.__table__.insert(), emissions)
-                    await session.commit()
-                except Exception as exc:
-                    await session.rollback()
-                    logger.warning(
-                        "intent_runtime: trade_signal_emissions history write failed "
-                        "(status UPDATE already committed; emissions are loss-tolerant)",
-                        emission_count=len(emissions),
-                        error_type=type(exc).__name__,
-                        exc_info=exc,
-                    )
+                # Emission history is append-only + loss-tolerant (offline
+                # backtester only, no live reader). Hand it to the background
+                # flusher (_run_emission_flush_loop) instead of an inline
+                # insert+commit, which held this main-pool connection 2-3.5s per
+                # chunk under contention and starved the orchestrator hot path.
+                # The trade_signals UPDATE is already committed above, so the
+                # session's connection is released as soon as this block exits.
+                self._buffer_emissions(emissions)
 
 
 _intent_runtime: IntentRuntime | None = None

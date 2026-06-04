@@ -188,7 +188,14 @@ async def _trade_signals_by_dedupe(
 
 
 @pytest.mark.asyncio
-async def test_status_projection_updates_signal_and_writes_emission(monkeypatch):
+async def test_status_projection_updates_signal_and_buffers_emission(monkeypatch):
+    """The status projection commits the trade_signals UPDATE synchronously
+    (the critical path) but hands the loss-tolerant emission-history row to the
+    background flusher instead of writing it inline (which previously held a
+    main-pool connection 2-3.5s under contention). This pins that contract:
+    the signal row is updated immediately, the emission is buffered (not yet in
+    DB), and a single flush drains the buffer into trade_signal_emissions via
+    the dedicated audit pool."""
     engine, session_factory = await build_postgres_session_factory(
         Base, "intent_runtime_status_projection"
     )
@@ -207,6 +214,11 @@ async def test_status_projection_updates_signal_and_writes_emission(monkeypatch)
         monkeypatch.setattr(
             intent_runtime_module, "AsyncSessionLocal", session_factory
         )
+        # Emissions are flushed via the dedicated audit pool; point it at the
+        # test DB too so the flush below is observable.
+        monkeypatch.setattr(
+            intent_runtime_module, "AuditAsyncSessionLocal", session_factory
+        )
 
         runtime = IntentRuntime()
         await runtime._project_status_batch(
@@ -219,6 +231,9 @@ async def test_status_projection_updates_signal_and_writes_emission(monkeypatch)
             ]
         )
 
+        # trade_signals UPDATE is the synchronous critical path: committed by
+        # the time _project_status_batch returns. The emission, by contrast, is
+        # decoupled — buffered in memory, not yet persisted.
         async with session_factory() as session:
             row = (
                 await session.execute(
@@ -227,6 +242,26 @@ async def test_status_projection_updates_signal_and_writes_emission(monkeypatch)
                     )
                 )
             ).one()
+            emission_before = (
+                await session.execute(
+                    select(TradeSignalEmission.signal_id).where(
+                        TradeSignalEmission.signal_id == signal_id
+                    )
+                )
+            ).all()
+        assert row.status == "executed"
+        assert float(row.effective_price) == pytest.approx(0.42)
+        assert emission_before == [], (
+            "emission must NOT be written inline by the projection — it is "
+            "buffered for the background flusher"
+        )
+        assert len(runtime._emission_buffer) == 1
+
+        # The background flusher drains the buffer in one bulk insert.
+        await runtime._flush_emissions_once()
+        assert runtime._emission_buffer == []
+
+        async with session_factory() as session:
             emission = (
                 await session.execute(
                     select(
@@ -239,8 +274,6 @@ async def test_status_projection_updates_signal_and_writes_emission(monkeypatch)
                 )
             ).one()
 
-        assert row.status == "executed"
-        assert float(row.effective_price) == pytest.approx(0.42)
         assert emission.signal_id == signal_id
         assert emission.status == "executed"
         assert float(emission.effective_price) == pytest.approx(0.42)
