@@ -54,7 +54,12 @@ from utils.utcnow import utcnow
 logger = get_logger("trader_reconciliation_worker")
 
 WORKER_NAME = "trader_reconciliation"
-DEFAULT_INTERVAL_SECONDS = 1
+# REST reconciliation is the periodic drift-correction safety net; the
+# Polymarket CLOB user-channel WS (polymarket_user_feed -> WalletStateCache)
+# is the real-time path for order/fill state.  30s matches the documented
+# safety-net cadence — the prior 1s scheduled cadence REST-polled Polymarket
+# every second even when fully idle (no positions, no trading).
+DEFAULT_INTERVAL_SECONDS = 30
 _IDLE_SLEEP_SECONDS = 1
 _POSITION_MARK_SYNC_INTERVAL_SECONDS = 10.0
 _last_position_mark_sync_at = 0.0
@@ -129,7 +134,13 @@ _TIMEOUT_CANCEL_GRACE_SECONDS = 5.0
 _STARTUP_INTER_TRADER_SLEEP_SECONDS = 0.0
 _DEFAULT_INTER_TRADER_SLEEP_SECONDS = 0.1
 _SCHEDULED_CYCLE_COOLDOWN_SECONDS = 1.0
-_EVENT_CYCLE_COOLDOWN_SECONDS = 0.5
+# Coalesce event-triggered REST reconciliation. Every trader_order /
+# execution_* event used to fire a full Polymarket REST pass with only 0.5s
+# between, hammering the CLOB API ~once/second during active trading. The WS
+# user feed already pushes order/fill state in real time, so debounce
+# event-driven REST passes to one per 30s (the drift-correction safety net)
+# and leave the loop free for the orchestrator to process signals in between.
+_EVENT_CYCLE_COOLDOWN_SECONDS = 30.0
 _POSITION_TICK_CYCLE_COOLDOWN_SECONDS = 0.25
 _TERMINAL_AUDIT_INTERVAL_SECONDS = 300.0
 _TERMINAL_AUDIT_TIMEOUT_SECONDS = 8.0

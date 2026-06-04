@@ -173,7 +173,14 @@ def get_sync_proxy_client() -> httpx.Client:
     # generous headroom against future stalls without keeping idle
     # connections forever.
     kwargs = {
-        "http2": True,
+        # HTTP/1.1, not HTTP/2: Polymarket's CLOB frequently sends an HTTP/2
+        # GOAWAY (surfaced by httpx as ConnectionTerminated), and on a
+        # multiplexed h2 connection that storms EVERY in-flight order/cancel
+        # request at once (observed as repeated py_clob_client_v2
+        # ConnectionTerminated errors). HTTP/1.1 uses the keep-alive connection
+        # pool below, so a dropped connection only affects one request (httpx
+        # retries it transparently) and GOAWAY (an h2-only frame) cannot occur.
+        "http2": False,
         "timeout": cfg.timeout,
         "verify": cfg.verify_ssl,
         "limits": httpx.Limits(
