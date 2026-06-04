@@ -437,19 +437,31 @@ async def register_window_dirs(window_dirs: Iterable[Path]) -> dict[str, Any]:
     the two can never double-write the same row.
     """
     started = time.monotonic()
-    seen: set[Path] = set()
-    groups: list[_DatasetGroup] = []
-    for wd in window_dirs:
-        try:
-            resolved = Path(wd).resolve()
-        except Exception:
-            continue
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        group = _group_for_window_dir(resolved)
-        if group is not None:
-            groups.append(group)
+    # Build groups via filesystem resolve/is_dir/iterdir/is_file OFF the event
+    # loop. This walk previously ran synchronously inside the async function —
+    # for the live sink that is the trading orchestrator's loop, so a
+    # recording-only catalog pass stalled trading (caught via py-spy: the loop
+    # blocked in pathlib.stat under _group_for_window_dir). Recording must never
+    # affect the orchestrator; only the async DB upsert below belongs on the loop.
+    materialized = list(window_dirs)
+
+    def _build_groups() -> list[_DatasetGroup]:
+        seen: set[Path] = set()
+        built: list[_DatasetGroup] = []
+        for wd in materialized:
+            try:
+                resolved = Path(wd).resolve()
+            except Exception:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            group = _group_for_window_dir(resolved)
+            if group is not None:
+                built.append(group)
+        return built
+
+    groups: list[_DatasetGroup] = await asyncio.to_thread(_build_groups)
     results: list[dict[str, Any]] = []
     if groups:
         async with _RESCAN_LOCK:
