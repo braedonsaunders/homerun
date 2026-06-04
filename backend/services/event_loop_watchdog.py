@@ -19,7 +19,10 @@ watchdog must NEVER crash the event loop it monitors.
 from __future__ import annotations
 
 import asyncio
+import sys
+import threading
 import time
+import traceback
 from typing import Optional
 
 from services.live_pressure import publish_backpressure
@@ -41,6 +44,11 @@ _MAX_TASKS_DUMPED = 20
 # last 5 seconds.  Better one warning per real incident than 100
 # warnings per stall window.
 _WARN_COOLDOWN_SECONDS = 5.0
+# A separate OS thread snapshots the loop thread's stack when the loop's
+# heartbeat goes stale for this long.  Unlike the in-loop task dump (which only
+# runs AFTER the block clears, so it sees the aftermath), the thread is not
+# blocked by the loop and captures the EXACT synchronous call still in flight.
+_BLOCKER_CAPTURE_THRESHOLD_SECONDS = 1.0
 
 
 # Cap on cr_await traversal depth — guards against cycles or pathological
@@ -192,12 +200,31 @@ class _Watchdog:
         self._last_warn_mono: float = 0.0
         self._stalls_observed: int = 0
         self._max_stall_seconds: float = 0.0
+        # Heartbeat + out-of-loop stack capturer (see _thread_monitor).
+        self._last_beat: float = time.monotonic()
+        self._loop_thread_id: Optional[int] = None
+        self._thread: Optional[threading.Thread] = None
+        self._thread_stop: threading.Event = threading.Event()
+        self._last_blocker_capture_mono: float = 0.0
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._stop_event = asyncio.Event()
+        self._last_beat = time.monotonic()
+        self._loop_thread_id = threading.get_ident()
         self._task = asyncio.create_task(self._run(), name="event-loop-watchdog")
+        # Out-of-loop monitor: a daemon thread that snapshots the loop thread's
+        # stack when the heartbeat stalls.  It is NOT blocked by the loop, so it
+        # catches the synchronous call mid-flight — the in-loop task dump can't.
+        if self._thread is None or not self._thread.is_alive():
+            self._thread_stop.clear()
+            self._thread = threading.Thread(
+                target=self._thread_monitor,
+                name="event-loop-watchdog-thread",
+                daemon=True,
+            )
+            self._thread.start()
         logger.info(
             "Event-loop watchdog started",
             probe_sleep_ms=int(_PROBE_SLEEP_SECONDS * 1000),
@@ -205,6 +232,7 @@ class _Watchdog:
         )
 
     async def stop(self) -> None:
+        self._thread_stop.set()
         if self._stop_event is not None:
             self._stop_event.set()
         if self._task is not None and not self._task.done():
@@ -223,11 +251,13 @@ class _Watchdog:
         stop_event = self._stop_event
         assert stop_event is not None
         while not stop_event.is_set():
+            self._last_beat = time.monotonic()
             scheduled_at = time.monotonic()
             try:
                 await asyncio.sleep(_PROBE_SLEEP_SECONDS)
             except asyncio.CancelledError:
                 raise
+            self._last_beat = time.monotonic()
             actual_elapsed = time.monotonic() - scheduled_at
             stall_seconds = actual_elapsed - _PROBE_SLEEP_SECONDS
             if stall_seconds < _STALL_THRESHOLD_SECONDS:
@@ -318,6 +348,37 @@ class _Watchdog:
             level=min(1.0, max(0.5, stall_seconds / 2.0)),
             reason=f"stall:{round(stall_seconds, 3)}s",
         )
+
+    def _thread_monitor(self) -> None:
+        """Daemon-thread loop that snapshots the loop thread's stack when the
+        heartbeat stalls.  Runs OFF the event loop, so a synchronous call
+        monopolizing the loop cannot block it — this is the one view that names
+        the actual blocker (the in-loop ``_dump_tasks`` only runs once the loop
+        is moving again, showing the aftermath rather than the culprit)."""
+        while not self._thread_stop.wait(0.2):
+            try:
+                beat_age = time.monotonic() - self._last_beat
+                if beat_age < _BLOCKER_CAPTURE_THRESHOLD_SECONDS:
+                    continue
+                now_mono = time.monotonic()
+                if now_mono - self._last_blocker_capture_mono < _WARN_COOLDOWN_SECONDS:
+                    continue
+                self._last_blocker_capture_mono = now_mono
+                tid = self._loop_thread_id
+                if tid is None:
+                    continue
+                frame = sys._current_frames().get(tid)
+                if frame is None:
+                    continue
+                stack = "".join(traceback.format_stack(frame, limit=30))
+                logger.warning(
+                    "Event-loop BLOCKED — loop-thread stack (the synchronous blocker)",
+                    blocked_seconds=round(beat_age, 2),
+                    blocker_stack="\n" + stack,
+                )
+            except Exception:
+                # The monitor thread must never die.
+                continue
 
     def status_snapshot(self) -> dict:
         return {
