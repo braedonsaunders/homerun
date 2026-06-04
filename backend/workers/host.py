@@ -668,9 +668,17 @@ class WorkerHost:
         See ``services.recorder_subscription_service`` for the policy.
         """
         try:
+            from services.market_data_ingestor import get_market_data_ingestor
             from services.recorder_subscription_service import run_loop
             from services.recording_feed import get_recording_feed_manager
 
+            # Start the microstructure ingestor (book/trade buffering + parquet
+            # sink + catalog flush loops) HERE — it was previously started by the
+            # trading feed_manager, but recording now lives on this plane.  The
+            # RecordingFeedManager pool's record_book / record_trade callbacks
+            # feed it; without this start() the buffered books would never flush
+            # to parquet.  Idempotent.
+            get_market_data_ingestor().start()
             # Start the ISOLATED recording WS pool (its own connections + cache,
             # decoupled from the trading feed) before the recorder begins
             # subscribing the broad set onto it.  The ingestor's record_book /

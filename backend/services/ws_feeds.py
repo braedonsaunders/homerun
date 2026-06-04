@@ -1691,14 +1691,13 @@ class FeedManager:
             self._started = True
             loop = asyncio.get_running_loop()
             self._loop = loop  # store for thread-safe scheduling from callbacks
-            # Single unified ingestor — replaces the previous split between
-            # microstructure_recorder + book_delta_decomposer.  Validates
-            # books once, walks levels once, persists snapshots + deltas
-            # off the hot path.  See services/market_data_ingestor.py for
-            # the financial-institution-grade hot-path constraints.
-            from services.market_data_ingestor import get_market_data_ingestor
-
-            get_market_data_ingestor().start()
+            # The microstructure recorder (LiveMarketDataIngestor + parquet sink
+            # + catalog) is NOT started here.  This trading feed never feeds it
+            # (record_book/record_trade ride the isolated RecordingFeedManager
+            # pool), so its flush loops + sink belong on the dedicated recording
+            # plane — started by the recorder-subscription loop and gated by
+            # ``start_recording``, so the trading plane carries zero recording
+            # machinery.
             self._eviction_task = loop.create_task(self._cache_eviction_loop())
             # Wire PositionMarkState to receive every price tick
             from services.position_mark_state import get_position_mark_state
