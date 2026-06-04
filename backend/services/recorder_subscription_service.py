@@ -70,6 +70,9 @@ _MIN_LIQUIDITY_USD = float(os.environ.get("HOMERUN_RECORDER_MIN_LIQUIDITY", "1.0
 # parquet sink and starving the orchestrator.  Live source of truth is the
 # recording config (Data Lab); this env value is only the config-read fallback.
 _DEFAULT_WS_MAX_TOKENS = int(os.environ.get("HOMERUN_RECORDER_WS_MAX_TOKENS", "5000"))
+# Safety cap on the DB-derived "what we trade" market lookup used when the
+# recorder runs in its own process (no in-process trading feed to read).
+_MAX_TRADED_MARKETS = 2000
 
 
 @dataclass
@@ -221,12 +224,13 @@ async def _gather_target_tokens(
     return [t for t, _ in selected], stats
 
 
-def _trading_subscribed_tokens() -> list[str]:
-    """The TRADING feed's current subscription set — the markets the
-    orchestrator is actively watching/trading (open positions, hot
-    opportunities, crypto), put there by the trading subscribers.  Read-only;
-    recording unions these in so we always record what we trade.  Best-effort —
-    never raises into the loop."""
+def _trading_feed_subscribed_tokens() -> list[str]:
+    """The TRADING feed's current subscription set, read IN-PROCESS — the markets
+    the orchestrator is actively watching/trading (open positions, hot
+    opportunities, crypto).  Only populated when recording is COLOCATED with
+    trading (the ``all`` plane); on the dedicated ``recording`` plane the trading
+    feed lives in another process and this returns ``[]`` (the DB-derive below
+    covers that topology).  Best-effort — never raises into the loop."""
     try:
         from services.ws_feeds import get_feed_manager
 
@@ -244,6 +248,67 @@ def _trading_subscribed_tokens() -> list[str]:
     except Exception:  # noqa: BLE001
         return []
     return []
+
+
+async def _db_traded_tokens() -> list[str]:
+    """clob_token_ids of markets with a live ``trader_orders`` row — the durable,
+    cross-process "what we trade" set.  Used on the dedicated ``recording`` plane
+    where the in-process trading feed is unavailable: derive the traded markets
+    from the DB (reusing the canonical ``OPEN_ORDER_STATUSES``) and map them to
+    tokens through the shared market catalog.  Preserves the backtest-fidelity
+    guarantee (FULL WS capture of illiquid markets we trade) across the process
+    split.  Best-effort; never raises into the loop."""
+    from sqlalchemy import select
+
+    from models.database import AsyncSessionLocal, TraderOrder
+    from services.shared_state import _read_market_catalog_file
+    from services.trader_orchestrator_state import OPEN_ORDER_STATUSES
+
+    async with AsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(TraderOrder.market_id)
+                .where(TraderOrder.status.in_(tuple(OPEN_ORDER_STATUSES)))
+                .limit(_MAX_TRADED_MARKETS)
+            )
+        ).all()
+    traded_market_ids = {str(m) for (m,) in rows if m}
+    if not traded_market_ids:
+        return []
+
+    catalog = _read_market_catalog_file()
+    if catalog is None:
+        return []
+    _events, markets, _meta = catalog
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in markets:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("id") or m.get("market_id") or m.get("condition_id") or "").strip()
+        if not mid or mid not in traded_market_ids:
+            continue
+        _active, toks, _liq = _classify_market(m)
+        for t in toks:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+    return out
+
+
+async def _trading_subscribed_tokens() -> list[str]:
+    """Tokens the orchestrator is actively trading, unioned into the recording
+    set so backtests have FULL WS book data for markets we trade — including
+    illiquid ones below the liquidity floor (the ``tail_end_carry`` "0 backtest
+    fills" gap).  Topology-aware: the in-process trading feed when colocated, a
+    DB-derive when the recorder runs in its own process.  Best-effort."""
+    tokens = _trading_feed_subscribed_tokens()
+    if tokens:
+        return tokens
+    try:
+        return await _db_traded_tokens()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 async def _ensure_subscribed(target_tokens: list[str]) -> tuple[int, int]:
@@ -316,9 +381,9 @@ async def loop_tick() -> None:
         # actually trading, even when those markets are too illiquid to make the
         # liquidity-ranked broad set (e.g. tail_end_carry's near-resolution
         # favorites — the exact gap that produced 0 backtest fills).  Union the
-        # trading feed's live subscription set (open positions + hot opps +
-        # crypto) into the recording target.
-        traded = _trading_subscribed_tokens()
+        # actively-traded tokens (the in-process trading feed when colocated, or
+        # a DB-derive when the recorder runs in its own plane) into the target.
+        traded = await _trading_subscribed_tokens()
         if traded:
             target_tokens = list(dict.fromkeys([*target_tokens, *traded]))
         newly, already = await _ensure_subscribed(target_tokens)

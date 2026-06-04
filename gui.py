@@ -234,6 +234,11 @@ _WORKER_PLANES = (
     ("WORKERS", "trading"),
     ("NEWS", "news"),
     ("DISCOVERY", "discovery"),
+    # Dedicated microstructure-recording plane: the ISOLATED RecordingFeedManager
+    # pool + LiveMarketDataIngestor + BookParquetSink, moved off the trading plane
+    # so the broad WS book stream + parquet encoding never load the orchestrator's
+    # event loop.  See the ``recording`` plane in ``backend/workers/host.py``.
+    ("RECORDING", "recording"),
 )
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {

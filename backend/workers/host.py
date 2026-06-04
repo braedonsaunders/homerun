@@ -160,6 +160,10 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_copy_trade_service": True,
         "start_position_monitor": True,
         "start_fill_monitor": True,
+        # Recording moved to its own ``recording`` plane (process isolation
+        # of the broad WS book stream + parquet encoding from the trading
+        # event loop).  OFF here so we never double-run two recording pools.
+        "start_recording": False,
     },
     "news": {
         # ML/embedding workers.  Hand off opportunities to the trading
@@ -299,6 +303,37 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_copy_trade_service": True,
         "start_position_monitor": True,
         "start_fill_monitor": True,
+        # Legacy single-process mode records inline.
+        "start_recording": True,
+    },
+    "recording": {
+        # Dedicated microstructure-recording plane.  Runs the ISOLATED
+        # RecordingFeedManager pool + LiveMarketDataIngestor + BookParquetSink
+        # and the recording-session manager — moved off the trading plane so
+        # the broad WS book stream, parquet encoding, and provider_datasets
+        # catalog UPSERT can never load the orchestrator's event loop (the
+        # "recording must not affect the orchestrator" invariant, now enforced
+        # by a process boundary).  Reads the shared market-catalog file +
+        # Redis recording config; writes parquet + the small provider_datasets
+        # UPSERT.  No strategies / feed / orchestrator / live-execution.
+        "worker_modules": (),
+        "runtime_names": (),
+        "load_strategy_registry": False,
+        "strategy_source_keys": (),
+        "load_data_source_registry": False,
+        "start_event_bus": False,
+        "start_event_dispatcher": False,
+        "apply_runtime_settings": False,
+        "start_intent_runtime": False,
+        "start_feed_manager": False,
+        "start_market_runtime": False,
+        "load_market_cache": False,
+        "load_news_feed": False,
+        "initialize_live_execution": False,
+        "start_copy_trade_service": False,
+        "start_position_monitor": False,
+        "start_fill_monitor": False,
+        "start_recording": True,
     },
 }
 
@@ -1136,22 +1171,24 @@ class WorkerHost:
 
         # Recording-session manager — promotes scheduled sessions, ticks
         # running ones, and auto-stops at scheduled_end_at /
-        # max_duration_seconds.  Trading plane only so we don't run
-        # multiple managers when other planes are also up.
-        if self._plane_name == "trading":
+        # max_duration_seconds.  Gated by ``start_recording`` so exactly ONE
+        # plane (the dedicated ``recording`` plane) runs it — never two
+        # managers racing the same sessions.
+        if self._enabled("start_recording"):
             self._background_tasks.append(asyncio.create_task(
                 self._run_recording_session_loop(),
                 name="recording-session-manager",
             ))
 
-        # Proactive recorder subscription — keeps the WebSocket feed
-        # subscribed to the top N liquid markets in MarketCatalog so
+        # Proactive recorder subscription — keeps the ISOLATED recording WS
+        # pool subscribed to the top N liquid markets in MarketCatalog so
         # the microstructure recorder has book data for every market
         # a strategy might fire on.  Closes the BacktestStudio coverage
         # gap (38% no-data + 45% started-late on tail-end-carry's
-        # 657 opp tokens).  Trading plane only — single connection,
-        # single subscription set.
-        if self._plane_name == "trading":
+        # 657 opp tokens).  Gated by ``start_recording`` — runs on the
+        # dedicated ``recording`` plane, one pool + one subscription set,
+        # off the trading event loop entirely.
+        if self._enabled("start_recording"):
             self._background_tasks.append(asyncio.create_task(
                 self._run_recorder_subscription_loop(),
                 name="recorder-subscription",
