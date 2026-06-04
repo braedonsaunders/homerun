@@ -239,12 +239,19 @@ _WORKER_PLANES = (
     # so the broad WS book stream + parquet encoding never load the orchestrator's
     # event loop.  See the ``recording`` plane in ``backend/workers/host.py``.
     ("RECORDING", "recording"),
+    # Scanner + opportunity-detection plane: full-snapshot scanner, catalog
+    # refresh, SLO, search-index, events — moved off the trading event loop;
+    # opportunities reach trading via the trade_signals DB write path.  See the
+    # ``detection`` plane in ``backend/workers/host.py``.
+    ("DETECTION", "detection"),
 )
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {
-    "scanner": "trading", "scanner_slo": "trading", "crypto": "trading",
+    "scanner": "detection", "scanner_slo": "detection",
+    "market_universe": "detection", "search_index": "detection",
+    "events": "detection",
+    "crypto": "trading",
     "trader_orchestrator": "trading",
-    "events": "trading",
     "trader_reconciliation": "trading", "redeemer": "trading",
     "tracked_traders": "discovery", "discovery": "discovery",
     "weather": "news", "news": "news",

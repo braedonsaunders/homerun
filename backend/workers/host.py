@@ -100,28 +100,16 @@ _LOCKS_DIR = Path(__file__).resolve().parents[1] / ".runtime" / "locks"
 _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
     "trading": {
         "worker_modules": (
-            "workers.market_universe_worker",
-            "workers.scanner_worker",
-            "workers.scanner_slo_worker",
-            # Keeps ``search_index`` fresh for Cmd+K global search.
-            # Lives on the trading plane because its primary corpus
-            # is the live opportunity / market snapshot — colocating
-            # avoids cross-process state plumbing.
-            "workers.search_index_worker",
-            # ``tracked_traders_worker`` and ``discovery_worker`` were
-            # moved to the ``discovery`` plane after a 5h soak showed
-            # ``wallet_discovery._worker x12`` and ``smart_wallet_pool
-            # ._scan_worker x8`` dominating the trading event loop:
-            # every iteration each chained 5-6 Polymarket REST calls,
-            # producing 90+ in-flight ``try_connect`` tasks and
-            # starving the reseeder (whose REST seed couldn't complete
-            # within the 30 s budget) and the orchestrator
-            # (per-cycle stalls > 5 s, ``active_tasks`` p99 = 384).
-            # Keeping them off the trading loop is the cleanest fix —
-            # opportunities still flow to trading via the DB
-            # ``trade_signals`` write path.  See the ``discovery``
-            # plane below.
-            "workers.events_worker",
+            # Scanner + detection workers (market_universe, scanner,
+            # scanner_slo, search_index, events) live on the ``detection``
+            # plane.  Their full-snapshot scan + catalog refresh are CPU/loop
+            # heavy, and they hand opportunities to trading purely via the DB
+            # ``trade_signals`` write path (the intent_runtime bridge + Redis
+            # signal bridge) — the same cross-plane handoff news/discovery use
+            # — so they never need to share the orchestrator's event loop.
+            # The detection plane runs its OWN feed_manager + intent_runtime so
+            # scanner WS-strict signals (required_token_ids) still get live
+            # quotes + project.  See the ``detection`` plane below.
             "workers.trader_reconciliation_worker",
             "workers.fast_trader_runtime",
             # Isolated fast stop-loss / exit-risk loop (own fast DB pool +
@@ -334,6 +322,42 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_position_monitor": False,
         "start_fill_monitor": False,
         "start_recording": True,
+    },
+    "detection": {
+        # Scanner + opportunity-detection plane.  Runs the full-snapshot
+        # scanner, catalog refresh, SLO, search-index, and events workers off
+        # the trading event loop.  Opportunities reach trading via the DB
+        # ``trade_signals`` write path (intent_runtime bridge + Redis signal
+        # bridge), exactly like the news/discovery planes.  Runs its OWN
+        # feed_manager + intent_runtime so scanner WS-strict signals
+        # (required_token_ids) get live book quotes and project to trade_signals
+        # — the scanner subscribes its candidate tokens to this plane's feed and
+        # intent_runtime subscribes any missing ones.  No orchestrator /
+        # live-execution / recording here.
+        "worker_modules": (
+            "workers.market_universe_worker",
+            "workers.scanner_worker",
+            "workers.scanner_slo_worker",
+            "workers.search_index_worker",
+            "workers.events_worker",
+        ),
+        "runtime_names": (),
+        "load_strategy_registry": True,
+        "strategy_source_keys": ("scanner",),
+        "load_data_source_registry": True,
+        "start_event_bus": True,
+        "start_event_dispatcher": True,
+        "apply_runtime_settings": True,
+        "start_intent_runtime": True,
+        "start_feed_manager": True,
+        "start_market_runtime": False,
+        "load_market_cache": False,
+        "load_news_feed": False,
+        "initialize_live_execution": False,
+        "start_copy_trade_service": False,
+        "start_position_monitor": False,
+        "start_fill_monitor": False,
+        "start_recording": False,
     },
 }
 
