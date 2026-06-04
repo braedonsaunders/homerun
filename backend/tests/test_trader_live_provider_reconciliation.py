@@ -155,7 +155,7 @@ def test_inter_trader_sleep_skips_startup_delay():
     assert trader_reconciliation_worker._inter_trader_sleep_seconds(reason="scheduled") == 0.1
 
 
-def test_post_cycle_cooldown_prioritizes_fast_event_cycles():
+def test_post_cycle_cooldown_debounces_event_cycles():
     assert (
         trader_reconciliation_worker._post_cycle_cooldown_seconds(
             reason="scheduled",
@@ -168,7 +168,7 @@ def test_post_cycle_cooldown_prioritizes_fast_event_cycles():
             reason="event:trader_order",
             provider_pass=True,
         )
-        == 0.5
+        == 30.0
     )
     assert (
         trader_reconciliation_worker._post_cycle_cooldown_seconds(
