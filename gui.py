@@ -274,6 +274,22 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 OSC_ESCAPE_RE = re.compile(r"\x1B\].*?(?:\x07|\x1B\\)")
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
+# Compact display names for the plane dashboard cards (long worker module
+# names get abbreviated so cards stay uniform + fit without scrolling).
+_WORKER_SHORT_NAMES: dict[str, str] = {
+    "trader_orchestrator": "orchestrator",
+    "trader_orchestrator_crypto": "orch·crypto",
+    "trader_reconciliation": "reconcile",
+    "fast_trader_runtime": "fast-trader",
+    "fill_simulator_refresh": "fill-sim",
+    "strategy_reverse_engineer": "strat-reveng",
+    "provider_import": "prov-import",
+    "market_universe": "mkt-universe",
+    "search_index": "search-idx",
+    "tracked_traders": "tracked",
+    "cox_trainer": "cox-train",
+}
+
 WORKER_STATUS_ORDER: list[tuple[str, str]] = [
     ("scanner", "SCANNER"), ("scanner_slo", "SCANNER SLO"),
     ("discovery", "DISCOVERY"), ("weather", "WEATHER"),
@@ -643,6 +659,7 @@ class HomerunApp:
         self._plane_groups_built = False
         self._plane_header_labels: dict[str, tk.Label] = {}
         self._plane_item_labels: dict[str, tk.Label] = {}
+        self._plane_service_labels: dict[str, tuple] = {}
         self._worker_to_plane_item: dict[str, tuple[str, str, str]] = {}
 
         # Health poll guards
@@ -1150,17 +1167,23 @@ class HomerunApp:
     # ------------------------------------------------------------------
     # -- Plane-grouped home page -----------------------------------------
     def _plane_order(self, structure: dict) -> list:
-        """Stable plane order: the supervised planes first (trading, news,
-        discovery, recording, detection), then anything else the backend
-        reports."""
-        preferred = [pn for _tag, pn in _WORKER_PLANES]
+        """Dashboard order: the live-trading planes first (trading, detection,
+        recording), then the auxiliary planes (news, discovery), then any extra
+        the backend reports."""
+        preferred = ["trading", "detection", "recording", "news", "discovery"]
         ordered = [p for p in preferred if p in structure]
         ordered += [p for p in structure if p not in ordered]
         return ordered
 
+    def _short_name(self, name: str) -> str:
+        short = _WORKER_SHORT_NAMES.get(name, name)
+        return short if len(short) <= 15 else short[:14] + "…"
+
     def _build_plane_groups(self, structure: dict) -> None:
-        """(Re)build the per-plane group boxes from the backend plane structure.
-        Static at runtime, so this runs once (again only if structure changes)."""
+        """(Re)build the per-plane dashboard cards from the backend plane
+        structure.  Uniform card size; compact body (workers/runtimes as a
+        2-column dot grid, services collapsed to one footer line) so the whole
+        dashboard fits without scrolling.  Static at runtime → runs once."""
         container = getattr(self, "_planes_container", None)
         if container is None:
             return
@@ -1168,43 +1191,59 @@ class HomerunApp:
             child.destroy()
         self._plane_header_labels = {}
         self._plane_item_labels = {}
+        self._plane_service_labels = {}
         self._worker_to_plane_item = {}
         self._planes_placeholder = None
 
         order = self._plane_order(structure)
-        cols = 2 if len(order) > 3 else 1
+        cols = 3 if len(order) >= 5 else max(1, min(len(order), 2))
+        rows = (len(order) + cols - 1) // cols
         for idx, plane in enumerate(order):
             spec = structure.get(plane, {}) or {}
-            row, col = divmod(idx, cols)
-            group = tk.Frame(container, bg=BG_WORKER, highlightbackground=BORDER_LIGHT,
-                             highlightthickness=1)
-            group.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
-            header = tk.Label(group, text=f"○ {plane.upper()}", font=self._font_bold,
+            grow, gcol = divmod(idx, cols)
+            card = tk.Frame(container, bg=BG_WORKER, highlightbackground=BORDER_LIGHT,
+                            highlightthickness=1)
+            card.grid(row=grow, column=gcol, padx=3, pady=3, sticky="nsew")
+
+            header = tk.Label(card, text=f"○ {plane.upper()}", font=self._font_bold,
                               fg=FG_DIM, bg=BG_WORKER, anchor="w")
-            header.pack(padx=6, pady=(4, 2), anchor="w", fill=tk.X)
+            header.pack(padx=8, pady=(5, 3), anchor="w", fill=tk.X)
             self._plane_header_labels[plane] = header
 
-            any_item = False
-            for kind, names in (("runtime", spec.get("runtimes") or []),
-                                ("worker", spec.get("workers") or []),
-                                ("service", spec.get("services") or [])):
-                for name in names:
-                    any_item = True
-                    lbl = tk.Label(group, text=f"  ○ {name}", font=self._font_small,
-                                   fg=FG_DIM, bg=BG_WORKER, justify=tk.LEFT, anchor="w")
-                    lbl.pack(padx=8, pady=0, anchor="w", fill=tk.X)
-                    self._plane_item_labels[f"{plane}:{kind}:{name}"] = lbl
-                    self._worker_to_plane_item[name] = (plane, kind, name)
-            if not any_item:
-                tk.Label(group, text="  (background tasks only)", font=self._font_small,
-                         fg=FG_DIM, bg=BG_WORKER, anchor="w").pack(padx=8, anchor="w")
+            # Workers + runtimes (heartbeat-backed live processes) in a compact
+            # 2-column dot grid.
+            items_frame = tk.Frame(card, bg=BG_WORKER)
+            items_frame.pack(padx=6, pady=0, anchor="w", fill=tk.X)
+            procs = [("runtime", n) for n in (spec.get("runtimes") or [])]
+            procs += [("worker", n) for n in (spec.get("workers") or [])]
+            icols = 2
+            for i, (kind, name) in enumerate(procs):
+                irow, icol = divmod(i, icols)
+                lbl = tk.Label(items_frame, text=f"○ {self._short_name(name)}",
+                               font=self._font_small, fg=FG_DIM, bg=BG_WORKER, anchor="w")
+                lbl.grid(row=irow, column=icol, padx=(2, 10), pady=0, sticky="w")
+                self._plane_item_labels[f"{plane}:{kind}:{name}"] = lbl
+                self._worker_to_plane_item[name] = (plane, kind, name)
+            for c in range(icols):
+                items_frame.columnconfigure(c, weight=1, uniform="item")
+            if not procs:
+                tk.Label(items_frame, text="background tasks only", font=self._font_small,
+                         fg=FG_DIM, bg=BG_WORKER, anchor="w").grid(row=0, column=0, sticky="w")
+
+            # Services collapsed to one dim footer line (no per-service health).
+            svc_lbl = tk.Label(card, text="", font=self._font_small, fg=FG_DIM,
+                               bg=BG_WORKER, anchor="w", justify=tk.LEFT)
+            svc_lbl.pack(padx=8, pady=(2, 5), anchor="w", fill=tk.X)
+            self._plane_service_labels[plane] = (svc_lbl, list(spec.get("services") or []))
 
         for c in range(cols):
             container.columnconfigure(c, weight=1, uniform="plane")
+        for r in range(rows):
+            container.rowconfigure(r, weight=1)
 
     def _render_planes(self) -> None:
-        """Update the per-plane group boxes from the live plane process handles
-        + the heartbeat cache.  Builds the groups on first structured health."""
+        """Update the dashboard cards from the live plane process handles + the
+        heartbeat cache.  Builds the cards on first structured health."""
         structure = self._planes_structure
         if not structure:
             return
@@ -1218,45 +1257,49 @@ class HomerunApp:
             header = self._plane_header_labels.get(plane)
             if header is not None:
                 dot = "●" if alive else "○"
-                pid_txt = f"pid {pid}" if pid else "—"
+                tail = f"pid {pid}" if pid else "DOWN"
                 try:
-                    header.configure(
-                        text=f"{dot} {plane.upper()}    {'running' if alive else 'DOWN'}   {pid_txt}",
-                        fg=(GREEN if alive else RED))
+                    header.configure(text=f"{dot} {plane.upper()}   {tail}",
+                                     fg=(GREEN if alive else RED))
                 except tk.TclError:
                     pass
             spec = structure.get(plane, {}) or {}
             for kind, names in (("runtime", spec.get("runtimes") or []),
-                                ("worker", spec.get("workers") or []),
-                                ("service", spec.get("services") or [])):
+                                ("worker", spec.get("workers") or [])):
                 for name in names:
                     lbl = self._plane_item_labels.get(f"{plane}:{kind}:{name}")
                     if lbl is not None:
-                        self._render_plane_item(lbl, kind, name, alive)
+                        self._render_plane_item(lbl, name, alive)
+            svc = self._plane_service_labels.get(plane)
+            if svc is not None:
+                svc_lbl, names = svc
+                try:
+                    svc_lbl.configure(
+                        text=("svc · " + "  ".join(self._short_name(n) for n in names)) if names else "",
+                        fg=(FG if alive else FG_DIM))
+                except tk.TclError:
+                    pass
 
-    def _render_plane_item(self, lbl, kind: str, name: str, plane_alive: bool) -> None:
+    def _render_plane_item(self, lbl, name: str, plane_alive: bool) -> None:
+        """Update one worker/runtime row: a colored dot + short name.  Heartbeat
+        health when the worker reports a snapshot, else plane-process liveness."""
         snapshot = self._worker_state_cache.get(name, {})
         if snapshot:
-            status, status_class = self._resolve_worker_state(snapshot)
-            meta = self._format_worker_meta(snapshot)
+            _status, status_class = self._resolve_worker_state(snapshot)
             color = {"status-on": GREEN, "status-off": RED,
                      "status-warn": YELLOW, "status-idle": FG_DIM}.get(status_class, FG_DIM)
-            text = f"  ● {name}  ·  {status.lower()}  ·  {meta}"
-        elif kind == "service":
-            text = f"   • {name}"
-            color = GREEN if plane_alive else FG_DIM
+            dot = "○" if status_class == "status-off" else "●"
         else:
-            text = f"  {'●' if plane_alive else '○'} {name}  ·  {'up (process)' if plane_alive else 'down'}"
             color = GREEN if plane_alive else RED
+            dot = "●" if plane_alive else "○"
         try:
-            lbl.configure(text=text[:160], fg=color)
+            lbl.configure(text=f"{dot} {self._short_name(name)}", fg=color)
         except tk.TclError:
             pass
 
     def _render_worker_panel(self, worker_name: str) -> None:
-        # Plane-grouped home page: update just this worker's row in its plane
-        # group.  Legacy entrypoint kept so existing health/log callsites work
-        # without each needing to know the plane layout.
+        # Plane dashboard: update just this worker's row in its plane card.
+        # Legacy entrypoint kept so existing health/log callsites keep working.
         key = self._worker_to_plane_item.get(worker_name)
         if not key:
             return
@@ -1266,7 +1309,7 @@ class HomerunApp:
             return
         proc = self.worker_procs.get(plane)
         plane_alive = bool(proc is not None and proc.poll() is None)
-        self._render_plane_item(lbl, kind, name, plane_alive)
+        self._render_plane_item(lbl, name, plane_alive)
 
     def _resolve_worker_state(self, snapshot: dict) -> tuple[str, str]:
         if not snapshot:
