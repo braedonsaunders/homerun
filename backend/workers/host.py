@@ -570,20 +570,45 @@ class WorkerHost:
                 for task in list(asyncio.all_tasks()):
                     if task.done():
                         continue
+                    # task.get_stack() only returns the TOP coroutine's
+                    # suspension frame, not the nested ``await`` chain — so a
+                    # hang deep inside an awaited sub-coroutine (e.g.
+                    # live_execution_service.initialize) is invisible.  Walk
+                    # the ``cr_await`` chain manually to the deepest frame.
                     try:
-                        stack = task.get_stack(limit=25)
+                        frames = []
+                        seen_obj: set[int] = set()
+                        obj = task.get_coro()
+                        while obj is not None and id(obj) not in seen_obj:
+                            seen_obj.add(id(obj))
+                            fr = (
+                                getattr(obj, "cr_frame", None)
+                                or getattr(obj, "gi_frame", None)
+                                or getattr(obj, "ag_frame", None)
+                            )
+                            if fr is not None:
+                                _fn = fr.f_code.co_filename.replace(chr(92), "/").rsplit("/", 1)[-1]
+                                frames.append(f"{_fn}:{fr.f_lineno}:{fr.f_code.co_name}")
+                            obj = (
+                                getattr(obj, "cr_await", None)
+                                or getattr(obj, "gi_yieldfrom", None)
+                                or getattr(obj, "ag_await", None)
+                            )
                     except Exception:
                         continue
-                    frames = [
-                        f"{f.f_code.co_filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:"
-                        f"{f.f_lineno}:{f.f_code.co_name}"
-                        for f in stack
-                    ]
                     joined = " <- ".join(frames)
-                    if (
-                        "trader_orchestrator_worker" in joined
-                        or "_run_trader_once" in joined
-                        or "_wait_for_runtime_trigger" in joined
+                    if any(
+                        marker in joined
+                        for marker in (
+                            "trader_orchestrator_worker",
+                            "_run_trader_once",
+                            "_wait_for_runtime_trigger",
+                            "live_execution_service",
+                            "_resolve_polymarket",
+                            "_approve_clob_allowance",
+                            "sync_positions",
+                            "_bootstrap_wallet_state_cache",
+                        )
                     ):
                         logger.warning(
                             "ORCH-TASK-DUMP",
@@ -798,19 +823,42 @@ class WorkerHost:
             )
 
     async def _initialize_live_execution_background(self) -> None:
-        try:
-            trading_initialized = await live_execution_service.initialize()
-            if trading_initialized:
-                logger.info("Live execution service initialized", plane=self._plane_name)
-            else:
+        # Retry until ready.  A single attempt is not enough: a transient at
+        # startup (DB pool contention, a slow credential/funder/CLOB round-trip)
+        # leaves live_execution not-ready, and the orchestrator's live cycle
+        # then defers every cycle (run_worker_loop's is_ready() gate) — so
+        # without retrying here an arming user would wait forever.  Exponential
+        # backoff keeps a genuinely unconfigured account (no credentials) from
+        # spinning, while still self-healing a transient and picking up
+        # credentials configured at runtime.
+        backoff = 2.0
+        max_backoff = 30.0
+        while not self._shutting_down:
+            try:
+                if live_execution_service.is_ready():
+                    return
+                trading_initialized = await live_execution_service.initialize()
+                if trading_initialized:
+                    logger.info("Live execution service initialized", plane=self._plane_name)
+                    return
                 logger.info(
-                    "Live execution service not initialized - credentials not configured",
+                    "Live execution service not initialized (credentials not configured); will retry",
                     plane=self._plane_name,
+                    last_error=live_execution_service.get_last_init_error(),
                 )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Live execution initialization failed", plane=self._plane_name, exc_info=exc)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Live execution initialization failed; will retry",
+                    plane=self._plane_name,
+                    exc_info=exc,
+                )
+            try:
+                await asyncio.sleep(backoff)
+            except asyncio.CancelledError:
+                raise
+            backoff = min(backoff * 2.0, max_backoff)
 
     async def _acquire_plane_lock(self) -> None:
         self._plane_lock.acquire()

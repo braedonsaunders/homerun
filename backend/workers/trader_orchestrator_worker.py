@@ -9443,7 +9443,18 @@ async def run_worker_loop(
                             if _trader_matches_lane(trader, lane_key) and not _is_fast_tier_trader(trader)
                         ]
 
-                if not skip_cycle and needs_live_execution_init and not await live_execution_service.ensure_initialized():
+                # Live-trading readiness gate.  Check is_ready() — a cheap
+                # synchronous flag — rather than awaiting ensure_initialized().
+                # ensure_initialized() runs the full live_execution.initialize()
+                # inline (or blocks on its init lock) whenever the service is
+                # not yet ready, and that heavy credential/network/transport
+                # setup can wedge this cycle loop indefinitely: if a user armed
+                # live before the background initializer finished, the
+                # orchestrator would sit at "Live start command queued" forever
+                # and never flip to running.  Initialization is owned by
+                # _initialize_live_execution_background (which retries until
+                # ready); here we only defer the live cycle until it is.
+                if not skip_cycle and needs_live_execution_init and not live_execution_service.is_ready():
                     async with AsyncSessionLocal() as session:
                         init_stats = await _build_orchestrator_snapshot_metrics(
                             session=session,
@@ -9456,7 +9467,7 @@ async def run_worker_loop(
                             persist=write_snapshot,
                             running=False,
                             enabled=True,
-                            current_activity="Blocked: live trading service failed to initialize",
+                            current_activity="Blocked: live trading service initializing",
                             interval_seconds=cycle_interval,
                             last_error=None,
                             stats=init_stats,
