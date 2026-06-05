@@ -366,6 +366,37 @@ def _worker_name_from_module(module_name: str) -> str:
     return module_name.split(".")[-1].replace("_worker", "")
 
 
+def get_plane_worker_summary() -> dict[str, dict[str, Any]]:
+    """Public, runtime-stable view of the plane -> workers/runtimes/services
+    structure for the GUI home page + the /health/planes endpoint.  Single
+    source of truth = _PLANE_CONFIGS, so the GUI never duplicates the plane
+    layout.  Excludes the legacy ``all`` single-process plane (never spawned).
+    ``services`` are the notable plane-level background subsystems derived from
+    the feature flags — what actually runs when a plane has no worker_modules
+    (e.g. the recording plane)."""
+    service_flags: tuple[tuple[str, str], ...] = (
+        ("start_recording", "recorder"),
+        ("start_intent_runtime", "intent_runtime"),
+        ("start_feed_manager", "feed_manager"),
+        ("start_market_runtime", "market_runtime"),
+        ("initialize_live_execution", "live_execution"),
+        ("start_copy_trade_service", "copy_trade"),
+        ("start_position_monitor", "position_monitor"),
+        ("start_fill_monitor", "fill_monitor"),
+        ("load_news_feed", "news_feed"),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for plane, cfg in _PLANE_CONFIGS.items():
+        if plane == "all":
+            continue
+        out[plane] = {
+            "workers": [_worker_name_from_module(m) for m in cfg.get("worker_modules", ())],
+            "runtimes": [str(r) for r in cfg.get("runtime_names", ())],
+            "services": [label for flag, label in service_flags if cfg.get(flag)],
+        }
+    return out
+
+
 def _parse_iso_utc(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None

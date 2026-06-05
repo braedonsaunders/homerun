@@ -636,6 +636,15 @@ class HomerunApp:
         self._worker_last_activity: dict[str, str] = {}
         self._worker_last_error: dict[str, str] = {}
 
+        # Plane-grouped home page (driven by /health/gui ``planes`` — the real
+        # backend _PLANE_CONFIGS structure — joined with this process's own
+        # plane Popen handles for live PID/liveness).
+        self._planes_structure: dict[str, dict] = {}
+        self._plane_groups_built = False
+        self._plane_header_labels: dict[str, tk.Label] = {}
+        self._plane_item_labels: dict[str, tk.Label] = {}
+        self._worker_to_plane_item: dict[str, tuple[str, str, str]] = {}
+
         # Health poll guards
         self._health_poll_lock = threading.Lock()
         self._health_poll_inflight = False
@@ -778,34 +787,21 @@ class HomerunApp:
             self._metric_labels[key] = lbl
 
         # Worker Command Center title
-        tk.Label(parent, text="Worker Command Center", font=self._font_bold, fg=FG,
+        tk.Label(parent, text="Worker Planes — live OS processes", font=self._font_bold, fg=FG,
                  bg=BG, anchor="w").pack(padx=12, pady=(10, 4), anchor="w")
 
-        # Worker grid
-        worker_outer = tk.Frame(parent, bg=BG)
-        worker_outer.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 4))
-
-        self._worker_panels: dict[str, tk.Label] = {}
-        COLS = 4
-        for i, (worker_name, worker_label) in enumerate(WORKER_STATUS_ORDER):
-            row, col = divmod(i, COLS)
-            cell = tk.Frame(worker_outer, bg=BG_WORKER, highlightbackground=BORDER_LIGHT,
-                            highlightthickness=1)
-            cell.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
-
-            tk.Label(cell, text=worker_label, font=self._font_bold, fg=FG, bg=BG_WORKER,
-                     anchor="w").pack(padx=6, pady=(4, 0), anchor="w")
-
-            info_lbl = tk.Label(cell, text="● OFFLINE\nNo telemetry yet\n--\n--",
-                                font=self._font_small, fg=FG_DIM, bg=BG_WORKER,
-                                justify=tk.LEFT, anchor="w")
-            info_lbl.pack(padx=6, pady=(0, 4), anchor="w", fill=tk.X)
-            self._worker_panels[worker_name] = info_lbl
-
-        for col in range(COLS):
-            worker_outer.columnconfigure(col, weight=1, uniform="wk")
-        for row in range((len(WORKER_STATUS_ORDER) + COLS - 1) // COLS):
-            worker_outer.rowconfigure(row, weight=1)
+        # Worker PLANES grid — built dynamically from the backend's real
+        # _PLANE_CONFIGS structure (delivered via /health/gui ``planes``): one
+        # group box per OS-process plane (trading / detection / recording /
+        # news / discovery), each showing its live process status (PID) + its
+        # workers / runtimes / background services.  Replaces the old flat
+        # hardcoded worker list so the home page always mirrors reality.
+        self._planes_container = tk.Frame(parent, bg=BG)
+        self._planes_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 4))
+        self._planes_placeholder = tk.Label(
+            self._planes_container, text="Waiting for plane health…",
+            font=self._font_small, fg=FG_DIM, bg=BG, anchor="w")
+        self._planes_placeholder.pack(padx=6, pady=6, anchor="w")
 
         # Status bar
         self._status_bar = tk.Label(parent, text="", font=self._font_small, fg=FG_DIM, bg=BG, anchor="center")
@@ -1152,27 +1148,125 @@ class HomerunApp:
     # ------------------------------------------------------------------
     # Worker panel rendering
     # ------------------------------------------------------------------
+    # -- Plane-grouped home page -----------------------------------------
+    def _plane_order(self, structure: dict) -> list:
+        """Stable plane order: the supervised planes first (trading, news,
+        discovery, recording, detection), then anything else the backend
+        reports."""
+        preferred = [pn for _tag, pn in _WORKER_PLANES]
+        ordered = [p for p in preferred if p in structure]
+        ordered += [p for p in structure if p not in ordered]
+        return ordered
+
+    def _build_plane_groups(self, structure: dict) -> None:
+        """(Re)build the per-plane group boxes from the backend plane structure.
+        Static at runtime, so this runs once (again only if structure changes)."""
+        container = getattr(self, "_planes_container", None)
+        if container is None:
+            return
+        for child in container.winfo_children():
+            child.destroy()
+        self._plane_header_labels = {}
+        self._plane_item_labels = {}
+        self._worker_to_plane_item = {}
+        self._planes_placeholder = None
+
+        order = self._plane_order(structure)
+        cols = 2 if len(order) > 3 else 1
+        for idx, plane in enumerate(order):
+            spec = structure.get(plane, {}) or {}
+            row, col = divmod(idx, cols)
+            group = tk.Frame(container, bg=BG_WORKER, highlightbackground=BORDER_LIGHT,
+                             highlightthickness=1)
+            group.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
+            header = tk.Label(group, text=f"○ {plane.upper()}", font=self._font_bold,
+                              fg=FG_DIM, bg=BG_WORKER, anchor="w")
+            header.pack(padx=6, pady=(4, 2), anchor="w", fill=tk.X)
+            self._plane_header_labels[plane] = header
+
+            any_item = False
+            for kind, names in (("runtime", spec.get("runtimes") or []),
+                                ("worker", spec.get("workers") or []),
+                                ("service", spec.get("services") or [])):
+                for name in names:
+                    any_item = True
+                    lbl = tk.Label(group, text=f"  ○ {name}", font=self._font_small,
+                                   fg=FG_DIM, bg=BG_WORKER, justify=tk.LEFT, anchor="w")
+                    lbl.pack(padx=8, pady=0, anchor="w", fill=tk.X)
+                    self._plane_item_labels[f"{plane}:{kind}:{name}"] = lbl
+                    self._worker_to_plane_item[name] = (plane, kind, name)
+            if not any_item:
+                tk.Label(group, text="  (background tasks only)", font=self._font_small,
+                         fg=FG_DIM, bg=BG_WORKER, anchor="w").pack(padx=8, anchor="w")
+
+        for c in range(cols):
+            container.columnconfigure(c, weight=1, uniform="plane")
+
+    def _render_planes(self) -> None:
+        """Update the per-plane group boxes from the live plane process handles
+        + the heartbeat cache.  Builds the groups on first structured health."""
+        structure = self._planes_structure
+        if not structure:
+            return
+        if not self._plane_groups_built:
+            self._build_plane_groups(structure)
+            self._plane_groups_built = True
+        for plane in self._plane_order(structure):
+            proc = self.worker_procs.get(plane)
+            alive = bool(proc is not None and proc.poll() is None)
+            pid = proc.pid if (proc is not None and alive) else None
+            header = self._plane_header_labels.get(plane)
+            if header is not None:
+                dot = "●" if alive else "○"
+                pid_txt = f"pid {pid}" if pid else "—"
+                try:
+                    header.configure(
+                        text=f"{dot} {plane.upper()}    {'running' if alive else 'DOWN'}   {pid_txt}",
+                        fg=(GREEN if alive else RED))
+                except tk.TclError:
+                    pass
+            spec = structure.get(plane, {}) or {}
+            for kind, names in (("runtime", spec.get("runtimes") or []),
+                                ("worker", spec.get("workers") or []),
+                                ("service", spec.get("services") or [])):
+                for name in names:
+                    lbl = self._plane_item_labels.get(f"{plane}:{kind}:{name}")
+                    if lbl is not None:
+                        self._render_plane_item(lbl, kind, name, alive)
+
+    def _render_plane_item(self, lbl, kind: str, name: str, plane_alive: bool) -> None:
+        snapshot = self._worker_state_cache.get(name, {})
+        if snapshot:
+            status, status_class = self._resolve_worker_state(snapshot)
+            meta = self._format_worker_meta(snapshot)
+            color = {"status-on": GREEN, "status-off": RED,
+                     "status-warn": YELLOW, "status-idle": FG_DIM}.get(status_class, FG_DIM)
+            text = f"  ● {name}  ·  {status.lower()}  ·  {meta}"
+        elif kind == "service":
+            text = f"   • {name}"
+            color = GREEN if plane_alive else FG_DIM
+        else:
+            text = f"  {'●' if plane_alive else '○'} {name}  ·  {'up (process)' if plane_alive else 'down'}"
+            color = GREEN if plane_alive else RED
+        try:
+            lbl.configure(text=text[:160], fg=color)
+        except tk.TclError:
+            pass
+
     def _render_worker_panel(self, worker_name: str) -> None:
-        snapshot = self._worker_state_cache.get(worker_name, {})
-        status, status_class = self._resolve_worker_state(snapshot)
-        meta = self._format_worker_meta(snapshot)
-        logs = list(self._worker_logs.get(worker_name, []))
-        log_lines = logs[-2:] if logs else ["--", "--"]
-        while len(log_lines) < 2:
-            log_lines.append("--")
-
-        color = {
-            "status-on": GREEN, "status-off": RED,
-            "status-warn": YELLOW, "status-idle": FG_DIM,
-        }.get(status_class, FG_DIM)
-
-        display = f"● {status}\n{meta}\n{log_lines[0][:120]}\n{log_lines[1][:120]}"
-        panel = self._worker_panels.get(worker_name)
-        if panel:
-            try:
-                panel.configure(text=display, fg=color)
-            except tk.TclError:
-                pass
+        # Plane-grouped home page: update just this worker's row in its plane
+        # group.  Legacy entrypoint kept so existing health/log callsites work
+        # without each needing to know the plane layout.
+        key = self._worker_to_plane_item.get(worker_name)
+        if not key:
+            return
+        plane, kind, name = key
+        lbl = self._plane_item_labels.get(f"{plane}:{kind}:{name}")
+        if lbl is None:
+            return
+        proc = self.worker_procs.get(plane)
+        plane_alive = bool(proc is not None and proc.poll() is None)
+        self._render_plane_item(lbl, kind, name, plane_alive)
 
     def _resolve_worker_state(self, snapshot: dict) -> tuple[str, str]:
         if not snapshot:
@@ -1986,6 +2080,10 @@ class HomerunApp:
         workers = data.get("workers")
         if workers is None:
             workers = services.get("workers", {})
+        planes = data.get("planes")
+        if isinstance(planes, dict) and planes and planes != self._planes_structure:
+            self._planes_structure = planes
+            self._plane_groups_built = False  # structure changed → rebuild groups
 
         ws = services.get("ws_feeds", {})
         database_healthy = self._resolve_database_health(data, services)
@@ -2003,6 +2101,7 @@ class HomerunApp:
         self._update_platform_item("svc-wsfeeds", "WS FEEDS", ws_healthy)
 
         self._update_worker_panels(workers, services)
+        self._render_planes()
         self._update_runtime_metrics()
 
     def _apply_health_offline(self) -> None:
@@ -2022,6 +2121,7 @@ class HomerunApp:
         self._update_platform_item("svc-frontend", "FRONTEND", self._frontend_alive())
         self._update_platform_item("svc-wsfeeds", "WS FEEDS", False)
         self._update_workers_from_processes()
+        self._render_planes()
         self._update_runtime_metrics()
 
     def _resolve_database_health(self, data: dict, services: dict) -> bool:

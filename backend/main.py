@@ -1368,6 +1368,24 @@ async def _gui_health_database_ping() -> bool:
     return True
 
 
+_PLANE_SUMMARY_CACHE: dict | None = None
+
+
+def _get_plane_summary_safe() -> dict:
+    """Plane -> workers/runtimes/services structure for the GUI home page.
+    Static at runtime, so computed once.  Best-effort: never breaks the health
+    response if the worker host can't be imported."""
+    global _PLANE_SUMMARY_CACHE
+    if _PLANE_SUMMARY_CACHE is None:
+        try:
+            from workers.host import get_plane_worker_summary
+
+            _PLANE_SUMMARY_CACHE = get_plane_worker_summary()
+        except Exception:
+            _PLANE_SUMMARY_CACHE = {}
+    return _PLANE_SUMMARY_CACHE
+
+
 def _build_gui_health_response(db: dict) -> dict:
     scanner_status = db.get("scanner_status", {})
     worker_status_rows = db.get("worker_status_rows", [])
@@ -1402,6 +1420,7 @@ def _build_gui_health_response(db: dict) -> dict:
         "status": "healthy",
         "timestamp": utcnow().isoformat(),
         "workers": worker_status,
+        "planes": _get_plane_summary_safe(),
         "checks": {
             "database": db.get("database", False),
             # Redis is a soft dependency: report as healthy when disabled
