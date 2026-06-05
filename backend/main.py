@@ -247,8 +247,11 @@ async def _reset_orchestrator_boot_state() -> None:
             mode="shadow",
             requested_run_at=None,
             settings_json={
-                "selected_account_id": None,
-                "shadow_account_id": None,
+                # Live trading never auto-resumes after a process restart — we
+                # still disable + pause and clear the live arm/preflight tokens.
+                # But we PRESERVE the operator's account selection so re-arming
+                # is a single click instead of re-picking the account every
+                # restart (the recurring "it won't start after a restart").
                 "live_preflight": None,
                 "live_arm": None,
             },

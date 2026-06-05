@@ -327,9 +327,10 @@ async def test_reset_orchestrator_boot_state_hard_resets_when_prior_mode_was_liv
     assert update_calls[0]["is_paused"] is True
     assert update_calls[0]["mode"] == "shadow"
     assert update_calls[0]["requested_run_at"] is None
+    # Account selection is preserved across the restart (only the live arm +
+    # preflight tokens are cleared); trading still stays disabled + paused so
+    # live never auto-resumes.
     assert update_calls[0]["settings_json"] == {
-        "selected_account_id": None,
-        "shadow_account_id": None,
         "live_preflight": None,
         "live_arm": None,
     }
@@ -414,7 +415,8 @@ async def test_reset_orchestrator_boot_state_hard_resets_when_previously_paused(
     assert len(update_calls) == 1
     assert update_calls[0]["is_enabled"] is False
     assert update_calls[0]["mode"] == "shadow"
-    assert update_calls[0]["settings_json"]["selected_account_id"] is None
+    # Account preserved across restart — only live arm/preflight are cleared.
+    assert "selected_account_id" not in update_calls[0]["settings_json"]
 
 
 @pytest.mark.asyncio
