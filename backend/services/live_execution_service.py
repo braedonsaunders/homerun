@@ -2409,7 +2409,7 @@ class LiveExecutionService:
             closed_positions=result.get("closed_seeded", 0),
         )
 
-    async def initialize(self) -> bool:
+    async def initialize(self, *, force: bool = False) -> bool:
         """
         Initialize the trading client with API credentials.
 
@@ -2442,6 +2442,15 @@ class LiveExecutionService:
         """
         init_lock = self._get_init_lock()
         async with init_lock:
+            # Double-checked locking: another caller may have finished
+            # initialization while we waited for the lock.  Without this, the
+            # startup race — background initializer + reconciliation reseeder +
+            # market/copy services all calling ensure_initialized() before
+            # is_ready() flips — serializes behind this lock and each re-runs
+            # the full credential/funder/CLOB build redundantly (observed ~3x).
+            # ``force`` lets a credential-refresh path re-initialize anyway.
+            if self.is_ready() and not force:
+                return True
             (
                 private_key,
                 api_key,
