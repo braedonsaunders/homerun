@@ -110,6 +110,123 @@ async def test_runtime_signal_queue_coalesces_runtime_batches_for_all_lanes() ->
     assert get_queue_depth() == {"general": 0, "crypto": 0}
 
 
+@pytest.fixture
+def _fresh_runtime_queues():
+    """Give each test its own loop-bound runtime_signal_queue lanes.
+
+    The module-level ``asyncio.Queue`` objects bind to the first event loop
+    that touches them; pytest-asyncio runs each test in a fresh loop, so a
+    queue bound by an earlier test raises "bound to a different event loop"
+    when a later test touches it.  Production runs one loop per process, so
+    this only matters for the test harness.
+    """
+    from services import runtime_signal_queue as rsq
+
+    original = rsq._queues
+    rsq._queues = {lane: asyncio.Queue() for lane in rsq._LANES}
+    try:
+        yield
+    finally:
+        rsq._queues = original
+
+
+@pytest.mark.asyncio
+async def test_redis_bridge_emission_wakes_runtime_queue(_fresh_runtime_queues) -> None:
+    """A cross-plane signal emission (scanner running on the detection plane)
+    must wake the trading orchestrator's in-process runtime_signal_queue — not
+    only the event_bus.  Regression: after scanner moved to its own plane the
+    orchestrator stopped cycling because nothing woke its lane queue.
+    """
+    from services import signal_bus_redis_bridge
+
+    bridge = signal_bus_redis_bridge._Bridge()
+    await bridge._bridge_emission(
+        {
+            "signal_id": "xplane-scanner-1",
+            "source": "scanner",
+            "status": "pending",
+            "event_type": "upsert_insert",
+            "reason": "scanner_detection",
+            "updated_at": "2026-06-04T02:00:00Z",
+        }
+    )
+
+    payload = await wait_for_signal_batch(lane="general", timeout_seconds=0.5)
+    assert payload is not None
+    assert payload["event_type"] == "runtime_signal_batch"
+    assert payload["source"] == "scanner"
+    assert payload["source_signal_ids"]["scanner"] == ["xplane-scanner-1"]
+    assert get_queue_depth(lane="general") == 0
+
+
+@pytest.mark.asyncio
+async def test_redis_bridge_emission_routes_crypto_source_to_crypto_lane(_fresh_runtime_queues) -> None:
+    """A crypto-source cross-plane emission must wake the crypto lane."""
+    from services import signal_bus_redis_bridge
+
+    bridge = signal_bus_redis_bridge._Bridge()
+    await bridge._bridge_emission(
+        {
+            "signal_id": "xplane-crypto-1",
+            "source": "crypto",
+            "status": "pending",
+            "event_type": "upsert_update",
+            "updated_at": "2026-06-04T02:00:00Z",
+        }
+    )
+
+    payload = await wait_for_signal_batch(lane="crypto", timeout_seconds=0.5)
+    assert payload is not None
+    assert payload["source"] == "crypto"
+    assert payload["source_signal_ids"]["crypto"] == ["xplane-crypto-1"]
+
+
+@pytest.mark.asyncio
+async def test_redis_bridge_emission_ignores_nonactionable_status(_fresh_runtime_queues) -> None:
+    """status_update / status_expired emissions must NOT wake a trade cycle —
+    only upsert_* / reverse_entry events are actionable.
+    """
+    from services import signal_bus_redis_bridge
+
+    bridge = signal_bus_redis_bridge._Bridge()
+    await bridge._bridge_emission(
+        {
+            "signal_id": "xplane-status-1",
+            "source": "scanner",
+            "status": "filled",
+            "event_type": "status_update",
+            "updated_at": "2026-06-04T02:00:00Z",
+        }
+    )
+
+    payload = await wait_for_signal_batch(lane="general", timeout_seconds=0.2)
+    assert payload is None
+
+
+@pytest.mark.asyncio
+async def test_redis_bridge_emission_dedups_locally_emitted_signal(_fresh_runtime_queues) -> None:
+    """A signal the trading plane already emitted in-process (and already woke
+    the queue via intent_runtime) must be deduped when the Redis broadcast
+    loops back, so the bridge does not double-fire a cycle.
+    """
+    from services import signal_bus_redis_bridge
+
+    await signal_bus_redis_bridge.mark_locally_emitted(["xplane-local-1"])
+    bridge = signal_bus_redis_bridge._Bridge()
+    await bridge._bridge_emission(
+        {
+            "signal_id": "xplane-local-1",
+            "source": "scanner",
+            "status": "pending",
+            "event_type": "upsert_insert",
+            "updated_at": "2026-06-04T02:00:00Z",
+        }
+    )
+
+    payload = await wait_for_signal_batch(lane="general", timeout_seconds=0.2)
+    assert payload is None
+
+
 @pytest.mark.asyncio
 async def test_intent_runtime_hydrate_republishes_bootstrap_pending_signals(monkeypatch) -> None:
     now = utcnow()

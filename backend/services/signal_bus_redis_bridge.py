@@ -41,6 +41,7 @@ from typing import Any, Optional
 
 from services import redis_client
 from services.event_bus import event_bus
+from services.runtime_signal_queue import publish_signal_batch
 from services.signal_bus import SIGNAL_BATCH_CHANNEL, SIGNAL_EMISSION_CHANNEL
 from utils.logger import get_logger
 
@@ -215,6 +216,47 @@ class _Bridge:
                     except Exception:
                         pass
 
+    async def _wake_runtime_queue(
+        self,
+        *,
+        event_type: Any,
+        source: Any,
+        signal_ids: list[str],
+        trigger: Any,
+        reason: Any = None,
+        emitted_at: Any = None,
+    ) -> None:
+        """Wake the in-process ``runtime_signal_queue`` so the trader
+        orchestrator cycles immediately on a cross-plane signal.
+
+        The orchestrator awaits the lane queue (``wait_for_signal_batch``),
+        not the ``event_bus``, so re-injecting onto the bus alone never wakes
+        it — it only wakes ``event_bus`` subscribers (e.g. the fast trader).
+        Before detection/scanner moved to their own plane, the orchestrator
+        was woken in-process by that plane's ``publish_signal_batch``; with
+        the producer in another process its queue had no wake source.
+
+        ``publish_signal_batch``'s ``_is_actionable_event`` gate filters
+        non-actionable emissions (``status_update``/``status_expired``), so
+        only ``upsert_*``/``reverse_entry`` batches actually trigger a cycle.
+        Trading plane only — the bridge runs nowhere else, and only the
+        trading plane consumes the queue.
+        """
+        ids = [str(s) for s in signal_ids if s]
+        if not ids:
+            return
+        try:
+            await publish_signal_batch(
+                event_type=str(event_type or ""),
+                source=source,
+                signal_ids=ids,
+                trigger=str(trigger or "signal_bus"),
+                reason=reason,
+                emitted_at=emitted_at,
+            )
+        except Exception as exc:
+            logger.debug("runtime_signal_queue wake from bridge failed: %s", exc)
+
     async def _bridge_emission(self, payload: dict[str, Any]) -> None:
         signal_id = str(payload.get("signal_id") or "").strip()
         if signal_id and await _dedup.seen(signal_id):
@@ -227,6 +269,14 @@ class _Bridge:
             self._messages_bridged += 1
         except Exception as exc:
             logger.debug("event_bus.publish for emission bridge failed: %s", exc)
+        await self._wake_runtime_queue(
+            event_type=payload.get("event_type"),
+            source=payload.get("source"),
+            signal_ids=[signal_id] if signal_id else [],
+            trigger=payload.get("trigger"),
+            reason=payload.get("reason"),
+            emitted_at=payload.get("updated_at"),
+        )
 
     async def _bridge_batch(self, payload: dict[str, Any]) -> None:
         signal_ids_raw = payload.get("signal_ids") or []
