@@ -601,6 +601,89 @@ class WorkerHost:
             except asyncio.CancelledError:
                 raise
 
+    async def _run_orchestrator_slo_monitor_loop(self) -> None:
+        """Hot-loop SLO alarm (Phase D).
+
+        Reads the trader orchestrator's per-lane cycle lag from in-process
+        runtime_status and raises a throttled operator alert when the lag
+        exceeds the configured SLA.  The threshold lives in the orchestrator
+        control's ``global_runtime.orchestrator_cycle_slo_seconds`` (default
+        30s; 0 disables) so it is UI-configurable, never a hidden constant.
+
+        The lag itself comes from in-process runtime_status (no DB); only the
+        SLA threshold is refreshed from the control row, once per poll.
+        Trading plane only.
+        """
+        import time as _time
+        from services.notifier_bridge import publish_alert
+        from services.trader_orchestrator_state import read_orchestrator_control
+
+        _POLL_SECONDS = 10.0
+        _ALERT_THROTTLE_SECONDS = 300.0
+        last_alert_mono: dict[str, float] = {}
+
+        # Let the orchestrator warm up before judging cycle lag.
+        try:
+            await asyncio.sleep(30.0)
+        except asyncio.CancelledError:
+            return
+
+        while not self._shutting_down:
+            try:
+                slo_seconds: Optional[float] = None
+                try:
+                    async with AsyncSessionLocal() as session:
+                        control = await read_orchestrator_control(session, read_only=True)
+                    global_runtime = (control.get("settings") or {}).get("global_runtime") or {}
+                    raw_slo = global_runtime.get("orchestrator_cycle_slo_seconds")
+                    slo_seconds = float(raw_slo) if raw_slo is not None else None
+                except Exception:
+                    slo_seconds = None
+
+                if slo_seconds is not None and slo_seconds > 0:
+                    now_mono = _time.monotonic()
+                    for lane in ("general", "crypto"):
+                        snapshot = runtime_status.get_orchestrator(lane)
+                        if not isinstance(snapshot, dict) or not snapshot.get("running"):
+                            continue
+                        last_run_raw = snapshot.get("last_run_at")
+                        last_run = _parse_iso_utc(last_run_raw) if last_run_raw else None
+                        if last_run is None:
+                            continue
+                        lag_seconds = (utcnow() - last_run).total_seconds()
+                        if lag_seconds <= slo_seconds:
+                            continue
+                        if now_mono - last_alert_mono.get(lane, 0.0) < _ALERT_THROTTLE_SECONDS:
+                            continue
+                        last_alert_mono[lane] = now_mono
+                        activity = snapshot.get("current_activity") or "unknown"
+                        logger.warning(
+                            "Orchestrator SLO breach",
+                            plane=self._plane_name,
+                            lane=lane,
+                            lag_seconds=round(lag_seconds, 1),
+                            slo_seconds=slo_seconds,
+                            activity=activity,
+                        )
+                        try:
+                            await publish_alert(
+                                f"Orchestrator SLO breach ({lane}): cycle lag "
+                                f"{lag_seconds:.1f}s > SLA {slo_seconds:.0f}s — trading loop "
+                                f"under resource pressure (activity: {activity})",
+                                category="operator",
+                            )
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Orchestrator SLO monitor cycle failed", exc_info=exc)
+
+            try:
+                await asyncio.sleep(_POLL_SECONDS)
+            except asyncio.CancelledError:
+                raise
+
     async def _run_skeleton_signal_retention_loop(self) -> None:
         """Periodic sweep that DELETEs orphaned `trade_signals`
         skeleton rows on the discovery plane.
@@ -1242,6 +1325,17 @@ class WorkerHost:
             self._background_tasks.append(asyncio.create_task(
                 self._run_trade_signal_pruner_loop(),
                 name="trade-signal-pruner",
+            ))
+
+        # Hot-loop SLO alarm (Phase D): watch the trader orchestrator's
+        # per-cycle lag and raise a throttled operator alert when it breaches
+        # the configured SLA, so resource pressure that stalls trading surfaces
+        # immediately instead of silently degrading fill latency. Trading plane
+        # only — that's where the orchestrator runtime_status lives in-process.
+        if self._plane_name == "trading":
+            self._background_tasks.append(asyncio.create_task(
+                self._run_orchestrator_slo_monitor_loop(),
+                name="orchestrator-slo-monitor",
             ))
 
         # Stuck-skeleton retention sweep (plan 0011): DELETEs orphaned

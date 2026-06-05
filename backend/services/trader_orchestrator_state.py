@@ -424,6 +424,15 @@ def _normalize_global_runtime_settings(value: Any) -> dict[str, Any]:
     runtime_trigger_cycle_timeout_seconds = (
         None if runtime_trigger_value <= 0 else max(3.0, min(60.0, float(runtime_trigger_value)))
     )
+    # Hot-loop SLO alarm threshold (Phase D): max acceptable orchestrator
+    # cycle lag before an operator alert fires. Default 30s (~6 missed 5s
+    # cycles = clear resource saturation); 0 disables the alarm. Surfaced
+    # through global_runtime so it is UI-configurable, never a hidden constant.
+    slo_override = source.get("orchestrator_cycle_slo_seconds")
+    slo_value = safe_float(slo_override, 30.0)
+    orchestrator_cycle_slo_seconds = (
+        None if slo_value <= 0 else max(3.0, min(300.0, float(slo_value)))
+    )
     return {
         "pending_live_exit_guard": _normalize_pending_live_exit_guard(source.get("pending_live_exit_guard")),
         "live_risk_clamps": _normalize_live_risk_clamps(
@@ -435,6 +444,7 @@ def _normalize_global_runtime_settings(value: Any) -> dict[str, Any]:
         "live_provider_health": _normalize_live_provider_health(source.get("live_provider_health")),
         "trader_cycle_timeout_seconds": trader_cycle_timeout_seconds,
         "runtime_trigger_cycle_timeout_seconds": runtime_trigger_cycle_timeout_seconds,
+        "orchestrator_cycle_slo_seconds": orchestrator_cycle_slo_seconds,
     }
 
 
