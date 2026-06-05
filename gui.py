@@ -1273,10 +1273,14 @@ class HomerunApp:
             svc = self._plane_service_labels.get(plane)
             if svc is not None:
                 svc_lbl, names = svc
+                if names:
+                    shown = "  ".join(self._short_name(n) for n in names[:3])
+                    extra = len(names) - 3
+                    txt = "svc · " + shown + (f"  +{extra}" if extra > 0 else "")
+                else:
+                    txt = ""
                 try:
-                    svc_lbl.configure(
-                        text=("svc · " + "  ".join(self._short_name(n) for n in names)) if names else "",
-                        fg=(FG if alive else FG_DIM))
+                    svc_lbl.configure(text=txt, fg=(FG if alive else FG_DIM))
                 except tk.TclError:
                     pass
 
