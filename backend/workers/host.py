@@ -559,77 +559,6 @@ class WorkerHost:
 
         self._schedule_background_task(_run(), name=f"{self._plane_name}-{task_name}")
 
-    async def _run_orchestrator_task_dump_loop(self) -> None:
-        """TEMP DIAGNOSTIC (remove after root-cause): every 30s log the await
-        stack of any asyncio task whose stack touches the trader orchestrator,
-        so a hung "starting" orchestrator reveals exactly where it is suspended.
-        py-spy cannot see suspended coroutines; asyncio task.get_stack() can."""
-        await asyncio.sleep(40.0)
-        while not self._shutting_down:
-            try:
-                for task in list(asyncio.all_tasks()):
-                    if task.done():
-                        continue
-                    # task.get_stack() only returns the TOP coroutine's
-                    # suspension frame, not the nested ``await`` chain — so a
-                    # hang deep inside an awaited sub-coroutine (e.g.
-                    # live_execution_service.initialize) is invisible.  Walk
-                    # the ``cr_await`` chain manually to the deepest frame.
-                    try:
-                        frames = []
-                        seen_obj: set[int] = set()
-                        obj = task.get_coro()
-                        while obj is not None and id(obj) not in seen_obj:
-                            seen_obj.add(id(obj))
-                            fr = (
-                                getattr(obj, "cr_frame", None)
-                                or getattr(obj, "gi_frame", None)
-                                or getattr(obj, "ag_frame", None)
-                            )
-                            if fr is not None:
-                                _fn = fr.f_code.co_filename.replace(chr(92), "/").rsplit("/", 1)[-1]
-                                frames.append(f"{_fn}:{fr.f_lineno}:{fr.f_code.co_name}")
-                            obj = (
-                                getattr(obj, "cr_await", None)
-                                or getattr(obj, "gi_yieldfrom", None)
-                                or getattr(obj, "ag_await", None)
-                            )
-                    except Exception:
-                        continue
-                    joined = " <- ".join(frames)
-                    if any(
-                        marker in joined
-                        for marker in (
-                            "trader_orchestrator_worker",
-                            "_run_trader_once",
-                            "_wait_for_runtime_trigger",
-                            "live_execution_service",
-                            "_resolve_polymarket",
-                            "_approve_clob_allowance",
-                            "sync_positions",
-                            "_bootstrap_wallet_state_cache",
-                        )
-                    ):
-                        logger.warning(
-                            "ORCH-TASK-DUMP",
-                            task_name=task.get_name(),
-                            stack=joined[-700:],
-                        )
-                        try:
-                            import os as _os
-                            _p = r"C:\homerun\output\tec_research\orch_task_dump.log"
-                            _os.makedirs(_os.path.dirname(_p), exist_ok=True)
-                            with open(_p, "a", encoding="utf-8") as _f:
-                                _f.write(f"{task.get_name()} :: {joined}\n")
-                        except Exception:
-                            pass
-            except Exception as exc:
-                logger.warning("orchestrator task dump failed", exc_info=exc)
-            try:
-                await asyncio.sleep(30.0)
-            except asyncio.CancelledError:
-                raise
-
     async def _run_trade_signal_pruner_loop(self) -> None:
         """Periodic pruner: deletes terminal trade_signals past the
         reactivation lookback.  Runs every 5 minutes on the trading
@@ -1313,13 +1242,6 @@ class WorkerHost:
             self._background_tasks.append(asyncio.create_task(
                 self._run_trade_signal_pruner_loop(),
                 name="trade-signal-pruner",
-            ))
-            # TEMP DIAGNOSTIC (remove after root-cause): surface where a hung
-            # "starting" orchestrator is suspended — py-spy can't see suspended
-            # coroutines, asyncio task.get_stack() can.
-            self._background_tasks.append(asyncio.create_task(
-                self._run_orchestrator_task_dump_loop(),
-                name="orch-task-dump-diagnostic",
             ))
 
         # Stuck-skeleton retention sweep (plan 0011): DELETEs orphaned
