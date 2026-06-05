@@ -590,6 +590,14 @@ class WorkerHost:
                             task_name=task.get_name(),
                             stack=joined[-700:],
                         )
+                        try:
+                            import os as _os
+                            _p = r"C:\homerun\output\tec_research\orch_task_dump.log"
+                            _os.makedirs(_os.path.dirname(_p), exist_ok=True)
+                            with open(_p, "a", encoding="utf-8") as _f:
+                                _f.write(f"{task.get_name()} :: {joined}\n")
+                        except Exception:
+                            pass
             except Exception as exc:
                 logger.warning("orchestrator task dump failed", exc_info=exc)
             try:
