@@ -9014,7 +9014,7 @@ async def _build_runtime_trigger_specs(
     traders: list[dict[str, Any]] = []
     mode = "shadow"
     async with AsyncSessionLocal() as session:
-        control = await read_orchestrator_control(session)
+        control = await read_orchestrator_control(session, read_only=True)
         if (
             not bool(control.get("is_enabled", False))
             or bool(control.get("is_paused", True))
@@ -9267,7 +9267,7 @@ async def run_worker_loop(
 
                 # Phase 1: read orchestrator control (single short session).
                 async with AsyncSessionLocal() as session:
-                    control = await read_orchestrator_control(session)
+                    control = await read_orchestrator_control(session, read_only=True)
 
                 # Phase 2: pure-Python derivation from control.  No session.
                 manual_force_cycle = _parse_iso(control.get("requested_run_at")) is not None
@@ -9788,7 +9788,7 @@ async def run_worker_loop(
                 logger.exception("Trader orchestrator worker cycle failed: %s", exc)
                 try:
                     async with AsyncSessionLocal() as session:
-                        control = await read_orchestrator_control(session)
+                        control = await read_orchestrator_control(session, read_only=True)
                         error_stats = await _build_orchestrator_snapshot_metrics(
                             session=session,
                             lane=lane_key,

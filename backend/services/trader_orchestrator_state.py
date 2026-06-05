@@ -5015,7 +5015,13 @@ def _serialize_event(row: TraderEvent) -> dict[str, Any]:
     }
 
 
-async def ensure_orchestrator_control(session: AsyncSession) -> TraderOrchestratorControl:
+async def ensure_orchestrator_control(
+    session: AsyncSession, *, read_only: bool = False
+) -> TraderOrchestratorControl:
+    # read_only=True (the orchestrator hot path) skips the settings
+    # normalization *write* — it only re-orders enabled_strategies, which the
+    # cycle doesn't care about — so a per-cycle control read never contends
+    # with the API/crypto-lane writers on this row.
     row = await session.get(TraderOrchestratorControl, ORCHESTRATOR_CONTROL_ID)
     if row is None:
         row = TraderOrchestratorControl(
@@ -5031,7 +5037,7 @@ async def ensure_orchestrator_control(session: AsyncSession) -> TraderOrchestrat
         session.add(row)
         await _commit_with_retry(session)
         await session.refresh(row)
-    else:
+    elif not read_only:
         normalized_settings = await _normalize_control_settings_for_session(session, row.settings_json)
         if row.settings_json != normalized_settings:
             row.settings_json = normalized_settings
@@ -5064,8 +5070,8 @@ async def ensure_orchestrator_snapshot(session: AsyncSession) -> TraderOrchestra
     return row
 
 
-async def read_orchestrator_control(session: AsyncSession) -> dict[str, Any]:
-    return _serialize_control(await ensure_orchestrator_control(session))
+async def read_orchestrator_control(session: AsyncSession, *, read_only: bool = False) -> dict[str, Any]:
+    return _serialize_control(await ensure_orchestrator_control(session, read_only=read_only))
 
 
 # A process-local runtime_status older than this is treated as stale and the
