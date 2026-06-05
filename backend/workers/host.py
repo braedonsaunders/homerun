@@ -559,6 +559,44 @@ class WorkerHost:
 
         self._schedule_background_task(_run(), name=f"{self._plane_name}-{task_name}")
 
+    async def _run_orchestrator_task_dump_loop(self) -> None:
+        """TEMP DIAGNOSTIC (remove after root-cause): every 30s log the await
+        stack of any asyncio task whose stack touches the trader orchestrator,
+        so a hung "starting" orchestrator reveals exactly where it is suspended.
+        py-spy cannot see suspended coroutines; asyncio task.get_stack() can."""
+        await asyncio.sleep(40.0)
+        while not self._shutting_down:
+            try:
+                for task in list(asyncio.all_tasks()):
+                    if task.done():
+                        continue
+                    try:
+                        stack = task.get_stack(limit=25)
+                    except Exception:
+                        continue
+                    frames = [
+                        f"{f.f_code.co_filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:"
+                        f"{f.f_lineno}:{f.f_code.co_name}"
+                        for f in stack
+                    ]
+                    joined = " <- ".join(frames)
+                    if (
+                        "trader_orchestrator_worker" in joined
+                        or "_run_trader_once" in joined
+                        or "_wait_for_runtime_trigger" in joined
+                    ):
+                        logger.warning(
+                            "ORCH-TASK-DUMP",
+                            task_name=task.get_name(),
+                            stack=joined[-700:],
+                        )
+            except Exception as exc:
+                logger.warning("orchestrator task dump failed", exc_info=exc)
+            try:
+                await asyncio.sleep(30.0)
+            except asyncio.CancelledError:
+                raise
+
     async def _run_trade_signal_pruner_loop(self) -> None:
         """Periodic pruner: deletes terminal trade_signals past the
         reactivation lookback.  Runs every 5 minutes on the trading
@@ -1219,6 +1257,13 @@ class WorkerHost:
             self._background_tasks.append(asyncio.create_task(
                 self._run_trade_signal_pruner_loop(),
                 name="trade-signal-pruner",
+            ))
+            # TEMP DIAGNOSTIC (remove after root-cause): surface where a hung
+            # "starting" orchestrator is suspended — py-spy can't see suspended
+            # coroutines, asyncio task.get_stack() can.
+            self._background_tasks.append(asyncio.create_task(
+                self._run_orchestrator_task_dump_loop(),
+                name="orch-task-dump-diagnostic",
             ))
 
         # Stuck-skeleton retention sweep (plan 0011): DELETEs orphaned
