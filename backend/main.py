@@ -1338,15 +1338,26 @@ _GUI_HEALTH_CACHE_TTL_SECONDS = 5.0
 
 async def _gui_health_db_queries() -> dict:
     """DB-dependent portion of the GUI health check."""
+    fresh_orchestrator_snapshot: dict = {}
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
+        # Read the orchestrator status straight from its authoritative DB
+        # snapshot rather than the worker-status cache.  The orchestrator
+        # runtimes write their dedicated snapshot (not a worker_snapshot
+        # heartbeat), so the cached row can lag — it froze the UI on the
+        # go-live "Live start command queued" state while the orchestrator was
+        # actually cycling live.
+        try:
+            fresh_orchestrator_snapshot = dict(await read_orchestrator_snapshot(session))
+        except Exception:
+            fresh_orchestrator_snapshot = {}
     workers_payload = await get_workers_status_cached_or_fallback()
     worker_status_rows = [
         dict(row)
         for row in workers_payload.get("workers", [])
         if isinstance(row, dict)
     ]
-    orchestrator_snapshot = next(
+    orchestrator_snapshot = fresh_orchestrator_snapshot or next(
         (
             dict(row)
             for row in worker_status_rows

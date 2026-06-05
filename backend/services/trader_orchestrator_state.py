@@ -5068,9 +5068,35 @@ async def read_orchestrator_control(session: AsyncSession) -> dict[str, Any]:
     return _serialize_control(await ensure_orchestrator_control(session))
 
 
+# A process-local runtime_status older than this is treated as stale and the
+# authoritative DB snapshot is read instead (the orchestrator updates its
+# runtime_status every cycle — single-digit seconds — so 30s is generous).
+_RUNTIME_SNAPSHOT_FRESH_SECONDS = 30.0
+
+
 async def read_orchestrator_snapshot(session: AsyncSession) -> dict[str, Any]:
     runtime_snapshot = runtime_status.get_orchestrator()
-    if os.environ.get("HOMERUN_PROCESS_ROLE") == "worker" and runtime_snapshot.get("updated_at") is not None:
+    # Only trust the process-local runtime_status when it is genuinely fresh.
+    # The orchestrator runs in the trading plane; any *other* process (e.g. the
+    # API serving /health/gui) holds a runtime_status last written when it last
+    # touched the orchestrator — e.g. the go-live arm — and never refreshes it.
+    # A role=="worker" API process would otherwise serve that frozen snapshot
+    # ("Live start command queued") while the orchestrator is actually cycling.
+    # Fall back to the authoritative DB snapshot whenever the local copy is stale.
+    runtime_fresh = False
+    if isinstance(runtime_snapshot, dict):
+        _runtime_updated_raw = runtime_snapshot.get("updated_at")
+        if _runtime_updated_raw:
+            try:
+                _runtime_updated_at = as_utc(
+                    datetime.fromisoformat(str(_runtime_updated_raw).replace("Z", "+00:00"))
+                )
+                runtime_fresh = (
+                    utcnow() - _runtime_updated_at
+                ).total_seconds() <= _RUNTIME_SNAPSHOT_FRESH_SECONDS
+            except Exception:
+                runtime_fresh = False
+    if os.environ.get("HOMERUN_PROCESS_ROLE") == "worker" and runtime_fresh:
         return await _apply_wallet_live_exposure_floor(session, _serialize_runtime_snapshot(runtime_snapshot))
     return await _apply_wallet_live_exposure_floor(session, _serialize_snapshot(await ensure_orchestrator_snapshot(session)))
 
