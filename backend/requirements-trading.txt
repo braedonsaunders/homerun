@@ -5,3 +5,7 @@
 py-clob-client-v2>=1.0.0
 eth-account>=0.10.0
 web3>=6.0.0
+# libsecp256k1 (C) bindings. eth-keys auto-selects this over its pure-Python
+# ECDSA backend when present, making every order signature ~23x faster
+# (1.26ms -> 0.055ms; pure-Python signing holds the GIL on the trading loop).
+coincurve>=21.0.0
