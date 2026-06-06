@@ -160,12 +160,6 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "worker_modules": (
             "workers.news_worker",
             "workers.weather_worker",
-            # Cox PH fill-model trainer (lifelines + pandas + scipy).
-            # Lives on the news plane to keep its dependency stack out
-            # of the trading-plane RAM footprint; the trader hot path
-            # only reads the persisted ``fill_probability_models``
-            # active row.
-            "workers.cox_trainer_worker",
         ),
         "runtime_names": (),
         "load_strategy_registry": True,
@@ -218,6 +212,14 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
             # here gives full process isolation from the live
             # orchestrator.  See workers/backtest_worker.py.
             "workers.backtest_worker",
+            # Cox PH fill-model trainer (lifelines + pandas + scipy).  It's
+            # backtest-fidelity infrastructure — the trader hot path only
+            # READS the persisted ``fill_probability_models`` active row — so
+            # it belongs with the other backtest workers here, decoupled from
+            # the news subsystem toggle and kept off the trading plane's RAM.
+            # The worker itself skips the refit when the model is still fresh,
+            # so colocating it here adds no startup cost on a warm model.
+            "workers.cox_trainer_worker",
         ),
         "runtime_names": (),
         # Load the ``traders`` strategy bucket so

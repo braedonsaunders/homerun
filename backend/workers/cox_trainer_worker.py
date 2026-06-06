@@ -51,13 +51,52 @@ async def start_loop() -> None:
         window,
     )
 
-    # Defer the heavy import until the loop actually runs.  pandas +
-    # scipy + lifelines is ~150MB resident; only worth paying once
-    # we're in the long-lived loop, not at module-import time.
-    from services.fill_simulator.cox_trainer import train_and_persist
+    # Lightweight freshness probe — uses only models.database (already
+    # imported) so a fresh-model boot pays NEITHER the ~150MB
+    # pandas/scipy/lifelines import NOR the fit.  The heavy
+    # ``train_and_persist`` import is deferred until a refit is actually due.
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from models.database import FillProbabilityModel
+
+    async def _seconds_since_last_train() -> float | None:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(FillProbabilityModel.trained_at)
+                .order_by(FillProbabilityModel.trained_at.desc())
+                .limit(1)
+            )
+            latest = result.scalar_one_or_none()
+        if latest is None:
+            return None
+        if latest.tzinfo is None:
+            latest = latest.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - latest).total_seconds())
 
     while True:
         try:
+            age = await _seconds_since_last_train()
+            # Training is a periodic batch job (default 6h).  Skip the refit
+            # when the persisted model is still fresh — this keeps the
+            # multi-second Cox fit (and its heavy import) off every process
+            # restart instead of stalling the DB on each live boot.
+            if age is not None and age < interval:
+                remaining = max(60.0, float(interval) - age)
+                logger.info(
+                    "Cox trainer: active model fresh (age=%.0fs < %ds); "
+                    "skipping retrain, next check in %.0fs",
+                    age,
+                    interval,
+                    remaining,
+                )
+                await asyncio.sleep(remaining)
+                continue
+
+            # Only now pay the heavy lifelines/pandas/scipy import.
+            from services.fill_simulator.cox_trainer import train_and_persist
+
             async with AsyncSessionLocal() as session:
                 results = await train_and_persist(
                     session,
