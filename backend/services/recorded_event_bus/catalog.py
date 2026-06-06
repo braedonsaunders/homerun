@@ -32,7 +32,7 @@ from typing import Any, Iterable, Mapping, Optional
 from sqlalchemy import select, delete, update as _sa_update, func as _sa_func, text as _sa_text
 
 from models.database import AsyncSessionLocal, TopicCatalog
-from services.live_pressure import is_db_pressure_active, maybe_mark_db_pressure
+from services.live_pressure import is_db_pressure_active
 from services.recorded_event_bus.envelope import parse_topic
 
 logger = logging.getLogger(__name__)
@@ -499,7 +499,18 @@ async def _flush_scheduled_touch_published() -> None:
                 for slug in slugs:
                     _invalidate_cache(slug)
             except Exception as exc:  # noqa: BLE001
-                maybe_mark_db_pressure(exc, component="topic_catalog.touch_published", ttl_seconds=45.0)
+                # Best-effort bookkeeping — the flush-delay note above states
+                # nothing critical depends on these stats.  Requeue + log, but
+                # do NOT mark global db_pressure: this batch contends on
+                # topic_catalog row locks with the recording plane (a separate
+                # process since the A.1/A.2 plane split), and tripping the
+                # shared breaker here was throttling the live scanner's CORE
+                # heavy scan ("Skipping heavy scan under DB pressure
+                # component=topic_catalog.touch_published" → no opportunities →
+                # no firehose → no terminal updates).  The lowest-priority
+                # writer already backs OFF under pressure (the
+                # is_db_pressure_active gate above); it must never IMPOSE
+                # pressure on higher-priority work.
                 _requeue_touch_published_batch(batch)
                 logger.warning(
                     "topic_catalog.touch_published batch failed",
