@@ -633,14 +633,51 @@ class WorkerHost:
         while not self._shutting_down:
             try:
                 slo_seconds: Optional[float] = None
+                db_snapshots: list = []
                 try:
                     async with AsyncSessionLocal() as session:
                         control = await read_orchestrator_control(session, read_only=True)
+                        try:
+                            from sqlalchemy import text as _sql_text
+                            db_snapshots = list((await session.execute(_sql_text(
+                                "SELECT id, last_run_at, current_activity "
+                                "FROM trader_orchestrator_snapshot WHERE running = true"
+                            ))).mappings().all())
+                        except Exception:
+                            db_snapshots = []
                     global_runtime = (control.get("settings") or {}).get("global_runtime") or {}
                     raw_slo = global_runtime.get("orchestrator_cycle_slo_seconds")
                     slo_seconds = float(raw_slo) if raw_slo is not None else None
                 except Exception:
                     slo_seconds = None
+
+                # Reliable stall capture from the PERSISTED snapshot's last_run_at
+                # (the real cycle-completion time). A hung cycle keeps the
+                # in-process heartbeat fresh but never advances last_run_at, so the
+                # runtime_status-based check below misses it entirely — which is
+                # exactly why an obviously-stalled orchestrator produced no dump.
+                _stall_threshold = max((slo_seconds or 30.0) * 3.0, 90.0)
+                _now_mono2 = _time.monotonic()
+                for _snap in db_snapshots:
+                    _lr = _snap.get("last_run_at")
+                    if _lr is None:
+                        continue
+                    if getattr(_lr, "tzinfo", None) is None:
+                        _lr = _lr.replace(tzinfo=timezone.utc)
+                    _db_lag = (utcnow() - _lr).total_seconds()
+                    if _db_lag <= _stall_threshold:
+                        continue
+                    _sid = str(_snap.get("id") or "?")
+                    if (_now_mono2 - last_alert_mono.get(f"dbstall:{_sid}", 0.0)) < _ALERT_THROTTLE_SECONDS:
+                        continue
+                    last_alert_mono[f"dbstall:{_sid}"] = _now_mono2
+                    logger.warning(
+                        "Orchestrator DB-snapshot STALL — cycle not completing",
+                        snapshot_id=_sid,
+                        lag_seconds=round(_db_lag, 0),
+                        activity=_snap.get("current_activity"),
+                    )
+                    self._dump_orchestrator_await_stacks(_sid, _db_lag)
 
                 if slo_seconds is not None and slo_seconds > 0:
                     now_mono = _time.monotonic()
