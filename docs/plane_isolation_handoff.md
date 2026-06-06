@@ -1,112 +1,119 @@
-# Plane-isolation phases — status & handoff (A.3, B, C, D)
+# Plane-isolation phases — status & handoff
 
-Context: reduce trading-loop saturation by isolating heavy subsystems into
-their own OS-process "planes". Phases A.1/A.2 (recording, scanner/detection)
-landed earlier. This doc covers A.3, B, C, D.
+Goal: stop the trading event loop from saturating by isolating heavy subsystems
+into their own OS-process planes, and by cutting CPU/contention on the hot path.
 
-**Do not push to origin until the operator has tested.** All commits below are
-local-only by request.
+**Do not push to origin until the operator has tested.** All commits local-only.
 
-## Done (committed locally, not pushed)
+## Shipped & verified this session (local commits, not pushed)
 
-### Phase B — read-free orchestrator hot path — `c4b967d4`
-The orchestrator called `read_orchestrator_control()` every cycle (both lanes)
-and on every runtime-trigger spec build. That path runs
-`ensure_orchestrator_control()`, which **writes** a normalized `settings_json`
-row whenever the normalized form differs (it re-orders `enabled_strategies`) —
-i.e. a steady stream of UPDATEs to the single `orchestrator_control` row on the
-hot path, contending with the API and the crypto lane.
-
-Fix: `ensure_orchestrator_control(session, *, read_only=False)` and
-`read_orchestrator_control(session, *, read_only=False)`. With `read_only=True`
-the normalization write is skipped (the cycle does not care about strategy
-ordering). All three orchestrator hot-path reads now pass `read_only=True`.
-Normalization still happens on API/startup writes. Net: zero hot-path writes to
-`orchestrator_control`.
-
-Not done (deliberately): caching the per-cycle `AppSettings` (creds) and
-`list_traders` SELECTs. Those are cheap reads; caching them adds kill-switch /
-creds-staleness risk for little gain. The per-cycle *write* was the contention,
-and it is gone.
+### Phase B — read-only orchestrator control read — `c4b967d4`
+`ensure/read_orchestrator_control(..., read_only=True)` skips the per-cycle
+settings-normalization WRITE (it only re-orders enabled_strategies) on the
+orchestrator hot path. All three hot-path reads use it. Net: zero hot-path
+writes to the single `orchestrator_control` row from the cycle loop. (Did NOT
+cache AppSettings/list_traders SELECTs — kill-switch/creds staleness risk, low
+gain. The per-cycle write was the contention.)
 
 ### Phase D — hot-loop SLO alarm — `2dadecd5`
-`host._run_orchestrator_slo_monitor_loop()` (trading plane only) reads the
-orchestrator's per-lane cycle lag (`now - last_run_at`) from in-process
-`runtime_status` and raises a throttled operator alert (`notifier_bridge.publish_alert`,
-5-min per-lane throttle) when the lag exceeds the SLA — surfacing resource-pressure
-stalls immediately instead of only as degraded fill latency, and well under the
-~180 s heartbeat-restart line.
+`host._run_orchestrator_slo_monitor_loop` (trading plane) reads orchestrator
+cycle lag (`now - last_run_at`) from in-process runtime_status and raises a
+throttled operator alert when it exceeds the SLA. Threshold is a UI-configurable
+`global_runtime.orchestrator_cycle_slo_seconds` (default 30s, 0=off) — no hidden
+constant. D's CPU-pool half was the earlier cpu-pool=56 work.
 
-Threshold is a first-class UI-configurable `global_runtime` field,
-`orchestrator_cycle_slo_seconds` (default 30 s; `0` disables), normalized in
-`_normalize_global_runtime_settings` alongside `trader_cycle_timeout_seconds` —
-no hidden constant (per the no-hardcoded-settings rule).
+### C-backed order signing (coincurve) — `5a5fa7e0`
+Verified `eth-keys` was on its pure-Python `NativeECCBackend` because coincurve
+wasn't installed — every order signature did ECDSA over secp256k1 in pure
+Python (1.26ms, holding the GIL on the trading loop). Installed `coincurve`
+(libsecp256k1 C bindings); eth-keys auto-flips to it. Verified: signatures
+byte-identical (RFC 6979), eth_account sign+recover intact, **23x faster
+(1.26ms → 0.055ms; 794/s → 18,290/s)**. keccak256 already C-backed
+(pycryptodome). Pinned in requirements-trading.txt.
 
-Phase D's other half — pushing more CPU-bound work onto the existing process
-pool (`cpu-pool=56`, landed under the earlier saturation task) — is incremental
-and out of scope here.
+## Corrected architecture (verified — supersedes the earlier "C before A.3")
 
-## Blocked / foundational: C must precede A.3
+The earlier note assumed reconcile had to move with exits, forcing a C-first
+execution-core extraction. **Verified false.** Exits are already isolated:
 
-### The verified dependency
-A.3 ("move reconciliation to its own plane") **cannot be done before C**, and a
-prior "split-only" note that assumed `reconcile_live_positions` was read-only
-drift detection was wrong. Verified in code:
+- `services/trader_orchestrator/exit_risk_loop.py` is a **dedicated fast exit
+  engine** on the trading plane: 2s sweep, its own `FastAsyncSessionLocal` pool
+  (2.5s stmt / 500ms lock timeout — never queues behind the saturated worker
+  pool), **WS price-change wake (sub-second)**, evaluates every open live
+  position, sells via the shared `execute_position_exit`. This is the primary
+  stop-loss/take-profit path, and it stays on trading. (Operator's call, correct.)
+- `reconcile_live_positions` (position_lifecycle.py:6102, ~4.5k lines) is ~95%
+  COLD housekeeping — wallet REST syncs, terminal audit, drift detection, mark
+  refresh, bulk DB reconcile — plus a **backstop** that fires only when
+  exit_risk_loop is stale >10s (line 10602; logs "reconcile STOP BACKSTOP
+  fired"). In normal operation the backstop is a no-op.
 
-`services/trader_orchestrator/position_lifecycle.py:6102 reconcile_live_positions`
-is the **live position-lifecycle / exit-execution engine**, not read-only
-detection. Its docstring: *"Handles: stop-loss, take-profit, trailing stop, max
-hold, market inactivity, and resolution detection."* When an exit trigger fires
-it **places and cancels real orders** via `live_execution_service`
-(`cancel_order`, ladder `place_order` at lines ~5751, ~8769–8857, ~9274) and
-does hot-path `WalletStateCache` reads (`get_wallet_state_cache`, ~3730–3794).
+**Consequences:**
+- **Phase C (execution-core process) is unnecessary and dropped.** Only the
+  trading plane ever needs to place orders (exit_risk_loop + backstop), so
+  execution has no multi-writer problem to solve and no reason to be its own
+  process. Order submit is IO-bound (awaits the CLOB, yields the loop) — not a
+  saturation source; the signing CPU was, and coincurve fixed that.
+- **The real saturation is the per-candidate CPU loop in reconcile + its DB-pool
+  contention**, both sharing the orchestrator's process/GIL/pool. That is what
+  moving the cold reconcile to its own plane removes.
 
-`live_execution_service` (CLOB client, `_orders` cache, nonce/allowance state)
-is trading-plane-resident. Therefore moving `reconcile_live_positions` to a
-separate plane **before** execution is its own IPC-accessible process would
-orphan it from `live_execution_service` — live positions would stop getting
-their protective stop-loss / take-profit exits. Catastrophic. So: **C first,
-then A.3.**
+## Cold-reconcile split — execution plan (the remaining work, A.3 redefined)
 
-### Phase C — dedicated execution-core process (the foundational change)
-Extract `live_execution_service` into its own OS process so order submission is
-off the trading event loop and callable from any plane.
+Move the heavy reconcile to a new `reconciliation` plane in **detection-only,
+no-execution** mode. Keep exit_risk_loop + the backstop on the trading plane.
 
-- New plane `execution` running an execution-core that **owns** the CLOB client,
-  the `_orders` cache, and nonce/allowance/signature state. It is the **single
-  writer** of orders — no split-brain on nonces/allowances across planes.
-- In-process **client proxy** with the same surface as today's
-  `live_execution_service` so call sites (`position_lifecycle`, the orchestrator,
-  the fast trader) are unchanged. The proxy forwards mutating calls
-  (`place_order`, `cancel_order`, `prepare_sell_balance_allowance`) over IPC
-  (Redis req/reply or a dedicated socket) to the execution-core; idempotency
-  keys on every submit so a retried IPC call cannot double-submit.
-- Reads (`get_order`, `get_order_snapshots_by_clob_ids`) served from a
-  replicated read cache or the same IPC.
-- Exit hot path latency budget: stop-loss must still fire fast — measure IPC
-  round-trip and keep it well inside the exit cadence.
+**Why this is a focused, tested change, not a rush:** `reconcile_live_positions`
+contains ~12 mutating live-execution call sites across distinct close contexts
+(external-close, wallet-flatten, inactivity, resolution-extreme, backstop,
+ladder, simple exit). Grep `live_execution_service.cancel_order|execute_live_order
+|run_exit_pass|prepare_sell_balance_allowance` in position_lifecycle.py — the
+ones inside 6102–11466 are: 8774, 8833, 8857, 9274, 9310/9312, 9332/9334, 9736/
+9738, 10719, 10824, 10831/10832, 10922/10924. A cold plane must touch NONE of
+them.
 
-### Phase A.3 — reconciliation plane (after C)
-Once C lands: move `reconcile_live_positions` / `_run_reconciliation_cycle` to a
-new `reconciliation` plane that reaches execution through the **same client
-proxy** as trading. Keep `_run_wallet_cache_reseeder_loop` on trading (the
-`WalletStateCache` freshness gate — trading halts without it) **and** run a
-reseeder on the reconciliation plane (the heavy reconcile does hot-path cache
-reads, so that plane needs a fresh cache too). Add the plane to
-`host._PLANE_CONFIGS` and the GUI `_WORKER_PLANES` / `_WORKER_PLANE_BY_NAME`.
-Heartbeat must be plane-distinct or the per-plane watchdog can't detect a hung
-worker (don't let two planes write the same `worker_snapshot` row).
+**Recommended mechanism (M1):** add `place_exits: bool = True` to
+`reconcile_live_positions`, gating every mutating execution call site (and the
+backstop block at 10602). When `place_exits=False`: still compute "would-close"
+detail/counters (useful telemetry), but never call live_execution_service /
+execute_live_order / run_exit_pass / prepare_sell_allowance. Default True keeps
+ALL existing callers byte-identical.
 
-### Verification gate for C + A.3
-1. Live exits still fire after C: force a stop-loss / take-profit on a live test
-   position; confirm the sell submits and fills.
-2. No duplicate / dropped orders under IPC retry (kill the execution-core
-   mid-submit; confirm idempotency).
-3. After A.3: reconciliation-plane drift output matches what trading produced
-   pre-split, byte-for-byte on the same inputs.
+**The safety invariant that makes M1 shippable** — a unit test that mocks
+live_execution_service, execute_live_order, run_exit_pass, and
+_prepare_sell_allowance_bounded, runs reconcile_live_positions with
+`place_exits=False` over a fixture of live positions (including stop-loss /
+trailing / wallet-flatten triggers), and asserts **call_count == 0** on all of
+them. That converts "12 scattered sites" into one verifiable guarantee.
 
-## Why C/A.3 weren't rushed here
-C rewrites the live order-submission path (real money). Per the institutional-
-grade / no-shortcut rule, it needs fresh context and the verification gate
-above, not a rushed end-of-context attempt. B and D were independent and safe to
-land now; A.3 is hard-blocked on C.
+**Then:**
+1. Add a `reconciliation` plane to `host._PLANE_CONFIGS`: `worker_modules =
+   ("workers.trader_reconciliation_worker",)`, its own DB pool, **no
+   live_execution init**, empty runtime_names. Add to GUI `_WORKER_PLANES` /
+   `_WORKER_PLANE_BY_NAME`.
+2. Gate the reconciliation worker by `HOMERUN_WORKER_PLANE`:
+   - `reconciliation` plane: run the heavy cycle with `place_exits=False`.
+   - `trading` plane: run a cheap backstop pass (`place_exits=True`, skip the
+     heavy REST/terminal-audit/bulk-reconcile-write) so the safety net stays
+     local — OR drop the trading reconcile entirely and have the cold plane
+     enqueue stale-loop closes via `publish_signal_batch` (runtime_signal_queue)
+     for the trading plane to act on. Prefer keeping the cheap local backstop;
+     it's simpler and never weakens the net.
+   - Plane-distinct heartbeat name so the per-plane watchdog can detect a hung
+     worker (don't let two planes write the same `worker_snapshot` row).
+3. Dual-writer scoping: the cold plane must not write exit/status columns the
+   trading backstop owns. Money path stays single-executor on trading; a cold
+   bookkeeping race is self-healing on the next cycle (worst case a mismarked
+   reconcile field, never a missed/duplicate live order).
+
+**Wallet-cache reseeder** (`_run_wallet_cache_reseeder_loop`) stays on trading
+(WalletStateCache freshness gate) AND runs on the reconciliation plane (the cold
+reconcile reads the cache).
+
+### Verification gate
+1. The `place_exits=False ⇒ zero execution calls` unit test (above) is green.
+2. Existing reconcile tests pass unchanged (defaults preserved).
+3. Live exits still fire after the cutover: force a stop-loss on a live test
+   position; confirm exit_risk_loop sells. Kill exit_risk_loop; confirm the
+   backstop still closes.
+4. Cold reconcile drift output matches pre-split on the same inputs.
