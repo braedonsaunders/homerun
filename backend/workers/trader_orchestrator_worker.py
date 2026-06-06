@@ -9034,7 +9034,17 @@ async def _build_runtime_trigger_specs(
             )
             if _trader_matches_lane(trader, lane_key) and not _is_fast_tier_trader(trader)
         ]
-    if mode == "live" and not await live_execution_service.ensure_initialized():
+    if mode == "live" and not live_execution_service.is_ready():
+        # Non-blocking readiness check — NEVER await ensure_initialized() on the
+        # orchestrator hot path. ensure_initialized() runs the full
+        # live_execution.initialize() under init_lock; when a provider flakes
+        # (CLOB read timeout / Polygon RPC evicted) that init is slow or fails,
+        # so awaiting it here held the lock and stalled the cycle for minutes —
+        # the ingest-lag / stale-fill regression. The scheduled-cycle gate was
+        # already switched to is_ready() (4c43e5a4); this is its runtime-trigger
+        # twin, which the A.2 cross-plane signal path made hot. Background init
+        # (host._initialize_live_execution_background) keeps retrying; the cycle
+        # resumes the instant live execution is ready.
         return control, [], 3.0
     control_settings = dict((control or {}).get("settings") or {})
     global_runtime_settings = dict(control_settings.get("global_runtime") or {})
