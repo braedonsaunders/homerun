@@ -59,6 +59,26 @@ _inflight_timed_tasks: dict[str, asyncio.Task] = {}
 _last_pressure_snapshot_skip_log_at = 0.0
 _last_pressure_heavy_skip_log_at = 0.0
 
+# Only the scan's OWN DB write path failing (snapshot persist / detection
+# enqueue) is a real reason to shed the heavy scan — genuine scan-path
+# contention, with a self-correcting loop (the heavy scan's own writes
+# re-trip pressure if the DB is truly overloaded, backing it off within a
+# cycle).  Peripheral pressure must NOT halt scanning: universe re-hydrate
+# has a cached fallback, heartbeat/clear are liveness/control, and
+# topic_catalog bookkeeping is cross-plane recording contention.  Halting
+# the scan on those starves the whole live pipeline of trade_signals
+# (no scan -> no signals -> no orchestrator decisions -> no terminal
+# updates) — the exact regression the A.1/A.2 plane split surfaced.
+_SCAN_PATH_PRESSURE_COMPONENTS = frozenset({"scanner_snapshot", "scanner_enqueue"})
+
+
+def _scan_path_under_pressure() -> bool:
+    """True only when the scan's own DB write path is the pressure source."""
+    if not is_db_pressure_active():
+        return False
+    component = str(db_pressure_snapshot().get("component") or "").strip()
+    return component in _SCAN_PATH_PRESSURE_COMPONENTS
+
 
 class _TimedTaskStillRunningError(RuntimeError):
     pass
@@ -666,7 +686,7 @@ async def _run_scan_loop() -> None:
                     scanner._current_activity = f"Heavy lane degraded: {reason}{until_suffix}"
                 if not forced_degrade_enabled:
                     last_forced_degrade_log = None
-                if run_heavy_now and is_db_pressure_active():
+                if run_heavy_now and _scan_path_under_pressure():
                     run_heavy_now = False
                     heartbeat_state["phase"] = "degraded"
                     heartbeat_state["progress"] = 0.6
