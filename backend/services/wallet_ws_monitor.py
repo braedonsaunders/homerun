@@ -112,6 +112,17 @@ _RPC_429_RETRY_AFTER_FALLBACK_SECONDS = 60.0  # If Retry-After header missing
 # pass ``permanent=True`` and stay out forever.
 _RPC_EVICTION_RETRY_AFTER_SECONDS = 1800.0  # 30 min
 
+# Coalesce on-chain OrderFilled scans into ONE ranged eth_getLogs at most this
+# often, instead of one call per Polygon block (~2s ⇒ ~30 calls/min — the
+# dominant RPC credit burn). The CLOB user-WS is the primary fill signal; this
+# on-chain scan is a reconciliation backstop, so a few seconds of coalescing
+# latency is fine and cuts the call volume (and provider credit spend) ~7x.
+_BLOCK_QUERY_INTERVAL_SECONDS = 15.0
+# Cap blocks per ranged getLogs so a long WS gap can't request an unbounded span
+# (eth_getLogs result-size limits); older gaps are the reconciliation backstop's
+# job, not this scan's.
+_MAX_BLOCK_QUERY_SPAN = 500
+
 
 # ==================== DATA MODEL ====================
 
@@ -533,7 +544,18 @@ class WalletWebSocketMonitor:
         # it so it rejoins rotation on its own once it's healthy again.
         self._configured_primary_rpc_url: str = ""
         self._configured_primary_reprobe_at: float = 0.0
-        self._configured_primary_reprobe_interval_seconds: float = 300.0
+        # Faster recovery: re-probe the evicted primary every 2 min (was 5) so a
+        # re-funded key (credits topped up) rejoins rotation shortly. It re-admits
+        # to position 0 for the next request to validate; with the block-query
+        # coalescing throttle below that's ~1 request / 2 min, not a burst.
+        self._configured_primary_reprobe_interval_seconds: float = 120.0
+        # Alert-once latch so a still-dead key re-probing every 2 min doesn't
+        # re-spam the WARNING; cleared (and a RECOVERED line logged) when it works.
+        self._primary_eviction_alerted: bool = False
+        # eth_getLogs coalescing throttle (see _BLOCK_QUERY_INTERVAL_SECONDS).
+        self._last_block_query_mono: float = 0.0
+        self._block_query_interval_seconds: float = _BLOCK_QUERY_INTERVAL_SECONDS
+        self._max_block_query_span: int = _MAX_BLOCK_QUERY_SPAN
         # Fix SS — per-endpoint consecutive-failure counter.  401/403 already
         # evict immediately (auth required), and the existing
         # ``_rpc_error_requires_auth`` / ``unsupported_logs_query`` heuristics
@@ -617,14 +639,19 @@ class WalletWebSocketMonitor:
         # routine eviction of a free fallback. Surface it at WARNING with
         # the masked URL so it isn't buried among the per-endpoint failures.
         if normalized == self._configured_primary_rpc_url:
-            logger.warning(
-                "Wallet monitor: CONFIGURED primary RPC evicted — now running on "
-                "fallback endpoints. Check the provider (key disabled / credits / "
-                "billing). It will be re-probed automatically every %ds.",
-                int(self._configured_primary_reprobe_interval_seconds),
-                primary_rpc_url=_mask_rpc_url(normalized),
-                permanent=permanent,
-            )
+            # Alert-once: a still-dead key re-probing every interval re-enters
+            # this path and would otherwise re-spam the WARNING each cycle.
+            if not self._primary_eviction_alerted:
+                logger.warning(
+                    "Wallet monitor: CONFIGURED primary RPC evicted — now running on "
+                    "fallback endpoints. Check the provider (key disabled / credits / "
+                    "billing). It will be re-probed automatically every %ds and switch "
+                    "back on its own once it's healthy.",
+                    int(self._configured_primary_reprobe_interval_seconds),
+                    primary_rpc_url=_mask_rpc_url(normalized),
+                    permanent=permanent,
+                )
+                self._primary_eviction_alerted = True
             # Arm the re-probe clock from the eviction moment so the first
             # retry waits a full interval rather than firing immediately.
             self._configured_primary_reprobe_at = time.monotonic()
@@ -666,6 +693,16 @@ class WalletWebSocketMonitor:
         normalized = _normalize_rpc_http_url(endpoint)
         if normalized:
             self._rpc_endpoint_consecutive_failures.pop(normalized, None)
+            # Configured primary came back (e.g. credits topped up and the
+            # re-probe re-admitted it) — clear the alert latch and log the
+            # recovery so the operator sees it switch back on its own.
+            if normalized == self._configured_primary_rpc_url and self._primary_eviction_alerted:
+                self._primary_eviction_alerted = False
+                logger.warning(
+                    "Wallet monitor: configured primary RPC RECOVERED — back in "
+                    "rotation (provider healthy again).",
+                    primary_rpc_url=_mask_rpc_url(normalized),
+                )
 
     def _note_rpc_endpoint_failure(self, endpoint: str) -> bool:
         """Increment the consecutive-failure counter.
@@ -1321,7 +1358,28 @@ class WalletWebSocketMonitor:
         if self._rpc_backoff_until > time.monotonic():
             return
 
+        # Coalesce blocks into a single ranged eth_getLogs at most every
+        # _block_query_interval_seconds. This previously fired one eth_getLogs
+        # per block (~30/min on Polygon) — the dominant RPC credit burn. We now
+        # wait out the interval, then query EVERY block since the last scan in
+        # one ranged call, so no block is dropped — just batched.
+        now_mono = time.monotonic()
+        if (now_mono - self._last_block_query_mono) < self._block_query_interval_seconds:
+            return
+        self._last_block_query_mono = now_mono
+
+        from_block = (
+            self._last_processed_block + 1
+            if self._last_processed_block is not None
+            else block_number
+        )
+        if from_block < block_number - self._max_block_query_span:
+            from_block = block_number - self._max_block_query_span
+        if from_block > block_number:
+            from_block = block_number
+
         block_hex = hex(block_number)
+        from_hex = hex(from_block)
 
         try:
             block_timestamp = int(block_timestamp_hex, 16)
@@ -1329,8 +1387,9 @@ class WalletWebSocketMonitor:
             block_timestamp = 0
 
         try:
-            # Query logs via HTTP RPC (more reliable for getLogs)
-            logs = await self._get_logs_for_block(block_hex)
+            # Query logs via HTTP RPC (more reliable for getLogs) — ranged
+            # [from_block, block_number] so coalesced blocks are all covered.
+            logs = await self._get_logs_for_block(block_hex, from_block_hex=from_hex)
             if logs is None:
                 failures = self._block_failure_counts.get(block_number, 0) + 1
                 self._block_failure_counts[block_number] = failures
@@ -1381,11 +1440,14 @@ class WalletWebSocketMonitor:
             )
             self._stats["errors"] += 1
 
-    async def _get_logs_for_block(self, block_hex: str) -> Optional[list[dict]]:
-        """Fetch OrdersFilled event logs for a specific block from the HTTP RPC.
+    async def _get_logs_for_block(
+        self, block_hex: str, from_block_hex: Optional[str] = None
+    ) -> Optional[list[dict]]:
+        """Fetch OrderFilled event logs for a block (or block range) from RPC.
 
         Args:
-            block_hex: Block number as a hex string (e.g. '0x1a2b3c').
+            block_hex: The latest (to) block number as a hex string.
+            from_block_hex: Range start; defaults to ``block_hex`` (single block).
 
         Returns:
             List of log entries matching the filter criteria.
@@ -1396,7 +1458,7 @@ class WalletWebSocketMonitor:
             "method": "eth_getLogs",
             "params": [
                 {
-                    "fromBlock": block_hex,
+                    "fromBlock": from_block_hex or block_hex,
                     "toBlock": block_hex,
                     "address": list(POLYMARKET_EXCHANGE_ADDRESSES_V2),
                     "topics": [ORDER_FILLED_TOPIC],
