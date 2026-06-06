@@ -419,7 +419,7 @@ async def test_handle_block_does_not_advance_cursor_on_rpc_failure(monkeypatch):
     monitor.add_wallet("0x1111111111111111111111111111111111111111")
     monitor._last_processed_block = 100
 
-    async def _raise_timeout(_: str):
+    async def _raise_timeout(_, from_block_hex=None):
         raise TimeoutError()
 
     monkeypatch.setattr(monitor, "_get_logs_for_block", _raise_timeout)
@@ -437,7 +437,7 @@ async def test_handle_block_advances_cursor_when_rpc_succeeds(monkeypatch):
     monitor.add_wallet("0x1111111111111111111111111111111111111111")
     monitor._last_processed_block = 100
 
-    async def _return_logs(_: str):
+    async def _return_logs(_, from_block_hex=None):
         return []
 
     monkeypatch.setattr(monitor, "_get_logs_for_block", _return_logs)
