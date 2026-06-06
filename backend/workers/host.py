@@ -667,6 +667,13 @@ class WorkerHost:
                             slo_seconds=slo_seconds,
                             activity=activity,
                         )
+                        # On a SEVERE stall (cycle minutes behind, not merely
+                        # slow), dump the orchestrator's await-stack so the exact
+                        # suspended line is captured. The lag alarm says the
+                        # cycle is parked; only the stack says WHERE — and that's
+                        # what's needed to fix the ingest-lag (stale-fill) stall.
+                        if lag_seconds > max(slo_seconds * 3.0, 60.0):
+                            self._dump_orchestrator_await_stacks(lane, lag_seconds)
                         try:
                             await publish_alert(
                                 f"Orchestrator SLO breach ({lane}): cycle lag "
@@ -685,6 +692,43 @@ class WorkerHost:
                 await asyncio.sleep(_POLL_SECONDS)
             except asyncio.CancelledError:
                 raise
+
+    def _dump_orchestrator_await_stacks(self, lane: str, lag_seconds: float) -> None:
+        """Dump the await-stack of every asyncio task parked in orchestrator
+        code, so a multi-minute cycle stall is captured with the exact line it
+        is suspended on. ``task.print_stack`` on a suspended coroutine yields
+        the await chain — which the lag alarm alone cannot provide."""
+        import io
+
+        try:
+            tasks = asyncio.all_tasks()
+        except Exception:
+            return
+        dumped = 0
+        for task in tasks:
+            try:
+                frames = task.get_stack()
+                if not frames:
+                    continue
+                if not any(
+                    "trader_orchestrator" in (getattr(getattr(f, "f_code", None), "co_filename", "") or "")
+                    for f in frames
+                ):
+                    continue
+                buf = io.StringIO()
+                task.print_stack(file=buf)
+                logger.warning(
+                    "ORCHESTRATOR STALL await-stack lane=%s lag=%.0fs task=%s:\n%s",
+                    lane,
+                    lag_seconds,
+                    task.get_name(),
+                    buf.getvalue(),
+                )
+                dumped += 1
+                if dumped >= 8:
+                    break
+            except Exception:
+                continue
 
     async def _run_skeleton_signal_retention_loop(self) -> None:
         """Periodic sweep that DELETEs orphaned `trade_signals`
