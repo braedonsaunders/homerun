@@ -736,34 +736,67 @@ class WorkerHost:
         is suspended on. ``task.print_stack`` on a suspended coroutine yields
         the await chain — which the lag alarm alone cannot provide."""
         import io
+        import inspect as _inspect
 
         try:
             tasks = list(asyncio.all_tasks())
         except Exception:
             return
-        # Dump EVERY pending task's full frame chain — NOT filtered to
-        # trader_orchestrator. A hung cycle is typically suspended awaiting an
-        # inner shielded task whose coroutine lives in another module
-        # (live_execution, market-context, reconcile, …); filtering to the
-        # orchestrator hid exactly that, and print_stack on the outer task only
-        # showed `await run_worker_loop`. Full filename:lineno:func per frame.
+        # task.get_stack() only returns the TOP frame for these coroutines, so
+        # walk the cr_await chain by hand: coro.cr_frame gives the suspended
+        # line, coro.cr_await gives what it's awaiting (a sub-coroutine to
+        # descend into, or a Task/Future — and a Task we descend into via
+        # get_coro()). That reconstructs the real deep chain, including the
+        # shielded inner task that the cycle is actually parked on.
         buf = io.StringIO()
         buf.write(
-            f"=== ORCHESTRATOR STALL full task dump lane={lane} "
-            f"lag={lag_seconds:.0f}s pending_tasks={len(tasks)} ===\n"
+            f"=== ORCH STALL cr_await walk lane={lane} lag={lag_seconds:.0f}s tasks={len(tasks)} ===\n"
         )
         for task in tasks:
             try:
-                frames = task.get_stack(limit=None)
-                if not frames:
+                chain: list[str] = []
+                obj = task.get_coro()
+                seen: set[int] = set()
+                steps = 0
+                while obj is not None and steps < 80:
+                    steps += 1
+                    if id(obj) in seen:
+                        break
+                    seen.add(id(obj))
+                    frame = (
+                        getattr(obj, "cr_frame", None)
+                        or getattr(obj, "gi_frame", None)
+                        or getattr(obj, "ag_frame", None)
+                    )
+                    if frame is not None:
+                        co = frame.f_code
+                        chain.append(f"{co.co_filename}:{frame.f_lineno} {co.co_name}")
+                    nxt = (
+                        getattr(obj, "cr_await", None)
+                        or getattr(obj, "gi_yieldfrom", None)
+                        or getattr(obj, "ag_await", None)
+                    )
+                    if nxt is None:
+                        break
+                    if _inspect.iscoroutine(nxt) or _inspect.isgenerator(nxt):
+                        obj = nxt
+                        continue
+                    nm = nxt.get_name() if hasattr(nxt, "get_name") else ""
+                    chain.append(f"<await {type(nxt).__name__} {nm}>")
+                    gc = getattr(nxt, "get_coro", None)
+                    if callable(gc):
+                        try:
+                            obj = gc()
+                            continue
+                        except Exception:
+                            break
+                    break
+                # Skip trivial idle tasks (one frame parked on a sleep/future).
+                if len(chain) < 2 and not any("trader_orchestrator" in c for c in chain):
                     continue
-                buf.write(f"\n--- task={task.get_name()} frames={len(frames)} ---\n")
-                for f in frames:
-                    code = getattr(f, "f_code", None)
-                    fn = getattr(code, "co_filename", "?")
-                    ln = getattr(f, "f_lineno", 0)
-                    nm = getattr(code, "co_name", "?")
-                    buf.write(f"  {fn}:{ln} in {nm}\n")
+                buf.write(f"\n--- task={task.get_name()} depth={len(chain)} ---\n")
+                for c in chain:
+                    buf.write(f"  {c}\n")
             except Exception:
                 continue
         logger.warning("%s", buf.getvalue())
