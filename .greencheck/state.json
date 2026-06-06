@@ -1,11 +1,11 @@
 {
-  "runId": 1779406784374,
-  "workflowRunId": 26259162456,
+  "runId": 1780757864515,
+  "workflowRunId": 27065353658,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/26259162456",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/27065353658",
   "branch": "main",
-  "headSha": "b88ad2e13f9487bb43d3ac58375b421a58ff17de",
+  "headSha": "b0376ce122d3ed02c18127fac923c64c8b4df1a2",
   "prNumber": null,
   "passes": [
     {
@@ -13,110 +13,60 @@
       "cluster": {
         "type": "test-failure",
         "files": [
-          "backend/tests/test_gate_metrics.py"
+          "backend/tests/test_wallet_ws_monitor.py"
         ],
         "failures": [
           {
             "type": "test-failure",
-            "file": "backend/tests/test_gate_metrics.py",
+            "file": "backend/tests/test_wallet_ws_monitor.py",
             "line": null,
             "column": null,
-            "message": "AssertionError: Expected budget-violation warning, got: []",
+            "message": "assert 100 == 101",
             "rule": null,
-            "rawLog": "FAILED tests/test_gate_metrics.py::test_budget_violation_logs_when_p95_exceeds_2x_budget - AssertionError: Expected budget-violation warning, got: []",
+            "rawLog": "FAILED tests/test_wallet_ws_monitor.py::test_handle_block_advances_cursor_when_rpc_succeeds - assert 100 == 101",
             "confidence": 0.7
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "853494a33ae203fc123901b4306708ae44eec66e",
+      "commitSha": "79c772c2c3cf879931dc7fad5420b6e1e9814783",
       "filesChanged": [
-        "backend/services/trader_orchestrator/gate_pipeline.py"
+        "backend/tests/test_wallet_ws_monitor.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 282790
+      "durationMs": 211659
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-05-21T23:39:44.374Z",
+  "startedAt": "2026-06-06T14:57:44.515Z",
   "result": null,
   "commits": [
-    "853494a33ae203fc123901b4306708ae44eec66e"
+    "79c772c2c3cf879931dc7fad5420b6e1e9814783"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_gate_metrics.py",
+      "file": "backend/tests/test_wallet_ws_monitor.py",
       "line": null,
       "column": null,
-      "message": "AssertionError: Expected budget-violation warning, got: []",
+      "message": "assert 100 == 101",
       "rule": null,
-      "rawLog": "FAILED tests/test_gate_metrics.py::test_budget_violation_logs_when_p95_exceeds_2x_budget - AssertionError: Expected budget-violation warning, got: []",
+      "rawLog": "FAILED tests/test_wallet_ws_monitor.py::test_handle_block_advances_cursor_when_rpc_succeeds - assert 100 == 101",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_gate_metrics.py",
+      "file": "backend/tests/test_signal_bus_redis_bridge.py",
       "line": null,
       "column": null,
-      "message": "AssertionError: Expected exactly 1 warning after first batch, got 0",
+      "message": "AttributeError: '_SignalDedup' object has no attribute '_ids'",
       "rule": null,
-      "rawLog": "FAILED tests/test_gate_metrics.py::test_budget_violation_rate_limited_to_once_per_5_minutes - AssertionError: Expected exactly 1 warning after first batch, got 0",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_pre_db_venue_preflight.py",
-      "line": null,
-      "column": null,
-      "message": "AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
-      "rule": null,
-      "rawLog": "FAILED tests/test_pre_db_venue_preflight.py::test_preflight_happy_path_writes_placeholders_and_submits - AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_strategy_sdk_gates.py",
-      "line": null,
-      "column": null,
-      "message": "AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
-      "rule": null,
-      "rawLog": "FAILED tests/test_strategy_sdk_gates.py::test_strategy_gate_short_circuits_inside_session_engine - AttributeError: <module 'services.trader_orchestrator.session_engine' from '/home/runner/work/homerun/homerun/backend/services/trader_orchestrator/session_engine.py'> has no attribute '_resolve_shadow_book_and_tape'",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_trader_hot_state_decisions.py",
-      "line": null,
-      "column": null,
-      "message": "AssertionError: assert 0 == 1",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trader_hot_state_decisions.py::test_flush_audit_buffer_requeues_failed_batch_at_front - AssertionError: assert 0 == 1",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_trader_hot_state_decisions.py",
-      "line": null,
-      "column": null,
-      "message": "AssertionError: assert [_AuditEntry(...etry_count=5)] == []",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trader_hot_state_decisions.py::test_flush_audit_buffer_drops_entries_that_exhaust_retry_budget - AssertionError: assert [_AuditEntry(...etry_count=5)] == []",
-      "confidence": 0.7
-    },
-    {
-      "type": "test-failure",
-      "file": "backend/tests/test_trading_service_safety.py",
-      "line": null,
-      "column": null,
-      "message": "AssertionError: assert 0 >= 1",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trading_service_safety.py::test_failed_order_rolls_back_reserved_volume - AssertionError: assert 0 >= 1",
+      "rawLog": "ERROR tests/test_signal_bus_redis_bridge.py::test_dedup_remembers_added_ids - AttributeError: '_SignalDedup' object has no attribute '_ids'",
       "confidence": 0.7
     }
   ],
   "latestParserUsed": "pytest",
-  "latestLogPath": ".greencheck/logs/workflow-run-26259162456.log"
+  "latestLogPath": ".greencheck/logs/workflow-run-27065353658.log"
 }

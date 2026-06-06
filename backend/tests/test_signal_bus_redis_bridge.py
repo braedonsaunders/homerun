@@ -38,16 +38,14 @@ def _reset_redis_state():
 @pytest.fixture(autouse=True)
 def _reset_bridge_state():
     """Reset the dedup ring and bridge bookkeeping between tests."""
-    signal_bus_redis_bridge._dedup._ids.clear()
-    signal_bus_redis_bridge._dedup._set.clear()
+    signal_bus_redis_bridge._dedup._seen_at.clear()
     bridge = signal_bus_redis_bridge._bridge
     bridge._messages_received = 0
     bridge._messages_bridged = 0
     bridge._messages_skipped_dup = 0
     bridge._last_message_mono = None
     yield
-    signal_bus_redis_bridge._dedup._ids.clear()
-    signal_bus_redis_bridge._dedup._set.clear()
+    signal_bus_redis_bridge._dedup._seen_at.clear()
 
 
 @pytest.mark.asyncio
@@ -69,18 +67,20 @@ async def test_dedup_handles_empty_id():
 
 @pytest.mark.asyncio
 async def test_dedup_evicts_oldest_when_full(monkeypatch):
-    """The dedup ring is bounded; oldest IDs roll off."""
+    """The dedup ring is memory-bounded; stale IDs are swept when oversized."""
     monkeypatch.setattr(signal_bus_redis_bridge, "_DEDUP_WINDOW_SIZE", 4)
-    # Replace the dedup with a tiny one for this test.
     fresh = signal_bus_redis_bridge._SignalDedup()
     monkeypatch.setattr(signal_bus_redis_bridge, "_dedup", fresh)
-    for i in range(6):
+    # Add 4 items, then backdate their timestamps so they look expired.
+    for i in range(4):
         await fresh.add(f"sig-{i}")
-    # 0 and 1 should have rolled off; 2..5 still present.
+        fresh._seen_at[f"sig-{i}"] = 0.0  # far in the past, past TTL
+    # Adding a 5th item (len > WINDOW_SIZE) triggers the sweep that removes
+    # items past _DEDUP_TTL_SECONDS — the backdated entries are evicted.
+    await fresh.add("sig-4")
     assert await fresh.seen("sig-0") is False
     assert await fresh.seen("sig-1") is False
-    assert await fresh.seen("sig-2") is True
-    assert await fresh.seen("sig-5") is True
+    assert await fresh.seen("sig-4") is True
 
 
 @pytest.mark.asyncio
