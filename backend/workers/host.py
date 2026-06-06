@@ -634,6 +634,7 @@ class WorkerHost:
             try:
                 slo_seconds: Optional[float] = None
                 db_snapshots: list = []
+                _last_decision_at = None
                 try:
                     async with AsyncSessionLocal() as session:
                         control = await read_orchestrator_control(session, read_only=True)
@@ -645,6 +646,13 @@ class WorkerHost:
                             ))).mappings().all())
                         except Exception:
                             db_snapshots = []
+                        try:
+                            _last_decision_at = (await session.execute(_sql_text(
+                                "SELECT max(created_at) FROM trader_decision_checks "
+                                "WHERE created_at > now() - interval '15 minutes'"
+                            ))).scalar()
+                        except Exception:
+                            _last_decision_at = None
                     global_runtime = (control.get("settings") or {}).get("global_runtime") or {}
                     raw_slo = global_runtime.get("orchestrator_cycle_slo_seconds")
                     slo_seconds = float(raw_slo) if raw_slo is not None else None
@@ -658,7 +666,20 @@ class WorkerHost:
                 # exactly why an obviously-stalled orchestrator produced no dump.
                 _stall_threshold = max((slo_seconds or 30.0) * 3.0, 90.0)
                 _now_mono2 = _time.monotonic()
+                # Decisions still landing within the stall window => the
+                # orchestrator IS working; the manage-only maintenance cycle just
+                # runs at a longer cadence than the SLO threshold and lags its
+                # snapshot. Suppress the false STALL alarm + await-stack dump then
+                # (a TRUE stall stops producing decisions, so this still fires).
+                _decisions_fresh = False
+                if _last_decision_at is not None:
+                    _ld = _last_decision_at
+                    if getattr(_ld, "tzinfo", None) is None:
+                        _ld = _ld.replace(tzinfo=timezone.utc)
+                    _decisions_fresh = (utcnow() - _ld).total_seconds() <= _stall_threshold
                 for _snap in db_snapshots:
+                    if _decisions_fresh:
+                        continue
                     _lr = _snap.get("last_run_at")
                     if _lr is None:
                         continue
