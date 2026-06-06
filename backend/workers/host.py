@@ -738,34 +738,35 @@ class WorkerHost:
         import io
 
         try:
-            tasks = asyncio.all_tasks()
+            tasks = list(asyncio.all_tasks())
         except Exception:
             return
-        dumped = 0
+        # Dump EVERY pending task's full frame chain — NOT filtered to
+        # trader_orchestrator. A hung cycle is typically suspended awaiting an
+        # inner shielded task whose coroutine lives in another module
+        # (live_execution, market-context, reconcile, …); filtering to the
+        # orchestrator hid exactly that, and print_stack on the outer task only
+        # showed `await run_worker_loop`. Full filename:lineno:func per frame.
+        buf = io.StringIO()
+        buf.write(
+            f"=== ORCHESTRATOR STALL full task dump lane={lane} "
+            f"lag={lag_seconds:.0f}s pending_tasks={len(tasks)} ===\n"
+        )
         for task in tasks:
             try:
-                frames = task.get_stack()
+                frames = task.get_stack(limit=None)
                 if not frames:
                     continue
-                if not any(
-                    "trader_orchestrator" in (getattr(getattr(f, "f_code", None), "co_filename", "") or "")
-                    for f in frames
-                ):
-                    continue
-                buf = io.StringIO()
-                task.print_stack(file=buf)
-                logger.warning(
-                    "ORCHESTRATOR STALL await-stack lane=%s lag=%.0fs task=%s:\n%s",
-                    lane,
-                    lag_seconds,
-                    task.get_name(),
-                    buf.getvalue(),
-                )
-                dumped += 1
-                if dumped >= 8:
-                    break
+                buf.write(f"\n--- task={task.get_name()} frames={len(frames)} ---\n")
+                for f in frames:
+                    code = getattr(f, "f_code", None)
+                    fn = getattr(code, "co_filename", "?")
+                    ln = getattr(f, "f_lineno", 0)
+                    nm = getattr(code, "co_name", "?")
+                    buf.write(f"  {fn}:{ln} in {nm}\n")
             except Exception:
                 continue
+        logger.warning("%s", buf.getvalue())
 
     async def _run_skeleton_signal_retention_loop(self) -> None:
         """Periodic sweep that DELETEs orphaned `trade_signals`
