@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections import deque
 from typing import Any, Optional
 
 from services import redis_client
@@ -51,33 +50,50 @@ logger = get_logger("signal_bus_redis_bridge")
 # last few seconds.  A signal_id seen here is dropped from the Redis
 # bridge to prevent double-firing.
 _DEDUP_WINDOW_SIZE = 2048
+# Cross-plane echo TTL. ``mark_locally_emitted()`` and the bridge's own
+# ``add()`` stamp a signal_id here so the local Redis echo (the same emission
+# looping back ~ms after the in-process event_bus fire) is dropped exactly once.
+# It MUST be short-lived: a *legitimate* cross-plane RE-emission of the same
+# signal_id — e.g. the detection-plane scanner re-publishing a signal on a
+# price/edge update — has to wake the orchestrator again. Pre-A.2 the in-process
+# bus re-fired on every upsert, so the orchestrator re-evaluated updated signals;
+# a PERMANENT signal_id ring silently swallowed those cross-plane re-emissions,
+# so updated signals were never re-evaluated and the orchestrator went idle once
+# the initial backlog drained. A few seconds covers the echo (incl. the bridge's
+# 2s get_message poll latency) with margin while letting genuine updates pass.
+_DEDUP_TTL_SECONDS = 3.0
 
 
 class _SignalDedup:
-    __slots__ = ("_ids", "_set", "_lock")
+    __slots__ = ("_seen_at", "_lock")
 
     def __init__(self) -> None:
-        self._ids: deque[str] = deque(maxlen=_DEDUP_WINDOW_SIZE)
-        self._set: set[str] = set()
+        self._seen_at: dict[str, float] = {}
         self._lock = asyncio.Lock()
+
+    def _evict_locked(self, now: float) -> None:
+        # Bound memory: only sweep when oversized, dropping anything past TTL.
+        if len(self._seen_at) <= _DEDUP_WINDOW_SIZE:
+            return
+        cutoff = now - _DEDUP_TTL_SECONDS
+        self._seen_at = {sid: ts for sid, ts in self._seen_at.items() if ts >= cutoff}
 
     async def add(self, signal_id: str) -> None:
         if not signal_id:
             return
         async with self._lock:
-            if signal_id in self._set:
-                return
-            if len(self._ids) >= _DEDUP_WINDOW_SIZE:
-                old = self._ids.popleft()
-                self._set.discard(old)
-            self._ids.append(signal_id)
-            self._set.add(signal_id)
+            now = time.monotonic()
+            self._seen_at[signal_id] = now
+            self._evict_locked(now)
 
     async def seen(self, signal_id: str) -> bool:
         if not signal_id:
             return False
         async with self._lock:
-            return signal_id in self._set
+            ts = self._seen_at.get(signal_id)
+            if ts is None:
+                return False
+            return (time.monotonic() - ts) < _DEDUP_TTL_SECONDS
 
 
 _dedup = _SignalDedup()
@@ -299,6 +315,21 @@ class _Bridge:
             self._messages_bridged += 1
         except Exception as exc:
             logger.debug("event_bus.publish for batch bridge failed: %s", exc)
+        # Wake the in-process runtime_signal_queue so the trader orchestrator
+        # cycles on cross-plane BATCH emissions, not only per-signal EMISSION.
+        # The intent_runtime projection commits with upsert_trade_signal(
+        # commit=False) — which skips the per-signal EMISSION channel — then
+        # emits one coalesced batch per chunk. Without this wake, detection-plane
+        # signals never reach the orchestrator's runtime-trigger loop.
+        # _bridge_emission already wakes; this is its BATCH twin.
+        await self._wake_runtime_queue(
+            event_type=payload.get("event_type"),
+            source=payload.get("source"),
+            signal_ids=payload.get("signal_ids") or [],
+            trigger=payload.get("trigger"),
+            reason=payload.get("reason"),
+            emitted_at=payload.get("emitted_at"),
+        )
 
 
 _bridge = _Bridge()

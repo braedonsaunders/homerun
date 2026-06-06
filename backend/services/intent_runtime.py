@@ -25,6 +25,7 @@ from services.runtime_signal_queue import publish_signal_batch
 from services.signal_bus import (
     SIGNAL_ACTIVE_STATUSES as BUS_SIGNAL_ACTIVE_STATUSES,
     SIGNAL_REACTIVATABLE_STATUSES as BUS_SIGNAL_REACTIVATABLE_STATUSES,
+    _publish_trade_signal_batch,
     build_signal_contract_from_opportunity,
     expire_source_signals_except,
     make_dedupe_key,
@@ -3197,6 +3198,7 @@ class IntentRuntime:
                     }
                 else:
                     existing_by_dedupe_key = {}
+                committed_signal_ids: list[str] = []
                 for snapshot in chunk:
                     signal_type = str(snapshot.get("signal_type") or "").strip().lower()
                     if signal_type:
@@ -3267,7 +3269,32 @@ class IntentRuntime:
                     effective_price = snapshot.get("effective_price")
                     if effective_price is not None and effective_price != getattr(row, "effective_price", None):
                         row.effective_price = effective_price
+                    if row is not None and getattr(row, "id", None):
+                        committed_signal_ids.append(str(row.id))
                 await session.commit()
+                # Cross-plane wake: upsert_trade_signal(commit=False) above SKIPS
+                # the per-signal Redis EMISSION (signal_bus gates emission on
+                # commit=True). Post-A.2 the scanner/intent_runtime run on the
+                # detection plane, so without an explicit notify here the
+                # committed signals never wake the trading-plane orchestrator's
+                # runtime-trigger loop (manifested as an 843-signal backlog with
+                # 0 decisions). Emit one coalesced batch per committed chunk;
+                # signal_bus_redis_bridge._bridge_batch wakes the in-process
+                # runtime_signal_queue on the trading plane. Best-effort: a lost
+                # notify only falls back to higher latency, never a trading bug.
+                if committed_signal_ids:
+                    try:
+                        await _publish_trade_signal_batch(
+                            event_type="upsert_update",
+                            signal_ids=committed_signal_ids,
+                            source=source,
+                            reason="projection_commit",
+                        )
+                    except Exception as _emit_exc:
+                        logger.debug(
+                            "intent_runtime: cross-plane signal batch notify failed (non-fatal)",
+                            exc_info=_emit_exc,
+                        )
 
         if sweep_missing:
             async with AsyncSessionLocal() as session:
