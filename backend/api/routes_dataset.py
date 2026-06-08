@@ -1120,6 +1120,14 @@ class _RecorderConfigUpdate(_PydBaseModel):
         None, ge=1024 * 1024 * 1024,
         description="Max on-disk bytes for recorded book parquet (>=1 GB); the denser REST-baseline recording needs headroom",
     )
+    disk_guard_enabled: bool | None = Field(
+        None,
+        description="Free-DISK guard: pause recording writes (and force-prune oldest windows) when total free disk drops below the threshold, so recording can never fill the drive to 0 bytes and crash the host. Independent of the size caps above.",
+    )
+    disk_guard_min_free_gb: int | None = Field(
+        None, ge=0, le=1000,
+        description="Free-disk headroom (GB) below which the guard pauses writes and force-prunes",
+    )
 
 
 @router.get("/recorder/config")
@@ -1136,7 +1144,18 @@ async def get_recorder_config_state() -> dict[str, Any]:
     """
     from services.recording_control import get_recorder_config_persisted
 
-    return await get_recorder_config_persisted()
+    cfg = await get_recorder_config_persisted()
+    # Attach the live free-disk-guard status (current free space, whether the
+    # guard is active right now, and when it last tripped) so the UI can surface
+    # "when it kicks in" alongside the editable enable/threshold knobs.
+    try:
+        from services.disk_guard import status as _disk_guard_status
+        from services.external_data.parquet_schema import parquet_root
+
+        cfg["disk_guard_status"] = await _disk_guard_status(parquet_root())
+    except Exception:
+        cfg["disk_guard_status"] = None
+    return cfg
 
 
 @router.put("/recorder/config")

@@ -2208,10 +2208,14 @@ function BookRetentionSection() {
   })
   const [days, setDays] = useState<string>('')
   const [gb, setGb] = useState<string>('')
+  const [dgEnabled, setDgEnabled] = useState<boolean>(true)
+  const [dgMinGb, setDgMinGb] = useState<string>('')
   useEffect(() => {
     if (configQuery.data) {
       setDays(String(configQuery.data.book_retention_days ?? 7))
       setGb(String(Math.round((configQuery.data.book_max_bytes ?? 0) / (1024 * 1024 * 1024))))
+      setDgEnabled(configQuery.data.disk_guard_enabled ?? true)
+      setDgMinGb(String(configQuery.data.disk_guard_min_free_gb ?? 10))
     }
   }, [configQuery.data])
   const save = useMutation({
@@ -2222,13 +2226,18 @@ function BookRetentionSection() {
   const dirty =
     server != null &&
     ((Number(days) || 0) !== server.book_retention_days ||
-      Math.round((server.book_max_bytes ?? 0) / (1024 * 1024 * 1024)) !== (Number(gb) || 0))
+      Math.round((server.book_max_bytes ?? 0) / (1024 * 1024 * 1024)) !== (Number(gb) || 0) ||
+      dgEnabled !== (server.disk_guard_enabled ?? true) ||
+      (Number(dgMinGb) || 0) !== (server.disk_guard_min_free_gb ?? 0))
   const onSave = () => {
     const patch: Partial<RecorderConfig> = {}
     const d = Number(days)
     const g = Number(gb)
     if (Number.isFinite(d) && d > 0) patch.book_retention_days = Math.round(d)
     if (Number.isFinite(g) && g > 0) patch.book_max_bytes = Math.round(g * 1024 * 1024 * 1024)
+    patch.disk_guard_enabled = dgEnabled
+    const mg = Number(dgMinGb)
+    if (Number.isFinite(mg) && mg >= 0) patch.disk_guard_min_free_gb = Math.round(mg)
     save.mutate(patch)
   }
   return (
@@ -2290,6 +2299,61 @@ function BookRetentionSection() {
             {save.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
             {t('dataLab.save', { defaultValue: 'Save' })}
           </Button>
+        </div>
+      </div>
+      {/* Free-disk guard — independent of the size cap above; stops recording
+          from ever filling the whole drive to 0 bytes and crashing the host. */}
+      <div className="border-t border-border/30 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px]">
+          <label className="flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={dgEnabled}
+              onChange={(e) => setDgEnabled(e.target.checked)}
+              disabled={save.isPending}
+              className="h-3 w-3"
+            />
+            <span className="font-semibold">
+              {t('dataLab.diskGuard', { defaultValue: 'Free-disk guard' })}
+            </span>
+            <span className="text-muted-foreground">{dgEnabled ? 'ON' : 'OFF'}</span>
+          </label>
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">
+              {t('dataLab.diskGuardMin', { defaultValue: 'pause writes below (GB free):' })}
+            </span>
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              value={dgMinGb}
+              onChange={(e) => setDgMinGb(e.target.value.replace(/[^0-9]/g, ''))}
+              disabled={save.isPending || !dgEnabled}
+              className="h-6 w-20 text-[12px]"
+            />
+          </div>
+          {server?.disk_guard_status ? (
+            <span
+              className={
+                server.disk_guard_status.active
+                  ? 'font-semibold text-red-600 dark:text-red-400'
+                  : 'text-muted-foreground'
+              }
+            >
+              {server.disk_guard_status.active
+                ? `ACTIVE NOW — pausing writes (${server.disk_guard_status.free_gb}GB free)`
+                : `${server.disk_guard_status.free_gb}GB free`}
+              {server.disk_guard_status.last_trip
+                ? ` · last kicked in ${new Date(server.disk_guard_status.last_trip.at).toLocaleString()}`
+                : ''}
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-1 text-[9px] text-muted-foreground">
+          {t('dataLab.diskGuardHint', {
+            defaultValue:
+              'Independent of the disk budget above — stops recording from ever filling the whole drive to 0 and crashing the host. Force-prunes oldest windows to recover headroom.',
+          })}
         </div>
       </div>
     </div>

@@ -261,6 +261,24 @@ class BookParquetSink:
                 logger.exception("book_parquet_sink: loop error")
 
     async def _flush(self, *, force: bool = False) -> None:
+        # Free-DISK guard: if total free disk has dropped below the configured
+        # headroom, never write more — that's exactly how the recorder zeroed
+        # the drive and crashed the host.  Drop the in-memory batch (back-
+        # pressure) and force-prune oldest windows to recover space.  This is
+        # independent of the size caps (which only bound the app's OWN
+        # footprint, not the whole disk).  Fail-open on any guard error.
+        try:
+            from services import disk_guard
+            blocked, _free_now, _min_free = await disk_guard.evaluate(self._root or parquet_root())
+        except Exception:
+            blocked, _min_free = False, 0.0
+        if blocked:
+            self._dropped += self._buffered_rows
+            self._buf.clear()
+            self._dirty.clear()
+            self._buffered_rows = 0
+            await asyncio.to_thread(self._prune, _min_free)
+            return
         current_bucket = int(time.time() // _WINDOW_SECONDS) * _WINDOW_SECONDS
         keys = list(self._buf.keys()) if force else list(self._dirty)
         for key in keys:
@@ -318,9 +336,14 @@ class BookParquetSink:
         except Exception:
             logger.debug("book_parquet_sink: incremental catalog skipped", exc_info=True)
 
-    def _prune(self) -> None:
+    def _prune(self, emergency_target_free_gb: float | None = None) -> None:
         """Bound the on-disk footprint: drop window dirs older than
         retention_days, then trim oldest until under max_bytes.
+
+        When ``emergency_target_free_gb`` is set (the disk guard tripped), also
+        keep shedding the oldest non-protected windows until total FREE disk
+        recovers above that headroom — the size cap alone can't help when the
+        drive is full of unrelated data.
 
         Both are read LIVE from the recording config (``book_retention_days`` /
         ``book_max_bytes``) each pass so an operator can size the disk budget for
@@ -388,3 +411,28 @@ class BookParquetSink:
                     continue
                 shutil.rmtree(d, ignore_errors=True)
                 total -= sz
+        # Emergency shed (disk guard tripped): the size cap alone isn't enough
+        # because the DISK is low from other data too.  Keep deleting oldest
+        # non-protected windows until total free disk recovers above the guard
+        # threshold (or nothing prunable remains — protected recordings stay).
+        if emergency_target_free_gb and emergency_target_free_gb > 0:
+            try:
+                free_gb = shutil.disk_usage(str(base)).free / (1024.0 ** 3)
+            except Exception:
+                free_gb = float(emergency_target_free_gb)
+            if free_gb < emergency_target_free_gb:
+                for _end, d, sz in sorted(kept, key=lambda x: x[0]):
+                    if free_gb >= emergency_target_free_gb:
+                        break
+                    if not d.exists() or _protected(d):
+                        continue
+                    shutil.rmtree(d, ignore_errors=True)
+                    try:
+                        free_gb = shutil.disk_usage(str(base)).free / (1024.0 ** 3)
+                    except Exception:
+                        free_gb += sz / (1024.0 ** 3)
+                logger.warning(
+                    "book_parquet_sink: emergency prune for disk headroom "
+                    "(target %.1fGB free, now %.1fGB)",
+                    float(emergency_target_free_gb), free_gb,
+                )

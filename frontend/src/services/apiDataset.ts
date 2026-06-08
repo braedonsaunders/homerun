@@ -377,6 +377,21 @@ export interface RecorderConfig {
   // REST-baseline recording needs headroom to retain a full backtest window.
   book_retention_days: number
   book_max_bytes: number
+  // Free-DISK guard: pause recording writes (+ force-prune) when total free
+  // disk drops below the threshold, so recording can never fill the drive to
+  // 0 bytes and crash the host. Independent of the size caps above.
+  disk_guard_enabled: boolean
+  disk_guard_min_free_gb: number
+  // Live status (read-only; attached by the GET response, not editable).
+  disk_guard_status?: DiskGuardStatus | null
+}
+
+export interface DiskGuardStatus {
+  disk_guard_enabled: boolean
+  disk_guard_min_free_gb: number
+  free_gb: number
+  active: boolean
+  last_trip: { at: string; free_gb: number; min_gb: number } | null
 }
 
 export async function getRecorderConfig(): Promise<RecorderConfig> {

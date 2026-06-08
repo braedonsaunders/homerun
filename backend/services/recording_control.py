@@ -184,6 +184,16 @@ _CONFIG_DEFAULTS: dict[str, object] = {
     # backtest window; operator-tunable so disk can be sized to the host.
     "book_retention_days": 7,
     "book_max_bytes": 40 * 1024 * 1024 * 1024,
+    # Free-DISK guard (independent of the size/age caps above).  Those caps
+    # bound the APP's own footprint; this bounds the WHOLE disk.  When total
+    # free space on the parquet root drops below ``disk_guard_min_free_gb``,
+    # the recorder PAUSES writes (drops the flush batch) and force-prunes the
+    # oldest windows so it can never write the drive to 0 bytes and crash the
+    # host (the failure that motivated this).  Read live by
+    # ``services.disk_guard`` on every flush; operator-tunable in Data Lab.
+    # Default ON @ 10 GB of headroom.
+    "disk_guard_enabled": True,
+    "disk_guard_min_free_gb": 10,
 }
 
 _config_cache: dict[str, object] = dict(_CONFIG_DEFAULTS)
@@ -232,6 +242,13 @@ def _coerce_config(raw: object) -> dict[str, object]:
     if "book_max_bytes" in raw:
         try:
             out["book_max_bytes"] = max(1024 * 1024 * 1024, int(raw.get("book_max_bytes")))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pass
+    if "disk_guard_enabled" in raw:
+        out["disk_guard_enabled"] = bool(raw.get("disk_guard_enabled"))
+    if "disk_guard_min_free_gb" in raw:
+        try:
+            out["disk_guard_min_free_gb"] = max(0, min(1000, int(raw.get("disk_guard_min_free_gb"))))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             pass
     return out
