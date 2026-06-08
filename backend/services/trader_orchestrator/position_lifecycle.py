@@ -6110,6 +6110,7 @@ async def reconcile_live_positions(
     order_ids: Optional[list[str]] = None,
     include_active_candidates: bool = True,
     include_terminal_audit: bool = True,
+    place_exits: bool = True,
     reason: str = "live_position_lifecycle",
 ) -> dict[str, Any]:
     """Lifecycle management for live positions.
@@ -6129,6 +6130,45 @@ async def reconcile_live_positions(
 
     import time as _time
     _lc_t0 = _time.monotonic()
+
+    # ── Detection-only execution gate (cold reconciliation plane) ─────────
+    # When place_exits=False the cold plane computes every close decision for
+    # telemetry but MUST NEVER mutate the venue.  Every order place / cancel /
+    # allowance call below — and the stale-exit backstop, whose close flows
+    # through these — routes through these thin wrappers, the SINGLE choke
+    # point, so the unit test can assert zero underlying calls when
+    # place_exits=False.  Default True forwards verbatim → every existing caller
+    # (the trading plane) stays byte-identical.
+    async def _gx_cancel_order(_clob_id: str):
+        if not place_exits:
+            return False
+        return await live_execution_service.cancel_order(_clob_id)
+
+    async def _gx_prepare_sell_allowance(_token_id: str) -> bool:
+        if not place_exits:
+            return False
+        return await _prepare_sell_allowance_bounded(_token_id)
+
+    async def _gx_execute_live_order(**_kwargs):
+        if not place_exits:
+            # Detection-only: return an object shaped like the real
+            # LiveOrderResult (downstream reads .status/.order_id/.payload/
+            # .error_message) so the close path bookkeeps a no-op exit without
+            # ever touching the venue.
+            from types import SimpleNamespace
+            return SimpleNamespace(
+                status="skipped_detection_only",
+                order_id=None,
+                error_message="detection_only_no_execution",
+                payload={},
+            )
+        from services.live_execution_adapter import execute_live_order as _eli
+        return await _eli(**_kwargs)
+
+    async def _gx_run_exit_pass(**_kwargs):
+        if not place_exits:
+            return {}
+        return await exit_executor.run_exit_pass(**_kwargs)
 
     if include_active_candidates:
         candidates = list(
@@ -8771,14 +8811,14 @@ async def reconcile_live_positions(
             async def _ladder_cancel(_clob_id: str) -> bool:
                 async with release_conn(session):
                     try:
-                        return bool(await live_execution_service.cancel_order(_clob_id))
+                        return bool(place_exits and await live_execution_service.cancel_order(_clob_id))
                     except Exception:
                         return False
 
             try:
                 async with release_conn(session):
-                    await _prepare_sell_allowance_bounded(_ladder_token_id)
-                    _ladder_report = await exit_executor.run_exit_pass(
+                    await _gx_prepare_sell_allowance(_ladder_token_id)
+                    _ladder_report = await _gx_run_exit_pass(
                         pending_exit=pending_exit,
                         token_id=_ladder_token_id,
                         side="SELL",
@@ -8830,7 +8870,7 @@ async def reconcile_live_positions(
             if provider_clob_id and pending_exit_status in {"submitted", "pending"}:
                 try:
                     async with release_conn(session):
-                        await live_execution_service.cancel_order(provider_clob_id)
+                        await _gx_cancel_order(provider_clob_id)
                 except Exception:
                     pass
             if not dry_run:
@@ -8854,7 +8894,7 @@ async def reconcile_live_positions(
             if provider_clob_id and pending_exit_status in {"submitted", "pending"}:
                 try:
                     async with release_conn(session):
-                        await live_execution_service.cancel_order(provider_clob_id)
+                        await _gx_cancel_order(provider_clob_id)
                 except Exception:
                     pass
             pending_exit["status"] = "superseded_manual_sell"
@@ -9271,7 +9311,7 @@ async def reconcile_live_positions(
                     if cancel_target:
                         async with release_conn(session):
                             try:
-                                cancel_ok = bool(await live_execution_service.cancel_order(cancel_target))
+                                cancel_ok = bool(await _gx_cancel_order(cancel_target))
                             except Exception:
                                 cancel_ok = False
 
@@ -9281,8 +9321,6 @@ async def reconcile_live_positions(
 
                     if cancel_ok:
                         try:
-                            from services.live_execution_adapter import execute_live_order
-
                             base_min_order_size_usd = _resolve_position_min_order_size_usd(
                                 trader_params=params,
                                 payload=payload,
@@ -9307,9 +9345,9 @@ async def reconcile_live_positions(
                                 pending_exit["close_trigger"] = "tp_underwater_market_sell"
                                 pending_exit["post_only"] = False
                                 async with release_conn(session):
-                                    await _prepare_sell_allowance_bounded(token_id)
+                                    await _gx_prepare_sell_allowance(token_id)
                                     exec_result = await asyncio.wait_for(
-                                        execute_live_order(
+                                        _gx_execute_live_order(
                                             token_id=token_id,
                                             side="SELL",
                                             size=remaining_exit_size,
@@ -9329,9 +9367,9 @@ async def reconcile_live_positions(
                                     pending_exit["post_only"] = True
                                 requote_as_rapid_exit = rapid_exit_requote_enabled
                                 async with release_conn(session):
-                                    await _prepare_sell_allowance_bounded(token_id)
+                                    await _gx_prepare_sell_allowance(token_id)
                                     exec_result = await asyncio.wait_for(
-                                        execute_live_order(
+                                        _gx_execute_live_order(
                                             token_id=token_id,
                                             side="SELL",
                                             size=remaining_exit_size,
@@ -9728,14 +9766,12 @@ async def reconcile_live_positions(
                     continue
                 exit_submissions_this_pass[0] += 1
                 try:
-                    from services.live_execution_adapter import execute_live_order
-
                     rapid_retry_exit = force_rapid_retry
                     post_only_retry = bool(pending_exit_kind == "take_profit_limit" and not rapid_retry_exit)
                     async with release_conn(session):
-                        await _prepare_sell_allowance_bounded(token_id)
+                        await _gx_prepare_sell_allowance(token_id)
                         exec_result = await asyncio.wait_for(
-                            execute_live_order(
+                            _gx_execute_live_order(
                                 token_id=token_id,
                                 side="SELL",
                                 size=exit_size,
@@ -10716,7 +10752,7 @@ async def reconcile_live_positions(
                     if cancel_target:
                         try:
                             async with release_conn(session):
-                                cancel_success = bool(await live_execution_service.cancel_order(cancel_target))
+                                cancel_success = bool(await _gx_cancel_order(cancel_target))
                         except Exception:
                             cancel_success = False
                     existing_tp_limit["cancelled_for_override_at"] = _iso_utc(now)
@@ -10821,15 +10857,15 @@ async def reconcile_live_positions(
                                 async with release_conn(session):
                                     try:
                                         return bool(
-                                            await live_execution_service.cancel_order(_clob_id)
+                                            place_exits and await live_execution_service.cancel_order(_clob_id)
                                         )
                                     except Exception:
                                         return False
 
                             try:
                                 async with release_conn(session):
-                                    await _prepare_sell_allowance_bounded(token_id)
-                                    _first_report = await exit_executor.run_exit_pass(
+                                    await _gx_prepare_sell_allowance(token_id)
+                                    _first_report = await _gx_run_exit_pass(
                                         pending_exit=exit_record,
                                         token_id=token_id,
                                         side="SELL",
@@ -10916,12 +10952,10 @@ async def reconcile_live_positions(
                         continue
                     exit_submissions_this_pass[0] += 1
                     try:
-                        from services.live_execution_adapter import execute_live_order
-
                         async with release_conn(session):
-                            await _prepare_sell_allowance_bounded(token_id)
+                            await _gx_prepare_sell_allowance(token_id)
                             exec_result = await asyncio.wait_for(
-                                execute_live_order(
+                                _gx_execute_live_order(
                                     token_id=token_id,
                                     side="SELL",
                                     size=exit_size,
