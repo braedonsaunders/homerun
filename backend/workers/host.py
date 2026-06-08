@@ -1525,8 +1525,10 @@ class WorkerHost:
         # ``trade_signals`` rows whose projection-loop UPSERT never
         # landed.  Lives on the discovery plane so the orphan-deletion
         # path stays off the trader-cycle's 10 s budget.  See
-        # ``services.skeleton_signal_retention``.
-        if self._plane_name == "discovery":
+        # ``services.skeleton_signal_retention``.  Runs on the always-on
+        # recording plane (moved off discovery, which zero-cost now gates off
+        # when the discovery subsystem is disabled).
+        if self._plane_name == "recording":
             self._background_tasks.append(asyncio.create_task(
                 self._run_skeleton_signal_retention_loop(),
                 name="skeleton-signal-retention",
@@ -1765,14 +1767,14 @@ class WorkerHost:
                     exc_info=exc,
                 )
 
-        # R10-B.1e: TelegramNotifier moved OFF the trading plane so its
-        # 5 s DB poll + 30+ s asyncpg holds can never steal budget from
-        # the trader-orchestrator hot path.  The discovery plane has
-        # spare cycles, owns the singleton (a second notifier would
-        # double-deliver every message), and hosts the cross-plane
-        # ``notifier_bridge`` subscriber so producers on other planes can
-        # publish via Redis.
-        if self._plane_name == "discovery":
+        # TelegramNotifier + the cross-plane Redis subscribers (notifier_bridge,
+        # signal_cache, event-loop watchdog) run on the always-on RECORDING
+        # plane: off the trader-orchestrator hot path (5 s DB poll + 30+ s
+        # asyncpg holds), single owner (a 2nd notifier double-delivers), and --
+        # unlike discovery -- never gated off by the zero-cost subsystem toggle.
+        # (Was discovery; moved when zero-cost stopped spawning disabled
+        # subsystems and silently killed Telegram + the signal cache.)
+        if self._plane_name == "recording":
             try:
                 from services.notifier import notifier as notifier_service
 
@@ -2068,9 +2070,9 @@ class WorkerHost:
                     exc_info=exc,
                 )
 
-        if self._plane_name == "discovery":
-            # R10-B.1e: stop notifier bridge subscriber first (no more
-            # incoming messages), then stop the notifier itself.
+        if self._plane_name == "recording":
+            # stop notifier bridge subscriber first (no more incoming
+            # messages), then stop the notifier itself.
             try:
                 from services import notifier_bridge
 
