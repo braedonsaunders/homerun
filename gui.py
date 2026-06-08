@@ -252,6 +252,11 @@ _WORKER_PLANES = (
     # bookkeeps, mutates NOTHING, and never touches the trading plane's
     # exit-state. See the ``reconciliation`` plane in backend/workers/host.py.
     ("RECONCILE", "reconciliation"),
+    # Always-on platform-services plane: TelegramNotifier + notifier_bridge,
+    # signal_cache, skeleton-signal-retention, event-loop watchdog -- cross-cutting
+    # services that must never be gated off by a subsystem toggle. See the
+    # ``services`` plane in backend/workers/host.py.
+    ("SERVICES", "services"),
 )
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {

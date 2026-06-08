@@ -402,6 +402,35 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_fill_monitor": False,
         "start_recording": False,
     },
+    "services": {
+        # Always-on platform-services plane.  Hosts the cross-cutting Redis
+        # subscribers + background loops that aren't tied to any tradable
+        # subsystem (TelegramNotifier + notifier_bridge, signal_cache,
+        # skeleton-signal-retention, event-loop watchdog).  Lives here -- not on
+        # a subsystem plane -- so the zero-cost subsystem toggles never silently
+        # kill alerts / the fast-trader cache.  Just DB + Redis (which every
+        # plane has); no strategies / feed / market_runtime / execution /
+        # recording.  The services themselves are started by the
+        # ``if self._plane_name == "services":`` blocks below.
+        "worker_modules": (),
+        "runtime_names": (),
+        "load_strategy_registry": False,
+        "strategy_source_keys": (),
+        "load_data_source_registry": False,
+        "start_event_bus": True,
+        "start_event_dispatcher": False,
+        "apply_runtime_settings": True,
+        "start_intent_runtime": False,
+        "start_feed_manager": False,
+        "start_market_runtime": False,
+        "load_market_cache": False,
+        "load_news_feed": False,
+        "initialize_live_execution": False,
+        "start_copy_trade_service": False,
+        "start_position_monitor": False,
+        "start_fill_monitor": False,
+        "start_recording": False,
+    },
 }
 
 
@@ -1525,10 +1554,10 @@ class WorkerHost:
         # ``trade_signals`` rows whose projection-loop UPSERT never
         # landed.  Lives on the discovery plane so the orphan-deletion
         # path stays off the trader-cycle's 10 s budget.  See
-        # ``services.skeleton_signal_retention``.  Runs on the always-on
-        # recording plane (moved off discovery, which zero-cost now gates off
+        # ``services.skeleton_signal_retention``.  Runs on the dedicated
+        # always-on ``services`` plane (off discovery, which zero-cost gates off
         # when the discovery subsystem is disabled).
-        if self._plane_name == "recording":
+        if self._plane_name == "services":
             self._background_tasks.append(asyncio.create_task(
                 self._run_skeleton_signal_retention_loop(),
                 name="skeleton-signal-retention",
@@ -1768,13 +1797,14 @@ class WorkerHost:
                 )
 
         # TelegramNotifier + the cross-plane Redis subscribers (notifier_bridge,
-        # signal_cache, event-loop watchdog) run on the always-on RECORDING
-        # plane: off the trader-orchestrator hot path (5 s DB poll + 30+ s
-        # asyncpg holds), single owner (a 2nd notifier double-delivers), and --
-        # unlike discovery -- never gated off by the zero-cost subsystem toggle.
-        # (Was discovery; moved when zero-cost stopped spawning disabled
-        # subsystems and silently killed Telegram + the signal cache.)
-        if self._plane_name == "recording":
+        # signal_cache, event-loop watchdog) run on the dedicated always-on
+        # ``services`` platform plane: off the trader-orchestrator hot path (5 s
+        # DB poll + 30+ s asyncpg holds), single owner (a 2nd notifier
+        # double-delivers), and -- unlike any subsystem plane -- never gated off
+        # by the zero-cost subsystem toggle.  (Were on discovery; moved when
+        # zero-cost stopped spawning disabled subsystems and silently killed
+        # Telegram + the signal cache.)
+        if self._plane_name == "services":
             try:
                 from services.notifier import notifier as notifier_service
 
@@ -2070,7 +2100,7 @@ class WorkerHost:
                     exc_info=exc,
                 )
 
-        if self._plane_name == "recording":
+        if self._plane_name == "services":
             # stop notifier bridge subscriber first (no more incoming
             # messages), then stop the notifier itself.
             try:
