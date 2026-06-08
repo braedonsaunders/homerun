@@ -1964,14 +1964,9 @@ async def run_worker_loop() -> None:
                             default_interval=DEFAULT_INTERVAL_SECONDS,
                         )
                         interval_seconds = max(1, int(control.get("interval_seconds") or DEFAULT_INTERVAL_SECONDS))
-                        if not _IS_COLD_RECONCILE_PLANE:
-                            # Trading-plane reconcile is a backstop behind
-                            # exit_risk_loop + the cold plane: floor the
-                            # scheduled provider pass + full sweep so it stops
-                            # running every 30s on the trading event loop.
-                            interval_seconds = max(
-                                interval_seconds, _TRADING_BACKSTOP_INTERVAL_FLOOR_SECONDS
-                            )
+                        # A.3 trading backstop-cadence floor is held back until the
+                        # cold reconciliation plane is re-enabled (it must carry the
+                        # frequent sweep first); keep the normal reconcile cadence.
                         is_enabled = bool(control.get("is_enabled", True))
                         is_paused = bool(control.get("is_paused", False))
                         requested_run = bool(control.get("requested_run_at") is not None)
