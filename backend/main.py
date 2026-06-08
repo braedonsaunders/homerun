@@ -1339,11 +1339,39 @@ _gui_health_cache_updated_at: datetime | None = None
 _GUI_HEALTH_CACHE_TTL_SECONDS = 5.0
 
 
+async def _read_subsystem_enable_flags(session) -> dict:
+    """Global enable toggle per subsystem (ship defaults: scanner on;
+    news/weather/discovery off).  Drives the GUI's zero-cost plane gating: a
+    globally-disabled subsystem's worker plane is never spawned (and is stopped
+    if running), so the app pays no resource price for it."""
+    from models.database import (
+        ScannerControl,
+        NewsWorkflowControl,
+        DiscoveryControl,
+        WeatherControl,
+    )
+
+    out = {"scanner": True, "news": False, "weather": False, "discovery": False}
+    for key, model, default in (
+        ("scanner", ScannerControl, True),
+        ("news", NewsWorkflowControl, False),
+        ("discovery", DiscoveryControl, False),
+        ("weather", WeatherControl, False),
+    ):
+        try:
+            row = await session.get(model, "default")
+            out[key] = bool(getattr(row, "is_enabled", default)) if row is not None else default
+        except Exception:
+            out[key] = default
+    return out
+
+
 async def _gui_health_db_queries() -> dict:
     """DB-dependent portion of the GUI health check."""
     fresh_orchestrator_snapshot: dict = {}
     async with AsyncSessionLocal() as session:
         scanner_status = await shared_state.get_scanner_status_from_db(session)
+        subsystem_flags = await _read_subsystem_enable_flags(session)
         # Read the orchestrator status straight from its authoritative DB
         # snapshot rather than the worker-status cache.  The orchestrator
         # runtimes write their dedicated snapshot (not a worker_snapshot
@@ -1372,6 +1400,7 @@ async def _gui_health_db_queries() -> dict:
         "scanner_status": scanner_status,
         "worker_status_rows": worker_status_rows,
         "orchestrator_snapshot": orchestrator_snapshot,
+        "subsystem_flags": subsystem_flags,
         "database": True,
     }
 
@@ -1435,6 +1464,7 @@ def _build_gui_health_response(db: dict) -> dict:
         "timestamp": utcnow().isoformat(),
         "workers": worker_status,
         "planes": _get_plane_summary_safe(),
+        "subsystems": db.get("subsystem_flags", {}),
         "checks": {
             "database": db.get("database", False),
             # Redis is a soft dependency: report as healthy when disabled

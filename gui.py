@@ -265,6 +265,18 @@ _WORKER_PLANE_BY_NAME: dict[str, str] = {
     "weather": "news", "news": "news",
 }
 
+# Zero-cost-when-disabled: core planes (trading/recording/reconciliation) always
+# run; these are gated by their subsystem's GLOBAL enable toggle so a disabled
+# subsystem spawns no process at all (and a running one is stopped on toggle-off).
+_GATED_PLANE_SUBSYSTEMS = {
+    "detection": ("scanner",),
+    "news": ("news", "weather"),
+    "discovery": ("discovery",),
+}
+_SUBSYSTEM_DEFAULT_ENABLED = {
+    "scanner": True, "news": False, "weather": False, "discovery": False,
+}
+
 HEALTH_URL = f"http://127.0.0.1:{BACKEND_PORT}/health/gui"
 PROJECT_ROOT = Path(__file__).parent.resolve()
 BACKEND_DIR = PROJECT_ROOT / "backend"
@@ -628,6 +640,10 @@ class HomerunApp:
         # Process handles
         self.backend_proc: Optional[subprocess.Popen] = None
         self.worker_procs: dict[str, subprocess.Popen] = {}
+        # Zero-cost-when-disabled: latest per-subsystem global enable flags
+        # (refreshed from /health/gui).  Seeded with ship defaults so a fresh
+        # start pays no resource price for off subsystems before the first poll.
+        self._subsystem_flags: dict = dict(_SUBSYSTEM_DEFAULT_ENABLED)
         self.frontend_proc: Optional[subprocess.Popen] = None
 
         # State
@@ -1810,11 +1826,59 @@ class HomerunApp:
         self._start_stream_thread(worker_proc, source_tag)
         return worker_proc
 
+    def _plane_globally_enabled(self, plane_name: str) -> bool:
+        """True unless the plane's subsystem is globally disabled in settings.
+        Core planes (trading/recording/reconciliation) are always enabled."""
+        subsystems = _GATED_PLANE_SUBSYSTEMS.get(plane_name)
+        if not subsystems:
+            return True
+        flags = self._subsystem_flags or {}
+        return any(
+            bool(flags.get(s, _SUBSYSTEM_DEFAULT_ENABLED.get(s, False)))
+            for s in subsystems
+        )
+
+    def _terminate_worker_plane(self, plane_name: str) -> None:
+        """Stop one worker plane's process tree (zero-cost on toggle-off)."""
+        proc = self.worker_procs.get(plane_name)
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                if sys.platform == "win32":
+                    _terminate_process_tree(proc.pid)
+                else:
+                    proc.terminate()
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        finally:
+            self.worker_procs.pop(plane_name, None)
+
     def _ensure_worker_planes_alive(self) -> None:
         if self.backend_proc is None or self.backend_proc.poll() is not None:
             return
         for _source_tag, plane_name in _WORKER_PLANES:
             proc = self.worker_procs.get(plane_name)
+            if not self._plane_globally_enabled(plane_name):
+                # Zero-cost: subsystem globally disabled in settings — never
+                # spawn its plane; stop it if a prior run / runtime toggle-off
+                # left it running.
+                if proc is not None and proc.poll() is None:
+                    self._enqueue_log(
+                        f"Stopping {plane_name} worker plane — subsystem disabled in settings.",
+                        source=_WORKER_SOURCE_TAG_BY_PLANE[plane_name], level="INFO",
+                    )
+                    self._terminate_worker_plane(plane_name)
+                continue
             if proc is not None and proc.poll() is None:
                 continue
             if proc is not None:
@@ -2111,6 +2175,16 @@ class HomerunApp:
             req = urllib.request.Request(HEALTH_URL, method="GET")
             with urllib.request.urlopen(req, timeout=HEALTH_REQUEST_TIMEOUT_SECONDS) as resp:
                 data = json.loads(resp.read().decode())
+                _flags = data.get("subsystems")
+                if isinstance(_flags, dict) and _flags:
+                    # Refresh before the supervisor runs so a newly toggled
+                    # subsystem starts/stops its plane on this same tick.
+                    self._subsystem_flags = {
+                        "scanner": bool(_flags.get("scanner", True)),
+                        "news": bool(_flags.get("news", False)),
+                        "weather": bool(_flags.get("weather", False)),
+                        "discovery": bool(_flags.get("discovery", False)),
+                    }
                 self._ensure_worker_planes_alive_threadsafe()
                 self.root.after(0, self._apply_health_safe, data)
         except Exception:
