@@ -6220,6 +6220,26 @@ async def reconcile_live_positions(
     reverse_signal_ids_by_source: dict[str, list[str]] = {}
 
     candidate_ids = {str(row.id) for row in candidates}
+
+    # ── Dual-writer scoping for the cold reconciliation plane ─────────────
+    # When place_exits=False (the detection-only plane) capture each active
+    # candidate's pre-pass exit lifecycle (pending_live_exit / superseded) so it
+    # can be restored before the bulk persist below.  The cold plane runs the
+    # SAME detection and does settlement / terminal-audit / bulk-reconcile
+    # bookkeeping, but the pending-exit EXECUTION lifecycle is OWNED by the
+    # trading plane's backstop: the cold plane must never persist a change to it
+    # or it would clobber an in-flight exit and risk a double-execution.
+    _cold_exit_state_snapshot: dict[str, tuple[Any, Any]] = {}
+    if not place_exits:
+        import copy as _copy
+
+        for _snap_row in candidates:
+            _snap_pj = _snap_row.payload_json or {}
+            _cold_exit_state_snapshot[str(_snap_row.id)] = (
+                _copy.deepcopy(_snap_pj.get("pending_live_exit")),
+                _copy.deepcopy(_snap_pj.get("superseded_pending_exit")),
+            )
+
     if include_terminal_audit:
         terminal_age_expr = func.coalesce(
             TraderOrder.updated_at,
@@ -11213,6 +11233,27 @@ async def reconcile_live_positions(
             touched_by_id[str(row.id or "")] = row
         touched_rows = [row for row_id, row in touched_by_id.items() if row_id]
         publish_rows = list(touched_rows)
+        # ── Dual-writer scoping (cold reconciliation plane) ───────────────
+        # Revert each active candidate's pending-exit EXECUTION lifecycle to its
+        # pre-pass value so this detection-only plane persists its settlement /
+        # status / pnl bookkeeping but NEVER a change to the exit lifecycle the
+        # trading backstop owns.  Trading (place_exits=True) skips this entirely.
+        if not place_exits and _cold_exit_state_snapshot:
+            for _rrow in touched_rows:
+                _rsnap = _cold_exit_state_snapshot.get(str(_rrow.id or ""))
+                if _rsnap is None:
+                    continue  # not an active candidate (e.g. terminal-audit reopen)
+                _orig_pending, _orig_superseded = _rsnap
+                _rpj = dict(_rrow.payload_json or {})
+                if _orig_pending is None:
+                    _rpj.pop("pending_live_exit", None)
+                else:
+                    _rpj["pending_live_exit"] = _orig_pending
+                if _orig_superseded is None:
+                    _rpj.pop("superseded_pending_exit", None)
+                else:
+                    _rpj["superseded_pending_exit"] = _orig_superseded
+                _rrow.payload_json = _rpj
         if touched_rows:
             _lc_t3a = _time.monotonic()
             # Roadmap #3 — bound the bulk UPDATE's worst case under

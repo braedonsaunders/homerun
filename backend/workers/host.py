@@ -361,6 +361,40 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_fill_monitor": False,
         "start_recording": False,
     },
+    "reconciliation": {
+        # Cold reconciliation plane (A.3).  Runs ONLY trader_reconciliation_worker
+        # in DETECTION-ONLY mode (the worker reads HOMERUN_WORKER_PLANE ==
+        # "reconciliation" -> place_exits=False): the heavy per-candidate sweep +
+        # settlement / terminal-audit / bulk-reconcile bookkeeping runs here on
+        # its OWN process so the trading event loop is never loaded by it.  It
+        # NEVER places/cancels live orders (initialize_live_execution=False + the
+        # place_exits gate) and NEVER persists the pending-exit execution
+        # lifecycle (reconcile_live_positions' dual-writer scoping).  The trading
+        # plane keeps exit_risk_loop (primary, real-time exits) + a
+        # place_exits=True reconcile backstop at a longer cadence.  Strategies are
+        # loaded so the cold pass computes the same exit decisions (telemetry);
+        # no feed / intent_runtime / market_runtime / live_execution here.
+        "worker_modules": (
+            "workers.trader_reconciliation_worker",
+        ),
+        "runtime_names": (),
+        "load_strategy_registry": True,
+        "strategy_source_keys": ("scanner", "traders", "crypto", "sports", "manual"),
+        "load_data_source_registry": True,
+        "start_event_bus": True,
+        "start_event_dispatcher": False,
+        "apply_runtime_settings": True,
+        "start_intent_runtime": False,
+        "start_feed_manager": False,
+        "start_market_runtime": False,
+        "load_market_cache": True,
+        "load_news_feed": False,
+        "initialize_live_execution": False,
+        "start_copy_trade_service": False,
+        "start_position_monitor": False,
+        "start_fill_monitor": False,
+        "start_recording": False,
+    },
 }
 
 

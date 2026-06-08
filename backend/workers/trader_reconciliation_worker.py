@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import json as _json
 import time
 import traceback
@@ -54,6 +55,36 @@ from utils.utcnow import utcnow
 logger = get_logger("trader_reconciliation_worker")
 
 WORKER_NAME = "trader_reconciliation"
+
+# ── A.3 cold reconciliation plane ─────────────────────────────────────────
+# When launched on the dedicated ``reconciliation`` plane (HOMERUN_WORKER_PLANE)
+# this worker runs DETECTION-ONLY: the heavy per-candidate sweep + settlement /
+# terminal-audit / bulk-reconcile bookkeeping runs on its OWN process, so the
+# trading event loop is never loaded by it.  It NEVER places/cancels live orders
+# and NEVER persists the pending-exit execution lifecycle
+# (reconcile_live_positions(place_exits=False) + its dual-writer scoping).  The
+# trading plane keeps exit_risk_loop (primary, real-time exits) + a
+# place_exits=True reconcile BACKSTOP; with the cold plane carrying the frequent
+# heavy work the trading backstop runs at a longer cadence.
+#
+# LIVE-VERIFY GATE (docs/plane_isolation_handoff.md): before trusting this in
+# production, with both planes running, force a stop-loss and confirm (a) the
+# exit fires once via exit_risk_loop, (b) NO double-execution, (c) the cold
+# plane logs the would-close but places nothing.
+_WORKER_PLANE = (os.environ.get("HOMERUN_WORKER_PLANE") or "").strip().lower()
+_IS_COLD_RECONCILE_PLANE = _WORKER_PLANE == "reconciliation"
+_PLACE_EXITS = not _IS_COLD_RECONCILE_PLANE
+if _IS_COLD_RECONCILE_PLANE:
+    # Distinct heartbeat/control row so the two planes are independently
+    # supervised + visible (a shared row would let one plane mask the other's
+    # death from the stale-heartbeat watchdog).
+    WORKER_NAME = "trader_reconciliation_cold"
+# Trading-plane reconcile is a backstop behind exit_risk_loop + the cold plane;
+# floor its SCHEDULED cadence so the per-candidate sweep stops running every 30s
+# on the trading event loop.  Event-triggered cycles still fire immediately; the
+# cold plane sweeps at the normal interval.
+_TRADING_BACKSTOP_INTERVAL_FLOOR_SECONDS = 90
+
 # REST reconciliation is the periodic drift-correction safety net; the
 # Polymarket CLOB user-channel WS (polymarket_user_feed -> WalletStateCache)
 # is the real-time path for order/fill state.  30s matches the documented
@@ -526,6 +557,7 @@ async def _reconcile_live_state_for_trader_inner(
                 trader_params=trader_params,
                 dry_run=False,
                 include_terminal_audit=False,
+                place_exits=_PLACE_EXITS,
                 reason="reconciliation_worker",
             )
     if _terminal_audit_due(trader_id):
@@ -539,6 +571,7 @@ async def _reconcile_live_state_for_trader_inner(
                         dry_run=False,
                         include_active_candidates=False,
                         include_terminal_audit=True,
+                        place_exits=_PLACE_EXITS,
                         reason="reconciliation_terminal_audit",
                     ),
                     timeout=_TERMINAL_AUDIT_TIMEOUT_SECONDS,
@@ -1931,6 +1964,14 @@ async def run_worker_loop() -> None:
                             default_interval=DEFAULT_INTERVAL_SECONDS,
                         )
                         interval_seconds = max(1, int(control.get("interval_seconds") or DEFAULT_INTERVAL_SECONDS))
+                        if not _IS_COLD_RECONCILE_PLANE:
+                            # Trading-plane reconcile is a backstop behind
+                            # exit_risk_loop + the cold plane: floor the
+                            # scheduled provider pass + full sweep so it stops
+                            # running every 30s on the trading event loop.
+                            interval_seconds = max(
+                                interval_seconds, _TRADING_BACKSTOP_INTERVAL_FLOOR_SECONDS
+                            )
                         is_enabled = bool(control.get("is_enabled", True))
                         is_paused = bool(control.get("is_paused", False))
                         requested_run = bool(control.get("requested_run_at") is not None)

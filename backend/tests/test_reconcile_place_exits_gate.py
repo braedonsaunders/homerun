@@ -258,5 +258,23 @@ async def test_detection_only_reconcile_places_no_orders(tmp_path, monkeypatch):
             assert prepare_mock.await_count == 0, "prepare_sell_allowance called in detection-only mode"
             # Detection still completed (no crash on the wrappers' no-op returns).
             assert isinstance(result, dict)
+
+            # Dual-writer scoping: the cold plane must NOT persist any exit
+            # lifecycle state — pending_live_exit is owned by the trading
+            # backstop. Without scoping, the skipped new-exit submission would
+            # have written pending_live_exit={status: failed/skipped}, which on
+            # a real position would clobber the trading plane's in-flight exit
+            # and cause a double-execution.
+            session.expire_all()
+            refreshed = await session.get(TraderOrder, "order-1")
+            assert refreshed is not None
+            assert (refreshed.payload_json or {}).get("pending_live_exit") is None, (
+                "cold reconciliation plane persisted pending_live_exit — would "
+                "clobber the trading plane's in-flight exit (double-execution risk)"
+            )
+            assert str(refreshed.status) == "open", (
+                f"cold plane changed order status to {refreshed.status!r} via a "
+                f"skipped exit — execution-state must stay trading-owned"
+            )
     finally:
         await engine.dispose()

@@ -244,6 +244,13 @@ _WORKER_PLANES = (
     # opportunities reach trading via the trade_signals DB write path.  See the
     # ``detection`` plane in ``backend/workers/host.py``.
     ("DETECTION", "detection"),
+    # Cold reconciliation plane (A.3): the heavy per-candidate reconcile sweep +
+    # settlement / terminal-audit / bulk-reconcile bookkeeping, moved off the
+    # trading event loop in DETECTION-ONLY mode (never places/cancels orders,
+    # never persists the pending-exit lifecycle).  Trading keeps exit_risk_loop
+    # (primary exits) + a backstop.  See the ``reconciliation`` plane in
+    # ``backend/workers/host.py``.
+    ("RECONCILE", "reconciliation"),
 )
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {
@@ -253,6 +260,7 @@ _WORKER_PLANE_BY_NAME: dict[str, str] = {
     "crypto": "trading",
     "trader_orchestrator": "trading",
     "trader_reconciliation": "trading", "redeemer": "trading",
+    "trader_reconciliation_cold": "reconciliation",
     "tracked_traders": "discovery", "discovery": "discovery",
     "weather": "news", "news": "news",
 }
