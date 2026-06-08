@@ -367,13 +367,17 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         # "reconciliation" -> place_exits=False): the heavy per-candidate sweep +
         # settlement / terminal-audit / bulk-reconcile bookkeeping runs here on
         # its OWN process so the trading event loop is never loaded by it.  It
-        # NEVER places/cancels live orders (initialize_live_execution=False + the
-        # place_exits gate) and NEVER persists the pending-exit execution
-        # lifecycle (reconcile_live_positions' dual-writer scoping).  The trading
-        # plane keeps exit_risk_loop (primary, real-time exits) + a
-        # place_exits=True reconcile backstop at a longer cadence.  Strategies are
+        # NEVER places/cancels live orders — live_execution is initialized in
+        # READ-ONLY mode (initialize_live_execution=True + live_execution_read_only
+        # =True): it loads CLOB creds so authenticated READS (order snapshots,
+        # wallet/balance) succeed, but every venue mutation (place/cancel/allowance)
+        # is hard-blocked at the service. Combined with the reconcile place_exits
+        # gate + dual-writer scoping, the cold plane reads + bookkeeps but mutates
+        # nothing and never persists the pending-exit execution lifecycle. The
+        # trading plane keeps exit_risk_loop (primary, real-time exits) + a
+        # place_exits=True reconcile backstop at a longer cadence. Strategies are
         # loaded so the cold pass computes the same exit decisions (telemetry);
-        # no feed / intent_runtime / market_runtime / live_execution here.
+        # no feed / intent_runtime / market_runtime here.
         "worker_modules": (
             "workers.trader_reconciliation_worker",
         ),
@@ -389,7 +393,10 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "start_market_runtime": False,
         "load_market_cache": True,
         "load_news_feed": False,
-        "initialize_live_execution": False,
+        # Init live_execution but READ-ONLY: creds for authenticated reads;
+        # every venue mutation (place/cancel/allowance) hard-blocked.
+        "initialize_live_execution": True,
+        "live_execution_read_only": True,
         "start_copy_trade_service": False,
         "start_position_monitor": False,
         "start_fill_monitor": False,
@@ -1017,6 +1024,10 @@ class WorkerHost:
         # credentials configured at runtime.
         backoff = 2.0
         max_backoff = 30.0
+        # Read-only planes (cold reconciliation) load creds for authenticated
+        # READS but must never mutate the venue. Set this BEFORE any init so the
+        # service comes up with all mutations hard-blocked.
+        live_execution_service.set_read_only(self._enabled("live_execution_read_only"))
         while not self._shutting_down:
             try:
                 if live_execution_service.is_ready():

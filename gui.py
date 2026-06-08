@@ -244,14 +244,14 @@ _WORKER_PLANES = (
     # opportunities reach trading via the trade_signals DB write path.  See the
     # ``detection`` plane in ``backend/workers/host.py``.
     ("DETECTION", "detection"),
-    # A.3 cold "reconciliation" plane is defined in backend/workers/host.py but
-    # intentionally NOT spawned yet: reconcile_live_positions makes AUTHENTICATED
-    # CLOB reads (order snapshots / wallet sync) that need live-execution creds,
-    # and the first cut spawned it with initialize_live_execution=False -> those
-    # reads failed ("Invalid username/password") and disrupted the trading
-    # plane's CLOB auth. Re-enable only after the cold plane gets read creds
-    # WITHOUT clobbering the trading plane's (place_exits=False still gates exec).
-    # ("RECONCILE", "reconciliation"),
+    # Cold reconciliation plane (A.3): the heavy reconcile sweep + settlement /
+    # terminal-audit / bulk-reconcile bookkeeping, moved off the trading event
+    # loop. Runs live_execution in READ-ONLY mode (loads CLOB creds so
+    # authenticated reads succeed; ALL venue mutations hard-blocked) + the
+    # reconcile place_exits=False gate + dual-writer scoping -> it reads +
+    # bookkeeps, mutates NOTHING, and never touches the trading plane's
+    # exit-state. See the ``reconciliation`` plane in backend/workers/host.py.
+    ("RECONCILE", "reconciliation"),
 )
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {

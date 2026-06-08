@@ -575,6 +575,12 @@ class LiveExecutionService:
 
     def __init__(self):
         self._initialized = False
+        # Read-only mode: the cold reconciliation plane loads creds for
+        # authenticated READS but must NEVER mutate the venue. When True, every
+        # place / cancel / allowance method short-circuits (see
+        # _block_if_read_only). The trading plane stays the sole executor.
+        self._read_only: bool = False
+        self._read_only_log_at: dict[str, float] = {}
         self._client = None
         self._wallet_address: Optional[str] = None
         self._eoa_address: Optional[str] = None
@@ -1486,8 +1492,33 @@ class LiveExecutionService:
         await load_proxy_config()
         return patch_clob_client_proxy()
 
+    def set_read_only(self, value: bool) -> None:
+        """Put the service in READ-ONLY mode (call BEFORE initialize()).
+
+        Used by the cold reconciliation plane: it loads CLOB credentials so its
+        authenticated READS (order snapshots, balances, positions) succeed, but
+        every venue MUTATION (place / cancel / allowance) is blocked.  The
+        trading plane is the sole executor."""
+        self._read_only = bool(value)
+
+    def _block_if_read_only(self, op: str) -> bool:
+        """Return True (and throttled-log) when read-only, so the caller skips a
+        venue mutation.  Reads are never routed here."""
+        if not self._read_only:
+            return False
+        now_mono = _time.monotonic()
+        if now_mono - self._read_only_log_at.get(op, 0.0) >= 60.0:
+            self._read_only_log_at[op] = now_mono
+            logger.warning(
+                "live_execution_service: %s blocked — read-only plane (no venue mutations)",
+                op,
+            )
+        return True
+
     async def _approve_clob_allowance(self) -> None:
         """Refresh CLOB collateral balance/allowance cache for supported signature types."""
+        if self._block_if_read_only("approve_allowance"):
+            return
         if not self.is_ready():
             return
 
@@ -1516,6 +1547,8 @@ class LiveExecutionService:
             logger.warning("CLOB balance-allowance cache refresh failed (non-fatal): %s", exc)
 
     async def refresh_conditional_balance_allowance(self, token_id: str) -> bool:
+        if self._block_if_read_only("refresh_conditional_allowance"):
+            return False
         token_key = str(token_id or "").strip()
         if not token_key:
             return False
@@ -1789,6 +1822,8 @@ class LiveExecutionService:
                 pass
 
     async def refresh_collateral_balance_allowance(self) -> bool:
+        if self._block_if_read_only("refresh_collateral_allowance"):
+            return False
         if not self.is_ready() and not await self.ensure_initialized():
             return False
         if not self.is_ready():
@@ -4717,6 +4752,11 @@ class LiveExecutionService:
         Returns:
             Order object with status
         """
+        if self._block_if_read_only("place_order"):
+            raise RuntimeError(
+                "place_order blocked: live_execution_service is read-only "
+                "(cold reconciliation plane must never place orders)"
+            )
         token_key = str(token_id or "").strip()
         if not token_key:
             raise ValueError("token_id is required")
@@ -5670,6 +5710,8 @@ class LiveExecutionService:
 
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an open order"""
+        if self._block_if_read_only("cancel_order"):
+            return False
         order_key = str(order_id or "").strip()
         if not order_key:
             return False
