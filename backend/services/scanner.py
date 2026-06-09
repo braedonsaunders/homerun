@@ -4144,33 +4144,55 @@ class ArbitrageScanner:
                     async with self._scan_lock:
                         return self._opportunities
 
-                snapshot_market_by_id: dict[str, object] = {}
-                for market in cached_markets_snapshot:
-                    market_id = str(getattr(market, "id", "") or "").strip()
-                    if market_id:
-                        snapshot_market_by_id[market_id] = market
-
-                snapshot_event_to_market_order: dict[str, list[str]] = {}
-                snapshot_market_to_event_key: dict[str, str] = {}
-                snapshot_verified_event_keys: set[str] = set()
-                for event in cached_events_snapshot:
-                    event_key = str(getattr(event, "id", "") or getattr(event, "slug", "") or "").strip()
-                    if not event_key:
-                        continue
-                    ordered_ids: list[str] = []
-                    seen_event_market_ids: set[str] = set()
-                    for market in list(getattr(event, "markets", None) or []):
+                # Build the snapshot routing graph OFF the event loop. This is a
+                # full-universe pass (dict construction + per-event roster rebuild
+                # over every cloned market/event) operating purely on the PRIVATE
+                # deep-clone snapshot (cached_*_snapshot) — no lock needed, no
+                # shared mutation — so running it in a worker thread keeps the
+                # detection plane's event loop free for the signal projection.
+                # Stage 1 heavy-lane event-loop unblock; mirrors the catalog-clone
+                # offload just above.
+                def _build_snapshot_graph() -> tuple[dict, dict, dict, set]:
+                    snapshot_market_by_id: dict[str, object] = {}
+                    for market in cached_markets_snapshot:
                         market_id = str(getattr(market, "id", "") or "").strip()
-                        if not market_id or market_id in seen_event_market_ids or market_id not in snapshot_market_by_id:
+                        if market_id:
+                            snapshot_market_by_id[market_id] = market
+
+                    snapshot_event_to_market_order: dict[str, list[str]] = {}
+                    snapshot_market_to_event_key: dict[str, str] = {}
+                    snapshot_verified_event_keys: set[str] = set()
+                    for event in cached_events_snapshot:
+                        event_key = str(getattr(event, "id", "") or getattr(event, "slug", "") or "").strip()
+                        if not event_key:
                             continue
-                        seen_event_market_ids.add(market_id)
-                        ordered_ids.append(market_id)
-                        snapshot_market_to_event_key[market_id] = event_key
-                    if not ordered_ids:
-                        continue
-                    event.markets = [snapshot_market_by_id[market_id] for market_id in ordered_ids]
-                    snapshot_event_to_market_order[event_key] = ordered_ids
-                    snapshot_verified_event_keys.add(event_key)
+                        ordered_ids: list[str] = []
+                        seen_event_market_ids: set[str] = set()
+                        for market in list(getattr(event, "markets", None) or []):
+                            market_id = str(getattr(market, "id", "") or "").strip()
+                            if not market_id or market_id in seen_event_market_ids or market_id not in snapshot_market_by_id:
+                                continue
+                            seen_event_market_ids.add(market_id)
+                            ordered_ids.append(market_id)
+                            snapshot_market_to_event_key[market_id] = event_key
+                        if not ordered_ids:
+                            continue
+                        event.markets = [snapshot_market_by_id[market_id] for market_id in ordered_ids]
+                        snapshot_event_to_market_order[event_key] = ordered_ids
+                        snapshot_verified_event_keys.add(event_key)
+                    return (
+                        snapshot_market_by_id,
+                        snapshot_event_to_market_order,
+                        snapshot_market_to_event_key,
+                        snapshot_verified_event_keys,
+                    )
+
+                (
+                    snapshot_market_by_id,
+                    snapshot_event_to_market_order,
+                    snapshot_market_to_event_key,
+                    snapshot_verified_event_keys,
+                ) = await _heavy_clone_loop.run_in_executor(None, _build_snapshot_graph)
 
                 def _snapshot_market_event_key(market: object) -> str:
                     market_id = str(getattr(market, "id", "") or "").strip()
@@ -4440,7 +4462,12 @@ class ArbitrageScanner:
                             self._opportunities = await asyncio.get_running_loop().run_in_executor(
                                 None, self._merge_opportunities, full_actionable
                             )
-                        opportunities_snapshot = [_clone_model(opp) for opp in self._opportunities]
+                        # Clone the opportunity pool off the loop (still under
+                        # _scan_lock, so self._opportunities is stable) — same
+                        # pattern as the merge just above. Stage 1 unblock.
+                        opportunities_snapshot = await asyncio.get_running_loop().run_in_executor(
+                            None, lambda: [_clone_model(opp) for opp in self._opportunities]
+                        )
 
                     refreshed_opportunities = await self.refresh_opportunity_prices(
                         opportunities_snapshot,
