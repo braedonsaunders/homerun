@@ -420,6 +420,9 @@ def _handle_runtime_trigger_dispatch_task_done(trader_id: str, task: asyncio.Tas
         )
 
 
+_ORCH_LAST_ITER_MONO: dict[str, float] = {}
+
+
 async def _pause_until_next_cycle(
     *,
     process_runtime_triggers: bool,
@@ -9801,6 +9804,27 @@ async def run_worker_loop(
                         last_run_at=utcnow(),
                         stats=metrics,
                     )
+
+                # DIAGNOSTIC (cold-start latency): one line per orchestrator
+                # iteration so a Start's 30s can be pinned from logs — gap shows
+                # how long the loop was parked (pause), the flags show what it
+                # decided. Remove once the cold-start cause is fixed.
+                try:
+                    _now_mono = time.monotonic()
+                    _gap = _now_mono - _ORCH_LAST_ITER_MONO.get(lane_key, _now_mono)
+                    _ORCH_LAST_ITER_MONO[lane_key] = _now_mono
+                    logger.info(
+                        "orch-iter lane=%s enabled=%s force=%s skip=%s manage_only=%s req_run_at=%s gap=%.1fs",
+                        lane_key,
+                        bool(control.get("is_enabled")),
+                        manual_force_cycle,
+                        skip_cycle,
+                        manage_only_cycle,
+                        bool(control.get("requested_run_at")),
+                        _gap,
+                    )
+                except Exception:
+                    pass
 
                 # Cortex fleet commander — check if a cycle is due
                 if lane_key == _LANE_GENERAL and not skip_cycle:
