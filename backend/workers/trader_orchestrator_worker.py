@@ -9778,7 +9778,19 @@ async def run_worker_loop(
                     try:
                         from workers.cortex_worker import maybe_run_cortex_tick
 
-                        await maybe_run_cortex_tick()
+                        # Hard timeout: cortex's settings read runs INLINE on the
+                        # orchestrator hot path, so a transient DB-connection hang
+                        # there can freeze the entire scheduled-cycle loop (observed
+                        # a 1920s stall: run_worker_loop -> maybe_run_cortex_tick ->
+                        # _load_cortex_settings -> DB execute, awaiting forever).
+                        # Cortex is COLD and optional on this path — cap it and skip
+                        # on timeout so the loop can NEVER block on it. The heavy
+                        # cortex cycle itself already runs as a detached task.
+                        await asyncio.wait_for(maybe_run_cortex_tick(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Cortex tick exceeded 5s; skipped to protect the orchestrator loop"
+                        )
                     except Exception as cortex_exc:
                         logger.debug("Cortex tick check failed (non-critical): %s", cortex_exc)
 
