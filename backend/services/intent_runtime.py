@@ -86,7 +86,21 @@ _STATUS_PROJECTION_PRESSURE_CHUNK_SIZE = 1
 # ``is_db_pressure_active()`` is True (recent DBAPIError or
 # pool-watchdog flag) we prioritize lock-hold-time minimization
 # over throughput.
-_UPSERT_PROJECTION_CHUNK_SIZE = 1  # ITER-?: 3->1 isolates per-row lock failures so one contended dedupe_key can't poison a 3-row batch
+# 2026-06-09: 1->3 (back to the documented compromise above). The 3->1 revert
+# ("one contended dedupe_key can't poison a 3-row batch") predates three
+# structural changes that each removed part of its motivation: the projection
+# now runs on its OWN dedicated pool (not contending with the worker pool),
+# commits with synchronous_commit=off (no WAL-flush wait), and lock_timeout was
+# raised 1000->3000ms (a transient row contention no longer aborts the batch).
+# Meanwhile a live bisect (emit-stamp -> projection-commit, measured from
+# trade_signals.updated_at) showed p50=4.3s / p95=29s during scanner bursts
+# (~60 upserts dumped per heavy-lane chunk): at chunk=1 every signal pays the
+# full fixed overhead (subscribe check + SET LOCAL round-trip + existing-row
+# SELECT + UPSERT + commit + publish), so a burst drains serially at ~N/25s.
+# chunk=3 amortizes that 3x; a poisoned batch still retries via the existing
+# _PROJECTION_RETRY path. Pressure mode stays at 1 (lock-hold minimization
+# beats throughput when the DB is already unhappy).
+_UPSERT_PROJECTION_CHUNK_SIZE = 3
 _UPSERT_PROJECTION_PRESSURE_CHUNK_SIZE = 1
 _PROJECTION_RETRY_MAX_ATTEMPTS = 3
 _PROJECTION_RETRY_BASE_DELAY_SECONDS = 0.25

@@ -562,6 +562,12 @@ async def test_project_upserts_skip_nonreactivable_existing_rows(monkeypatch):
 
     upsert_mock = AsyncMock()
     monkeypatch.setattr("services.intent_runtime.AsyncSessionLocal", lambda: _SessionContext())
+    # The projection's transactions ride the dedicated projection pool
+    # (_projection_session -> ProjectionAsyncSessionLocal); patch it to the
+    # same mock so the non-reactivable existing row is visible to the skip
+    # check (mirrors the fix in test_intent_runtime_publish_projection_
+    # durability for the same pool split).
+    monkeypatch.setattr("services.intent_runtime.ProjectionAsyncSessionLocal", lambda: _SessionContext())
     monkeypatch.setattr("services.intent_runtime.upsert_trade_signal", upsert_mock)
 
     runtime = IntentRuntime()
