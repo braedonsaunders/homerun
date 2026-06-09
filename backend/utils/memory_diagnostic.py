@@ -344,15 +344,23 @@ async def memory_diagnostic_loop() -> None:
         "memory_diagnostic loop started — touch %s to trigger a dump",
         _REQUEST_PATH,
     )
+    def _poll_and_dump_sync() -> None:
+        # Synchronous filesystem work (stat + dump-write + unlink) runs in a
+        # worker thread: the 16h soak's event-loop watchdog caught the bare
+        # ``_REQUEST_PATH.exists()`` os.stat blocking the SERVICES plane's
+        # loop for 1.0-1.2s when the disk was busy with WAL-fsync storms.
+        if not _REQUEST_PATH.exists():
+            return
+        _write_dump()
+        try:
+            _REQUEST_PATH.unlink()
+        except Exception:
+            pass
+
     while True:
         try:
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-            if _REQUEST_PATH.exists():
-                _write_dump()
-                try:
-                    _REQUEST_PATH.unlink()
-                except Exception:
-                    pass
+            await asyncio.to_thread(_poll_and_dump_sync)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
