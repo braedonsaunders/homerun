@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from config import settings
 from models.database import (
     AsyncSessionLocal,
     AuditAsyncSessionLocal,
+    FastAsyncSessionLocal,
     TradeSignal,
     TradeSignalEmission,
 )
@@ -38,6 +40,42 @@ from utils.logger import get_logger
 from utils.utcnow import utcnow
 
 logger = get_logger(__name__)
+
+
+# --- signal-projection DB isolation -----------------------------------------
+# The intent-runtime projection loop (upsert -> trade_signals -> cross-plane
+# notify) is the latency-critical path the trader orchestrator wakes on. On the
+# DETECTION plane it shares the 34-conn worker pool with the scanner's market
+# sweep + the ~2.9s history-backfill + the ~2.1s scanner-state projection, so
+# its per-chunk connection checkout queues behind that bursty work — measured
+# emit->queue-wake p50=1.3s / p95=9.9s despite a <1/s signal arrival rate.
+#
+# The fast tier (FastAsyncSessionLocal) is created eagerly on every process but
+# consumed ONLY by the order-submit hot path (fast_trader_runtime, exit_risk_
+# loop), which runs on the TRADING plane — so on the detection plane it sits
+# completely idle. Routing the projection loop onto it there gives instant
+# checkouts with ZERO new connections and full isolation from the worker-pool
+# contention. Every other plane keeps the worker pool, so the projection never
+# competes with the live exit loop's fast tier on trading.
+#
+# HOMERUN_WORKER_PLANE is read lazily (not at import): host.main() sets it just
+# before asyncio.run(), which can run after this module is first imported.
+_projection_sessionmaker_cached = None
+
+
+def _projection_session():
+    """Return a DB session for the latency-critical signal-projection loop.
+
+    Fast tier on the detection plane (idle there), worker pool everywhere else.
+    See the module-level note above for the full rationale.
+    """
+    global _projection_sessionmaker_cached
+    if _projection_sessionmaker_cached is None:
+        plane = (os.environ.get("HOMERUN_WORKER_PLANE") or "").strip().lower()
+        _projection_sessionmaker_cached = (
+            FastAsyncSessionLocal if plane == "detection" else AsyncSessionLocal
+        )
+    return _projection_sessionmaker_cached()
 
 _SIGNAL_ACTIVE_STATUSES = {"pending", "selected", "submitted"}
 _SIGNAL_TERMINAL_STATUSES = {"executed", "skipped", "expired", "failed"}
@@ -3123,7 +3161,7 @@ class IntentRuntime:
                         "intent_runtime user-channel subscribe before projection failed",
                         exc_info=exc,
                     )
-            async with AsyncSessionLocal() as session:
+            async with _projection_session() as session:
                 # Mirrors Fix J's unmute in shared_state: if SET LOCAL
                 # silently fails (e.g. session not yet in transaction or
                 # connection in error state) the server-side timeouts
@@ -3297,7 +3335,7 @@ class IntentRuntime:
                         )
 
         if sweep_missing:
-            async with AsyncSessionLocal() as session:
+            async with _projection_session() as session:
                 # Mirrors Fix J's unmute in shared_state: if SET LOCAL
                 # silently fails (e.g. session not yet in transaction or
                 # connection in error state) the server-side timeouts
@@ -3437,7 +3475,7 @@ class IntentRuntime:
             ]
             if not signal_ids:
                 continue
-            async with AsyncSessionLocal() as session:
+            async with _projection_session() as session:
                 # Mirrors Fix J's unmute in shared_state: if SET LOCAL
                 # silently fails (e.g. session not yet in transaction or
                 # connection in error state) the server-side timeouts
