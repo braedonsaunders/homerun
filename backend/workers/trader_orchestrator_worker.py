@@ -23,6 +23,7 @@ from config import settings
 from models.database import (
     AppSettings,
     AsyncSessionLocal,
+    apply_telemetry_async_commit,
     DiscoveredWallet,
     TradeSignal,
     TraderEvent,
@@ -1745,6 +1746,11 @@ async def _drain_orchestrator_snapshot_persists(lane_key: str) -> None:
             return
         try:
             async with AsyncSessionLocal() as fresh_session:
+                # Telemetry durability class: async commit so this snapshot
+                # never waits in (or lengthens) the WAL group-commit queue
+                # (see models.database.apply_telemetry_async_commit). The
+                # transactional caller-session path keeps full durability.
+                await apply_telemetry_async_commit(fresh_session)
                 await write_orchestrator_snapshot(fresh_session, **snapshot_kwargs)
             _orchestrator_snapshot_last_persist_mono[lane_key] = time.monotonic()
         except asyncio.CancelledError:

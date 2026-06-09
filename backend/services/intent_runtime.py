@@ -18,6 +18,7 @@ from models.database import (
     ProjectionAsyncSessionLocal,
     TradeSignal,
     TradeSignalEmission,
+    apply_telemetry_async_commit,
 )
 from models.opportunity import Opportunity
 from services.event_bus import event_bus
@@ -3159,7 +3160,17 @@ class IntentRuntime:
                         text(
                             "SELECT "
                             "set_config('statement_timeout', :stmt_ms, true), "
-                            "set_config('lock_timeout', :lock_ms, true)"
+                            "set_config('lock_timeout', :lock_ms, true), "
+                            # Projection writes are the reconstructible-signal
+                            # durability class (scanner re-emits on restart;
+                            # see models.database.apply_telemetry_async_commit):
+                            # async commit keeps the ~10/s trade_signals
+                            # UPDATE commits out of the WAL group-commit queue
+                            # (16h soak: 546k updates queueing money-path
+                            # commits 2-4s on IO/WALSync) AND returns commit
+                            # faster -> faster cross-plane publish -> lower
+                            # emit->wake.
+                            "set_config('synchronous_commit', 'off', true)"
                         ),
                         {
                             "stmt_ms": str(_PROJECTION_STATEMENT_TIMEOUT_MS),
@@ -3333,7 +3344,17 @@ class IntentRuntime:
                         text(
                             "SELECT "
                             "set_config('statement_timeout', :stmt_ms, true), "
-                            "set_config('lock_timeout', :lock_ms, true)"
+                            "set_config('lock_timeout', :lock_ms, true), "
+                            # Projection writes are the reconstructible-signal
+                            # durability class (scanner re-emits on restart;
+                            # see models.database.apply_telemetry_async_commit):
+                            # async commit keeps the ~10/s trade_signals
+                            # UPDATE commits out of the WAL group-commit queue
+                            # (16h soak: 546k updates queueing money-path
+                            # commits 2-4s on IO/WALSync) AND returns commit
+                            # faster -> faster cross-plane publish -> lower
+                            # emit->wake.
+                            "set_config('synchronous_commit', 'off', true)"
                         ),
                         {
                             "stmt_ms": str(_PROJECTION_STATEMENT_TIMEOUT_MS),
@@ -3397,7 +3418,12 @@ class IntentRuntime:
             # Audit pool: emissions are loss-tolerant + recoverable, so they
             # ride the dedicated audit tier and never contend with the main
             # (trading hot-path) pool — same isolation trader_hot_state uses.
+            # Async commit: emissions were the single biggest WAL producer in
+            # the 16h soak (542k inserts) and are explicitly loss-tolerant —
+            # the canonical telemetry durability class (see
+            # models.database.apply_telemetry_async_commit).
             async with AuditAsyncSessionLocal() as session:
+                await apply_telemetry_async_commit(session)
                 await session.execute(TradeSignalEmission.__table__.insert(), batch)
                 await session.commit()
         except Exception as exc:
@@ -3473,7 +3499,17 @@ class IntentRuntime:
                         text(
                             "SELECT "
                             "set_config('statement_timeout', :stmt_ms, true), "
-                            "set_config('lock_timeout', :lock_ms, true)"
+                            "set_config('lock_timeout', :lock_ms, true), "
+                            # Projection writes are the reconstructible-signal
+                            # durability class (scanner re-emits on restart;
+                            # see models.database.apply_telemetry_async_commit):
+                            # async commit keeps the ~10/s trade_signals
+                            # UPDATE commits out of the WAL group-commit queue
+                            # (16h soak: 546k updates queueing money-path
+                            # commits 2-4s on IO/WALSync) AND returns commit
+                            # faster -> faster cross-plane publish -> lower
+                            # emit->wake.
+                            "set_config('synchronous_commit', 'off', true)"
                         ),
                         {
                             "stmt_ms": str(_PROJECTION_STATEMENT_TIMEOUT_MS),

@@ -3574,6 +3574,16 @@ class LiveExecutionService:
                     _stage_started = _time.monotonic()
                     await session.connection()
                     _prs_record("pool_wait", _stage_started)
+                    # Telemetry durability class: runtime state is restored on
+                    # init and re-derived from TraderOrder + venue reconcile —
+                    # losing the last <1s version on a hard crash restores a
+                    # marginally older state the system already tolerates.
+                    # Async commit keeps the upsert+commit (observed 0.5-1.6s +
+                    # 0.4-0.8s in the 16h soak) out of the WAL group-commit
+                    # queue (see models.database.apply_telemetry_async_commit).
+                    from models.database import apply_telemetry_async_commit
+
+                    await apply_telemetry_async_commit(session)
                     # Derive realized P&L counters from the verified
                     # ground truth (TraderOrder.actual_profit).  The legacy
                     # in-memory accumulators on ``self._stats``/``self._total_pnl``

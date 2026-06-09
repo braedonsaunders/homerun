@@ -175,6 +175,11 @@ async def _persist_touch_published_batch(batch: Mapping[str, Mapping[str, Any]])
         await session.execute(
             _sa_text("SET LOCAL idle_in_transaction_session_timeout = '5000ms'")
         )
+        # Telemetry durability class: publish stats are best-effort bookkeeping
+        # (the comment in the flush loop says nothing critical depends on them)
+        # — async commit keeps these batches out of the WAL group-commit queue
+        # (see models.database.apply_telemetry_async_commit).
+        await session.execute(_sa_text("SET LOCAL synchronous_commit = 'off'"))
         await session.execute(
             _sa_text(
                 """

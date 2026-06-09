@@ -5926,6 +5926,36 @@ ProjectionAsyncSessionLocal = sessionmaker(
 )
 
 
+# --- Durability classes ------------------------------------------------------
+# 2026-06-09 16h-soak SLOW COMMIT DIAGNOSTICs: commits queued 2-4s on
+# IO/WALSync / LWLock/WALWrite — even no-op commits (dirty_rows=0) — behind the
+# telemetry firehose (trade_signals: 546k projection updates; trade_signal_
+# emissions: 542k audit inserts; plus heartbeats / runtime snapshots / catalog
+# stats, each a separate WAL-flushing COMMIT). Every money-path commit waited
+# in the same group-commit queue: orchestrator stalls, 2-4.5s fast-tier holds,
+# 1.1-1.5s pool_wait.
+#
+# Split commits into two durability classes:
+#   * MONEY-PATH state (orders, fills, positions, decisions, exits) keeps
+#     synchronous_commit=local (connection default) — durable on COMMIT.
+#   * RECONSTRUCTIBLE telemetry/audit/projection writes opt into per-
+#     transaction synchronous_commit=off via this helper: COMMIT returns
+#     without waiting for the WAL flush (walwriter flushes within
+#     ~3x wal_writer_delay ≈ 600ms). On a hard crash the last <1s of THESE
+#     writes may be lost — acceptable by construction: scanner re-emits
+#     signals, heartbeats rewrite within seconds, snapshots re-persist,
+#     emission audit rows are loss-tolerant, catalog stats recount.
+#
+# SET LOCAL is transaction-scoped: it cannot weaken any other transaction's
+# durability. NEVER call this inside a transaction that also writes money-path
+# state. Sites with an existing folded set_config() SELECT add
+# set_config('synchronous_commit','off',true) there instead (zero extra
+# round-trips); this helper serves sites with no existing SET LOCAL batch.
+async def apply_telemetry_async_commit(session) -> None:
+    """SET LOCAL synchronous_commit=off for the CURRENT transaction (see above)."""
+    await session.execute(text("SET LOCAL synchronous_commit = 'off'"))
+
+
 async def recover_pool() -> None:
     """Drop all pooled connections and force fresh ones on next checkout.
 
