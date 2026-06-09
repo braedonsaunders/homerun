@@ -432,14 +432,43 @@ async def _pause_until_next_cycle(
     if not process_runtime_triggers:
         await _worker_sleep(max(0.05, float(sleep_seconds)))
         return None, stream_claim_cursor, stream_last_claim_run_at
-    return await _wait_for_runtime_trigger(
-        None,
-        sleep_seconds,
-        consumer=stream_consumer_name,
-        group=stream_group,
-        claim_cursor=stream_claim_cursor,
-        last_claim_run_at=stream_last_claim_run_at,
-    )
+    # Wait for a signal batch up to the full cycle interval, BUT in short
+    # increments so a manual Start (operator sets requested_run_at via the
+    # trader panel) wakes the loop within ~_POLL_SECONDS instead of a whole
+    # interval. The "30s to start" was this pause blocking the entire
+    # run_interval_seconds inside wait_for_signal_batch, oblivious to the
+    # control flip — only noticed on the next iteration. A real signal batch
+    # still returns instantly (it ends the current increment early).
+    remaining = max(0.05, float(sleep_seconds))
+    cursor = stream_claim_cursor
+    last_claim = stream_last_claim_run_at
+    _POLL_SECONDS = 3.0
+    while remaining > 0:
+        wait = min(_POLL_SECONDS, remaining)
+        trigger, cursor, last_claim = await _wait_for_runtime_trigger(
+            None,
+            wait,
+            consumer=stream_consumer_name,
+            group=stream_group,
+            claim_cursor=cursor,
+            last_claim_run_at=last_claim,
+        )
+        if trigger is not None:
+            return trigger, cursor, last_claim
+        remaining -= wait
+        if remaining <= 0:
+            break
+        # Cheap read-only control check: if an operator just hit Start, break the
+        # pause now so the loop's manual_force_cycle path runs immediately
+        # instead of after a full interval.
+        try:
+            async with AsyncSessionLocal() as _ctl_session:
+                _ctl = await read_orchestrator_control(_ctl_session, read_only=True)
+            if _parse_iso(_ctl.get("requested_run_at")) is not None:
+                return None, cursor, last_claim
+        except Exception:
+            pass
+    return None, cursor, last_claim
 
 
 # ── Hot-path shims ────────────────────────────────────────────────
