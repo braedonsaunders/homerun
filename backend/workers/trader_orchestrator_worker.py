@@ -1737,6 +1737,23 @@ def _session_has_pending_writes(session: Any) -> bool:
 # than piling up tasks.
 _orch_snapshot_bg_pending: dict[str, dict[str, Any]] = {}
 _orch_snapshot_bg_tasks: dict[str, asyncio.Task] = {}
+# Last PERSISTED (running, enabled, has_error) per lane. The UI's Start button
+# reads the DB snapshot via GET /status (the API process cannot see this
+# worker's in-memory runtime_status), so a disabled->running transition must
+# reach the DB row immediately — the 10s min-persist throttle below only
+# exists to damp steady-state heartbeat spam. Without this, the first
+# running=True snapshot after an operator Start was silently dropped whenever
+# any snapshot (e.g. "Disabled") had persisted in the prior 10s, leaving the
+# button on "starting..." while the loop was already trading.
+_orch_snapshot_last_persisted_state: dict[str, tuple[bool, bool, bool]] = {}
+
+
+def _orch_snapshot_state_sig(snapshot_kwargs: dict[str, Any]) -> tuple[bool, bool, bool]:
+    return (
+        bool(snapshot_kwargs.get("running")),
+        bool(snapshot_kwargs.get("enabled")),
+        bool(snapshot_kwargs.get("last_error")),
+    )
 
 
 async def _drain_orchestrator_snapshot_persists(lane_key: str) -> None:
@@ -1753,6 +1770,7 @@ async def _drain_orchestrator_snapshot_persists(lane_key: str) -> None:
                 await apply_telemetry_async_commit(fresh_session)
                 await write_orchestrator_snapshot(fresh_session, **snapshot_kwargs)
             _orchestrator_snapshot_last_persist_mono[lane_key] = time.monotonic()
+            _orch_snapshot_last_persisted_state[lane_key] = _orch_snapshot_state_sig(snapshot_kwargs)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1787,7 +1805,19 @@ async def _write_orchestrator_snapshot_best_effort(
     lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
     has_pending_writes = _session_has_pending_writes(session)
     use_fresh_session = not has_pending_writes and isinstance(session, AsyncSession)
-    if not has_pending_writes:
+    # State TRANSITIONS (disabled<->running, enabled flip, error appearing/
+    # clearing) bypass both the min-interval throttle and the pressure skip:
+    # the UI's Start/Stop button state hangs off this DB row (see the note at
+    # _orch_snapshot_last_persisted_state). Steady-state snapshots (same sig)
+    # stay throttled exactly as before — and so does the FIRST snapshot of a
+    # fresh process (no prior sig): that's boot housekeeping, not an operator
+    # action, and it must still defer under backpressure.
+    _prev_state_sig = _orch_snapshot_last_persisted_state.get(lane_key)
+    state_changed = (
+        _prev_state_sig is not None
+        and _prev_state_sig != _orch_snapshot_state_sig(snapshot_kwargs)
+    )
+    if not has_pending_writes and not state_changed:
         now_mono = time.monotonic()
         last_persisted_at = _orchestrator_snapshot_last_persist_mono.get(lane_key)
         if (
@@ -1821,6 +1851,7 @@ async def _write_orchestrator_snapshot_best_effort(
     try:
         await write_orchestrator_snapshot(session, **snapshot_kwargs)
         _orchestrator_snapshot_last_persist_mono[lane_key] = time.monotonic()
+        _orch_snapshot_last_persisted_state[lane_key] = _orch_snapshot_state_sig(snapshot_kwargs)
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
         if hasattr(session, "rollback"):
             await session.rollback()

@@ -198,8 +198,22 @@ async def get_overview(session: AsyncSession = Depends(get_db_session)):
     payload = await get_orchestrator_overview(session)
     if session.in_transaction():
         await session.rollback()
-    _orchestrator_overview_cache = payload
-    _orchestrator_overview_cache_updated_at = utcnow()
+    # Never CACHE a transitional payload (control flipped but the worker's
+    # snapshot row hasn't caught up: starting / stopping). The Start button
+    # polls this endpoint; caching a running=False payload right after Start
+    # served it stale for the full TTL, pinning the UI on "starting..." for
+    # seconds after the orchestrator was already trading (the live pulse feed,
+    # which is WS-pushed, visibly moved first). During a transition every
+    # request reads the DB fresh so the UI flips the moment the worker
+    # persists; steady-state payloads cache exactly as before.
+    control_enabled = bool((payload.get("control") or {}).get("is_enabled"))
+    worker_running = bool((payload.get("worker") or {}).get("running"))
+    if control_enabled == worker_running:
+        _orchestrator_overview_cache = payload
+        _orchestrator_overview_cache_updated_at = utcnow()
+    else:
+        _orchestrator_overview_cache = None
+        _orchestrator_overview_cache_updated_at = None
     return payload
 
 
