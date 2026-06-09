@@ -4406,6 +4406,16 @@ def _cached_order_snapshots_by_clob_ids(clob_order_ids: list[str]) -> dict[str, 
 _market_info_cache: dict[str, tuple[float, Optional[dict[str, Any]]]] = {}
 _MARKET_INFO_CACHE_TTL_SECONDS = 180.0
 _MARKET_INFO_NEAR_RESOLUTION_SECONDS = 300.0  # 5 minutes
+# Floor between refreshes for near-resolution / resolved markets. These used
+# to return needs_refresh=True UNCONDITIONALLY, which made every exit-risk
+# sweep (~2s cadence) force-REST + DB-persist EVERY near-resolution market on
+# EVERY sweep — and tail-end strategies hold almost exclusively near-resolution
+# markets. A live await-stack dump caught ~40 such fetch tasks queued on the
+# rate-limit lane, starving the scheduled orchestrator cycles behind the same
+# semaphore (SLO "cycle not completing", lag 1081s). Resolution still surfaces
+# within this floor — exits don't need 2s-fresh market METADATA (prices ride
+# the WS feed; a just-resolved market at worst rejects one exit order).
+_MARKET_INFO_NEAR_RESOLUTION_REFRESH_FLOOR_SECONDS = 20.0
 _MARKET_INFO_CACHE_MAX_SIZE = 2000
 _market_info_cache_last_eviction: float = 0.0
 
@@ -4435,17 +4445,27 @@ def _market_info_needs_refresh(lookup_id: str, now_mono: float) -> bool:
         return True
     fetched_at, info = entry
     age = now_mono - fetched_at
-    if age >= _MARKET_INFO_CACHE_TTL_SECONDS:
+    # Deterministic per-key jitter (0-25% of TTL): the whole order book's
+    # entries get warmed together at startup / first sweep, so a flat TTL
+    # expired them TOGETHER and every expiry was a synchronized REST+DB
+    # stampede through the rate-limit lane. Spreading expiry over 180-225s
+    # keeps the same average freshness without the thundering herd.
+    jittered_ttl = _MARKET_INFO_CACHE_TTL_SECONDS * (1.0 + 0.25 * ((hash(lookup_id) % 100) / 100.0))
+    if age >= jittered_ttl:
         return True
     if isinstance(info, dict):
         if info.get("winning_outcome") is not None:
-            return True
+            # Resolved: winning_outcome is final — refresh only to pick up
+            # late-settling fields, at the floor cadence instead of every sweep.
+            return age >= _MARKET_INFO_NEAR_RESOLUTION_REFRESH_FLOOR_SECONDS
         end_time = _extract_market_end_time_naive(info)
         if end_time is not None:
             now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
             seconds_left = (end_time - now_utc).total_seconds()
             if seconds_left <= _MARKET_INFO_NEAR_RESOLUTION_SECONDS:
-                return True
+                # Near resolution: refresh promptly but bounded (see the floor
+                # constant's note) — NOT on every ~2s sweep.
+                return age >= _MARKET_INFO_NEAR_RESOLUTION_REFRESH_FLOOR_SECONDS
     return False
 
 
