@@ -6111,6 +6111,7 @@ async def reconcile_live_positions(
     include_active_candidates: bool = True,
     include_terminal_audit: bool = True,
     place_exits: bool = True,
+    cheap_backstop: bool = False,
     reason: str = "live_position_lifecycle",
 ) -> dict[str, Any]:
     """Lifecycle management for live positions.
@@ -6308,12 +6309,23 @@ async def reconcile_live_positions(
     for row in terminal_rows:
         session.expunge(row)
     await session.rollback()
-    async with release_conn(session):
-        wallet_positions_by_token = await _load_mapping_with_timeout(
-            _load_execution_wallet_positions_by_token,
-            timeout=_WALLET_POSITIONS_LOAD_TIMEOUT_SECONDS,
-            fallback=dict(_wallet_positions_cache[1] or {}),
-        )
+    if cheap_backstop:
+        # Cheap exit backstop (trading plane): the cold reconciliation plane owns
+        # the heavy REST sweep.  Serve wallet positions from the WS-fresh
+        # WalletStateCache (the reconciliation worker is the single REST writer
+        # keeping it fresh) so this exit-safety pass stays fast and adds zero
+        # provider load -- exactly what the orchestrator hot path does.
+        from services.wallet_state_cache import get_wallet_state_cache as _gwsc
+
+        _ws_positions = _gwsc().positions_by_token()
+        wallet_positions_by_token = _ws_positions if _ws_positions else dict(_wallet_positions_cache[1] or {})
+    else:
+        async with release_conn(session):
+            wallet_positions_by_token = await _load_mapping_with_timeout(
+                _load_execution_wallet_positions_by_token,
+                timeout=_WALLET_POSITIONS_LOAD_TIMEOUT_SECONDS,
+                fallback=dict(_wallet_positions_cache[1] or {}),
+            )
     # Two distinct concepts:
     #
     #   wallet_positions_loaded         — the load attempt succeeded; the
@@ -7136,7 +7148,10 @@ async def reconcile_live_positions(
     terminal_rows_needing_wallet_fill_repair = [
         row for row in terminal_rows if _terminal_row_needs_wallet_fill_repair_audit(row, now_naive)
     ]
-    if any(_candidate_needs_wallet_history(row) for row in candidates) or terminal_rows_needing_wallet_fill_repair:
+    if not cheap_backstop and (
+        any(_candidate_needs_wallet_history(row) for row in candidates)
+        or terminal_rows_needing_wallet_fill_repair
+    ):
         async with release_conn(session):
             (
                 wallet_closed_positions_by_token,

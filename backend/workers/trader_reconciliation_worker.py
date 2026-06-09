@@ -74,6 +74,11 @@ WORKER_NAME = "trader_reconciliation"
 _WORKER_PLANE = (os.environ.get("HOMERUN_WORKER_PLANE") or "").strip().lower()
 _IS_COLD_RECONCILE_PLANE = _WORKER_PLANE == "reconciliation"
 _PLACE_EXITS = not _IS_COLD_RECONCILE_PLANE
+# Trading-plane reconcile is the cheap exit BACKSTOP: the cold plane owns the
+# heavy REST sweep (wallet history + terminal audit), so the trading pass leans
+# on the WS-fresh WalletStateCache and skips the wallet-history gather. The cold
+# plane runs the full REST reconcile.
+_CHEAP_BACKSTOP = not _IS_COLD_RECONCILE_PLANE
 if _IS_COLD_RECONCILE_PLANE:
     # Distinct heartbeat/control row so the two planes are independently
     # supervised + visible (a shared row would let one plane mask the other's
@@ -558,9 +563,12 @@ async def _reconcile_live_state_for_trader_inner(
                 dry_run=False,
                 include_terminal_audit=False,
                 place_exits=_PLACE_EXITS,
+                cheap_backstop=_CHEAP_BACKSTOP,
                 reason="reconciliation_worker",
             )
-    if _terminal_audit_due(trader_id):
+    # Terminal audit (heavy: full wallet-history reopen scan) runs on the COLD
+    # reconciliation plane only -- the trading plane is the cheap exit backstop.
+    if _IS_COLD_RECONCILE_PLANE and _terminal_audit_due(trader_id):
         try:
             async with AsyncSessionLocal() as session:
                 terminal_audit_result = await asyncio.wait_for(
