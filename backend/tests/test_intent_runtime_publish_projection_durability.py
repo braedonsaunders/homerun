@@ -193,9 +193,9 @@ async def test_status_projection_updates_signal_and_buffers_emission(monkeypatch
     (the critical path) but hands the loss-tolerant emission-history row to the
     background flusher instead of writing it inline (which previously held a
     main-pool connection 2-3.5s under contention). This pins that contract:
-    the signal row is updated immediately, the emission is buffered (not yet in
-    DB), and a single flush drains the buffer into trade_signal_emissions via
-    the dedicated audit pool."""
+    the signal row is updated immediately (via the dedicated projection pool),
+    the emission is buffered (not yet in DB), and a single flush drains the
+    buffer into trade_signal_emissions via the dedicated audit pool."""
     engine, session_factory = await build_postgres_session_factory(
         Base, "intent_runtime_status_projection"
     )
@@ -213,6 +213,13 @@ async def test_status_projection_updates_signal_and_buffers_emission(monkeypatch
         )
         monkeypatch.setattr(
             intent_runtime_module, "AsyncSessionLocal", session_factory
+        )
+        # The status UPDATE rides the dedicated signal-projection pool
+        # (_projection_session -> ProjectionAsyncSessionLocal); point it at
+        # the test DB so the synchronous critical-path commit lands where
+        # the assertions below can see it.
+        monkeypatch.setattr(
+            intent_runtime_module, "ProjectionAsyncSessionLocal", session_factory
         )
         # Emissions are flushed via the dedicated audit pool; point it at the
         # test DB too so the flush below is observable.
