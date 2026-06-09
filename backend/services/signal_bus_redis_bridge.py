@@ -59,8 +59,11 @@ _DEDUP_WINDOW_SIZE = 2048
 # bus re-fired on every upsert, so the orchestrator re-evaluated updated signals;
 # a PERMANENT signal_id ring silently swallowed those cross-plane re-emissions,
 # so updated signals were never re-evaluated and the orchestrator went idle once
-# the initial backlog drained. A few seconds covers the echo (incl. the bridge's
-# 2s get_message poll latency) with margin while letting genuine updates pass.
+# the initial backlog drained. The echo itself loops back in ~1ms (get_message
+# is event-driven — a published message wakes the bridge immediately, it does
+# NOT poll), so 3s is not about echo coverage: it is the deliberate per-signal
+# re-emission rate-limit, bounding how often an updated signal re-wakes the
+# orchestrator under rapid price jitter.
 _DEDUP_TTL_SECONDS = 3.0
 
 
