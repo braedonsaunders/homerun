@@ -1723,6 +1723,42 @@ def _session_has_pending_writes(session: Any) -> bool:
         return True
 
 
+# Single-flight background persist for the orchestrator TELEMETRY snapshot.
+# The 16h soak's await-stack dumps showed the main loop parked 90s+ inside
+# write_orchestrator_snapshot -> COMMIT ("Starting cycle[scheduled:general]"
+# stalls, and the operator-visible 30s "Start takes forever"): under commit
+# contention (reconcile / market-runtime / catalog flushes all committing
+# chunky JSON), the hot loop was blocked on a STATUS-ROW commit. The in-memory
+# runtime_status is already updated before the persist, and the DB row only
+# feeds the UI + SLO monitor — so the trading loop must never await it.
+# Latest-wins per lane: while a persist is in flight, newer snapshots replace
+# the pending slot instead of queueing, so telemetry lags (acceptable) rather
+# than piling up tasks.
+_orch_snapshot_bg_pending: dict[str, dict[str, Any]] = {}
+_orch_snapshot_bg_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _drain_orchestrator_snapshot_persists(lane_key: str) -> None:
+    while True:
+        snapshot_kwargs = _orch_snapshot_bg_pending.pop(lane_key, None)
+        if snapshot_kwargs is None:
+            return
+        try:
+            async with AsyncSessionLocal() as fresh_session:
+                await write_orchestrator_snapshot(fresh_session, **snapshot_kwargs)
+            _orchestrator_snapshot_last_persist_mono[lane_key] = time.monotonic()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Telemetry only — never let a snapshot failure propagate anywhere
+            # near the trading loop. The next snapshot attempt retries.
+            logger.warning(
+                "Orchestrator snapshot background persist failed (telemetry only)",
+                lane=lane_key,
+                exc_info=exc,
+            )
+
+
 async def _write_orchestrator_snapshot_best_effort(
     session: Any,
     *,
@@ -1742,11 +1778,11 @@ async def _write_orchestrator_snapshot_best_effort(
     )
     if not persist:
         return
+    lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
     has_pending_writes = _session_has_pending_writes(session)
     use_fresh_session = not has_pending_writes and isinstance(session, AsyncSession)
     if not has_pending_writes:
         now_mono = time.monotonic()
-        lane_key = str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
         last_persisted_at = _orchestrator_snapshot_last_persist_mono.get(lane_key)
         if (
             last_persisted_at is not None
@@ -1762,20 +1798,26 @@ async def _write_orchestrator_snapshot_best_effort(
             and (is_db_pressure_active() or pressure_level >= _ORCHESTRATOR_SNAPSHOT_PRESSURE_SKIP_LEVEL)
         ):
             return
-    persist_session = session
+    if use_fresh_session:
+        # Telemetry-only persist on a fresh session: hand it to the background
+        # drainer and return WITHOUT awaiting the commit (see note above).
+        _orch_snapshot_bg_pending[lane_key] = dict(snapshot_kwargs)
+        existing = _orch_snapshot_bg_tasks.get(lane_key)
+        if existing is None or existing.done():
+            _orch_snapshot_bg_tasks[lane_key] = asyncio.create_task(
+                _drain_orchestrator_snapshot_persists(lane_key),
+                name=f"orch-snapshot-persist-{lane_key}",
+            )
+        return
+    # Caller session has pending writes: the snapshot rides the caller's
+    # transaction (committing here also commits those writes), so this path
+    # MUST stay synchronous and keep its original error semantics.
     try:
-        if use_fresh_session:
-            async with AsyncSessionLocal() as fresh_session:
-                persist_session = fresh_session
-                await write_orchestrator_snapshot(fresh_session, **snapshot_kwargs)
-        else:
-            await write_orchestrator_snapshot(session, **snapshot_kwargs)
-        _orchestrator_snapshot_last_persist_mono[
-            str(lane or _LANE_GENERAL).strip().lower() or _LANE_GENERAL
-        ] = time.monotonic()
+        await write_orchestrator_snapshot(session, **snapshot_kwargs)
+        _orchestrator_snapshot_last_persist_mono[lane_key] = time.monotonic()
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
-        if hasattr(persist_session, "rollback"):
-            await persist_session.rollback()
+        if hasattr(session, "rollback"):
+            await session.rollback()
         if isinstance(exc, OperationalError) and not _is_retryable_db_error(exc):
             raise
         logger.warning("Skipped orchestrator snapshot write due to transient DB error", exc_info=exc)
