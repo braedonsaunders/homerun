@@ -5881,6 +5881,51 @@ def _backtest_on_checkin(dbapi_connection, connection_record):  # noqa: ANN001
 BacktestAsyncSessionLocal = sessionmaker(backtest_async_engine, class_=RetryableAsyncSession, expire_on_commit=False)
 
 
+# --- Signal-projection tier --------------------------------------------------
+# A small DEDICATED pool for the intent-runtime signal-projection loop
+# (upsert -> trade_signals -> cross-plane notify) — the latency-critical path
+# the trader orchestrator wakes on.  It exists to keep that path off TWO other
+# pools, on EVERY plane:
+#   * the worker pool (``async_engine``): on the detection plane it is saturated
+#     by the scanner's full market sweep + the ~2.9s history backfill + the
+#     ~2.1s scanner-state projection, so per-signal connection checkouts queued
+#     behind that multi-second work (measured emit->queue-wake p50 1.3s /
+#     p95 9.9s at a <1/s signal rate); and
+#   * the fast tier (``fast_async_engine``): reserved for the order-submit hot
+#     path (fast_trader_runtime, exit_risk_loop).  The projection must NEVER
+#     borrow it — even on planes where the fast tier sits idle — so live
+#     execution latency can never be coupled to projection load.
+# The projection loop is single-threaded (one chunk at a time) so a handful of
+# connections is plenty.  Like the audit/backtest tiers the engine is created
+# eagerly but connects LAZILY, so it costs ZERO connections on planes that never
+# run the projection (recording / reconciliation / services), and only ~4 each
+# on the two that do (detection, trading) — trivial against the 200-conn budget.
+_PROJECTION_POOL_SIZE = 4
+_PROJECTION_MAX_OVERFLOW = 4
+_projection_engine_kw: dict = {
+    "echo": False,
+    "pool_pre_ping": True,
+    "pool_size": _PROJECTION_POOL_SIZE,
+    "max_overflow": _PROJECTION_MAX_OVERFLOW,
+    "pool_timeout": max(1, int(settings.DATABASE_POOL_TIMEOUT_SECONDS)),
+    "pool_recycle": max(30, int(settings.DATABASE_POOL_RECYCLE_SECONDS)),
+    "pool_use_lifo": True,
+    # Same connect args / server_settings as the worker pool — the projection
+    # ran on that pool originally, so this preserves its exact query behaviour
+    # (statement/lock timeouts, synchronous_commit=local) minus the contention.
+    "connect_args": _connect_args,
+}
+projection_async_engine = create_async_engine(settings.DATABASE_URL, **_projection_engine_kw)
+_db_logger.info(
+    "Projection-tier connection pool created (pool_size=%d, max_overflow=%d)",
+    _PROJECTION_POOL_SIZE,
+    _PROJECTION_MAX_OVERFLOW,
+)
+ProjectionAsyncSessionLocal = sessionmaker(
+    projection_async_engine, class_=RetryableAsyncSession, expire_on_commit=False
+)
+
+
 async def recover_pool() -> None:
     """Drop all pooled connections and force fresh ones on next checkout.
 
