@@ -1318,7 +1318,13 @@ class HomerunApp:
         """Update one worker/runtime row: a colored dot + short name.  Heartbeat
         health when the worker reports a snapshot, else plane-process liveness."""
         snapshot = self._worker_state_cache.get(name, {})
-        if snapshot:
+        # Only trust a worker's heartbeat snapshot while its PLANE PROCESS is
+        # actually alive. A gated-off / not-spawned plane has plane_alive=False
+        # and no live workers, but a STALE cached snapshot from before it was
+        # gated would otherwise render the subworker green while its parent card
+        # is (correctly) red. When the plane is down, fall through to plane
+        # liveness so the child row shows red too.
+        if plane_alive and snapshot:
             _status, status_class = self._resolve_worker_state(snapshot)
             color = {"status-on": GREEN, "status-off": RED,
                      "status-warn": YELLOW, "status-idle": FG_DIM}.get(status_class, FG_DIM)
