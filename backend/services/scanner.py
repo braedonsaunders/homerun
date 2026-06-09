@@ -4109,8 +4109,30 @@ class ArbitrageScanner:
                 self._heavy_lane_error = None
                 self._full_snapshot_strategy_running = True
                 self._last_full_snapshot_strategy_error = None
-                cached_events_snapshot = [_clone_model(event) for event in self._cached_events]
-                cached_markets_snapshot = [_clone_model(market) for market in self._cached_markets]
+                # Deep-clone the full catalog OFF the event loop. The clone MUST
+                # be atomic (taken under _scan_lock so the fast lane can't mutate
+                # the catalog mid-clone) but it must NOT block the loop: cloning
+                # thousands of Pydantic market/event models inline stalled the
+                # detection plane's event loop for ~1-2s on every heavy cycle,
+                # starving the latency-critical signal projection (the emit->wake
+                # p95 ~10s / max ~28s spikes coincided with heavy-lane starts).
+                # Running the clone in a worker thread keeps _scan_lock held — so
+                # atomicity is preserved, every _cached_* mutator already takes
+                # _scan_lock — while the GIL yields between per-model clones
+                # (~every 5ms), letting the projection keep draining. The fast
+                # lane already serializes on _scan_lock, so this adds no new CPU
+                # contention; it only moves the existing clone off the loop.
+                _heavy_clone_loop = asyncio.get_running_loop()
+
+                def _clone_catalog_snapshot() -> tuple[list, list]:
+                    return (
+                        [_clone_model(event) for event in self._cached_events],
+                        [_clone_model(market) for market in self._cached_markets],
+                    )
+
+                cached_events_snapshot, cached_markets_snapshot = (
+                    await _heavy_clone_loop.run_in_executor(None, _clone_catalog_snapshot)
+                )
 
             try:
                 await self._ensure_runtime_strategies_loaded()
