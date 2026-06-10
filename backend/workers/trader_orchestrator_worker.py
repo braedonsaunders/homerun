@@ -1756,6 +1756,32 @@ def _orch_snapshot_state_sig(snapshot_kwargs: dict[str, Any]) -> tuple[bool, boo
     )
 
 
+# Single-flight background hot-state maintenance (audit-buffer flush + stale
+# reseed). See the call site in run_worker_loop for why this must never be
+# awaited inline on the cycle loop.
+_hot_state_maintenance_task: asyncio.Task | None = None
+
+
+def _kick_hot_state_maintenance() -> None:
+    global _hot_state_maintenance_task
+    existing = _hot_state_maintenance_task
+    if existing is not None and not existing.done():
+        return
+
+    async def _run() -> None:
+        try:
+            await hot_state.flush_audit_buffer()
+            await hot_state.reseed_if_stale()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Hot state maintenance failed: %s", exc)
+
+    _hot_state_maintenance_task = asyncio.create_task(
+        _run(), name="hot-state-maintenance"
+    )
+
+
 async def _drain_orchestrator_snapshot_persists(lane_key: str) -> None:
     while True:
         snapshot_kwargs = _orch_snapshot_bg_pending.pop(lane_key, None)
@@ -9823,11 +9849,18 @@ async def run_worker_loop(
                                     await maint_session.rollback()
                                 logger.warning("Failed stale-terminal-order watchdog pass: %s", exc)
 
-                    try:
-                        await hot_state.flush_audit_buffer()
-                        await hot_state.reseed_if_stale()
-                    except Exception as exc:
-                        logger.warning("Hot state maintenance failed: %s", exc)
+                    # Hot-state maintenance runs in the BACKGROUND (single-flight
+                    # across both lanes). The 24h-soak stall dumps caught the
+                    # 489s "Starting cycle" freezes here: reseed_if_stale ran
+                    # _seed_from_db INLINE under _seed_lock on this loop — the
+                    # crypto lane held the lock in a minutes-long DB read while
+                    # the general lane queued on the same lock, freezing BOTH
+                    # lanes. _seed_from_db builds into shadow dicts and swaps
+                    # atomically precisely so concurrent readers stay correct,
+                    # so trading on the current in-memory state while the reseed
+                    # runs in the background is exactly as safe as the steady
+                    # state between reseeds.
+                    _kick_hot_state_maintenance()
                     last_maintenance_at = utcnow()
 
                 async with AsyncSessionLocal() as session:

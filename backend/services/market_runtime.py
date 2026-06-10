@@ -1056,11 +1056,59 @@ class MarketRuntime:
         return out
 
     async def _run_loop(self) -> None:
+        # Zombie-iteration bookkeeping: an iteration that survives the cancel
+        # grace in _await_with_cancel_grace is retained as abandoned, and this
+        # loop then waits here until it actually finishes. The 24h soak showed
+        # one such wedge lasting 431s (22 iteration timeouts overall): crypto
+        # market data went stale and no snapshot heartbeat landed, so the SLO
+        # alert fired blind ("cycle took 431s of 30s") with no clue WHERE the
+        # iteration was stuck. Two iterations must NOT run concurrently (the
+        # iteration mutates shared crypto state without a generation guard),
+        # so we keep waiting — but now with a truthful degraded heartbeat
+        # every ~15s and a one-shot await-stack dump of the stuck task so the
+        # next occurrence pinpoints the wedge line.
+        zombie_wait_started_mono: float | None = None
+        zombie_last_heartbeat_mono: float = 0.0
+        zombie_stack_dumped = False
         while not self._stop_event.is_set():
-            if self._loop_iteration_task is not None and not self._loop_iteration_task.done():
-                self._current_activity = "Waiting for prior loop cleanup"
+            stuck_task = self._loop_iteration_task
+            if stuck_task is not None and not stuck_task.done():
+                now_mono = time.monotonic()
+                if zombie_wait_started_mono is None:
+                    zombie_wait_started_mono = now_mono
+                    zombie_stack_dumped = False
+                waited = now_mono - zombie_wait_started_mono
+                self._current_activity = f"Degraded: waiting for stuck iteration ({waited:.0f}s)"
+                if waited >= 90.0 and not zombie_stack_dumped:
+                    zombie_stack_dumped = True
+                    try:
+                        import io as _io
+
+                        _buf = _io.StringIO()
+                        stuck_task.print_stack(limit=14, file=_buf)
+                        logger.warning(
+                            "Market runtime iteration STUCK %.0fs past its %.0fs timeout — await stack:\n%s",
+                            waited,
+                            _LOOP_ITERATION_TIMEOUT_SECONDS,
+                            _buf.getvalue(),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Market runtime iteration STUCK %.0fs past timeout (stack unavailable)",
+                            waited,
+                        )
+                if (now_mono - zombie_last_heartbeat_mono) >= 15.0:
+                    zombie_last_heartbeat_mono = now_mono
+                    try:
+                        await self._persist_crypto_worker_snapshot(force=True)
+                    except Exception as snapshot_exc:
+                        logger.debug(
+                            "Degraded-heartbeat snapshot persist failed",
+                            exc_info=snapshot_exc,
+                        )
                 await asyncio.sleep(1.0)
                 continue
+            zombie_wait_started_mono = None
             iteration_task = asyncio.create_task(self._run_loop_iteration(), name="market-runtime-loop-iteration")
             self._loop_iteration_task = iteration_task
             iteration_task.add_done_callback(self._clear_loop_iteration_task)
