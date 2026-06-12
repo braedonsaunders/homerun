@@ -30,6 +30,7 @@ import csv
 import io
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1308,36 +1309,15 @@ async def storage_summary() -> dict[str, Any]:
     # view (parquet bytes).  Walk every configured parquet root and group
     # bytes by top-level provider so the operator sees one reconciled
     # picture: SQL tables + parquet providers + a grand total.
-    parquet_providers: list[dict[str, Any]] = []
-    parquet_total_bytes = 0
-    try:
-        from services.external_data.parquet_schema import parquet_roots
-        seen: set[str] = set()
-        for root in parquet_roots():
-            if not root.exists():
-                continue
-            for prov_dir in sorted(root.iterdir()):
-                if not prov_dir.is_dir() or prov_dir.name in seen:
-                    continue
-                seen.add(prov_dir.name)
-                pb = 0
-                pf = 0
-                for fp in prov_dir.rglob("*.parquet"):
-                    try:
-                        pb += fp.stat().st_size
-                        pf += 1
-                    except OSError:
-                        continue
-                parquet_total_bytes += pb
-                parquet_providers.append({
-                    "provider": prov_dir.name,
-                    "size_bytes": pb,
-                    "file_count": pf,
-                })
-    except Exception as exc:
-        logger.warning("storage_summary: parquet enumeration failed: %s", exc)
-
-    parquet_providers.sort(key=lambda p: p["size_bytes"], reverse=True)
+    #
+    # The walk runs OFF the event loop, cached + single-flight: the live
+    # ingestor writes ~17k token files per 15-min window (>1M files/day),
+    # and the original inline rglob()+stat() here BLOCKED the API's event
+    # loop for the entire walk — py-spy caught the MainThread wedged at
+    # fp.stat() while every other request timed out ("all down except the
+    # frontend" after each boot, as soon as the UI fired this request).
+    parquet_providers, parquet_total_bytes = await _parquet_storage_summary_cached()
+    parquet_providers = list(parquet_providers)
     grand_total_bytes = (total_bytes or 0) + parquet_total_bytes
     return {
         "tables": out,
@@ -1349,6 +1329,84 @@ async def storage_summary() -> dict[str, Any]:
         },
         "grand_total_bytes": grand_total_bytes,
     }
+
+
+_parquet_summary_cache: tuple[list[dict[str, Any]], int] | None = None
+_parquet_summary_cache_at: float = 0.0
+_PARQUET_SUMMARY_TTL_SECONDS = 600.0
+_parquet_summary_lock = asyncio.Lock()
+
+
+def _scan_parquet_providers_sync() -> tuple[list[dict[str, Any]], int]:
+    """Walk every parquet root and sum bytes per top-level provider.
+
+    Pure-sync worker — ALWAYS run via asyncio.to_thread (see the note in
+    storage_summary). os.scandir instead of rglob: on NTFS the dirent
+    carries the size, so entry.stat() is satisfied from the find data
+    instead of a per-file round trip — order-of-magnitude faster on the
+    million-file live_ingestor tree.
+    """
+    from services.external_data.parquet_schema import parquet_roots
+
+    providers: list[dict[str, Any]] = []
+    total = 0
+    seen: set[str] = set()
+    for root in parquet_roots():
+        if not root.exists():
+            continue
+        for prov_dir in sorted(root.iterdir()):
+            if not prov_dir.is_dir() or prov_dir.name in seen:
+                continue
+            seen.add(prov_dir.name)
+            pb = 0
+            pf = 0
+            stack = [str(prov_dir)]
+            while stack:
+                d = stack.pop()
+                try:
+                    with os.scandir(d) as it:
+                        for entry in it:
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    stack.append(entry.path)
+                                elif entry.name.endswith(".parquet"):
+                                    pb += entry.stat(follow_symlinks=False).st_size
+                                    pf += 1
+                            except OSError:
+                                continue
+                except OSError:
+                    continue
+            total += pb
+            providers.append({
+                "provider": prov_dir.name,
+                "size_bytes": pb,
+                "file_count": pf,
+            })
+    providers.sort(key=lambda p: p["size_bytes"], reverse=True)
+    return providers, total
+
+
+async def _parquet_storage_summary_cached() -> tuple[list[dict[str, Any]], int]:
+    """TTL-cached, single-flight, off-loop parquet storage summary."""
+    global _parquet_summary_cache, _parquet_summary_cache_at
+    now = time.monotonic()
+    cached = _parquet_summary_cache
+    if cached is not None and (now - _parquet_summary_cache_at) < _PARQUET_SUMMARY_TTL_SECONDS:
+        return cached
+    async with _parquet_summary_lock:
+        # Re-check under the lock — another caller may have just refreshed.
+        now = time.monotonic()
+        cached = _parquet_summary_cache
+        if cached is not None and (now - _parquet_summary_cache_at) < _PARQUET_SUMMARY_TTL_SECONDS:
+            return cached
+        try:
+            result = await asyncio.to_thread(_scan_parquet_providers_sync)
+        except Exception as exc:
+            logger.warning("storage_summary: parquet enumeration failed: %s", exc)
+            result = ([], 0)
+        _parquet_summary_cache = result
+        _parquet_summary_cache_at = time.monotonic()
+        return result
 
 
 @router.get("/{name}/distinct/{column}")
