@@ -611,6 +611,39 @@ def fit_cox_ph(df: pd.DataFrame, *, strata_key: str, holdout_days: int = 7) -> T
     )
 
 
+def _finite_map(values: Any, fallback: float) -> Any:
+    """Replace non-finite floats (nan/inf) in a flat {name: float} dict.
+
+    pandas/lifelines emit NaN for degenerate covariates (empty/constant
+    columns), and ``float('nan')`` JSON-serializes to a literal ``NaN`` token
+    that Postgres rejects ("Token 'NaN' is invalid") — which made EVERY
+    fill_probability_models INSERT fail, so no Cox model was ever persisted.
+    Semantic fallbacks keep inference safe: std->1.0 and mean->0.0 make
+    z-scoring a no-op, coefficient->0.0 makes the covariate inert.
+    """
+    if not isinstance(values, dict):
+        return values
+    out = {}
+    for k, v in values.items():
+        try:
+            f = float(v)
+            out[k] = f if math.isfinite(f) else fallback
+        except (TypeError, ValueError):
+            out[k] = fallback
+    return out
+
+
+def _deep_definite(value: Any) -> Any:
+    """Recursively replace non-finite floats with None (JSON null)."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _deep_definite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_deep_definite(v) for v in value]
+    return value
+
+
 async def train_and_persist(
     session: AsyncSession,
     *,
@@ -647,11 +680,13 @@ async def train_and_persist(
             concordance_index=r.concordance_index,
             brier_score=r.brier_score,
             log_likelihood=r.log_likelihood,
-            coefficients_json=r.coefficients,
-            baseline_survival_json=r.baseline_survival,
-            feature_means_json=r.feature_means,
-            feature_stds_json=r.feature_stds,
-            config_json={**r.config, "calibration_bins": r.calibration_bins} if r.calibration_bins else r.config,
+            coefficients_json=_finite_map(r.coefficients, 0.0),
+            baseline_survival_json=_deep_definite(r.baseline_survival),
+            feature_means_json=_finite_map(r.feature_means, 0.0),
+            feature_stds_json=_finite_map(r.feature_stds, 1.0),
+            config_json=_deep_definite(
+                {**r.config, "calibration_bins": r.calibration_bins} if r.calibration_bins else r.config
+            ),
             promoted_at=None,
             active=False,
             notes=r.notes,
