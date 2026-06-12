@@ -285,6 +285,7 @@ class BookParquetSink:
             rows = self._buf.get(key)
             if not rows:
                 self._dirty.discard(key)
+                self._buf.pop(key, None)
                 continue
             snapshot = list(rows)
             try:
@@ -300,6 +301,23 @@ class BookParquetSink:
             if key[2] < current_bucket and not force:
                 self._buffered_rows -= len(self._buf.get(key, []))
                 self._buf.pop(key, None)
+        # Sweep CLOSED windows that are no longer dirty. The pop above only
+        # fires for a key that is dirty AFTER its window closed (late rows) —
+        # but the NORMAL lifecycle is: final rows flush while the window is
+        # still current (file complete on disk), the window closes, the key
+        # never gets dirty again, and this loop never revisits it. Those fully
+        # written row lists leaked permanently — a 22h soak showed _buf at
+        # 569,997 keys (~2GB on the recording plane), with the _MAX_BUFFERED_ROWS
+        # drop-oldest backstop then silently DROPPING data to compensate.
+        # Closed + non-dirty == already written in its final flush (a write
+        # failure leaves the key dirty, so unwritten rows are never swept) —
+        # the buffered copy is pure garbage; free it.
+        if not force:
+            for key in [k for k in self._buf.keys() if k[2] < current_bucket and k not in self._dirty]:
+                self._buffered_rows -= len(self._buf.get(key, []))
+                self._buf.pop(key, None)
+            if self._buffered_rows < 0:
+                self._buffered_rows = 0
 
     def _write_file(self, key: tuple[str, str, int], rows: list[dict]) -> Path | None:
         pkind, token, bucket = key

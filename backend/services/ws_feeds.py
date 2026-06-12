@@ -19,6 +19,7 @@ import asyncio
 from collections import deque
 from datetime import datetime, timezone
 import json
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -707,6 +708,11 @@ class PolymarketWSFeed:
 
         # Subscription tracking
         self._subscribed_assets: Set[str] = set()  # token_ids
+        # token_id -> monotonic time of the most recent subscribe() REQUEST
+        # (stamped for already-subscribed tokens too). Feeds the detection
+        # plane's subscription-budget eviction: least-recently-requested
+        # tokens are unsubscribed first (see FeedManager._cache_eviction_loop).
+        self._sub_last_requested: dict[str, float] = {}
         self._sub_lock = asyncio.Lock()
 
         # Connection state
@@ -774,6 +780,9 @@ class PolymarketWSFeed:
         async with self._sub_lock:
             new_ids = [tid for tid in token_ids if tid not in self._subscribed_assets]
             self._subscribed_assets.update(token_ids)
+            now_mono = time.monotonic()
+            for tid in token_ids:
+                self._sub_last_requested[tid] = now_mono
             should_send = bool(new_ids) and self._ws and self._state == ConnectionState.CONNECTED
         if should_send:
             _SUBSCRIBE_CHUNK = 100
@@ -789,6 +798,8 @@ class PolymarketWSFeed:
             return
         async with self._sub_lock:
             self._subscribed_assets.difference_update(token_ids)
+            for tid in token_ids:
+                self._sub_last_requested.pop(tid, None)
 
         for tid in token_ids:
             self._cache.remove(tid)
@@ -2015,6 +2026,20 @@ class FeedManager:
     async def _cache_eviction_loop(self) -> None:
         """Periodically evict stale entries from the price cache and prune
         feed subscriptions for tokens that were evicted."""
+        # Subscription budget: DETECTION plane only. The scanner subscribes
+        # every candidate batch and never unsubscribes live markets, so the
+        # set ratchets toward the full universe (46k tokens after 22h) and the
+        # plane degrades as message volume / book cache / GC scale with it.
+        # The 600s-stale eviction below only catches DEAD markets (stopped
+        # ticking); this budget bounds ACTIVE-but-cold coverage by evicting
+        # the least-recently-requested tokens. Detection has no open-position
+        # price dependency (no execution on this plane), so eviction is safe:
+        # the next scan that wants an evicted token re-subscribes it. The
+        # trading plane is deliberately exempt — an open position's book must
+        # never be budget-evicted.
+        _plane = os.environ.get("HOMERUN_WORKER_PLANE", "").strip().lower()
+        _budget = int(getattr(settings, "WS_MARKET_SUBSCRIPTION_BUDGET", 0) or 0)
+        _enforce_budget = _plane == "detection" and _budget > 0
         try:
             while True:
                 await asyncio.sleep(60.0)
@@ -2026,7 +2051,26 @@ class FeedManager:
                         # stays lean.
                         async with self._polymarket_feed._sub_lock:
                             self._polymarket_feed._subscribed_assets.difference_update(stale_ids)
+                            for tid in stale_ids:
+                                self._polymarket_feed._sub_last_requested.pop(tid, None)
                         logger.info("PriceCache evicted stale entries", evicted=len(stale_ids))
+                    if _enforce_budget:
+                        feed = self._polymarket_feed
+                        overflow = len(feed._subscribed_assets) - _budget
+                        if overflow > 0:
+                            async with feed._sub_lock:
+                                last = feed._sub_last_requested
+                                victims = sorted(
+                                    feed._subscribed_assets,
+                                    key=lambda tid: last.get(tid, 0.0),
+                                )[:overflow]
+                            await feed.unsubscribe(victims)
+                            logger.info(
+                                "WS subscription budget enforced",
+                                budget=_budget,
+                                evicted=len(victims),
+                                remaining=len(feed._subscribed_assets),
+                            )
                 except Exception as exc:
                     logger.warning("PriceCache eviction failed", exc_info=exc)
         except asyncio.CancelledError:

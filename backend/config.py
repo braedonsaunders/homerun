@@ -168,6 +168,18 @@ class Settings(BaseSettings):
     MARKET_FETCH_ORDER: str = "volume"  # volume, updatedAt, createdAt, or empty for default
     MIN_LIQUIDITY: float = 1000.0  # Minimum liquidity in USD
     SCANNER_FORCE_FULL_UNIVERSE: bool = True  # Ignore market/event caps for full-coverage discovery
+    # DETECTION-plane market-WS subscription budget (token count; 0 = unlimited).
+    # The scanner subscribes every candidate batch's tokens and nothing
+    # unsubscribes live markets, so subscriptions ratchet toward the FULL
+    # universe over hours (22h soak: 46,436 subscribed tokens = every active
+    # token) — WS message volume, book-cache size and GC pressure grow with
+    # it, which is the "fast at boot, slow after hours" degradation curve.
+    # The feed-manager eviction loop enforces this budget by unsubscribing the
+    # least-recently-REQUESTED tokens; any scan that wants an evicted token
+    # again simply re-subscribes. Applies ONLY on the detection plane — the
+    # trading plane's feed is never budget-evicted (open positions must keep
+    # their books streaming).
+    WS_MARKET_SUBSCRIPTION_BUDGET: int = 15000
     # Hard gate at the catalog-fetch boundary: only persist markets that
     # are *actually tradable* (accepting_orders=True AND volume>0 AND
     # has CLOB token IDs).  Polymarket's gamma API returns ~250K markets

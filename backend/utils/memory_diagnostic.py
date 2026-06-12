@@ -344,6 +344,13 @@ async def memory_diagnostic_loop() -> None:
         "memory_diagnostic loop started — touch %s to trigger a dump",
         _REQUEST_PATH,
     )
+    # Opt-in line-level allocation tracing: every dump captured during the
+    # 22h degradation hunt said "TRACEMALLOC: Not enabled" because nothing
+    # ever called start_tracemalloc(), leaving only the container census.
+    # Set HOMERUN_TRACEMALLOC=1 (all planes pick it up at start) to pay the
+    # ~5-10% overhead and get file:line ground truth in the next dump.
+    if os.environ.get("HOMERUN_TRACEMALLOC", "").strip() in {"1", "true", "yes"}:
+        start_tracemalloc()
     def _poll_and_dump_sync() -> None:
         # Synchronous filesystem work (stat + dump-write + unlink) runs in a
         # worker thread: the 16h soak's event-loop watchdog caught the bare
