@@ -1222,21 +1222,45 @@ async def _publish_trade_signal_batch(
     signal_ids: list[str],
     source: str | None = None,
     reason: str | None = None,
+    signal_snapshots: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     if not signal_ids:
         return
     normalized_event_type = str(event_type or "").strip().lower()
     normalized_source = str(source or "").strip().lower()
     emitted_at_iso = _utc_now().isoformat()
+    normalized_signal_ids = [str(signal_id or "").strip() for signal_id in signal_ids if str(signal_id or "").strip()]
+    if not normalized_signal_ids:
+        return
+    normalized_snapshots: dict[str, dict[str, Any]] = {}
+    if isinstance(signal_snapshots, dict):
+        normalized_id_set = set(normalized_signal_ids[:500])
+        for signal_id, snapshot in signal_snapshots.items():
+            normalized_signal_id = str(signal_id or "").strip()
+            if normalized_signal_id not in normalized_id_set or not isinstance(snapshot, dict):
+                continue
+            snapshot_payload = copy.deepcopy(snapshot)
+            payload_json = snapshot_payload.get("payload_json")
+            if not isinstance(payload_json, dict):
+                payload_json = {}
+            else:
+                payload_json = dict(payload_json)
+            payload_json["signal_emitted_at"] = emitted_at_iso
+            snapshot_payload["payload_json"] = payload_json
+            safe_snapshot = _safe_json(snapshot_payload)
+            if isinstance(safe_snapshot, dict):
+                normalized_snapshots[normalized_signal_id] = safe_snapshot
     payload = {
         "event_type": normalized_event_type,
         "source": normalized_source,
         "reason": reason,
-        "signal_count": int(len(signal_ids)),
-        "signal_ids": signal_ids[:500],
+        "signal_count": int(len(normalized_signal_ids)),
+        "signal_ids": normalized_signal_ids[:500],
         "emitted_at": emitted_at_iso,
         "trigger": "signal_bus",
     }
+    if normalized_snapshots:
+        payload["signal_snapshots"] = normalized_snapshots
     # Pre-mark these IDs so the cross-plane bridge dedups correctly.
     try:
         from services import signal_bus_redis_bridge
@@ -1250,6 +1274,8 @@ async def _publish_trade_signal_batch(
         pass
     # Cross-plane wakeup.
     await _publish_redis(SIGNAL_BATCH_CHANNEL, payload)
+    for snapshot in normalized_snapshots.values():
+        await _publish_redis(SIGNAL_PAYLOADS_CHANNEL, snapshot)
 
 
 def make_dedupe_key(*parts: Any) -> str:

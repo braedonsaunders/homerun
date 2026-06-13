@@ -74,6 +74,62 @@ _REST_PRIME_COOLDOWN_S: float = 3.0
 _rest_prime_last_ts: dict[str, float] = {}
 
 
+# ── Replay book provider ───────────────────────────────────────────
+#
+# During backtest discovery replay there is no live WS feed cache, so every
+# SDK book read (get_order_book_depth / get_book_levels / get_best_bid_ask /
+# get_book_imbalance) would return None — which silently kills any strategy
+# that gates on book state and makes it un-backtestable while it works fine
+# live.  The backtester installs the tick's reconstructed per-token book
+# states here (the same grid the detect ``prices`` arg carries) around each
+# detect/on_event dispatch, exactly like the replay clock.  Fidelity is
+# top-of-book plus top-5 aggregate depth (what the recorded grid carries);
+# true L2 execution realism remains the matching engine's job at fill time.
+_replay_books: Optional[dict[str, dict]] = None
+
+
+def set_replay_books(books: Optional[dict[str, dict]]) -> Optional[dict[str, dict]]:
+    """Install per-token replay book states; returns the previous value
+    for restore (mirrors ``utils.utcnow.set_replay_clock_us``)."""
+    global _replay_books
+    prev = _replay_books
+    _replay_books = books if books else None
+    return prev
+
+
+def restore_replay_books(token: Optional[dict[str, dict]]) -> None:
+    global _replay_books
+    _replay_books = token
+
+
+def _replay_state_bid_ask(state: dict) -> tuple[Optional[float], Optional[float]]:
+    bid = state.get("bid", state.get("best_bid"))
+    ask = state.get("ask", state.get("best_ask"))
+    try:
+        bid_f = float(bid) if bid is not None else None
+        ask_f = float(ask) if ask is not None else None
+    except (TypeError, ValueError):
+        return None, None
+    if bid_f is not None and bid_f <= 0.0:
+        bid_f = None
+    if ask_f is not None and ask_f <= 0.0:
+        ask_f = None
+    return bid_f, ask_f
+
+
+def _replay_staleness_ms(state: dict) -> float:
+    from utils.utcnow import utcnow as _now
+
+    ts = state.get("ts")
+    try:
+        ts_f = float(ts)
+    except (TypeError, ValueError):
+        return 0.0
+    if ts_f <= 0.0:
+        return 0.0
+    return max(0.0, (_now().timestamp() - ts_f) * 1000.0)
+
+
 def _prime_book_via_rest(token_id: str) -> None:
     try:
         import asyncio
@@ -2705,7 +2761,10 @@ class StrategySDK:
         try:
             from services.market_runtime import get_market_runtime
 
-            return get_market_runtime().get_token_mid_price(str(token_id or "").strip())
+            runtime = get_market_runtime()
+            if not runtime.started:
+                return None
+            return runtime.get_token_mid_price(str(token_id or "").strip())
         except Exception:
             pass
         return None
@@ -2723,7 +2782,10 @@ class StrategySDK:
         try:
             from services.market_runtime import get_market_runtime
 
-            return get_market_runtime().get_token_spread_bps(str(token_id or "").strip())
+            runtime = get_market_runtime()
+            if not runtime.started:
+                return None
+            return runtime.get_token_spread_bps(str(token_id or "").strip())
         except Exception:
             pass
         return None
@@ -3083,6 +3145,22 @@ class StrategySDK:
         token_id = StrategySDK._resolve_token_id(market, side)
         if token_id is None:
             return None
+        if _replay_books is not None:
+            state = _replay_books.get(token_id)
+            if not isinstance(state, dict):
+                return None
+            _bid, ask = _replay_state_bid_ask(state)
+            if ask is None:
+                return None
+            ask_depth = float(state.get("ask_depth") or 0.0)
+            return {
+                "vwap_price": ask,
+                "slippage_bps": 0.0,
+                "fill_probability": 1.0,
+                "available_liquidity": ask_depth * ask,
+                "is_fresh": bool(state.get("is_fresh", True)),
+                "staleness_ms": round(_replay_staleness_ms(state), 1),
+            }
         try:
             from services.ws_feeds import get_feed_manager
             from services.optimization.vwap import VWAPCalculator
@@ -3150,6 +3228,16 @@ class StrategySDK:
         token_id = StrategySDK._resolve_token_id(market, side)
         if token_id is None:
             return None
+        if _replay_books is not None:
+            state = _replay_books.get(token_id)
+            if not isinstance(state, dict):
+                return None
+            _bid, ask = _replay_state_bid_ask(state)
+            if ask is None or max_levels < 1:
+                return None
+            # Replay grid carries aggregate top-5 depth, not the ladder —
+            # surface it as one synthetic level at best ask.
+            return [{"price": ask, "size": float(state.get("ask_depth") or 0.0)}]
         try:
             from services.ws_feeds import get_feed_manager
         except ImportError as e:
@@ -3183,6 +3271,14 @@ class StrategySDK:
         token_id = StrategySDK._resolve_token_id(market, side)
         if token_id is None:
             return None
+        if _replay_books is not None:
+            state = _replay_books.get(token_id)
+            if not isinstance(state, dict):
+                return None
+            bid, ask = _replay_state_bid_ask(state)
+            if bid is None or ask is None:
+                return None
+            return (bid, ask)
         try:
             from services.ws_feeds import get_feed_manager
         except ImportError as e:
@@ -3212,6 +3308,17 @@ class StrategySDK:
         token_id = StrategySDK._resolve_token_id(market, side)
         if token_id is None:
             return None
+        if _replay_books is not None:
+            state = _replay_books.get(token_id)
+            if not isinstance(state, dict):
+                return None
+            # Replay grid carries aggregate top-5 depth per side.
+            bid_size = float(state.get("bid_depth") or 0.0)
+            ask_size = float(state.get("ask_depth") or 0.0)
+            denom = bid_size + ask_size
+            if denom <= 0.0:
+                return None
+            return (bid_size - ask_size) / denom
         try:
             from services.ws_feeds import get_feed_manager
         except ImportError as e:
@@ -3416,7 +3523,10 @@ class StrategySDK:
         try:
             from services.market_runtime import get_market_runtime
 
-            return get_market_runtime().get_price_history(
+            runtime = get_market_runtime()
+            if not runtime.started:
+                return []
+            return runtime.get_price_history(
                 str(token_id or "").strip(),
                 max_snapshots=max_snapshots,
             )
@@ -3486,7 +3596,10 @@ class StrategySDK:
                     }
             from services.market_runtime import get_market_runtime
 
-            return get_market_runtime().get_price_change(
+            runtime = get_market_runtime()
+            if not runtime.started:
+                return None
+            return runtime.get_price_change(
                 str(token_id or "").strip(),
                 lookback_seconds=lookback_seconds,
             )
@@ -3506,7 +3619,10 @@ class StrategySDK:
         try:
             from services.market_runtime import get_market_runtime
 
-            return get_market_runtime().get_recent_trades(
+            runtime = get_market_runtime()
+            if not runtime.started:
+                return []
+            return runtime.get_recent_trades(
                 str(token_id or "").strip(),
                 max_trades=max_trades,
             )
@@ -3523,7 +3639,10 @@ class StrategySDK:
         try:
             from services.market_runtime import get_market_runtime
 
-            return get_market_runtime().get_trade_volume(
+            runtime = get_market_runtime()
+            if not runtime.started:
+                return {"buy_volume": 0.0, "sell_volume": 0.0, "total": 0.0, "trade_count": 0}
+            return runtime.get_trade_volume(
                 str(token_id or "").strip(),
                 lookback_seconds=lookback_seconds,
             )
@@ -3539,7 +3658,10 @@ class StrategySDK:
         try:
             from services.market_runtime import get_market_runtime
 
-            return get_market_runtime().get_buy_sell_imbalance(
+            runtime = get_market_runtime()
+            if not runtime.started:
+                return 0.0
+            return runtime.get_buy_sell_imbalance(
                 str(token_id or "").strip(),
                 lookback_seconds=lookback_seconds,
             )

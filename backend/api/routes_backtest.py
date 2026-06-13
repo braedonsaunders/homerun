@@ -215,9 +215,9 @@ async def get_run(run_id: str):
 #   GET  /backtest/runs/{run_id}/status → poll for progress (1s cadence)
 #   POST /backtest/runs/{run_id}/cancel → operator stop
 #
-# Engine work runs in the dedicated backtest worker process (discovery
-# plane, see workers/backtest_worker.py).  Full GIL + crash isolation
-# from the API + orchestrator.
+# Engine work runs in the dedicated backtest worker process (always-on
+# ``jobs`` plane, see workers/backtest_worker.py).  Full GIL + crash
+# isolation from the API + orchestrator.
 #
 # The legacy ``POST /backtest/run`` (sync) path stays for backwards
 # compatibility but should be considered deprecated — running a 1M+
@@ -254,10 +254,13 @@ async def enqueue_run_route(req: UnifiedBacktestRequest) -> dict[str, Any]:
         "seed": req.seed,
         "counterfactual_sample_size": req.counterfactual_sample_size,
         "ensemble_sample_size": req.ensemble_sample_size,
+        "fills_sample_size": req.fills_sample_size,
         "impact_strength_bps": req.impact_strength_bps,
         "maker_rebate_bps": req.maker_rebate_bps,
         "maker_rebate_max_spread_bps": req.maker_rebate_max_spread_bps,
         "n_trials": req.n_trials,
+        "discovery_sample_interval_seconds": req.discovery_sample_interval_seconds,
+        "discovery_max_ticks": req.discovery_max_ticks,
     }
     row = await enqueue_run(payload)
     return {

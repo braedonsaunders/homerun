@@ -918,6 +918,192 @@ async def set_parquet_root(req: ParquetRootUpdate) -> dict[str, Any]:
     }
 
 
+def _disk_usage_for(p: Path) -> dict[str, Any]:
+    """Free/total bytes for the drive holding ``p`` (nearest existing
+    ancestor when ``p`` itself doesn't exist yet)."""
+    import shutil
+
+    probe = p
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    try:
+        du = shutil.disk_usage(str(probe))
+        return {
+            "free_gb": round(du.free / 1024**3, 1),
+            "total_gb": round(du.total / 1024**3, 1),
+        }
+    except OSError:
+        return {"free_gb": None, "total_gb": None}
+
+
+@router.get("/parquet/storage-location")
+async def get_parquet_storage_location() -> dict[str, Any]:
+    """Storage-location card state: the PRIMARY parquet root (where the
+    live recorder, provider imports, and the recorded-event bus write),
+    its drive's free space, and how many bus topics currently store
+    under it."""
+    from services.external_data.parquet_schema import (
+        parquet_roots,
+        parquet_root_source,
+        set_parquet_root_overrides,
+    )
+    from models.database import TopicCatalog
+
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(select(AppSettings))).scalar_one_or_none()
+        persisted = (
+            list(getattr(row, "parquet_root_overrides", None) or []) if row is not None else []
+        )
+        set_parquet_root_overrides(persisted)
+        primary = parquet_roots()[0]
+        topic_rows = (
+            await session.execute(
+                select(TopicCatalog.slug, TopicCatalog.storage_uri).where(
+                    TopicCatalog.storage_kind == "parquet"
+                )
+            )
+        ).all()
+
+    primary_str = str(primary)
+    under_primary = 0
+    for _slug, uri in topic_rows:
+        if uri and str(Path(str(uri))).lower().startswith(primary_str.lower()):
+            under_primary += 1
+    return {
+        "primary_root": primary_str,
+        "source": parquet_root_source(),
+        "roots": [_resolved_root_dict(p) for p in parquet_roots()],
+        "disk": _disk_usage_for(primary),
+        "bus_topics_parquet": len(topic_rows),
+        "bus_topics_under_primary": under_primary,
+    }
+
+
+class StorageLocationUpdate(BaseModel):
+    # New primary storage folder.  Created if missing (the whole point is
+    # pointing at a fresh directory on a bigger drive).  The previous
+    # primary stays in the roots list so existing data remains readable.
+    root: str = Field(..., min_length=2, max_length=500)
+    # Rewrite recorded-event-bus topics whose storage_uri sits under the
+    # old primary so NEW recordings follow the move.  Existing files are
+    # NOT moved; replay reads only the new location for those topics, so
+    # leave this on unless you plan to copy history manually.
+    migrate_bus_topics: bool = True
+
+
+@router.put("/parquet/storage-location")
+async def set_parquet_storage_location(req: StorageLocationUpdate) -> dict[str, Any]:
+    """Move the PRIMARY parquet storage root (e.g. onto a bigger drive).
+
+    Effects:
+      * ``parquet_root_overrides[0]`` becomes the new folder — the book
+        recorder, provider imports, and the scan stamp follow it on
+        their next write (no restart needed for those).
+      * The old primary is kept as an additional READ root so already-
+        recorded data stays visible to backtests and the Data Lab.
+      * Recorded-event-bus topics stored under the old primary get their
+        ``storage_uri`` rewritten under the new root (new partitions land
+        there); the bus WRITERS pick this up on the next app restart.
+    """
+    from services.external_data.parquet_schema import (
+        parquet_roots,
+        parquet_root_source,
+        set_parquet_root_overrides,
+    )
+    from models.database import TopicCatalog
+
+    raw = str(req.root).strip()
+    try:
+        new_root = Path(raw).expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"invalid path: {exc}") from exc
+    if not new_root.is_absolute():
+        raise HTTPException(status_code=400, detail=f"path must be absolute: {raw}")
+    try:
+        new_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"cannot create directory: {exc}") from exc
+    if not new_root.is_dir():
+        raise HTTPException(status_code=400, detail=f"path is not a directory: {new_root}")
+    # Writability probe — a drive can exist but be read-only/permission-blocked.
+    probe = new_root / ".homerun_write_probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"directory is not writable: {exc}") from exc
+
+    old_primary = parquet_roots()[0]
+    new_canonical = str(new_root)
+    # New primary first; every previously-visible root kept for reads.
+    overrides: list[str] = [new_canonical]
+    for p in parquet_roots():
+        s = str(p)
+        if s.lower() != new_canonical.lower() and s not in overrides:
+            overrides.append(s)
+
+    migrated_topics: list[dict[str, str]] = []
+    async with AsyncSessionLocal() as session:
+        row = (await session.execute(select(AppSettings))).scalar_one_or_none()
+        if row is None:
+            row = AppSettings(id="default")
+            session.add(row)
+        row.parquet_root_overrides = overrides
+        if req.migrate_bus_topics:
+            old_str = str(old_primary)
+            topic_rows = (
+                (
+                    await session.execute(
+                        select(TopicCatalog).where(TopicCatalog.storage_kind == "parquet")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for t in topic_rows:
+                if not t.storage_uri:
+                    continue
+                try:
+                    cur = Path(str(t.storage_uri)).resolve()
+                except (OSError, ValueError):
+                    continue
+                try:
+                    rel = cur.relative_to(old_str)
+                except ValueError:
+                    continue  # custom-located topic — leave it alone
+                new_uri = new_root / rel
+                try:
+                    new_uri.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"failed creating topic dir {new_uri}: {exc}",
+                    ) from exc
+                migrated_topics.append({"slug": t.slug, "from": str(cur), "to": str(new_uri)})
+                t.storage_uri = str(new_uri)
+        await session.commit()
+
+    set_parquet_root_overrides(overrides)
+    return {
+        "ok": True,
+        "primary_root": new_canonical,
+        "previous_primary": str(old_primary),
+        "source": parquet_root_source(),
+        "roots": [_resolved_root_dict(p) for p in parquet_roots()],
+        "disk": _disk_usage_for(new_root),
+        "migrated_bus_topics": migrated_topics,
+        "note": (
+            "Existing files were NOT moved — the old location stays readable as a "
+            "secondary root.  The live book recorder and provider imports follow the "
+            "new folder on their next write; recorded-event-bus writers follow on the "
+            "next app restart."
+        ),
+    }
+
+
 @router.get("/parquet/datasets")
 async def list_parquet_datasets_route() -> dict[str, Any]:
     """List every parquet-backed dataset currently in the catalog.
@@ -938,7 +1124,9 @@ async def rescan_parquet_route() -> dict[str, Any]:
     from services.external_data import parquet_scanner
 
     try:
-        report = await parquet_scanner.rescan_parquet_root()
+        # Operator-initiated rescan revalidates EVERYTHING (force=True);
+        # the backtest/background paths use the incremental fast path.
+        report = await parquet_scanner.rescan_parquet_root(force=True)
     except Exception as exc:
         logger.exception("parquet rescan failed")
         raise HTTPException(status_code=500, detail=f"rescan failed: {exc}") from exc

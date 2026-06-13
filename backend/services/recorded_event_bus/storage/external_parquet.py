@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ from typing import Any, AsyncIterator, Optional
 
 import pyarrow.parquet as pq
 
+from services.external_data.parquet_schema import bundle_path_for, manifest_path_for
 from services.recorded_event_bus.catalog import TopicSpec
 from services.recorded_event_bus.envelope import RecordedEvent
 
@@ -100,7 +102,8 @@ async def external_parquet_replayer(
     # ``_find_window_dirs`` walks recursively, identifying window dirs
     # by name shape (``YYYYMMDDTHHMMSS__YYYYMMDDTHHMMSS``) regardless
     # of depth.  Bounded recursion (max 5 levels) prevents accidents.
-    files: list[tuple[Path, str]] = []  # (path, entity_id_token)
+    legacy_files: list[tuple[Path, str]] = []  # (path, entity_id_token)
+    bundle_files: list[Path] = []
     for window_dir in _find_window_dirs(base, max_depth=5):
         try:
             window_start_dt, window_end_dt = _parse_window_dir(window_dir.name)
@@ -110,6 +113,11 @@ async def external_parquet_replayer(
         win_start_us = int(window_start_dt.timestamp() * 1_000_000)
         win_end_us = int(window_end_dt.timestamp() * 1_000_000)
         if win_end_us < window.start_us or win_start_us > window.end_us:
+            continue
+        bundle = bundle_path_for(window_dir, expected_kind)
+        if bundle.exists():
+            if entity_set is None or _tokens_for_bundle(bundle, expected_kind) & set(entity_set):
+                bundle_files.append(bundle)
             continue
         for fp in sorted(window_dir.glob("*.parquet")):
             m = _FILENAME_RE.match(fp.name)
@@ -125,15 +133,15 @@ async def external_parquet_replayer(
                 continue
             if entity_set is not None and token not in entity_set:
                 continue
-            files.append((fp, token))
+            legacy_files.append((fp, token))
 
-    if not files:
+    if not legacy_files and not bundle_files:
         return
 
     # Group files by token so per-token files (multiple window dirs
     # for the same token) feed a single time-ordered iterator.
     by_token: dict[str, list[Path]] = {}
-    for fp, token in files:
+    for fp, token in legacy_files:
         by_token.setdefault(token, []).append(fp)
 
     # Build one async iterator per token — each is monotone in
@@ -141,10 +149,15 @@ async def external_parquet_replayer(
     # window_dir's name encodes a non-overlapping time slice.
     _reader = _read_delta_rows if expected_kind == "deltas" else _read_snapshot_rows
 
-    async def _token_stream(token: str, paths: list[Path]) -> AsyncIterator[RecordedEvent]:
+    async def _file_stream(
+        paths: list[Path],
+        *,
+        token: str | None,
+        entity_filter: Optional[frozenset[str]],
+    ) -> AsyncIterator[RecordedEvent]:
         for fp in paths:
             try:
-                rows = await asyncio.to_thread(_reader, fp, token, window, spec)
+                rows = await asyncio.to_thread(_reader, fp, token, window, spec, entity_filter)
             except Exception:
                 logger.exception("external_parquet: failed to read %s", fp)
                 continue
@@ -152,8 +165,11 @@ async def external_parquet_replayer(
                 yield ev
 
     iterators: dict[str, AsyncIterator[RecordedEvent]] = {
-        tok: _token_stream(tok, sorted(paths)) for tok, paths in by_token.items()
+        tok: _file_stream(sorted(paths), token=tok, entity_filter=None)
+        for tok, paths in by_token.items()
     }
+    for fp in sorted(bundle_files):
+        iterators[f"bundle:{fp}"] = _file_stream([fp], token=None, entity_filter=entity_set)
     head: dict[str, Optional[RecordedEvent]] = {}
     heap: list[tuple[Any, str]] = []
     time_attr = window.time_field
@@ -192,6 +208,22 @@ def _parse_window_dir(name: str) -> tuple[datetime, datetime]:
 
 
 _WINDOW_DIR_RE = re.compile(r"^\d{8}T\d{6}__\d{8}T\d{6}$")
+
+
+def _tokens_for_bundle(fp: Path, kind: str) -> set[str]:
+    try:
+        raw = json.loads(manifest_path_for(fp.parent).read_text(encoding="utf-8"))
+        entry = raw.get(kind) if isinstance(raw, dict) else None
+        tokens = entry.get("tokens") if isinstance(entry, dict) else None
+        if isinstance(tokens, list):
+            return {str(t) for t in tokens if str(t)}
+    except Exception:
+        pass
+    try:
+        table = pq.read_table(str(fp), columns=["token_id"])
+    except Exception:
+        return set()
+    return {str(t) for t in table.column("token_id").to_pylist() if t}
 
 
 def _infer_provider_from_path(fp: Path) -> str:
@@ -247,9 +279,10 @@ def _find_window_dirs(root: Path, *, max_depth: int = 5) -> list[Path]:
 
 def _read_snapshot_rows(
     fp: Path,
-    token: str,
+    token: str | None,
     window,
     spec: TopicSpec,
+    entity_filter: Optional[frozenset[str]] = None,
 ) -> list[RecordedEvent]:
     """Read one canonical SNAPSHOT_SCHEMA file and project rows into
     RecordedEvent envelopes filtered to the window.
@@ -274,6 +307,11 @@ def _read_snapshot_rows(
     for i in range(n):
         t = int(times[i])
         if t < window.start_us or t >= window.end_us:
+            continue
+        row_token = str(cols["token_id"][i] or token or "")
+        if token is not None and row_token != token:
+            continue
+        if entity_filter is not None and row_token not in entity_filter:
             continue
         # Project the canonical SNAPSHOT_SCHEMA columns into the
         # envelope payload.  Use the same field names live + SQL
@@ -301,7 +339,7 @@ def _read_snapshot_rows(
         try:
             ev = RecordedEvent(
                 topic=spec.slug,
-                entity_id=cols["token_id"][i] or token,  # token_id column is authoritative
+                entity_id=row_token,  # token_id column is authoritative
                 observed_at_us=t,
                 ingested_at_us=t,  # canonical layout has no separate ingest_at
                 source="external_import",
@@ -318,9 +356,10 @@ def _read_snapshot_rows(
 
 def _read_delta_rows(
     fp: Path,
-    token: str,
+    token: str | None,
     window,
     spec: TopicSpec,
+    entity_filter: Optional[frozenset[str]] = None,
 ) -> list[RecordedEvent]:
     """Read one canonical DELTA_SCHEMA file (``deltas__*.parquet``) and
     project rows into RecordedEvent envelopes — the parquet equivalent of
@@ -340,6 +379,11 @@ def _read_delta_rows(
         t = int(times[i])
         if t < window.start_us or t >= window.end_us:
             continue
+        row_token = str(cols["token_id"][i] or token or "")
+        if token is not None and row_token != token:
+            continue
+        if entity_filter is not None and row_token not in entity_filter:
+            continue
         payload: dict[str, Any] = {
             "event_type": cols.get("event_type", [None] * n)[i],
             "side": cols.get("side", [None] * n)[i],
@@ -355,7 +399,7 @@ def _read_delta_rows(
         try:
             ev = RecordedEvent(
                 topic=spec.slug,
-                entity_id=cols["token_id"][i] or token,
+                entity_id=row_token,
                 observed_at_us=t,
                 ingested_at_us=t,
                 source="external_import",

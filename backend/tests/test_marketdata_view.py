@@ -75,6 +75,45 @@ def test_load_book_series_window_filter(tmp_path):
     assert snap is not None and snap.bids[0].price == 0.50
 
 
+def test_load_book_series_filters_bundle_by_token(tmp_path):
+    f = tmp_path / "snapshots.parquet"
+    base = 1_700_000_000_000_000
+    ticks = [
+        ("tok_a", base + 0, 0.40, 0.42),
+        ("tok_b", base + 1_000_000, 0.10, 0.12),
+        ("tok_a", base + 2_000_000, 0.50, 0.52),
+    ]
+    n = len(ticks)
+    table = pa.table(
+        {
+            "token_id": pa.array([t[0] for t in ticks], pa.string()),
+            "observed_at_us": pa.array([t[1] for t in ticks], pa.int64()),
+            "sequence": pa.array([i for i in range(n)], pa.int64()),
+            "best_bid": pa.array([t[2] for t in ticks], pa.float64()),
+            "best_ask": pa.array([t[3] for t in ticks], pa.float64()),
+            "spread_bps": pa.array([None] * n, pa.float64()),
+            "bids_price": pa.array([[t[2]] for t in ticks], pa.list_(pa.float64())),
+            "bids_size": pa.array([[10.0]] * n, pa.list_(pa.float64())),
+            "asks_price": pa.array([[t[3]] for t in ticks], pa.list_(pa.float64())),
+            "asks_size": pa.array([[10.0]] * n, pa.list_(pa.float64())),
+            "trade_price": pa.array([None] * n, pa.float64()),
+            "trade_size": pa.array([None] * n, pa.float64()),
+            "trade_side": pa.array([None] * n, pa.string()),
+        },
+        schema=SNAPSHOT_SCHEMA,
+    )
+    pq.write_table(table, str(f))
+
+    series, rows = load_book_series("tok_a", [f], start_us=base, end_us=base + 3_000_000)
+
+    assert rows == 2
+    assert len(series) == 2
+    assert [(snap.token_id, snap.bids[0].price) for _ts, snap in series.iter_range(base, base + 3_000_000)] == [
+        ("tok_a", 0.40),
+        ("tok_a", 0.50),
+    ]
+
+
 # ── CoverageMap logic ───────────────────────────────────────────────────
 def test_coverage_map_covered_uncovered_fraction():
     cov = CoverageMap(

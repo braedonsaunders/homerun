@@ -43,6 +43,17 @@ _DEFAULT_REPLAY_MAX_STEPS = 72
 _ASOF_CATALOG_CACHE: "OrderedDict[tuple[int, int], tuple]" = OrderedDict()
 _ASOF_CATALOG_CACHE_MAX = 4
 
+# Merged per-tick catalog grid for scanner_tick discovery replay, keyed by
+# (start_us, last_tick_us, n_ticks, interval).  Every recorded catalog
+# envelope is ~8.5MB of payload JSON (full ~4k events array + market deltas);
+# one ~22h window is ~23GB of parsing.  A strategy sweep runs many
+# scanner_tick strategies over the SAME window — without this memo each one
+# re-pays the full parse.  Value = (merged events [(tick_idx, DataEvent)],
+# real catalog market keys, envelope count).  Backtest-path only, same
+# isolation rationale as ``_ASOF_CATALOG_CACHE`` above.
+_CATALOG_TICK_GRID_CACHE: "OrderedDict[tuple[int, int, int, float], tuple]" = OrderedDict()
+_CATALOG_TICK_GRID_CACHE_MAX = 2
+
 
 @dataclass
 class BacktestResult:
@@ -207,6 +218,7 @@ async def _run_detect_once(
     *,
     timeout_seconds: float,
     now_us: int | None = None,
+    books: dict[str, dict[str, Any]] | None = None,
 ) -> list[Any]:
     """Run the strategy's detect with the replay clock pinned to
     ``now_us`` (the tick's as-of time) so wall-clock reads inside detect
@@ -214,10 +226,15 @@ async def _run_detect_once(
     attribute (thread-safe, for sync detect in an executor) and the
     utcnow ContextVar (for free-function ``utcnow()`` callers + child
     tasks) are set; the ContextVar is copied into the executor so a sync
-    detect running off-loop still sees the simulated clock."""
+    detect running off-loop still sees the simulated clock.  ``books``
+    installs the tick's per-token states as the StrategySDK replay book
+    provider (module-global, so the executor thread sees it too) — SDK
+    book reads then resolve historically instead of hitting the empty
+    live WS cache."""
     import contextvars as _cv
 
     from utils import utcnow as _utcnow_mod
+    from services import strategy_sdk as _sdk_mod
 
     loop = asyncio.get_running_loop()
     prev_instance = getattr(strategy, "_replay_now_us", None)
@@ -231,6 +248,7 @@ async def _run_detect_once(
             except Exception:  # noqa: BLE001
                 pass
         token = _utcnow_mod.set_replay_clock_us(int(now_us))
+    books_token = _sdk_mod.set_replay_books(books)
     try:
         if _has_custom_detect_async(strategy):
             return await asyncio.wait_for(
@@ -247,6 +265,7 @@ async def _run_detect_once(
             timeout=timeout_seconds,
         )
     finally:
+        _sdk_mod.restore_replay_books(books_token)
         if now_us is not None:
             try:
                 strategy.set_replay_clock(prev_instance)
@@ -265,6 +284,7 @@ async def _run_on_event_once(
     *,
     timeout_seconds: float,
     now_us: int | None = None,
+    books: dict[str, dict] | None = None,
 ) -> list[Any]:
     """Dispatch a tick's events through ``strategy.on_event`` — the LIVE entry
     point for event-driven (CRYPTO_UPDATE) strategies.
@@ -277,8 +297,14 @@ async def _run_on_event_once(
     processes one dispatch per event, and stateful strategies must see every
     dispatch — then aggregates the opportunities.  The replay clock is pinned to
     ``now_us`` exactly as :func:`_run_detect_once` does, so wall-clock reads
-    inside ``on_event`` resolve to simulated event time."""
+    inside ``on_event`` resolve to simulated event time.  ``books`` (the tick's
+    reconstructed per-token states) is installed as the StrategySDK replay book
+    provider for the dispatch, so SDK book reads (depth / best bid-ask /
+    levels / imbalance) resolve against historical state instead of the empty
+    live WS cache — without it, every book-gated crypto strategy silently
+    detects nothing in backtest while working live."""
     from utils import utcnow as _utcnow_mod
+    from services import strategy_sdk as _sdk_mod
 
     prev_instance = getattr(strategy, "_replay_now_us", None)
     token = None
@@ -291,6 +317,7 @@ async def _run_on_event_once(
             except Exception:  # noqa: BLE001
                 pass
         token = _utcnow_mod.set_replay_clock_us(int(now_us))
+    books_token = _sdk_mod.set_replay_books(books)
     try:
         out: list[Any] = []
         for ev in events or []:
@@ -299,6 +326,7 @@ async def _run_on_event_once(
                 out.extend(res)
         return out
     finally:
+        _sdk_mod.restore_replay_books(books_token)
         if now_us is not None:
             try:
                 strategy.set_replay_clock(prev_instance)
@@ -2970,40 +2998,177 @@ async def _replay_bus_events_into_tick_grid(
     n_binned = 0
     real_crypto_market_keys: set[str] = set()
     real_catalog_market_keys: set[str] = set()
-    async for envelope in replay_events_for_strategy(
-        strategy=strategy,
-        start_dt=start_dt,
-        end_dt=ticks[-1] + (ticks[-1] - ticks[-2] if len(ticks) >= 2 else timedelta(seconds=actual_interval)),
-        entity_filter=None,
-    ):
-        shaped = _project(envelope)
-        if shaped is None:
-            continue
-        # Bin into the tick whose right edge is closest >= envelope time.
-        ev_ts = datetime.fromtimestamp(envelope.observed_at_us / 1_000_000, tz=timezone.utc)
-        offset = (ev_ts - start_dt).total_seconds()
-        if offset < 0:
-            continue
-        idx = min(n_ticks - 1, int(offset // max(actual_interval, 1e-9)))
-        events_by_tick[idx].append(shaped)
-        n_binned += 1
-        # Track which crypto markets have REAL recorded dispatch coverage in
-        # this window so the synthesizer below only GAP-FILLS the rest —
-        # recorded data stays authoritative wherever it exists.
-        if envelope.topic == "crypto.update.dispatch":
-            payload = getattr(envelope, "payload", None) or {}
-            for m in (payload.get("markets") or []):
-                if isinstance(m, dict):
-                    k = str(m.get("condition_id") or m.get("id") or m.get("slug") or "")
-                    if k:
-                        real_crypto_market_keys.add(k)
-        elif envelope.topic == "polymarket.catalog.snapshot":
-            payload = getattr(envelope, "payload", None) or {}
-            for m in (payload.get("markets") or []):
-                if isinstance(m, dict):
-                    k = str(m.get("condition_id") or m.get("id") or m.get("slug") or "")
-                    if k:
-                        real_catalog_market_keys.add(k)
+    # Recorded catalog snapshots collapse to ONE merged MARKET_DATA_REFRESH
+    # per tick instead of stacking every envelope.  The discovery loop's
+    # scanner_tick consumer merges them latest-wins by market id / token id
+    # anyway, so merging at bin time is semantically identical — and it is
+    # the difference between a multi-day window costing GBs (every ~30s
+    # envelope held in full until its tick runs) and costing one bounded
+    # catalog-sized dict per tick.  Embedded ``events`` arrays merge
+    # latest-wins by event id too: every recorded envelope carries the FULL
+    # ~4k-entry Polymarket events array (~8.5MB payloads), so concatenation
+    # across a day's ~2700 envelopes would pile up ~11M dicts — the live
+    # detect() saw ONE such array per dispatch, never an accumulation.
+    #
+    # The merged per-tick product is also memoized per (window, tick grid):
+    # every scanner_tick strategy backtested over the same window re-parses
+    # the same ~23GB of payload JSON otherwise.  One sweep = one parse.
+    catalog_tick_acc: dict[int, dict[str, Any]] = {}
+    catalog_cache_key = (
+        int(start_dt.timestamp() * 1_000_000),
+        int(ticks[-1].timestamp() * 1_000_000),
+        n_ticks,
+        round(actual_interval, 3),
+    )
+    catalog_only = set(topics) == {"polymarket.catalog.snapshot"}
+    catalog_cache_hit = False
+    if catalog_only:
+        cached = _CATALOG_TICK_GRID_CACHE.get(catalog_cache_key)
+        if cached is not None:
+            _CATALOG_TICK_GRID_CACHE.move_to_end(catalog_cache_key)
+            cached_events, cached_keys, cached_count = cached
+            for idx, ev in cached_events:
+                events_by_tick[idx].append(ev)
+            real_catalog_market_keys.update(cached_keys)
+            n_binned = cached_count
+            catalog_cache_hit = True
+            logger.info(
+                "replay_discover: catalog tick-grid CACHE HIT (%d merged ticks, "
+                "%d envelopes worth)",
+                len(cached_events), cached_count,
+            )
+    if not catalog_cache_hit:
+        import gc as _gc
+        import json as _json_mat
+
+        def _compact_catalog_acc(acc: dict[str, Any]) -> None:
+            """Detach the tick's remaining parse-arena references.  Markets and
+            prices are already deep-copied at merge time (see below); only the
+            events array (swapped by reference per envelope to avoid copying
+            ~4k dicts 70× per tick) and the payload scalars still alias the
+            last envelope's arena — copy them once at tick close."""
+            if acc.get("_compacted"):
+                return
+            if acc["events_latest"]:
+                acc["events_latest"] = _json_mat.loads(
+                    _json_mat.dumps(acc["events_latest"])
+                )
+            acc["payload"] = dict(acc["payload"] or {})
+            acc["_compacted"] = True
+
+        prev_catalog_idx: int | None = None
+        async for envelope in replay_events_for_strategy(
+            strategy=strategy,
+            start_dt=start_dt,
+            end_dt=ticks[-1] + (ticks[-1] - ticks[-2] if len(ticks) >= 2 else timedelta(seconds=actual_interval)),
+            entity_filter=None,
+        ):
+            shaped = _project(envelope)
+            if shaped is None:
+                continue
+            # Bin into the tick whose right edge is closest >= envelope time.
+            ev_ts = datetime.fromtimestamp(envelope.observed_at_us / 1_000_000, tz=timezone.utc)
+            offset = (ev_ts - start_dt).total_seconds()
+            if offset < 0:
+                continue
+            idx = min(n_ticks - 1, int(offset // max(actual_interval, 1e-9)))
+            if envelope.topic == "polymarket.catalog.snapshot":
+                payload = getattr(envelope, "payload", None) or {}
+                for m in (payload.get("markets") or []):
+                    if isinstance(m, dict):
+                        k = str(m.get("condition_id") or m.get("id") or m.get("slug") or "")
+                        if k:
+                            real_catalog_market_keys.add(k)
+                # The catalog topic is time-ordered, so crossing a tick
+                # boundary closes the previous tick — compact it immediately.
+                if prev_catalog_idx is not None and idx != prev_catalog_idx:
+                    closed = catalog_tick_acc.get(prev_catalog_idx)
+                    if closed is not None:
+                        _compact_catalog_acc(closed)
+                prev_catalog_idx = idx
+                acc = catalog_tick_acc.setdefault(
+                    idx,
+                    {
+                        "markets": {}, "prices": {}, "events_latest": None,
+                        "source": None, "timestamp": None, "payload": None,
+                        "_compacted": False,
+                    },
+                )
+                acc["_compacted"] = False
+                # Deep-copy each retained delta NOW: keeping references into
+                # the envelope's parsed payload pins that parse's allocator
+                # arenas until tick close (~70 envelopes/tick × ~50MB parses
+                # = GBs of pinned-but-logically-free RSS).  Copying just the
+                # delta is small (most envelopes carry a handful of changed
+                # markets; the periodic full snapshots pay ~40MB once).
+                for m in getattr(shaped, "markets", None) or []:
+                    if isinstance(m, dict):
+                        k = str(m.get("id") or m.get("condition_id") or m.get("slug") or "")
+                        if k:
+                            acc["markets"][k] = _json_mat.loads(_json_mat.dumps(m))
+                for tid, book in (getattr(shaped, "prices", None) or {}).items():
+                    if isinstance(book, dict):
+                        acc["prices"][str(tid)] = dict(book)
+                    else:
+                        acc["prices"][str(tid)] = book
+                # Events: wholesale swap to the latest envelope's array.  Every
+                # recorded envelope carries the FULL ~4k events array, so the
+                # latest one IS the live state — a per-id merge would retain
+                # thousands of dicts from every parse for no fidelity gain.
+                # Reference-swap only; the close-time compaction copies the
+                # final array once per tick.
+                ev_arr = getattr(shaped, "events", None)
+                if ev_arr:
+                    acc["events_latest"] = ev_arr
+                # Latest envelope wins source/ts/payload — keep scalars, not
+                # the DataEvent (its attrs alias the parse arenas).
+                acc["source"] = shaped.source
+                acc["timestamp"] = shaped.timestamp
+                acc["payload"] = shaped.payload
+                n_binned += 1
+                continue
+            events_by_tick[idx].append(shaped)
+            n_binned += 1
+            # Track which crypto markets have REAL recorded dispatch coverage in
+            # this window so the synthesizer below only GAP-FILLS the rest —
+            # recorded data stays authoritative wherever it exists.
+            if envelope.topic == "crypto.update.dispatch":
+                payload = getattr(envelope, "payload", None) or {}
+                for m in (payload.get("markets") or []):
+                    if isinstance(m, dict):
+                        k = str(m.get("condition_id") or m.get("id") or m.get("slug") or "")
+                        if k:
+                            real_crypto_market_keys.add(k)
+
+        # Materialize the per-tick merged catalog refreshes (DataEvent is
+        # frozen, so the merge accumulates outside and constructs once per
+        # tick).  Compact any tick the boundary-close didn't reach (the last
+        # one, and sparse grids).
+        merged_catalog_events: list[tuple[int, Any]] = []
+        for idx, acc in catalog_tick_acc.items():
+            _compact_catalog_acc(acc)
+            ev = DataEvent(
+                event_type=EventType.MARKET_DATA_REFRESH,
+                source=acc["source"] or "scanner",
+                timestamp=acc["timestamp"] or ticks[min(idx, n_ticks - 1)],
+                payload=acc["payload"] or {},
+                markets=list(acc["markets"].values()) or None,
+                events=acc["events_latest"] or None,
+                prices=dict(acc["prices"]) or None,
+            )
+            events_by_tick[idx].append(ev)
+            merged_catalog_events.append((idx, ev))
+        catalog_tick_acc.clear()
+        _gc.collect()
+        if catalog_only and merged_catalog_events:
+            _CATALOG_TICK_GRID_CACHE[catalog_cache_key] = (
+                merged_catalog_events,
+                set(real_catalog_market_keys),
+                n_binned,
+            )
+            _CATALOG_TICK_GRID_CACHE.move_to_end(catalog_cache_key)
+            while len(_CATALOG_TICK_GRID_CACHE) > _CATALOG_TICK_GRID_CACHE_MAX:
+                _CATALOG_TICK_GRID_CACHE.popitem(last=False)
 
     # ── Imported-parquet gap-fill for event-driven crypto strategies ──
     #
@@ -3305,6 +3470,7 @@ async def _replay_discover_opportunities(
     max_ticks: int,
     candidate_token_ids: list[str] | None = None,
     warmup_seconds: int = 0,
+    progress_callback: Any = None,
 ) -> list[_SyntheticOpp]:
     """Replay-discovery: walk historical market state at sampled time
     ticks across [start_dt, end_dt] and call strategy.detect_async at
@@ -3563,17 +3729,22 @@ async def _replay_discover_opportunities(
             if shaped is not None:
                 events_by_tick[idx].append(shaped)
 
-    # Step 5b: per-token price grid for EVENT-DRIVEN strategies (crypto_update +
-    # scanner_tick).  These events embed each market's tokens but only a
-    # market-level mid; a strategy that prices a marketable taker order or reads
-    # per-token books needs the real best_bid/best_ask (crossing off the mid
-    # misses the real ask on wide-spread books → the order never fills even
-    # though the trigger fired).  Build the same canonical per-tick grid that
-    # book-driven strategies get, over every token the events reference (markets
-    # arrive on a ``.markets`` attr or in ``payload["markets"]``; tokens under
-    # clob_token_ids/clobTokenIds).  Additive — book-only strategies and any
-    # already-built grid are untouched.
-    if event_kind in ("crypto_update", "scanner_tick") and not grid:
+    # Step 5b: per-token price grid for CRYPTO_UPDATE strategies.  Their events
+    # embed each market's tokens but only a market-level mid; a strategy that
+    # prices a marketable taker order or reads per-token books needs the real
+    # best_bid/best_ask (crossing off the mid misses the real ask on wide-spread
+    # books → the order never fills even though the trigger fired).  Build the
+    # same canonical per-tick grid that book-driven strategies get, over every
+    # token the events reference (markets arrive on a ``.markets`` attr or in
+    # ``payload["markets"]``; tokens under clob_token_ids/clobTokenIds).
+    #
+    # scanner_tick is deliberately EXCLUDED: its tick loop replaces
+    # ``prices_at_tick`` with the carried catalog-tee books (the byte-identical
+    # live ``prices`` arg), so a grid built here is never consumed — and the
+    # token union of a carried catalog is the ENTIRE catalog (~40k+ tokens),
+    # which made this dead grid build the dominant cost (tens of minutes, GBs)
+    # of every scanner_tick backtest.
+    if event_kind == "crypto_update" and not grid:
         ev_tokens: set[str] = set()
         for _evs in events_by_tick:
             for _ev in _evs:
@@ -3621,6 +3792,9 @@ async def _replay_discover_opportunities(
     carry_catalog_prices: dict[str, dict] = {}
 
     _progress_every = max(1, n_ticks // 20)
+    # ~40 cancel probes per discovery pass, at least once every 50 ticks so
+    # coarse grids (a handful of multi-minute ticks) still get probed.
+    _cancel_probe_every = max(1, min(50, n_ticks // 40))
     _discover_t0 = time.monotonic()
     for tick_i in range(n_ticks):
         tick_t = ticks[tick_i]
@@ -3636,6 +3810,15 @@ async def _replay_discover_opportunities(
                 tick_i, n_ticks, 100.0 * tick_i / n_ticks, len(detected_total), _el, _eta,
             )
 
+        # Cancellation probe.  The job-queue progress callback raises
+        # BacktestCancelled when the operator hit stop; without this probe a
+        # cancel lands only once the matching engine starts yielding — a
+        # multi-minute discovery phase would grind on for a cancelled run.
+        # Callback exceptions must propagate (run_job catches them), so this
+        # is deliberately OUTSIDE the per-tick try below.
+        if progress_callback is not None and tick_i % _cancel_probe_every == 0:
+            await progress_callback(0, 0.0, 0)
+
         # Prices at this tick — built from the streaming grid for book-
         # driven strategies, empty for event-driven ones.
         prices_at_tick: dict[str, dict[str, Any]] = {}
@@ -3647,6 +3830,12 @@ async def _replay_discover_opportunities(
                         prices_at_tick[token_id] = st
 
         events_at_tick = events_by_tick[tick_i]
+        # Release the grid's reference now — the local above carries this
+        # tick's events through the iteration, and a multi-day scanner_tick
+        # window holds GBs of parsed catalog envelopes if the whole grid
+        # stays alive until return.  Peak memory then scales with the
+        # remaining ticks, not the full window.
+        events_by_tick[tick_i] = []
 
         # Decide which markets to surface to detect().  Event-driven
         # strategies receive the catalog narrowed to the markets their
@@ -3767,6 +3956,7 @@ async def _replay_discover_opportunities(
                     events_at_tick,
                     timeout_seconds=8.0,
                     now_us=int(tick_t.timestamp() * 1_000_000),
+                    books=prices_at_tick or None,
                 )
             else:
                 try:
@@ -3797,6 +3987,7 @@ async def _replay_discover_opportunities(
                     prices=prices_at_tick,
                     timeout_seconds=8.0,
                     now_us=int(tick_t.timestamp() * 1_000_000),
+                    books=prices_at_tick or None,
                 )
         except Exception:
             detect_failures += 1
@@ -3869,12 +4060,22 @@ def _opp_to_positions_data(opp: Any) -> dict[str, Any]:
                 out.append(p.model_dump())
             elif hasattr(p, "__dict__"):
                 out.append({k: v for k, v in p.__dict__.items() if not k.startswith("_")})
-        return {
+        pdata: dict[str, Any] = {
             "positions_to_take": out,
             "total_cost": float(getattr(opp, "total_cost", 0.0) or 0.0),
             "expected_roi": float(getattr(opp, "expected_roi", 0.0) or 0.0),
             "risk_score": float(getattr(opp, "risk_score", 0.0) or 0.0),
         }
+        # Carry the strategy_context through the synthetic wrapper.  Live,
+        # the intent runtime projects it into trade_signals.payload_json and
+        # the platform gates read source/timeframe out of it
+        # (_runtime_signal_market_data_context) — the directional-timeframe
+        # gate FAILS CLOSED without it, silently zeroing every crypto
+        # strategy's backtest while the same signal trades fine live.
+        sc = getattr(opp, "strategy_context", None)
+        if isinstance(sc, dict) and sc:
+            pdata["strategy_context"] = dict(sc)
+        return pdata
     return {}
 
 
@@ -3978,16 +4179,29 @@ async def _measure_data_coverage(
     snaps_per_token: dict[str, int] = {}
     if opp_tokens:
         try:
+            from pathlib import Path as _Path
+
             import pyarrow.parquet as _pq
             from services.marketdata.coverage import resolve_coverage
+
+            def _snapshot_rows_for_token(path: str, token_id: str) -> int:
+                try:
+                    if _Path(path).name == "snapshots.parquet":
+                        table = _pq.read_table(
+                            path,
+                            columns=["token_id"],
+                            filters=[("token_id", "=", str(token_id))],
+                        )
+                        return int(table.num_rows)
+                    return int(_pq.read_metadata(path).num_rows)
+                except Exception:
+                    return 0
+
             cov_map = await resolve_coverage(token_ids=opp_tokens, start=start_dt, end=end_dt)
             for tok in cov_map.covered_tokens:
                 rows = 0
                 for f in cov_map.files_for(tok):
-                    try:
-                        rows += int(_pq.read_metadata(f).num_rows)
-                    except Exception:
-                        pass
+                    rows += _snapshot_rows_for_token(f, str(tok))
                 if rows:
                     snaps_per_token[str(tok)] = rows
         except Exception as exc:
@@ -4411,8 +4625,15 @@ async def run_execution_backtest(
                         sample_interval_seconds=float(discovery_sample_interval_seconds),
                         max_ticks=int(discovery_max_ticks),
                         candidate_token_ids=token_ids,
+                        progress_callback=progress_callback,
                     )
                 except Exception as exc:
+                    if type(exc).__name__ == "BacktestCancelled":
+                        # Operator cancel surfaced via the progress callback —
+                        # must reach run_job, which catches it by identity.
+                        # Name-matched (not isinstance) to keep this module
+                        # import-decoupled from the job runner.
+                        raise
                     logger.warning("Historical discovery replay failed: %s", exc)
                     result.validation_warnings.append(
                         f"Discovery replay FAILED: {type(exc).__name__}: {str(exc)[:200]}"

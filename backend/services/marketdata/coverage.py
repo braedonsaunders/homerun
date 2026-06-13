@@ -107,7 +107,7 @@ async def resolve_coverage(
     """
     from sqlalchemy import select
     from models.database import AsyncSessionLocal, ProviderDataset
-    from services.external_data.parquet_schema import _safe_segment
+    from services.external_data.parquet_schema import _safe_segment, bundle_path_for
 
     requested = tuple(str(t) for t in token_ids if t)
     start_us = int(start.astimezone(timezone.utc).timestamp() * 1_000_000) if start.tzinfo else int(start.timestamp() * 1_000_000)
@@ -116,10 +116,12 @@ async def resolve_coverage(
         return CoverageMap(by_token={}, requested=(), window_start_us=start_us, window_end_us=end_us)
 
     if ensure_scan:
-        # Pick up newly-dropped files (same 60s-cached scan the legacy path used).
+        # Pick up newly-dropped files.  30-min staleness with the cross-
+        # process scan stamp — the old 60s cache re-walked the entire store
+        # (hundreds of thousands of file stats) on effectively every call.
         try:
             from services.external_data import parquet_scanner as _scan
-            await _scan.ensure_recent_scan(max_age_seconds=60.0)
+            await _scan.ensure_recent_scan(max_age_seconds=1800.0)
         except Exception as exc:  # noqa: BLE001
             logger.debug("resolve_coverage: ensure_recent_scan skipped: %s", exc)
 
@@ -156,10 +158,16 @@ async def resolve_coverage(
         ds_end_us = int(r.end_ts.replace(tzinfo=timezone.utc).timestamp() * 1_000_000) if r.end_ts else None
         for tok in tokens_here:
             resolved: Optional[str] = None
-            for cand in (
-                window_dir / f"snapshots__{_safe_segment(tok)}.parquet",
-                window_dir / f"snapshots__{tok}.parquet",
-            ):
+            bundle = bundle_path_for(window_dir, "snapshots")
+            candidates = (
+                (bundle,)
+                if bundle.exists()
+                else (
+                    window_dir / f"snapshots__{_safe_segment(tok)}.parquet",
+                    window_dir / f"snapshots__{tok}.parquet",
+                )
+            )
+            for cand in candidates:
                 if cand.exists():
                     resolved = str(cand)
                     break

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from services.external_data.parquet_schema import parquet_roots
+from services.external_data.parquet_schema import bundle_path_for, parquet_roots
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def _window_overlaps(dir_name: str, start_us: int, end_us: int) -> bool:
 
 
 def _iter_delta_files(start_us: int, end_us: int, providers: Optional[set[str]]) -> Iterable[Path]:
-    """Yield every ``deltas__*.parquet`` whose window-dir overlaps [start,end]."""
+    """Yield delta parquet files whose window-dir overlaps [start,end]."""
     for root in parquet_roots():
         root = Path(root)
         if not root.exists():
@@ -64,6 +64,10 @@ def _iter_delta_files(start_us: int, end_us: int, providers: Optional[set[str]])
                     continue
                 for window_dir in coin_dir.iterdir():
                     if not window_dir.is_dir() or not _window_overlaps(window_dir.name, start_us, end_us):
+                        continue
+                    bundle = bundle_path_for(window_dir, "deltas")
+                    if bundle.exists():
+                        yield bundle
                         continue
                     for f in window_dir.glob("deltas__*.parquet"):
                         yield f

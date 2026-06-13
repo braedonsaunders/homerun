@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timezone
+from datetime import timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -67,7 +67,7 @@ async def test_event_dispatcher_routes_data_events_in_process() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_signal_queue_coalesces_runtime_batches_for_all_lanes() -> None:
+async def test_runtime_signal_queue_coalesces_runtime_batches_for_all_lanes(_fresh_runtime_queues) -> None:
     starting_depth = get_queue_depth()
     assert isinstance(starting_depth, dict)
     assert all(int(value) == 0 for value in starting_depth.values())
@@ -225,6 +225,102 @@ async def test_redis_bridge_emission_dedups_locally_emitted_signal(_fresh_runtim
 
     payload = await wait_for_signal_batch(lane="general", timeout_seconds=0.2)
     assert payload is None
+
+
+@pytest.mark.asyncio
+async def test_redis_bridge_batch_wakes_runtime_queue_before_event_bus_publish(
+    monkeypatch,
+    _fresh_runtime_queues,
+) -> None:
+    from services import signal_bus_redis_bridge
+
+    async def slow_publish(_event_type, _payload):
+        await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(signal_bus_redis_bridge.event_bus, "publish", slow_publish)
+    bridge = signal_bus_redis_bridge._Bridge()
+    task = asyncio.create_task(
+        bridge._bridge_batch(
+            {
+                "signal_ids": ["xplane-fast-wake-1"],
+                "source": "scanner",
+                "event_type": "upsert_update",
+                "trigger": "signal_bus",
+                "emitted_at": "2026-06-04T02:00:00Z",
+                "signal_snapshots": {
+                    "xplane-fast-wake-1": {
+                        "id": "xplane-fast-wake-1",
+                        "source": "scanner",
+                        "market_id": "market-1",
+                    }
+                },
+            }
+        )
+    )
+    try:
+        payload = await wait_for_signal_batch(lane="general", timeout_seconds=0.05)
+        assert payload is not None
+        assert payload["source_signal_ids"]["scanner"] == ["xplane-fast-wake-1"]
+        assert payload["source_signal_snapshots"]["scanner"]["xplane-fast-wake-1"]["market_id"] == "market-1"
+    finally:
+        await task
+
+
+@pytest.mark.asyncio
+async def test_triggered_orchestrator_cycle_uses_batch_snapshots_without_db(monkeypatch) -> None:
+    from workers import trader_orchestrator_worker as worker
+
+    async def fail_authoritative_read(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("snapshot-backed runtime trigger must not query trade_signals")
+
+    monkeypatch.setattr(worker, "_list_unconsumed_trade_signals_authoritative", fail_authoritative_read)
+
+    now = utcnow()
+    rows = await worker._build_triggered_trade_signals(
+        object(),
+        trader_id="trader-1",
+        signal_ids_by_source={"scanner": ["snap-sig-1"]},
+        signal_snapshots_by_source={
+            "scanner": {
+                "snap-sig-1": {
+                    "id": "snap-sig-1",
+                    "source": "scanner",
+                    "source_item_id": "source-item-1",
+                    "signal_type": "opportunity",
+                    "strategy_type": "tail_end_carry",
+                    "market_id": "market-1",
+                    "market_question": "Question?",
+                    "direction": "buy_yes",
+                    "entry_price": 0.41,
+                    "edge_percent": 2.5,
+                    "confidence": 0.8,
+                    "liquidity": 1000.0,
+                    "expires_at": (now + timedelta(minutes=1)).isoformat(),
+                    "status": "pending",
+                    "payload_json": {"signal_emitted_at": now.isoformat()},
+                    "strategy_context_json": {"source_key": "scanner"},
+                    "quality_passed": True,
+                    "dedupe_key": "dedupe-1",
+                    "runtime_sequence": 10,
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                }
+            }
+        },
+        sources=["scanner"],
+        strategy_types_by_source={"scanner": ["tail_end_carry"]},
+        cursor_runtime_sequence=None,
+        cursor_created_at=None,
+        cursor_signal_id=None,
+        statuses=["pending", "selected"],
+        exclude_market_ids=None,
+        limit=10,
+    )
+
+    assert len(rows) == 1
+    assert rows[0].id == "snap-sig-1"
+    assert rows[0].payload_json["signal_emitted_at"] == now.isoformat()
 
 
 @pytest.mark.asyncio

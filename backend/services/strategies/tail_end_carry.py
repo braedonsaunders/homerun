@@ -222,14 +222,17 @@ class TailEndCarryStrategy(BaseStrategy):
         "min_repricing_buffer": 0.015,
         "repricing_weight": 0.45,
         "exclude_market_keywords": [
-            "exact score", "correct score",
+            "exact score", "exact-score", "correct score",
+            "o/u", "over/under", "over under",
+            "total goals", "total points",
+            "bitcoin", "ethereum", "xrp", "ripple",
             "lol:", "counter-strike",
             "tweets", "league of legends", "esports", "rift legends",
             "dota", "valorant", "cs2", "cs:", "esl pro",
         ],
-        # Spread market gate — sports spreads swing violently mid-game
+        # Spread market gate: sports spreads swing violently mid-game
         # and the trailing stop locks in losses on temporary adverse scores.
-        # Block them entirely; moneyline / O-U totals are safer tail-carry targets.
+        # Totals are excluded by keyword because they have the same gap risk.
         "block_spread_markets": True,
         "panic_drop_threshold": 0.08,
         "panic_window_points": 6,

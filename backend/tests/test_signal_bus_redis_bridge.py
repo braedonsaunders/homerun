@@ -65,6 +65,10 @@ async def test_dedup_handles_empty_id():
     assert await dedup.seen("") is False  # empty IDs are ignored
 
 
+def test_dedup_ttl_stays_below_execution_wake_budget():
+    assert 0 < signal_bus_redis_bridge._DEDUP_TTL_SECONDS <= 0.1
+
+
 @pytest.mark.asyncio
 async def test_dedup_evicts_oldest_when_full(monkeypatch):
     """The dedup ring is memory-bounded; stale IDs are swept when oversized."""
@@ -150,11 +154,18 @@ async def test_bridge_batch_filters_already_seen_ids(monkeypatch):
         "signal_ids": ["sig-a", "sig-b", "sig-c", "sig-d"],
         "signal_count": 4,
         "event_type": "upsert_insert",
+        "signal_snapshots": {
+            "sig-a": {"id": "sig-a"},
+            "sig-b": {"id": "sig-b"},
+            "sig-c": {"id": "sig-c"},
+            "sig-d": {"id": "sig-d"},
+        },
     })
     assert len(fired) == 1
     bridged_ids = fired[0][1]["signal_ids"]
     assert set(bridged_ids) == {"sig-c", "sig-d"}
     assert fired[0][1]["signal_count"] == 2
+    assert set(fired[0][1]["signal_snapshots"].keys()) == {"sig-c", "sig-d"}
 
 
 @pytest.mark.asyncio
@@ -188,6 +199,44 @@ async def test_bridge_batch_handles_empty_signal_ids(monkeypatch):
     # Empty payload still publishes (preserves existing event_bus
     # contract — consumers can decide whether to act).
     assert len(fired) == 1
+
+
+@pytest.mark.asyncio
+async def test_signal_batch_snapshots_are_restamped_to_publish_time(monkeypatch):
+    from services import signal_bus
+
+    published: list[tuple[str, dict]] = []
+
+    async def fake_publish_redis(channel, payload):
+        published.append((channel, payload))
+
+    async def fake_event_publish(_event_type, _payload):
+        return None
+
+    async def fake_mark_locally_emitted(_signal_ids):
+        return None
+
+    monkeypatch.setattr(signal_bus, "_publish_redis", fake_publish_redis)
+    monkeypatch.setattr(signal_bus.event_bus, "publish", fake_event_publish)
+    monkeypatch.setattr(signal_bus_redis_bridge, "mark_locally_emitted", fake_mark_locally_emitted)
+
+    await signal_bus._publish_trade_signal_batch(
+        event_type="upsert_update",
+        source="scanner",
+        signal_ids=["sig-restamp"],
+        signal_snapshots={
+            "sig-restamp": {
+                "id": "sig-restamp",
+                "source": "scanner",
+                "market_id": "market-1",
+                "payload_json": {"signal_emitted_at": "2000-01-01T00:00:00Z"},
+            }
+        },
+    )
+
+    batch_payload = next(payload for channel, payload in published if channel == signal_bus.SIGNAL_BATCH_CHANNEL)
+    snapshot = batch_payload["signal_snapshots"]["sig-restamp"]
+    assert snapshot["payload_json"]["signal_emitted_at"] == batch_payload["emitted_at"]
 
 
 def test_status_snapshot_initial():

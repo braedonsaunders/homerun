@@ -61,10 +61,9 @@ _DEDUP_WINDOW_SIZE = 2048
 # so updated signals were never re-evaluated and the orchestrator went idle once
 # the initial backlog drained. The echo itself loops back in ~1ms (get_message
 # is event-driven — a published message wakes the bridge immediately, it does
-# NOT poll), so 3s is not about echo coverage: it is the deliberate per-signal
-# re-emission rate-limit, bounding how often an updated signal re-wakes the
-# orchestrator under rapid price jitter.
-_DEDUP_TTL_SECONDS = 3.0
+# NOT poll). This value must remain below the execution wake SLA; it suppresses
+# local echoes, not legitimate scanner re-emissions.
+_DEDUP_TTL_SECONDS = 0.1
 
 
 class _SignalDedup:
@@ -88,6 +87,38 @@ class _SignalDedup:
             now = time.monotonic()
             self._seen_at[signal_id] = now
             self._evict_locked(now)
+
+    async def add_if_unseen(self, signal_id: str) -> bool:
+        if not signal_id:
+            return False
+        async with self._lock:
+            now = time.monotonic()
+            ts = self._seen_at.get(signal_id)
+            if ts is not None and (now - ts) < _DEDUP_TTL_SECONDS:
+                return False
+            self._seen_at[signal_id] = now
+            self._evict_locked(now)
+            return True
+
+    async def filter_unseen_and_add(self, signal_ids: list[str]) -> list[str]:
+        if not signal_ids:
+            return []
+        async with self._lock:
+            now = time.monotonic()
+            unseen: list[str] = []
+            emitted: set[str] = set()
+            for raw_signal_id in signal_ids:
+                signal_id = str(raw_signal_id or "").strip()
+                if not signal_id or signal_id in emitted:
+                    continue
+                ts = self._seen_at.get(signal_id)
+                if ts is not None and (now - ts) < _DEDUP_TTL_SECONDS:
+                    continue
+                self._seen_at[signal_id] = now
+                emitted.add(signal_id)
+                unseen.append(signal_id)
+            self._evict_locked(now)
+            return unseen
 
     async def seen(self, signal_id: str) -> bool:
         if not signal_id:
@@ -244,6 +275,7 @@ class _Bridge:
         trigger: Any,
         reason: Any = None,
         emitted_at: Any = None,
+        signal_snapshots: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Wake the in-process ``runtime_signal_queue`` so the trader
         orchestrator cycles immediately on a cross-plane signal.
@@ -272,22 +304,16 @@ class _Bridge:
                 trigger=str(trigger or "signal_bus"),
                 reason=reason,
                 emitted_at=emitted_at,
+                signal_snapshots=signal_snapshots,
             )
         except Exception as exc:
             logger.debug("runtime_signal_queue wake from bridge failed: %s", exc)
 
     async def _bridge_emission(self, payload: dict[str, Any]) -> None:
         signal_id = str(payload.get("signal_id") or "").strip()
-        if signal_id and await _dedup.seen(signal_id):
+        if signal_id and not await _dedup.add_if_unseen(signal_id):
             self._messages_skipped_dup += 1
             return
-        if signal_id:
-            await _dedup.add(signal_id)
-        try:
-            await event_bus.publish("trade_signal_emission", payload)
-            self._messages_bridged += 1
-        except Exception as exc:
-            logger.debug("event_bus.publish for emission bridge failed: %s", exc)
         await self._wake_runtime_queue(
             event_type=payload.get("event_type"),
             source=payload.get("source"),
@@ -296,28 +322,30 @@ class _Bridge:
             reason=payload.get("reason"),
             emitted_at=payload.get("updated_at"),
         )
+        try:
+            await event_bus.publish("trade_signal_emission", payload)
+            self._messages_bridged += 1
+        except Exception as exc:
+            logger.debug("event_bus.publish for emission bridge failed: %s", exc)
 
     async def _bridge_batch(self, payload: dict[str, Any]) -> None:
         signal_ids_raw = payload.get("signal_ids") or []
         signal_ids = [str(s) for s in signal_ids_raw if s]
         if signal_ids:
-            unseen: list[str] = []
-            for sid in signal_ids:
-                if not await _dedup.seen(sid):
-                    unseen.append(sid)
+            unseen = await _dedup.filter_unseen_and_add(signal_ids)
             if not unseen:
                 self._messages_skipped_dup += 1
                 return
-            for sid in unseen:
-                await _dedup.add(sid)
             payload = dict(payload)
+            raw_snapshots = payload.get("signal_snapshots")
+            if isinstance(raw_snapshots, dict):
+                payload["signal_snapshots"] = {
+                    signal_id: snapshot
+                    for signal_id in unseen
+                    if isinstance((snapshot := raw_snapshots.get(signal_id)), dict)
+                }
             payload["signal_ids"] = unseen
             payload["signal_count"] = len(unseen)
-        try:
-            await event_bus.publish("trade_signal_batch", payload)
-            self._messages_bridged += 1
-        except Exception as exc:
-            logger.debug("event_bus.publish for batch bridge failed: %s", exc)
         # Wake the in-process runtime_signal_queue so the trader orchestrator
         # cycles on cross-plane BATCH emissions, not only per-signal EMISSION.
         # The intent_runtime projection commits with upsert_trade_signal(
@@ -332,7 +360,17 @@ class _Bridge:
             trigger=payload.get("trigger"),
             reason=payload.get("reason"),
             emitted_at=payload.get("emitted_at"),
+            signal_snapshots=(
+                payload.get("signal_snapshots")
+                if isinstance(payload.get("signal_snapshots"), dict)
+                else None
+            ),
         )
+        try:
+            await event_bus.publish("trade_signal_batch", payload)
+            self._messages_bridged += 1
+        except Exception as exc:
+            logger.debug("event_bus.publish for batch bridge failed: %s", exc)
 
 
 _bridge = _Bridge()

@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,25 @@ def test_worker_logger_accepts_structured_warning_kwargs():
         lane="general",
         error="timeout",
     )
+
+
+def test_pending_runtime_snapshots_restamp_release_time():
+    snapshots = {
+        "scanner": {
+            "sig-1": {
+                "id": "sig-1",
+                "payload_json": {"signal_emitted_at": "2000-01-01T00:00:00Z"},
+            }
+        }
+    }
+
+    restamped = trader_orchestrator_worker._restamp_trigger_signal_snapshots_by_source(
+        snapshots,
+        emitted_at_iso="2026-06-13T01:30:00+00:00",
+    )
+
+    assert restamped["scanner"]["sig-1"]["payload_json"]["signal_emitted_at"] == "2026-06-13T01:30:00+00:00"
+    assert snapshots["scanner"]["sig-1"]["payload_json"]["signal_emitted_at"] == "2000-01-01T00:00:00Z"
 
 
 def test_signal_db_transient_classifier_handles_connection_and_timeout_errors():
@@ -371,6 +391,42 @@ async def test_write_orchestrator_snapshot_updates_runtime_status_before_db_writ
     finally:
         runtime_status._orchestrator = original_snapshot  # type: ignore[attr-defined]
         trader_orchestrator_worker._orchestrator_snapshot_last_persist_mono.clear()
+
+
+@pytest.mark.asyncio
+async def test_completed_orchestrator_snapshot_bypasses_persist_throttle(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    async def _fake_write_orchestrator_snapshot(_session, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        trader_orchestrator_worker,
+        "write_orchestrator_snapshot",
+        _fake_write_orchestrator_snapshot,
+    )
+    trader_orchestrator_worker._orchestrator_snapshot_last_persist_mono["general"] = time.monotonic()
+    trader_orchestrator_worker._orch_snapshot_last_persisted_state["general"] = (True, True, False)
+
+    last_run_at = datetime(2026, 6, 12, 21, 9, 5, tzinfo=timezone.utc)
+    try:
+        await trader_orchestrator_worker._write_orchestrator_snapshot_best_effort(
+            object(),
+            running=True,
+            enabled=True,
+            current_activity="Cycle[scheduled:general] signals=0 decisions=0 orders=0",
+            interval_seconds=5,
+            last_run_at=last_run_at,
+            last_error=None,
+            stats={"open_orders": 0},
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["last_run_at"] == last_run_at
+        assert calls[0]["current_activity"] == "Cycle[scheduled:general] signals=0 decisions=0 orders=0"
+    finally:
+        trader_orchestrator_worker._orchestrator_snapshot_last_persist_mono.clear()
+        trader_orchestrator_worker._orch_snapshot_last_persisted_state.clear()
 
 
 @pytest.mark.asyncio

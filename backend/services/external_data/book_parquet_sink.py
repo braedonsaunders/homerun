@@ -39,6 +39,7 @@ import pyarrow as pa
 from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
     SNAPSHOT_SCHEMA,
+    parts_dir_for,
     parquet_path_for,
     parquet_root,
 )
@@ -51,8 +52,10 @@ PROVIDER = "live_ingestor"
 _WINDOW_SECONDS = 900
 _FLUSH_INTERVAL_SECONDS = 2.0
 _CATALOG_INTERVAL_SECONDS = 60.0
+_COMPACT_INTERVAL_SECONDS = 30.0
 _PRUNE_INTERVAL_SECONDS = 300.0
 _MAX_BUFFERED_ROWS = 200_000  # drop-oldest backstop
+_ROW_GROUP_SIZE = 64_000
 _DEFAULT_RETENTION_DAYS = 7
 _DEFAULT_MAX_BYTES = 40 * 1024 * 1024 * 1024  # 40 GB — the denser REST-baseline
 # recording (every active market every ~10 min) needs a larger budget to retain
@@ -172,9 +175,16 @@ class BookParquetSink:
         self._retention_days = retention_days
         self._max_bytes = max_bytes
         self._root = root
-        # buffer: (kind, token, bucket) -> list[row dict]
-        self._buf: dict[tuple[str, str, int], list[dict]] = {}
-        self._dirty: set[tuple[str, str, int]] = set()
+        # v2 incremental layout: buffer keyed by (kind, bucket) — token_id is
+        # a COLUMN, not a key.  Each flush drains a key's rows into an
+        # immutable part file ({window}/_parts/{kind}__part-NNNNNN.parquet)
+        # and frees them, so sink memory is bounded by one flush interval of
+        # inflow (the old (kind, token, bucket) design rewrote each token's
+        # FULL window every 2s and leaked every closed window's rows — the
+        # 2.7GB recording plane).  The compactor merges parts -> one bundle
+        # per (kind, window) when the window closes.
+        self._buf: dict[tuple[str, int], list[dict]] = {}
+        self._part_seq: dict[tuple[str, int], int] = {}
         self._buffered_rows = 0
         self._dropped = 0
         self._written = 0
@@ -182,8 +192,11 @@ class BookParquetSink:
         self._stopped = False
         self._last_catalog = 0.0
         self._last_prune = 0.0
-        # Window dirs written since the last catalog pass; registered
-        # incrementally (only these) instead of via a full-tree rescan.
+        self._last_compact = 0.0
+        self._compact_inflight = False
+        # Window dirs whose BUNDLES changed since the last catalog pass
+        # (compaction output) — registered incrementally.  Part files are
+        # never registered: they're invisible to readers by design.
         self._pending_catalog: set[Path] = set()
 
     @property
@@ -208,9 +221,8 @@ class BookParquetSink:
             if row is None:
                 continue
             bucket = int(row["observed_at_us"] / 1_000_000 // _WINDOW_SECONDS) * _WINDOW_SECONDS
-            key = (pkind, row["token_id"], bucket)
+            key = (pkind, bucket)
             self._buf.setdefault(key, []).append(row)
-            self._dirty.add(key)
             self._buffered_rows += 1
         if self._buffered_rows > _MAX_BUFFERED_ROWS:
             self._drop_oldest()
@@ -219,9 +231,8 @@ class BookParquetSink:
         # Drop the oldest bucket entirely (back-pressure backstop).
         if not self._buf:
             return
-        oldest = min(self._buf.keys(), key=lambda k: k[2])
+        oldest = min(self._buf.keys(), key=lambda k: k[1])
         n = len(self._buf.pop(oldest, []))
-        self._dirty.discard(oldest)
         self._buffered_rows -= n
         self._dropped += n
 
@@ -252,6 +263,9 @@ class BookParquetSink:
                 if now - self._last_catalog >= _CATALOG_INTERVAL_SECONDS:
                     await self._catalog()
                     self._last_catalog = now
+                if now - self._last_compact >= _COMPACT_INTERVAL_SECONDS:
+                    self._maybe_start_compaction()
+                    self._last_compact = now
                 if now - self._last_prune >= _PRUNE_INTERVAL_SECONDS:
                     await asyncio.to_thread(self._prune)
                     self._last_prune = now
@@ -275,65 +289,109 @@ class BookParquetSink:
         if blocked:
             self._dropped += self._buffered_rows
             self._buf.clear()
-            self._dirty.clear()
+            self._part_seq.clear()
             self._buffered_rows = 0
             await asyncio.to_thread(self._prune, _min_free)
             return
-        current_bucket = int(time.time() // _WINDOW_SECONDS) * _WINDOW_SECONDS
-        keys = list(self._buf.keys()) if force else list(self._dirty)
-        for key in keys:
+        # Incremental drain: write each key's buffered rows as ONE immutable
+        # part file and free them immediately.  No key is ever rewritten, no
+        # rows outlive their flush — sink memory is bounded by one interval of
+        # inflow, and the per-flush write cost is O(new rows), not O(window).
+        for key in list(self._buf.keys()):
             rows = self._buf.get(key)
             if not rows:
-                self._dirty.discard(key)
                 self._buf.pop(key, None)
+                self._part_seq.pop(key, None)
                 continue
-            snapshot = list(rows)
+            # Atomic drain on the event loop: no await between read and reset,
+            # so rows appended during the threaded write land in the fresh
+            # list and ride the next part.
+            drained = rows
+            self._buf[key] = []
+            seq = self._part_seq.get(key, 0)
             try:
-                written_dir = await asyncio.to_thread(self._write_file, key, snapshot)
-                self._written += len(snapshot)
-                if written_dir is not None:
-                    self._pending_catalog.add(written_dir)
+                _dest, next_seq = await asyncio.to_thread(self._write_part, key, seq, drained)
+                self._part_seq[key] = next_seq
+                self._written += len(drained)
+                self._buffered_rows -= len(drained)
             except Exception:
-                logger.exception("book_parquet_sink: write failed %s", key)
+                # Put the rows back at the FRONT so ordering is preserved for
+                # the retry; the part file write is atomic so a failure left
+                # no partial artifact.
+                self._buf[key] = drained + self._buf[key]
+                logger.exception("book_parquet_sink: part write failed %s", key)
                 continue
-            self._dirty.discard(key)
-            # Free closed windows from memory once written.
-            if key[2] < current_bucket and not force:
-                self._buffered_rows -= len(self._buf.get(key, []))
+            # Drop fully-drained closed-window keys; their parts await the
+            # compactor.
+            current_bucket = int(time.time() // _WINDOW_SECONDS) * _WINDOW_SECONDS
+            if key[1] < current_bucket and not self._buf.get(key):
                 self._buf.pop(key, None)
-        # Sweep CLOSED windows that are no longer dirty. The pop above only
-        # fires for a key that is dirty AFTER its window closed (late rows) —
-        # but the NORMAL lifecycle is: final rows flush while the window is
-        # still current (file complete on disk), the window closes, the key
-        # never gets dirty again, and this loop never revisits it. Those fully
-        # written row lists leaked permanently — a 22h soak showed _buf at
-        # 569,997 keys (~2GB on the recording plane), with the _MAX_BUFFERED_ROWS
-        # drop-oldest backstop then silently DROPPING data to compensate.
-        # Closed + non-dirty == already written in its final flush (a write
-        # failure leaves the key dirty, so unwritten rows are never swept) —
-        # the buffered copy is pure garbage; free it.
-        if not force:
-            for key in [k for k in self._buf.keys() if k[2] < current_bucket and k not in self._dirty]:
-                self._buffered_rows -= len(self._buf.get(key, []))
-                self._buf.pop(key, None)
-            if self._buffered_rows < 0:
-                self._buffered_rows = 0
+                self._part_seq.pop(key, None)
+        if self._buffered_rows < 0:
+            self._buffered_rows = 0
 
-    def _write_file(self, key: tuple[str, str, int], rows: list[dict]) -> Path | None:
-        pkind, token, bucket = key
+    def _write_part(self, key: tuple[str, int], seq: int, rows: list[dict]) -> tuple[Path, int]:
+        pkind, bucket = key
         schema = SNAPSHOT_SCHEMA if pkind == "snapshots" else DELTA_SCHEMA
         start = datetime.fromtimestamp(bucket, tz=timezone.utc)
         end = datetime.fromtimestamp(bucket + _WINDOW_SECONDS, tz=timezone.utc)
-        pp = parquet_path_for(provider=PROVIDER, coin="_", token_id=token,
+        pp = parquet_path_for(provider=PROVIDER, coin="_", token_id="_",
                               start=start, end=end, kind=pkind, root=self._root)
-        rows_sorted = sorted(rows, key=lambda r: r["observed_at_us"])
+        pdir = parts_dir_for(pp.window_dir)
+        if seq == 0:
+            seq = self._next_part_sequence(pdir, pkind)
+        rows_sorted = sorted(rows, key=lambda r: (str(r.get("token_id") or ""), int(r["observed_at_us"])))
         cols = {name: [r.get(name) for r in rows_sorted] for name in schema.names}
         table = pa.table(cols, schema=schema)
-        # Single canonical writer: schema-validates + lineage-stamps + atomic.
-        write_canonical_table(table, dest_path=pp.file_path, kind=pkind, provider=PROVIDER)
-        # Return the window dir so the flush loop registers just this window in
-        # the catalog (incremental), instead of re-scanning the whole tree.
-        return pp.file_path.parent
+        dest = pdir / f"{pkind}__part-{seq:06d}.parquet"
+        write_canonical_table(
+            table,
+            dest_path=dest,
+            kind=pkind,
+            provider=PROVIDER,
+            row_group_size=_ROW_GROUP_SIZE,
+        )
+        return dest, seq + 1
+
+    @staticmethod
+    def _next_part_sequence(parts_dir: Path, kind: str) -> int:
+        try:
+            entries = list(parts_dir.iterdir())
+        except OSError:
+            return 0
+        prefix = f"{kind}__part-"
+        next_seq = 0
+        for fp in entries:
+            name = fp.name
+            if not name.startswith(prefix) or not name.endswith(".parquet"):
+                continue
+            raw = name[len(prefix):-8]
+            if not raw.isdigit():
+                continue
+            next_seq = max(next_seq, int(raw) + 1)
+        return next_seq
+
+    def _maybe_start_compaction(self) -> None:
+        if self._compact_inflight:
+            return
+        self._compact_inflight = True
+        asyncio.create_task(self._compact_closed_windows(), name="book-parquet-compactor")
+
+    async def _compact_closed_windows(self) -> None:
+        try:
+            from services.external_data.parquet_compactor import compact_closed_windows
+
+            changed = await asyncio.to_thread(
+                compact_closed_windows,
+                self._root or parquet_root(),
+                provider=PROVIDER,
+                max_windows=1,
+            )
+            self._pending_catalog.update(changed)
+        except Exception:
+            logger.exception("book_parquet_sink: compaction pass failed")
+        finally:
+            self._compact_inflight = False
 
     async def _catalog(self) -> None:
         try:

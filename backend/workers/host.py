@@ -198,28 +198,6 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "worker_modules": (
             "workers.discovery_worker",
             "workers.tracked_traders_worker",
-            # Drains the ProviderImportJob queue (polybacktest etc.).
-            # Pure REST I/O fan-out — same shape as the other discovery
-            # workers; share the plane to keep the trading event loop
-            # clean.  Also runs the strategy reverse-engineer queue
-            # since both are bounded long-running operator-initiated
-            # jobs that benefit from the same plane.
-            "workers.provider_import_worker",
-            "workers.strategy_reverse_engineer_worker",
-            # Drains the BacktestRun job queue.  Backtests are CPU-
-            # heavy (1M-snapshot replays chew the GIL for minutes) so
-            # they MUST live off the trading plane — running them
-            # here gives full process isolation from the live
-            # orchestrator.  See workers/backtest_worker.py.
-            "workers.backtest_worker",
-            # Cox PH fill-model trainer (lifelines + pandas + scipy).  It's
-            # backtest-fidelity infrastructure — the trader hot path only
-            # READS the persisted ``fill_probability_models`` active row — so
-            # it belongs with the other backtest workers here, decoupled from
-            # the news subsystem toggle and kept off the trading plane's RAM.
-            # The worker itself skips the refit when the model is still fresh,
-            # so colocating it here adds no startup cost on a warm model.
-            "workers.cox_trainer_worker",
         ),
         "runtime_names": (),
         # Load the ``traders`` strategy bucket so
@@ -241,6 +219,59 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         # Do not bulk-load ``cached_markets`` in discovery. The table can
         # be hundreds of MB and discovery only needs occasional point
         # lookups; MarketCacheService handles those lazily by primary key.
+        "load_market_cache": False,
+        "load_news_feed": False,
+        "initialize_live_execution": False,
+        "start_copy_trade_service": False,
+        "start_position_monitor": False,
+        "start_fill_monitor": False,
+    },
+    "jobs": {
+        # Always-on operator job-queue plane.  Drains the four DB-backed
+        # job queues — BacktestRun, ProviderImportJob, strategy
+        # reverse-engineer, Cox PH fill-model trainer.  These are
+        # operator-initiated tools, not subsystem features, so they must
+        # NOT be gated behind a subsystem toggle: they previously lived
+        # on the ``discovery`` plane, where the default-off discovery
+        # toggle silently left every enqueued backtest "Queued; waiting
+        # for backtest worker" forever on a fresh install.  Idle cost is
+        # a 3s DB poll per worker.  Backtests are CPU-heavy (1M-snapshot
+        # replays chew the GIL for minutes) so this plane must stay off
+        # the trading plane AND the services plane (its event-loop
+        # watchdog would read a GIL-pinned replay as a stall); the GUI
+        # spawns it below-normal CPU priority so batch compute yields to
+        # the live planes and the user's foreground.  One process = one
+        # backtest at a time — the engine already saturates a single
+        # core, and bounding concurrency is what keeps the box usable.
+        # No strategies / dispatcher / feed / market_runtime here: the
+        # backtest + reverse-engineer load strategy code from
+        # ``Strategy.source_code`` themselves, and replay constructs its
+        # own event stream from parquet.
+        "worker_modules": (
+            "workers.backtest_worker",
+            "workers.provider_import_worker",
+            "workers.strategy_reverse_engineer_worker",
+            # Cox PH fill-model trainer (lifelines + pandas + scipy).  It's
+            # backtest-fidelity infrastructure — the trader hot path only
+            # READS the persisted ``fill_probability_models`` active row — so
+            # it belongs with the backtest worker, decoupled from subsystem
+            # toggles and kept off the trading plane's RAM.  The worker
+            # itself skips the refit when the model is still fresh, so a
+            # warm model adds no startup cost.
+            "workers.cox_trainer_worker",
+        ),
+        "runtime_names": (),
+        "load_strategy_registry": False,
+        "strategy_source_keys": (),
+        "load_data_source_registry": True,
+        "start_event_bus": True,
+        "start_event_dispatcher": False,
+        "apply_runtime_settings": True,
+        "start_intent_runtime": False,
+        "start_feed_manager": False,
+        "start_market_runtime": False,
+        # Same rationale as discovery: backtest market lookups are lazy
+        # point reads via MarketCacheService — never bulk-load the table.
         "load_market_cache": False,
         "load_news_feed": False,
         "initialize_live_execution": False,
@@ -313,7 +344,7 @@ _PLANE_CONFIGS: dict[str, dict[str, Any]] = {
         "load_data_source_registry": False,
         "start_event_bus": False,
         "start_event_dispatcher": False,
-        "apply_runtime_settings": False,
+        "apply_runtime_settings": True,
         "start_intent_runtime": False,
         "start_feed_manager": False,
         "start_market_runtime": False,
@@ -1486,6 +1517,17 @@ class WorkerHost:
     async def _initialize_services(self) -> None:
         logger.info("Worker plane database pool ready", plane=self._plane_name)
 
+        if self._enabled("apply_runtime_settings"):
+            try:
+                await apply_runtime_settings_overrides()
+                logger.info(
+                    "Runtime settings overrides applied",
+                    plane=self._plane_name,
+                    precedence=RUNTIME_SETTINGS_PRECEDENCE,
+                )
+            except Exception as exc:
+                logger.warning("Failed to apply runtime settings overrides", plane=self._plane_name, exc_info=exc)
+
         # Bring up the Redis pool early so any subsequent service
         # initialization can opportunistically use the bus.  Soft-fail:
         # ``redis_client.start()`` returns False if Redis is disabled or
@@ -1642,17 +1684,6 @@ class WorkerHost:
         if self._enabled("start_event_dispatcher"):
             await event_dispatcher.start()
             self._event_dispatcher_started = True
-
-        if self._enabled("apply_runtime_settings"):
-            try:
-                await apply_runtime_settings_overrides()
-                logger.info(
-                    "Runtime settings overrides applied",
-                    plane=self._plane_name,
-                    precedence=RUNTIME_SETTINGS_PRECEDENCE,
-                )
-            except Exception as exc:
-                logger.warning("Failed to apply runtime settings overrides", plane=self._plane_name, exc_info=exc)
 
         if self._enabled("start_intent_runtime"):
             intent_runtime = get_intent_runtime()

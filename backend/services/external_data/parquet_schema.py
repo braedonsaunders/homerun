@@ -270,15 +270,67 @@ def schema_for(kind: str) -> pa.Schema:
     raise ValueError(f"unknown parquet kind: {kind!r}")
 
 
+# ── Bundle layout (v2) ───────────────────────────────────────────────
+#
+# The legacy layout wrote ONE FILE PER (kind, token) per window:
+# ``{kind}__{token_id}.parquet``.  At live-recording scale (~17k tokens per
+# 15-min window) that is >1M files/day — NTFS, every tree walker, the
+# pruner and the catalog scanner all degrade with file count (a single
+# storage-summary walk wedged the API event loop for minutes).
+#
+# The v2 layout stores ONE BUNDLE PER (kind, window):
+#
+#     {window_dir}/{kind}.parquet          # all tokens; token_id is a column,
+#                                          # rows sorted (token_id, observed_at_us)
+#                                          # so row-group stats give per-token
+#                                          # predicate pushdown on read
+#     {window_dir}/manifest.json           # {kind: {"tokens": [...], "rows": N}}
+#                                          # discovery without column scans
+#
+# The CURRENT (still-open) window accumulates small immutable increments in
+# a ``_parts/`` subdirectory (invisible to every legacy reader — they only
+# glob files directly inside the window dir):
+#
+#     {window_dir}/_parts/{kind}__part-{seq:06d}.parquet
+#
+# A compactor merges parts -> bundle when the window closes, verifies row
+# counts, then deletes the parts.  Readers prefer the bundle and fall back
+# to legacy per-token files, so both layouts stay readable indefinitely
+# (operator-imported per-token datasets are small and stay as-is).
+
+PARTS_DIRNAME = "_parts"
+MANIFEST_FILENAME = "manifest.json"
+
+
+def bundle_path_for(window_dir: Path, kind: str) -> Path:
+    """The single-file bundle for *kind* inside *window_dir* (v2 layout)."""
+    if kind not in {"snapshots", "deltas"}:
+        raise ValueError(f"unknown parquet kind: {kind!r} (expected 'snapshots' or 'deltas')")
+    return Path(window_dir) / f"{kind}.parquet"
+
+
+def parts_dir_for(window_dir: Path) -> Path:
+    return Path(window_dir) / PARTS_DIRNAME
+
+
+def manifest_path_for(window_dir: Path) -> Path:
+    return Path(window_dir) / MANIFEST_FILENAME
+
+
 __all__ = [
     "SNAPSHOT_SCHEMA",
     "DELTA_SCHEMA",
     "SCHEMA_VERSION",
+    "PARTS_DIRNAME",
+    "MANIFEST_FILENAME",
     "ParquetPath",
     "parquet_root",
     "parquet_roots",
     "parquet_root_source",
     "set_parquet_root_overrides",
     "parquet_path_for",
+    "bundle_path_for",
+    "parts_dir_for",
+    "manifest_path_for",
     "schema_for",
 ]

@@ -365,6 +365,7 @@ async def test_start_schedules_event_catalog_refresh_without_blocking_startup(mo
 
 def test_get_market_snapshot_schedules_forced_catalog_refresh_on_event_market_miss(monkeypatch):
     runtime = market_runtime.MarketRuntime()
+    runtime._started = True
     runtime._last_catalog_refresh_mono = 0.0
     refresh_calls: list[bool] = []
 
@@ -378,6 +379,24 @@ def test_get_market_snapshot_schedules_forced_catalog_refresh_on_event_market_mi
 
     assert snapshot == {"condition_id": "missing-market", "clob_token_ids": ["yes-miss", "no-miss"]}
     assert refresh_calls == [True]
+
+
+def test_get_market_snapshot_does_not_hydrate_event_catalog_when_inactive(monkeypatch):
+    runtime = market_runtime.MarketRuntime()
+    runtime._last_catalog_refresh_mono = 0.0
+    refresh_calls: list[bool] = []
+
+    monkeypatch.setattr(market_runtime, "_CATALOG_MISS_REFRESH_SECONDS", 0.0)
+    monkeypatch.setattr(runtime, "_schedule_event_catalog_refresh", lambda *, force=False: refresh_calls.append(bool(force)))
+
+    snapshot = runtime.get_market_snapshot(
+        "missing-market",
+        hint={"condition_id": "missing-market", "clob_token_ids": ["yes-miss", "no-miss"]},
+    )
+
+    assert snapshot == {"condition_id": "missing-market", "clob_token_ids": ["yes-miss", "no-miss"]}
+    assert refresh_calls == []
+    assert runtime._event_catalog_markets == {}
 
 
 @pytest.mark.asyncio

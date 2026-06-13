@@ -629,6 +629,8 @@ class MarketRuntime:
         refresh_task.add_done_callback(self._clear_event_catalog_refresh_task)
 
     def _schedule_event_catalog_refresh_on_miss(self) -> None:
+        if not self._started:
+            return
         if (time.monotonic() - self._last_catalog_refresh_mono) < _CATALOG_MISS_REFRESH_SECONDS:
             return
         self._schedule_event_catalog_refresh(force=True)
@@ -907,6 +909,9 @@ class MarketRuntime:
 
     def get_market_snapshot(self, market_id: str, *, hint: dict[str, Any] | None = None) -> dict[str, Any] | None:
         normalized = _normalize_market_id(market_id)
+        hinted = hint if isinstance(hint, dict) else {}
+        if not self._started:
+            return copy.deepcopy(hinted) if hinted else None
         if normalized:
             crypto = self._crypto_markets_by_lookup.get(normalized)
             if crypto is not None:
@@ -914,7 +919,6 @@ class MarketRuntime:
             event_market = self._event_catalog_markets.get(normalized)
             if event_market is not None:
                 return self._build_event_market_snapshot(event_market)
-        hinted = hint if isinstance(hint, dict) else {}
         for key in (
             "condition_id",
             "conditionId",

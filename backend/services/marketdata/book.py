@@ -106,9 +106,10 @@ def load_book_series(
 
     series: AsOfSeries[BookSnapshot] = AsOfSeries()
     rows_read = 0
+    token = str(token_id)
     for fp in files:
         try:
-            table = pq.read_table(str(fp), columns=_BOOK_COLUMNS)
+            table = pq.read_table(str(fp), columns=_BOOK_COLUMNS, filters=[("token_id", "=", token)])
         except Exception as exc:  # noqa: BLE001
             logger.warning("marketdata.book: unreadable %s for %s: %s", fp, token_id, exc)
             continue
@@ -122,8 +123,10 @@ def load_book_series(
             o = int(o)
             if o < start_us or o > end_us:
                 continue
+            if str(cols.get("token_id", [""] * n)[i] or "") != token:
+                continue
             row = {name: cols[name][i] for name in cols}
-            series.add(o, row_to_book_snapshot(token_id, row))
+            series.add(o, row_to_book_snapshot(token, row))
             rows_read += 1
     series.finalize()
     return series, rows_read

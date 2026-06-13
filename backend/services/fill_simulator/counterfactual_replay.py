@@ -100,14 +100,18 @@ async def _resolve_parquet_window(
         return None, None
     snap_p = Path(files[0])
     deltas_p: Path | None = None
-    if "snapshots__" in snap_p.name:
+    if snap_p.name == "snapshots.parquet":
+        cand = snap_p.with_name("deltas.parquet")
+        if cand.exists():
+            deltas_p = cand
+    elif "snapshots__" in snap_p.name:
         cand = snap_p.with_name(snap_p.name.replace("snapshots__", "deltas__", 1))
         if cand.exists():
             deltas_p = cand
     return snap_p, deltas_p
 
 
-def _read_parquet_snapshot_at(path: Path, ts_us_max: int) -> _Snapshot | None:
+def _read_parquet_snapshot_at(path: Path, token_id: str, ts_us_max: int) -> _Snapshot | None:
     """Newest snapshot row with ``observed_at_us <= ts_us_max`` (sync)."""
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
@@ -115,13 +119,19 @@ def _read_parquet_snapshot_at(path: Path, ts_us_max: int) -> _Snapshot | None:
     try:
         t = pq.read_table(
             str(path),
-            columns=["observed_at_us", "bids_price", "bids_size", "asks_price", "asks_size"],
+            columns=["token_id", "observed_at_us", "bids_price", "bids_size", "asks_price", "asks_size"],
+            filters=[("token_id", "=", str(token_id))],
         )
     except Exception:
         return None
     if t.num_rows == 0:
         return None
-    t = t.filter(pc.less_equal(t["observed_at_us"], ts_us_max))
+    t = t.filter(
+        pc.and_(
+            pc.equal(t["token_id"], str(token_id)),
+            pc.less_equal(t["observed_at_us"], ts_us_max),
+        )
+    )
     if t.num_rows == 0:
         return None
     t = t.sort_by([("observed_at_us", "ascending")])
@@ -137,7 +147,7 @@ def _read_parquet_snapshot_at(path: Path, ts_us_max: int) -> _Snapshot | None:
     return _Snapshot(bids_json=bids, asks_json=asks)
 
 
-def _read_parquet_deltas(path: Path, start_us: int, end_us: int) -> list[_Delta]:
+def _read_parquet_deltas(path: Path, token_id: str, start_us: int, end_us: int) -> list[_Delta]:
     """Delta rows in ``(start_us, end_us]`` ascending by time (sync)."""
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
@@ -145,18 +155,22 @@ def _read_parquet_deltas(path: Path, start_us: int, end_us: int) -> list[_Delta]
     try:
         t = pq.read_table(
             str(path),
-            columns=["observed_at_us", "event_type", "side", "price", "trade_size", "cancel_size"],
+            columns=["token_id", "observed_at_us", "event_type", "side", "price", "trade_size", "cancel_size"],
+            filters=[("token_id", "=", str(token_id))],
         )
     except Exception:
         return []
     if t.num_rows == 0:
         return []
     t = t.filter(
-        pc.and_(
-            pc.greater(t["observed_at_us"], start_us),
-            pc.less_equal(t["observed_at_us"], end_us),
+            pc.and_(
+                pc.equal(t["token_id"], str(token_id)),
+                pc.and_(
+                    pc.greater(t["observed_at_us"], start_us),
+                    pc.less_equal(t["observed_at_us"], end_us),
+                ),
+            )
         )
-    )
     if t.num_rows == 0:
         return []
     t = t.sort_by([("observed_at_us", "ascending")])
@@ -258,7 +272,7 @@ async def _fetch_initial_snapshot(
     if snap_path is None:
         return None
     ts_us_max = int(placed_at.timestamp() * 1_000_000)
-    return await asyncio.to_thread(_read_parquet_snapshot_at, snap_path, ts_us_max)
+    return await asyncio.to_thread(_read_parquet_snapshot_at, snap_path, token_id, ts_us_max)
 
 
 async def _stream_delta_events(
@@ -277,7 +291,7 @@ async def _stream_delta_events(
         return []
     start_us = int(start_at.timestamp() * 1_000_000)
     end_us = int(end_at.timestamp() * 1_000_000)
-    return await asyncio.to_thread(_read_parquet_deltas, deltas_path, start_us, end_us)
+    return await asyncio.to_thread(_read_parquet_deltas, deltas_path, token_id, start_us, end_us)
 
 
 async def replay_counterfactual_order(

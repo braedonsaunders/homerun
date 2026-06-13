@@ -29,6 +29,7 @@ def write_canonical_table(
     provider: Optional[str] = None,
     compression: str = "zstd",
     job_id: Optional[str] = None,
+    row_group_size: Optional[int] = None,
 ) -> int:
     """Validate, lineage-stamp, and atomically write a canonical book/delta table.
 
@@ -55,7 +56,7 @@ def write_canonical_table(
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    pq.write_table(table, str(tmp), compression=compression)
+    pq.write_table(table, str(tmp), compression=compression, row_group_size=row_group_size)
     os.replace(tmp, dest)
     return int(table.num_rows)
 

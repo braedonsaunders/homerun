@@ -289,6 +289,7 @@ async def _count_session_rows(
 
     import pyarrow.parquet as _pq
 
+    from services.external_data.parquet_schema import bundle_path_for
     from services.marketdata.coverage import resolve_coverage
 
     capture_types = set(row.capture_types_json or [])
@@ -296,6 +297,17 @@ async def _count_session_rows(
     want_delta = "delta" in capture_types
     if not want_snap and not want_delta:
         return {"total": 0, "last_at": None}
+
+    token_set = {str(t) for t in tokens if str(t)}
+
+    def _rows_for_session_tokens(path: Path) -> int:
+        try:
+            if path.name in {"snapshots.parquet", "deltas.parquet"}:
+                table = _pq.read_table(str(path), columns=["token_id"])
+                return sum(1 for t in table.column("token_id").to_pylist() if str(t) in token_set)
+            return int(_pq.read_metadata(str(path)).num_rows)
+        except Exception:
+            return 0
 
     cov = await resolve_coverage(token_ids=tokens, start=row.started_at, end=until)
     total = 0
@@ -309,16 +321,16 @@ async def _count_session_rows(
             if want_snap:
                 candidates.append(snap_p)
             if want_delta:
-                candidates.append(snap_p.with_name(snap_p.name.replace("snapshots__", "deltas__", 1)))
+                if snap_p.name == "snapshots.parquet":
+                    candidates.append(bundle_path_for(snap_p.parent, "deltas"))
+                else:
+                    candidates.append(snap_p.with_name(snap_p.name.replace("snapshots__", "deltas__", 1)))
             for f in candidates:
                 key = str(f)
                 if key in seen_files or not f.exists():
                     continue
                 seen_files.add(key)
-                try:
-                    total += int(_pq.read_metadata(key).num_rows)
-                except Exception:
-                    pass
+                total += _rows_for_session_tokens(f)
         if tc.end_us is not None:
             t = datetime.fromtimestamp(tc.end_us / 1_000_000, tz=timezone.utc)
             if last_at is None or t > last_at:

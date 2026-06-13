@@ -1216,7 +1216,11 @@ async def run_unified_backtest(
     # front, then freeze the catalog for the duration of the run.
     import services.external_data.parquet_scanner as _ps
     try:
-        await _ps.ensure_recent_scan()
+        # 30-min staleness: the live sink registers its windows incrementally
+        # as it writes them, so a backtest only needs the periodic full scan
+        # to pick up operator-dropped files.  60s staleness made EVERY run in
+        # a sweep re-pay the full store walk (each run takes >60s).
+        await _ps.ensure_recent_scan(max_age_seconds=1800.0)
     except Exception:  # noqa: BLE001
         logger.debug("pre-run parquet scan skipped", exc_info=True)
     # No-silent-failure guard: resolve parquet coverage for the run's token

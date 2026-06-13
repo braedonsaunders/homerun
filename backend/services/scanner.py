@@ -4095,6 +4095,19 @@ class ArbitrageScanner:
                         logger.debug("Scanner model_copy deep clone failed; falling back to deepcopy", exc_info=exc)
                 return copy.deepcopy(value)
 
+            def _copy_event_with_markets(event: object, markets: list) -> object:
+                if hasattr(event, "model_copy"):
+                    try:
+                        return event.model_copy(update={"markets": markets}, deep=False)  # type: ignore[attr-defined]
+                    except Exception as exc:
+                        logger.debug("Scanner event shallow clone failed; falling back to copy.copy", exc_info=exc)
+                copied = copy.copy(event)
+                try:
+                    setattr(copied, "markets", markets)
+                except Exception:
+                    pass
+                return copied
+
             async with self._scan_lock:
                 if not force and not targeted_condition_ids and not self._full_snapshot_strategy_due(now):
                     return self._opportunities
@@ -4109,30 +4122,12 @@ class ArbitrageScanner:
                 self._heavy_lane_error = None
                 self._full_snapshot_strategy_running = True
                 self._last_full_snapshot_strategy_error = None
-                # Deep-clone the full catalog OFF the event loop. The clone MUST
-                # be atomic (taken under _scan_lock so the fast lane can't mutate
-                # the catalog mid-clone) but it must NOT block the loop: cloning
-                # thousands of Pydantic market/event models inline stalled the
-                # detection plane's event loop for ~1-2s on every heavy cycle,
-                # starving the latency-critical signal projection (the emit->wake
-                # p95 ~10s / max ~28s spikes coincided with heavy-lane starts).
-                # Running the clone in a worker thread keeps _scan_lock held — so
-                # atomicity is preserved, every _cached_* mutator already takes
-                # _scan_lock — while the GIL yields between per-model clones
-                # (~every 5ms), letting the projection keep draining. The fast
-                # lane already serializes on _scan_lock, so this adds no new CPU
-                # contention; it only moves the existing clone off the loop.
+                # Keep the catalog lock only long enough to capture stable
+                # container membership. Heavy scans deep-clone only the current
+                # chunk below, avoiding a full-catalog duplicate on every pass.
                 _heavy_clone_loop = asyncio.get_running_loop()
-
-                def _clone_catalog_snapshot() -> tuple[list, list]:
-                    return (
-                        [_clone_model(event) for event in self._cached_events],
-                        [_clone_model(market) for market in self._cached_markets],
-                    )
-
-                cached_events_snapshot, cached_markets_snapshot = (
-                    await _heavy_clone_loop.run_in_executor(None, _clone_catalog_snapshot)
-                )
+                cached_events_snapshot = list(self._cached_events)
+                cached_markets_snapshot = list(self._cached_markets)
 
             try:
                 await self._ensure_runtime_strategies_loaded()
@@ -4144,21 +4139,17 @@ class ArbitrageScanner:
                     async with self._scan_lock:
                         return self._opportunities
 
-                # Build the snapshot routing graph OFF the event loop. This is a
-                # full-universe pass (dict construction + per-event roster rebuild
-                # over every cloned market/event) operating purely on the PRIVATE
-                # deep-clone snapshot (cached_*_snapshot) — no lock needed, no
-                # shared mutation — so running it in a worker thread keeps the
-                # detection plane's event loop free for the signal projection.
-                # Stage 1 heavy-lane event-loop unblock; mirrors the catalog-clone
-                # offload just above.
-                def _build_snapshot_graph() -> tuple[dict, dict, dict, set]:
+                # Build a read-only routing graph over the captured catalog
+                # membership. Market/event objects are cloned later, only for
+                # the chunk being dispatched.
+                def _build_snapshot_graph() -> tuple[dict, dict, dict, set, dict]:
                     snapshot_market_by_id: dict[str, object] = {}
                     for market in cached_markets_snapshot:
                         market_id = str(getattr(market, "id", "") or "").strip()
                         if market_id:
                             snapshot_market_by_id[market_id] = market
 
+                    snapshot_event_by_key: dict[str, object] = {}
                     snapshot_event_to_market_order: dict[str, list[str]] = {}
                     snapshot_market_to_event_key: dict[str, str] = {}
                     snapshot_verified_event_keys: set[str] = set()
@@ -4166,6 +4157,7 @@ class ArbitrageScanner:
                         event_key = str(getattr(event, "id", "") or getattr(event, "slug", "") or "").strip()
                         if not event_key:
                             continue
+                        snapshot_event_by_key[event_key] = event
                         ordered_ids: list[str] = []
                         seen_event_market_ids: set[str] = set()
                         for market in list(getattr(event, "markets", None) or []):
@@ -4177,7 +4169,6 @@ class ArbitrageScanner:
                             snapshot_market_to_event_key[market_id] = event_key
                         if not ordered_ids:
                             continue
-                        event.markets = [snapshot_market_by_id[market_id] for market_id in ordered_ids]
                         snapshot_event_to_market_order[event_key] = ordered_ids
                         snapshot_verified_event_keys.add(event_key)
                     return (
@@ -4185,6 +4176,7 @@ class ArbitrageScanner:
                         snapshot_event_to_market_order,
                         snapshot_market_to_event_key,
                         snapshot_verified_event_keys,
+                        snapshot_event_by_key,
                     )
 
                 (
@@ -4192,6 +4184,7 @@ class ArbitrageScanner:
                     snapshot_event_to_market_order,
                     snapshot_market_to_event_key,
                     snapshot_verified_event_keys,
+                    snapshot_event_by_key,
                 ) = await _heavy_clone_loop.run_in_executor(None, _build_snapshot_graph)
 
                 def _snapshot_market_event_key(market: object) -> str:
@@ -4258,6 +4251,38 @@ class ArbitrageScanner:
                         return list(oversize_group)
                     return selected
 
+                def _clone_chunk_inputs(seed_markets: list) -> tuple[list, list]:
+                    cloned_market_by_id: dict[str, object] = {}
+                    cloned_markets: list = []
+                    chunk_event_keys: list[str] = []
+                    seen_event_keys: set[str] = set()
+                    for market in seed_markets:
+                        market_id = str(getattr(market, "id", "") or "").strip()
+                        if not market_id:
+                            continue
+                        cloned_market = _clone_model(market)
+                        cloned_market_by_id[market_id] = cloned_market
+                        cloned_markets.append(cloned_market)
+                        event_key = _snapshot_market_event_key(market)
+                        if event_key and event_key not in seen_event_keys:
+                            seen_event_keys.add(event_key)
+                            chunk_event_keys.append(event_key)
+
+                    cloned_events: list = []
+                    for event_key in chunk_event_keys:
+                        event = snapshot_event_by_key.get(event_key)
+                        if event is None:
+                            continue
+                        ordered_ids = snapshot_event_to_market_order.get(event_key) or []
+                        event_markets = [
+                            cloned_market_by_id[market_id]
+                            for market_id in ordered_ids
+                            if market_id in cloned_market_by_id
+                        ]
+                        if event_markets:
+                            cloned_events.append(_copy_event_with_markets(event, event_markets))
+                    return cloned_events, cloned_markets
+
                 if targeted_condition_ids:
                     target_set = {
                         str(cid or "").strip().lower() for cid in targeted_condition_ids if str(cid or "").strip()
@@ -4268,6 +4293,7 @@ class ArbitrageScanner:
                         if str(getattr(market, "condition_id", getattr(market, "id", "")) or "").lower() in target_set
                         and self._is_market_active(market, now)
                     ]
+                    active_markets = targeted_markets
                     full_snapshot_markets = _snapshot_expand(targeted_markets)
                 else:
                     if bool(getattr(settings, "SCANNER_FORCE_FULL_UNIVERSE", True)):
@@ -4332,7 +4358,7 @@ class ArbitrageScanner:
                     chunk_now = datetime.now(timezone.utc)
                     chunk_start = 0
                     chunk_end = universe_count
-                    chunk_markets = universe_markets
+                    chunk_market_refs = universe_markets
                     next_cursor_index = 0
                     cycle_completed = True
                     processed_markets = universe_count
@@ -4375,11 +4401,17 @@ class ArbitrageScanner:
                             group_index = start_group_index + 1
 
                         chunk_start = cursor_consumed
-                        chunk_markets = [market for group in selected_groups for market in group]
+                        chunk_market_refs = [market for group in selected_groups for market in group]
                         chunk_end = min(universe_count, chunk_start + selected_count)
                         cycle_completed = group_index >= len(universe_groups)
                         next_cursor_index = 0 if cycle_completed else chunk_end
                         processed_markets = universe_count if cycle_completed else chunk_end
+
+                    chunk_events, chunk_markets = await _heavy_clone_loop.run_in_executor(
+                        None,
+                        _clone_chunk_inputs,
+                        chunk_market_refs,
+                    )
 
                     async with self._scan_lock:
                         self._last_full_snapshot_strategy_market_count = universe_count
@@ -4415,7 +4447,7 @@ class ArbitrageScanner:
                             "affected_market_count": len(market_ids),
                         },
                         markets=chunk_markets,
-                        events=cached_events_snapshot,
+                        events=chunk_events,
                         prices=dict(full_snapshot_prices),
                         scan_mode="full_snapshot_heavy",
                         changed_market_ids=market_ids,

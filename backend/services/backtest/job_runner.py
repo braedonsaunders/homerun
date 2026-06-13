@@ -79,9 +79,13 @@ _PAYLOAD_KEYS = (
     "seed",
     "counterfactual_sample_size",
     "ensemble_sample_size",
+    "fills_sample_size",
     "impact_strength_bps",
     "maker_rebate_bps",
     "maker_rebate_max_spread_bps",
+    "n_trials",
+    "discovery_sample_interval_seconds",
+    "discovery_max_ticks",
 )
 
 
@@ -228,6 +232,101 @@ class BacktestCancelled(Exception):
     set so the engine bails out cleanly."""
 
 
+# ── Crash recovery ────────────────────────────────────────────────
+
+
+def _pid_alive(pid: int) -> bool:
+    import sys as _sys
+
+    if _sys.platform == "win32":
+        # os.kill(pid, 0) TERMINATES on Windows — probe via OpenProcess.
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            return bool(ok) and exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    import os as _os
+
+    try:
+        _os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+# A run that has been "running" longer than this is orphaned regardless
+# of pid state (pid-reuse can make a dead worker look alive).  No
+# legitimate single backtest run approaches this — the engine bounds
+# windows and tick counts well below it.
+_ORPHAN_MAX_RUNNING_SECONDS = 24 * 3600.0
+
+
+async def requeue_orphaned_runs() -> int:
+    """Requeue ``running`` rows whose claiming worker is provably dead.
+
+    Worker ids are ``hostname:pid``.  Rows claimed on THIS host by a pid
+    that no longer exists were orphaned by a worker crash / host restart
+    and would otherwise sit ``running`` forever (the queue has no
+    heartbeat).  Called by the worker on startup, before polling.
+
+    Rows claimed on other hosts are only requeued past the 24h hard cap
+    — pid liveness is unprovable across hosts.
+    """
+    hostname = socket.gethostname()
+    my_pid = __import__("os").getpid()
+    now = utcnow()
+    requeued = 0
+    async with BacktestAsyncSessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(BacktestRun).where(BacktestRun.status == "running")
+            )
+        ).scalars().all()
+        for row in rows:
+            worker = str(row.worker_id or "")
+            host, _, pid_s = worker.rpartition(":")
+            claimed_at = row.claimed_at
+            if claimed_at is not None and claimed_at.tzinfo is None:
+                from datetime import timezone as _tz
+
+                claimed_at = claimed_at.replace(tzinfo=_tz.utc)
+            age_s = (
+                (now - claimed_at).total_seconds() if claimed_at is not None else None
+            )
+            same_host_dead = False
+            if host == hostname and pid_s.isdigit():
+                pid = int(pid_s)
+                same_host_dead = pid != my_pid and not _pid_alive(pid)
+            stale = age_s is not None and age_s > _ORPHAN_MAX_RUNNING_SECONDS
+            if not (same_host_dead or stale):
+                continue
+            row.status = "queued"
+            row.worker_id = None
+            row.claimed_at = None
+            row.progress = 0.0
+            row.snapshots_processed = 0
+            row.message = (
+                "Requeued: claiming worker died"
+                if same_host_dead
+                else "Requeued: run exceeded 24h running cap"
+            )
+            requeued += 1
+        if requeued:
+            await session.commit()
+    return requeued
+
+
 # ── Run ───────────────────────────────────────────────────────────
 
 
@@ -295,11 +394,17 @@ async def run_job(run_id: str) -> dict[str, Any]:
                 else:
                     fresh.progress = 0.0
                 fresh.snapshots_processed = int(processed)
-                fresh.message = (
-                    f"Replaying snapshots: {processed:,}"
-                    + (f" / {est:,}" if est else "")
-                    + f" · open={open_count} · equity=${equity_usd:,.2f}"
-                )
+                if processed <= 0:
+                    # Pre-engine phases (data load + discovery replay) probe
+                    # this callback for cancellation before any snapshot is
+                    # replayed — show the real phase instead of a fake $0 mark.
+                    fresh.message = "Loading historical data · discovery replay…"
+                else:
+                    fresh.message = (
+                        f"Replaying snapshots: {processed:,}"
+                        + (f" / {est:,}" if est else "")
+                        + f" · open={open_count} · equity=${equity_usd:,.2f}"
+                    )
                 await session.commit()
         except BacktestCancelled:
             raise
@@ -326,12 +431,14 @@ async def run_job(run_id: str) -> dict[str, Any]:
                     "initial_capital_usd", "submit_p50_ms", "submit_p95_ms",
                     "cancel_p50_ms", "cancel_p95_ms", "seed",
                     "counterfactual_sample_size", "ensemble_sample_size",
+                    "fills_sample_size",
                     "impact_strength_bps", "maker_rebate_bps",
                     "maker_rebate_max_spread_bps",
                     # n_trials drives the López de Prado deflated-Sharpe
                     # correction; the iteration loop passes the search
                     # size so over-fitting deflation actually applies.
                     "n_trials",
+                    "discovery_sample_interval_seconds", "discovery_max_ticks",
                 )
             },
             progress_callback=_on_progress,
@@ -399,6 +506,7 @@ __all__ = [
     "enqueue_run",
     "claim_next_queued_run",
     "request_cancel",
+    "requeue_orphaned_runs",
     "run_job",
     "BacktestCancelled",
 ]

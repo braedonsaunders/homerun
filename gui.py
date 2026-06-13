@@ -257,6 +257,14 @@ _WORKER_PLANES = (
     # services that must never be gated off by a subsystem toggle. See the
     # ``services`` plane in backend/workers/host.py.
     ("SERVICES", "services"),
+    # Always-on operator job-queue plane: backtest runs, provider imports,
+    # strategy reverse-engineer, Cox trainer.  Operator tools, not subsystem
+    # features — never gated (previously these drained on the discovery
+    # plane, so the default-off discovery toggle silently wedged every
+    # enqueued backtest at "Queued").  Spawned below-normal CPU priority:
+    # batch replays must yield to live planes and the user's foreground.
+    # See the ``jobs`` plane in backend/workers/host.py.
+    ("JOBS", "jobs"),
 )
 _WORKER_SOURCE_TAG_BY_PLANE = {pn: st for st, pn in _WORKER_PLANES}
 _WORKER_PLANE_BY_NAME: dict[str, str] = {
@@ -1826,11 +1834,25 @@ class HomerunApp:
                 log_path.write_text("", encoding="utf-8")
             except Exception:
                 pass
+        spawn_kwargs = _windows_subprocess_kwargs()
+        if plane_name == "jobs":
+            # Batch compute (backtest replays, provider imports, model
+            # training) must never compete with the live planes or the
+            # user's foreground for CPU — a normal-priority replay
+            # saturating cores alongside the live stack has frozen the
+            # whole machine.
+            if sys.platform == "win32":
+                spawn_kwargs["creationflags"] = (
+                    int(spawn_kwargs.get("creationflags") or 0)
+                    | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                )
+            else:
+                spawn_kwargs["preexec_fn"] = lambda: os.nice(10)
         worker_proc = subprocess.Popen(
             [str(self._venv_python_path()), "-m", "workers.host", plane_name],
             cwd=str(BACKEND_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=env,
-            **_windows_subprocess_kwargs(),
+            **spawn_kwargs,
         )
         _assign_to_job(worker_proc)
         self.worker_procs[plane_name] = worker_proc

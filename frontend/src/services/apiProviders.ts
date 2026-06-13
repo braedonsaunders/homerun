@@ -339,6 +339,53 @@ export async function setParquetRoots(roots: string[]): Promise<ParquetRoot> {
   return data
 }
 
+// ─── Storage location (primary parquet/recording folder) ────────────
+
+export interface StorageLocationDisk {
+  free_gb: number | null
+  total_gb: number | null
+}
+
+export interface StorageLocation {
+  primary_root: string
+  source: 'configured' | 'default'
+  roots: ParquetRootEntry[]
+  disk: StorageLocationDisk
+  bus_topics_parquet: number
+  bus_topics_under_primary: number
+}
+
+export interface StorageLocationUpdateResult {
+  ok: boolean
+  primary_root: string
+  previous_primary: string
+  source: 'configured' | 'default'
+  roots: ParquetRootEntry[]
+  disk: StorageLocationDisk
+  migrated_bus_topics: { slug: string; from: string; to: string }[]
+  note: string
+}
+
+export async function getStorageLocation(): Promise<StorageLocation> {
+  const { data } = await api.get<StorageLocation>('/providers/parquet/storage-location')
+  return data
+}
+
+/** Point the PRIMARY storage folder (live recordings, bus topics,
+ *  provider imports) at a new directory — created if missing.  The old
+ *  location stays readable as a secondary root; nothing is moved.
+ */
+export async function updateStorageLocation(
+  root: string,
+  migrateBusTopics = true,
+): Promise<StorageLocationUpdateResult> {
+  const { data } = await api.put<StorageLocationUpdateResult>(
+    '/providers/parquet/storage-location',
+    { root, migrate_bus_topics: migrateBusTopics },
+  )
+  return data
+}
+
 
 // ─── Telonex (markets catalog, availability, import, quota) ──────────
 

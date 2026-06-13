@@ -2354,6 +2354,61 @@ class TestScannerCallbacks:
         assert set(scanner.quality_reports.keys()) == {passed.stable_id}
 
     @pytest.mark.asyncio
+    async def test_full_snapshot_dispatch_clones_only_current_chunk_events(self, mock_polymarket_client):
+        scanner = _build_scanner(mock_client=mock_polymarket_client)
+        event_1_markets = []
+        event_2_markets = []
+        for event_idx, bucket in ((1, event_1_markets), (2, event_2_markets)):
+            for market_idx in range(2):
+                bucket.append(
+                    Market(
+                        id=f"m_chunk_event_{event_idx}_{market_idx}",
+                        condition_id=f"c_chunk_event_{event_idx}_{market_idx}",
+                        question=f"Chunk event {event_idx} market {market_idx}?",
+                        slug=f"chunk-event-{event_idx}-{market_idx}",
+                        event_slug=f"event-{event_idx}",
+                        clob_token_ids=[
+                            f"tok_chunk_event_{event_idx}_{market_idx}_yes",
+                            f"tok_chunk_event_{event_idx}_{market_idx}_no",
+                        ],
+                        outcome_prices=[0.49, 0.51],
+                    )
+                )
+        event_1 = Event(id="event-1", slug="event-1", title="Chunk event one", markets=event_1_markets)
+        event_2 = Event(id="event-2", slug="event-2", title="Chunk event two", markets=event_2_markets)
+        scanner._cached_events = [event_1, event_2]
+        scanner._cached_markets = [*event_1_markets, *event_2_markets]
+        scanner._cached_market_by_id = {market.id: market for market in scanner._cached_markets}
+        dispatches: list[tuple[list, list]] = []
+
+        async def _capture_dispatch(event, **kwargs):
+            dispatches.append((list(event.events or []), list(kwargs["full_market_snapshot"])))
+            return []
+
+        with (
+            patch.object(scanner, "_ensure_runtime_strategies_loaded", new_callable=AsyncMock),
+            patch.object(scanner, "_partition_market_refresh_strategies", return_value=(set(), {"full_only"})),
+            patch.object(scanner, "_snapshot_ws_prices", new_callable=AsyncMock, return_value={}),
+            patch.object(scanner, "_dispatch_market_refresh", side_effect=_capture_dispatch),
+            patch.object(scanner, "_set_activity", new_callable=AsyncMock),
+            patch("services.scanner.settings.SCANNER_FULL_SNAPSHOT_CHUNK_SIZE", 2),
+            patch("services.scanner.settings.SCANNER_FORCE_FULL_UNIVERSE", True),
+        ):
+            await scanner.scan_full_snapshot_strategies(force=True)
+
+        assert len(dispatches) == 2
+        for chunk_events, chunk_markets in dispatches:
+            assert len(chunk_events) == 1
+            assert len(chunk_markets) == 2
+            assert {market.id for market in chunk_events[0].markets} == {market.id for market in chunk_markets}
+            assert all(
+                all(market is not cached_market for cached_market in scanner._cached_markets)
+                for market in chunk_markets
+            )
+        assert scanner._cached_events[0].markets[0] is event_1_markets[0]
+        assert scanner._cached_events[1].markets[0] is event_2_markets[0]
+
+    @pytest.mark.asyncio
     async def test_callback_exception_does_not_break_scan(self, mock_polymarket_client, sample_opportunity):
         scanner = _build_scanner(mock_client=mock_polymarket_client)
         _seed_scanner_cache(scanner)

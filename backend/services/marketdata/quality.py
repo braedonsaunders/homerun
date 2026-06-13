@@ -51,16 +51,24 @@ async def assess_book_quality(
     obs: list[int] = []
     crossed = 0
     null_book = 0
+    token = str(token_id)
     for fp in files:
         try:
-            t = pq.read_table(str(fp), columns=["observed_at_us", "best_bid", "best_ask"])
+            t = pq.read_table(
+                str(fp),
+                columns=["token_id", "observed_at_us", "best_bid", "best_ask"],
+                filters=[("token_id", "=", token)],
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("assess_book_quality: unreadable %s: %s", fp, exc)
             continue
+        tok = t.column("token_id").to_pylist()
         o = t.column("observed_at_us").to_pylist()
         bb = t.column("best_bid").to_pylist()
         ba = t.column("best_ask").to_pylist()
         for i in range(len(o)):
+            if str(tok[i] or "") != token:
+                continue
             ts = o[i]
             if ts is None or ts < start_us or ts > end_us:
                 continue

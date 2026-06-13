@@ -975,7 +975,7 @@ def _scan_recent_parquet_actuals(minutes: int) -> dict[str, Any]:
 
     import pyarrow.parquet as _pq
 
-    from services.external_data.parquet_schema import parquet_roots
+    from services.external_data.parquet_schema import manifest_path_for, parquet_roots
 
     cutoff = _time.time() - max(1, int(minutes)) * 60
     book_rows = 0
@@ -983,6 +983,28 @@ def _scan_recent_parquet_actuals(minutes: int) -> dict[str, Any]:
     tokens: set[str] = set()
     newest_mtime = 0.0
     providers: set[str] = set()
+
+    def _tokens_for_file(fp) -> set[str]:
+        name = fp.name
+        if name.startswith("snapshots__") or name.startswith("deltas__"):
+            suffix = name.split("__", 1)[1].rsplit(".", 1)[0]
+            if not suffix.startswith("part-"):
+                return {suffix}
+        if name in {"snapshots.parquet", "deltas.parquet"}:
+            kind = name.split(".", 1)[0]
+            try:
+                manifest = json.loads(manifest_path_for(fp.parent).read_text(encoding="utf-8"))
+                entry = manifest.get(kind) if isinstance(manifest, dict) else None
+                raw_tokens = entry.get("tokens") if isinstance(entry, dict) else None
+                if isinstance(raw_tokens, list):
+                    return {str(t) for t in raw_tokens if str(t)}
+            except Exception:
+                pass
+        try:
+            table = _pq.read_table(str(fp), columns=["token_id"])
+        except Exception:
+            return set()
+        return {str(t) for t in table.column("token_id").to_pylist() if t}
 
     seen_roots: set[str] = set()
     for root in parquet_roots():
@@ -992,9 +1014,9 @@ def _scan_recent_parquet_actuals(minutes: int) -> dict[str, Any]:
         seen_roots.add(key)
         for fp in root.rglob("*.parquet"):
             name = fp.name
-            if name.startswith("snapshots__"):
+            if name == "snapshots.parquet" or name.startswith("snapshots__"):
                 kind = "book"
-            elif name.startswith("deltas__"):
+            elif name == "deltas.parquet" or name.startswith("deltas__"):
                 kind = "delta"
             else:
                 continue
@@ -1012,7 +1034,7 @@ def _scan_recent_parquet_actuals(minutes: int) -> dict[str, Any]:
                 book_rows += n
             else:
                 delta_rows += n
-            tokens.add(name.split("__", 1)[1].rsplit(".", 1)[0])
+            tokens.update(_tokens_for_file(fp))
             newest_mtime = max(newest_mtime, mt)
             # provider = first path segment under the root
             try:

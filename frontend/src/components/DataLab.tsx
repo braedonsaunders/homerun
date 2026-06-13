@@ -50,6 +50,11 @@ import { cn } from '../lib/utils'
 import DataLabProviders from './DataLabProviders'
 import DataLabTopics from './DataLabTopics'
 import {
+  type StorageLocation,
+  getStorageLocation,
+  updateStorageLocation,
+} from '../services/apiProviders'
+import {
   type CreateRecordingSessionPayload,
   type DatasetColumn,
   type DatasetFilter,
@@ -2360,9 +2365,141 @@ function BookRetentionSection() {
   )
 }
 
+// Primary storage folder — where the live recorder, the recorded-event bus,
+// and provider imports write parquet.  Operators point this at a roomy drive;
+// the previous folder stays readable as a secondary root so history survives.
+function StorageLocationSection() {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const locQuery = useQuery<StorageLocation>({
+    queryKey: ['data-lab', 'storage-location'],
+    queryFn: getStorageLocation,
+    refetchInterval: 60000,
+  })
+  const [root, setRoot] = useState<string>('')
+  const [applyNote, setApplyNote] = useState<string>('')
+  useEffect(() => {
+    if (locQuery.data) setRoot(locQuery.data.primary_root)
+  }, [locQuery.data])
+  const save = useMutation({
+    mutationFn: (newRoot: string) => updateStorageLocation(newRoot, true),
+    onSuccess: (res) => {
+      setApplyNote(res.note)
+      queryClient.invalidateQueries({ queryKey: ['data-lab', 'storage-location'] })
+      queryClient.invalidateQueries({ queryKey: ['providers', 'parquet-root'] })
+    },
+  })
+  const server = locQuery.data
+  const dirty = server != null && root.trim() !== '' && root.trim() !== server.primary_root
+  const saveError =
+    save.error != null
+      ? ((save.error as { response?: { data?: { detail?: string } } }).response?.data?.detail ??
+        String(save.error))
+      : null
+  return (
+    <div className="rounded-md border border-border/40 bg-card/30">
+      <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
+        <HardDrive className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />
+        <span className="text-xs font-semibold">
+          {t('dataLab.storageLocationTitle', { defaultValue: 'Storage location' })}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          {t('dataLab.storageLocationSub', {
+            defaultValue:
+              'Folder where recordings, bus topics, and provider imports are written — point it at a roomy drive',
+          })}
+        </span>
+        {server?.disk?.free_gb != null ? (
+          <span
+            className={
+              server.disk.free_gb < 30
+                ? 'ml-auto text-[10px] font-semibold text-red-600 dark:text-red-400'
+                : 'ml-auto text-[10px] text-muted-foreground'
+            }
+          >
+            {t('dataLab.storageLocationFree', {
+              defaultValue: '{{free}} GB free of {{total}} GB',
+              free: server.disk.free_gb,
+              total: server.disk.total_gb,
+            })}
+          </span>
+        ) : null}
+      </div>
+      <div className="flex flex-col gap-2 p-3">
+        <div className="rounded-md border border-border/30 bg-background/40 px-3 py-2">
+          <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            {t('dataLab.storageLocationFolder', { defaultValue: 'Storage folder (absolute path)' })}
+          </Label>
+          <div className="mt-1 flex items-center gap-2">
+            <Input
+              type="text"
+              value={root}
+              onChange={(e) => {
+                setRoot(e.target.value)
+                setApplyNote('')
+              }}
+              placeholder="D:\homerun-data\parquet"
+              disabled={save.isPending}
+              spellCheck={false}
+              className="h-7 flex-1 font-mono text-[12px]"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 text-[11px]"
+              onClick={() => save.mutate(root.trim())}
+              disabled={!dirty || save.isPending}
+            >
+              {save.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+              {t('dataLab.storageLocationApply', { defaultValue: 'Move storage here' })}
+            </Button>
+          </div>
+          <div className="mt-1 text-[9px] text-muted-foreground">
+            {t('dataLab.storageLocationHint', {
+              defaultValue:
+                'Created if missing. Existing data is NOT moved — the old folder stays readable as a secondary root. Live recorder and imports switch immediately; event-bus recording switches on the next app restart.',
+            })}
+          </div>
+        </div>
+        {saveError ? (
+          <div className="text-[10px] font-semibold text-red-600 dark:text-red-400">{saveError}</div>
+        ) : null}
+        {applyNote ? <div className="text-[10px] text-muted-foreground">{applyNote}</div> : null}
+        {server ? (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+            <span>
+              {t('dataLab.storageLocationSource', { defaultValue: 'source' })}:{' '}
+              <span className="font-mono">{server.source}</span>
+            </span>
+            <span>
+              {t('dataLab.storageLocationTopics', {
+                defaultValue: 'bus topics here: {{n}}/{{total}}',
+                n: server.bus_topics_under_primary,
+                total: server.bus_topics_parquet,
+              })}
+            </span>
+            {server.roots.length > 1 ? (
+              <span>
+                {t('dataLab.storageLocationReadRoots', {
+                  defaultValue: 'additional read roots: {{paths}}',
+                  paths: server.roots
+                    .slice(1)
+                    .map((r) => r.path)
+                    .join(', '),
+                })}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function StorageView() {
   return (
     <div className="flex flex-col gap-3 p-3">
+      <StorageLocationSection />
       <BookRetentionSection />
       <StorageOverviewSection />
       <DataLabTopics />

@@ -3238,6 +3238,7 @@ class IntentRuntime:
                 else:
                     existing_by_dedupe_key = {}
                 committed_signal_ids: list[str] = []
+                committed_signal_snapshots: dict[str, dict[str, Any]] = {}
                 for snapshot in chunk:
                     signal_type = str(snapshot.get("signal_type") or "").strip().lower()
                     if signal_type:
@@ -3309,7 +3310,11 @@ class IntentRuntime:
                     if effective_price is not None and effective_price != getattr(row, "effective_price", None):
                         row.effective_price = effective_price
                     if row is not None and getattr(row, "id", None):
-                        committed_signal_ids.append(str(row.id))
+                        committed_signal_id = str(row.id)
+                        committed_signal_ids.append(committed_signal_id)
+                        committed_snapshot = copy.deepcopy(snapshot)
+                        committed_snapshot["id"] = committed_signal_id
+                        committed_signal_snapshots[committed_signal_id] = committed_snapshot
                 await session.commit()
                 # Cross-plane wake: upsert_trade_signal(commit=False) above SKIPS
                 # the per-signal Redis EMISSION (signal_bus gates emission on
@@ -3328,6 +3333,7 @@ class IntentRuntime:
                             signal_ids=committed_signal_ids,
                             source=source,
                             reason="projection_commit",
+                            signal_snapshots=committed_signal_snapshots,
                         )
                     except Exception as _emit_exc:
                         logger.debug(

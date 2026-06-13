@@ -29,17 +29,19 @@ Triggered three ways:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from services.external_data.parquet_schema import (
     DELTA_SCHEMA,
     SNAPSHOT_SCHEMA,
+    manifest_path_for,
     parquet_roots,
 )
 
@@ -54,6 +56,7 @@ _WINDOW_DIR_RE = re.compile(
 _FILE_RE = re.compile(
     r"^(?P<kind>snapshots|deltas)__(?P<token_id>[A-Za-z0-9_\-]+)\.parquet$"
 )
+_BUNDLE_FILE_RE = re.compile(r"^(?P<kind>snapshots|deltas)\.parquet$")
 
 
 def _parse_window_dir(name: str) -> tuple[datetime, datetime] | None:
@@ -91,6 +94,8 @@ class _DatasetGroup:
     end: datetime
     snapshot_files: dict[str, Path] = field(default_factory=dict)  # token_id -> path
     delta_files: dict[str, Path] = field(default_factory=dict)
+    snapshot_bundle: Path | None = None
+    delta_bundle: Path | None = None
 
 
 # ── Filesystem walk ──────────────────────────────────────────────────
@@ -133,6 +138,13 @@ def _walk_parquet_root(root: Path) -> list[_DatasetGroup]:
                 for f in window_dir.iterdir():
                     if not f.is_file() or not f.name.endswith(".parquet"):
                         continue
+                    bundle = _BUNDLE_FILE_RE.match(f.name)
+                    if bundle is not None:
+                        if bundle.group("kind") == "snapshots":
+                            group.snapshot_bundle = f
+                        else:
+                            group.delta_bundle = f
+                        continue
                     parsed = _parse_filename(f.name)
                     if parsed is None:
                         logger.debug(
@@ -173,6 +185,13 @@ def _group_for_window_dir(window_dir: Path) -> _DatasetGroup | None:
     for f in window_dir.iterdir():
         if not f.is_file() or not f.name.endswith(".parquet"):
             continue
+        bundle = _BUNDLE_FILE_RE.match(f.name)
+        if bundle is not None:
+            if bundle.group("kind") == "snapshots":
+                group.snapshot_bundle = f
+            else:
+                group.delta_bundle = f
+            continue
         parsed = _parse_filename(f.name)
         if parsed is None:
             continue
@@ -181,7 +200,12 @@ def _group_for_window_dir(window_dir: Path) -> _DatasetGroup | None:
             group.snapshot_files[token_id] = f
         elif kind == "deltas":
             group.delta_files[token_id] = f
-    if not group.snapshot_files and not group.delta_files:
+    if (
+        not group.snapshot_files
+        and not group.delta_files
+        and group.snapshot_bundle is None
+        and group.delta_bundle is None
+    ):
         return None
     return group
 
@@ -197,40 +221,107 @@ def _validate_and_count_group(
     event loop free — an active recording window can carry tens of token files
     and several seconds of footer reads.
     """
-    import pyarrow.parquet as pq
-
     valid_snap_tokens: list[str] = []
     valid_delta_tokens: list[str] = []
     errors: list[str] = []
     snapshot_count = 0
     trade_count = 0
-    for kind, files, valid_list in (
-        ("snapshots", group.snapshot_files, valid_snap_tokens),
-        ("deltas", group.delta_files, valid_delta_tokens),
-    ):
-        expected_names = set((SNAPSHOT_SCHEMA if kind == "snapshots" else DELTA_SCHEMA).names)
-        for token_id, fp in files.items():
-            # One footer read per file: validates column names + row count
-            # (the old path read the footer three times per file).
-            try:
-                meta = pq.read_metadata(str(fp))
-                file_names = set(meta.schema.to_arrow_schema().names)
-            except Exception as exc:
-                errors.append(f"{fp.name}: unreadable: {str(exc)[:120]}")
-                continue
-            missing = expected_names - file_names
-            if missing:
-                errors.append(f"{fp.name}: missing columns: {sorted(missing)}")
-                continue
-            if meta.num_rows <= 0:
-                errors.append(f"{fp.name}: empty file (0 rows)")
-                continue
-            valid_list.append(token_id)
-            if kind == "snapshots":
-                snapshot_count += meta.num_rows
-            else:
-                trade_count += meta.num_rows
+    for kind in ("snapshots", "deltas"):
+        valid_tokens, row_count = _validate_kind(group, kind, errors)
+        if kind == "snapshots":
+            valid_snap_tokens = valid_tokens
+            snapshot_count = row_count
+        else:
+            valid_delta_tokens = valid_tokens
+            trade_count = row_count
     return valid_snap_tokens, valid_delta_tokens, snapshot_count, trade_count, errors
+
+
+def _validate_kind(group: _DatasetGroup, kind: str, errors: list[str]) -> tuple[list[str], int]:
+    expected_names = set((SNAPSHOT_SCHEMA if kind == "snapshots" else DELTA_SCHEMA).names)
+    bundle = group.snapshot_bundle if kind == "snapshots" else group.delta_bundle
+    legacy_files = group.snapshot_files if kind == "snapshots" else group.delta_files
+
+    if bundle is not None:
+        meta = _read_metadata(bundle, expected_names, errors)
+        if meta is not None:
+            tokens = _bundle_tokens(group.window_dir, bundle, kind, int(meta.num_rows), errors)
+            if tokens:
+                return tokens, int(meta.num_rows)
+            errors.append(f"{bundle.name}: no token_id values found")
+
+    valid_tokens: list[str] = []
+    row_count = 0
+    for token_id, fp in legacy_files.items():
+        meta = _read_metadata(fp, expected_names, errors)
+        if meta is None:
+            continue
+        valid_tokens.append(token_id)
+        row_count += int(meta.num_rows)
+    return valid_tokens, row_count
+
+
+def _read_metadata(fp: Path, expected_names: set[str], errors: list[str]):
+    import pyarrow.parquet as pq
+
+    try:
+        meta = pq.read_metadata(str(fp))
+        file_names = set(meta.schema.to_arrow_schema().names)
+    except Exception as exc:
+        errors.append(f"{fp.name}: unreadable: {str(exc)[:120]}")
+        return None
+    missing = expected_names - file_names
+    if missing:
+        errors.append(f"{fp.name}: missing columns: {sorted(missing)}")
+        return None
+    if meta.num_rows <= 0:
+        errors.append(f"{fp.name}: empty file (0 rows)")
+        return None
+    return meta
+
+
+def _load_manifest(window_dir: Path) -> dict[str, Any]:
+    mp = manifest_path_for(window_dir)
+    try:
+        raw = json.loads(mp.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _bundle_tokens(
+    window_dir: Path,
+    bundle: Path,
+    kind: str,
+    row_count: int,
+    errors: list[str],
+) -> list[str]:
+    import pyarrow.parquet as pq
+
+    manifest = _load_manifest(window_dir)
+    entry = manifest.get(kind) if isinstance(manifest.get(kind), dict) else {}
+    tokens = entry.get("tokens") if isinstance(entry, dict) else None
+    manifest_rows = entry.get("rows") if isinstance(entry, dict) else None
+    if isinstance(manifest_rows, int) and manifest_rows != row_count:
+        errors.append(f"{bundle.name}: manifest rows {manifest_rows} != footer rows {row_count}")
+    if isinstance(tokens, list) and tokens:
+        return sorted({str(t) for t in tokens if str(t)})
+    try:
+        table = pq.read_table(str(bundle), columns=["token_id"])
+    except Exception as exc:
+        errors.append(f"{bundle.name}: could not read token_id column: {str(exc)[:120]}")
+        return []
+    return sorted({str(t) for t in table.column("token_id").to_pylist() if t})
+
+
+def _group_row_id(group: _DatasetGroup) -> str:
+    """Stable id: hash of (provider, coin, window_slug).  Idempotent —
+    re-scanning the same dir produces the same id, so the UPSERT path
+    actually upserts rather than appending duplicates."""
+    import hashlib
+
+    ext_id_raw = f"{group.provider}|{group.coin}|{group.window_dir.name}"
+    return "parquet:" + hashlib.sha1(ext_id_raw.encode()).hexdigest()[:16]
 
 
 async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
@@ -257,12 +348,7 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
             "errors": errors,
         }
 
-    # Stable id: hash of (provider, coin, window_slug).  Idempotent —
-    # re-scanning the same dir produces the same id, so the UPSERT
-    # path actually upserts rather than appending duplicates.
-    import hashlib
-    ext_id_raw = f"{group.provider}|{group.coin}|{group.window_dir.name}"
-    ext_id = "parquet:" + hashlib.sha1(ext_id_raw.encode()).hexdigest()[:16]
+    ext_id = _group_row_id(group)
     row_id = ext_id  # use external_id as the primary key for parquet rows
     storage_uri = group.window_dir.resolve().as_uri()
     union_tokens = sorted(set(valid_snap_tokens) | set(valid_delta_tokens))
@@ -298,8 +384,15 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
     update_cols = {k: v for k, v in values.items() if k not in {"id", "created_at"}}
     async with AsyncSessionLocal() as session:
         stmt = _pg_insert(ProviderDataset).values(**values)
+        # Conflict-target the NATURAL key (provider, external_id), not the PK:
+        # rows imported by earlier paths can hold the same (provider,
+        # external_id) under a DIFFERENT id, so an id-only arbiter never
+        # matched them and every rescan of that window died with
+        # UniqueViolation on uq_provider_dataset_provider_extid (observed
+        # spamming the jobs plane each cycle). The PK stays untouched on
+        # update (id is excluded from update_cols).
         stmt = stmt.on_conflict_do_update(
-            index_elements=["id"],
+            index_elements=["provider", "external_id"],
             set_=update_cols,
         )
         try:
@@ -336,6 +429,38 @@ async def _upsert_group(group: _DatasetGroup) -> dict[str, Any]:
 _LAST_SCAN_AT: float = 0.0
 _RESCAN_LOCK = asyncio.Lock()
 
+
+def _scan_stamp_path() -> Path | None:
+    """Cross-process scan-freshness stamp, kept in the first parquet root's
+    ``.pins`` metadata dir.  ``_LAST_SCAN_AT`` is process-local, so without
+    this every worker restart re-paid the full multi-minute root walk even
+    when another process had just completed one."""
+    roots = parquet_roots()
+    if not roots:
+        return None
+    return roots[0] / ".pins" / "last_full_scan.stamp"
+
+
+def _read_scan_stamp_epoch() -> float:
+    p = _scan_stamp_path()
+    if p is None:
+        return 0.0
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _write_scan_stamp() -> None:
+    p = _scan_stamp_path()
+    if p is None:
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+    except OSError:
+        logger.debug("parquet_scanner: scan stamp write failed", exc_info=True)
+
 # When > 0, ``ensure_recent_scan`` is a no-op.  A backtest replays a FROZEN,
 # pinned dataset — the filesystem can't change underneath it — so re-walking
 # every root + re-UPSERTing the catalog every 60s mid-run is pure waste and, on
@@ -356,12 +481,22 @@ def resume_scan() -> None:
     _SCAN_SUSPEND_DEPTH = max(0, _SCAN_SUSPEND_DEPTH - 1)
 
 
-async def rescan_parquet_root(*, root: Path | None = None) -> dict[str, Any]:
+async def rescan_parquet_root(
+    *, root: Path | None = None, force: bool = False
+) -> dict[str, Any]:
     """Walk every configured parquet root (or the single ``root`` arg
     when caller wants a one-off), validate, and UPSERT one row per
     group.  Idempotent.  Safe to invoke concurrently — guarded by a
     process-local lock.  Returns a structured report the API + CLI
     surface to the operator.
+
+    ``force=False`` (the backtest path) skips footer-validation for groups
+    that are ALREADY cataloged and whose window ended in the past: recording
+    windows are append-only while active and immutable once closed, so
+    re-reading every historical file's footer is pure waste — at tens of
+    thousands of recorded files it turned "pick up newly-dropped files"
+    into a multi-GB, tens-of-minutes stall before every backtest.  The
+    operator's explicit Rescan (``force=True``) still validates everything.
 
     When the operator has configured multiple roots in Data Lab →
     Providers → Parquet, all of them are walked in order; results
@@ -378,14 +513,57 @@ async def rescan_parquet_root(*, root: Path | None = None) -> dict[str, Any]:
         else:
             scan_roots = parquet_roots()
         started = time.monotonic()
+
+        existing_ids: set[str] = set()
+        if not force:
+            try:
+                from sqlalchemy import select as _select
+                from models.database import AsyncSessionLocal, ProviderDataset
+
+                async with AsyncSessionLocal() as session:
+                    existing_ids = {
+                        row[0]
+                        for row in (
+                            await session.execute(
+                                _select(ProviderDataset.id).where(
+                                    ProviderDataset.storage_type == "parquet"
+                                )
+                            )
+                        ).all()
+                    }
+            except Exception:
+                logger.warning(
+                    "parquet_scanner: existing-id preload failed; falling back "
+                    "to full validation", exc_info=True,
+                )
+                existing_ids = set()
+        # A window that ended this recently may still receive its final
+        # flush — always revalidate those; everything older is immutable.
+        immutable_cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+
         results: list[dict[str, Any]] = []
         per_root_reports: list[dict[str, Any]] = []
         total_groups = 0
+        total_skipped = 0
         for scan_root in scan_roots:
             root_started = time.monotonic()
-            groups = _walk_parquet_root(scan_root)
+            # The walk stats every file under the root (hundreds of
+            # thousands on a long-running recorder) — pure blocking IO
+            # that must never run on the event loop (same py-spy-caught
+            # stall class as the live sink's old synchronous walk).
+            groups = await asyncio.to_thread(_walk_parquet_root, scan_root)
             root_results: list[dict[str, Any]] = []
+            root_skipped = 0
             for g in groups:
+                g_end = g.end if g.end.tzinfo else g.end.replace(tzinfo=timezone.utc)
+                if (
+                    not force
+                    and existing_ids
+                    and g_end < immutable_cutoff
+                    and _group_row_id(g) in existing_ids
+                ):
+                    root_skipped += 1
+                    continue
                 try:
                     res = await _upsert_group(g)
                 except Exception as exc:
@@ -402,13 +580,18 @@ async def rescan_parquet_root(*, root: Path | None = None) -> dict[str, Any]:
                 root_results.append(res)
                 results.append(res)
             total_groups += len(groups)
+            total_skipped += root_skipped
             per_root_reports.append({
                 "root": str(scan_root),
                 "groups_seen": len(groups),
+                "skipped_unchanged": root_skipped,
                 "elapsed_ms": (time.monotonic() - root_started) * 1000.0,
                 "exists": scan_root.exists(),
             })
         _LAST_SCAN_AT = time.time()
+        if root is None:
+            # Only a full multi-root scan counts as global freshness.
+            _write_scan_stamp()
         elapsed_ms = (time.monotonic() - started) * 1000.0
         # Keep the legacy top-level ``root`` key (= first scan root)
         # for back-compat with any frontend / CLI parsing the report
@@ -419,6 +602,7 @@ async def rescan_parquet_root(*, root: Path | None = None) -> dict[str, Any]:
             "roots": [str(p) for p in scan_roots],
             "per_root": per_root_reports,
             "groups_seen": total_groups,
+            "skipped_unchanged": total_skipped,
             "results": results,
             "elapsed_ms": elapsed_ms,
             "scanned_at_epoch": _LAST_SCAN_AT,
@@ -492,9 +676,17 @@ async def ensure_recent_scan(*, max_age_seconds: float = 60.0) -> bool:
     newly-dropped files are picked up automatically.  Returns True
     iff a fresh scan ran.
     """
+    global _LAST_SCAN_AT
     if _SCAN_SUSPEND_DEPTH > 0:
         return False
     if (time.time() - _LAST_SCAN_AT) <= max_age_seconds:
+        return False
+    # Cross-process freshness: another process (background loop, operator
+    # rescan, a prior worker) may have completed a full scan recently —
+    # honor its stamp instead of re-walking the entire store.
+    stamp_epoch = _read_scan_stamp_epoch()
+    if stamp_epoch and (time.time() - stamp_epoch) <= max_age_seconds:
+        _LAST_SCAN_AT = stamp_epoch
         return False
     await rescan_parquet_root()
     return True

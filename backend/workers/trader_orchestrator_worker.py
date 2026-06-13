@@ -326,6 +326,34 @@ def _merge_trigger_signal_snapshots_by_source(
     return merged or None
 
 
+def _restamp_trigger_signal_snapshots_by_source(
+    snapshots_by_source: dict[str, dict[str, dict[str, Any]]] | None,
+    *,
+    emitted_at_iso: str,
+) -> dict[str, dict[str, dict[str, Any]]] | None:
+    if not isinstance(snapshots_by_source, dict):
+        return None
+    restamped: dict[str, dict[str, dict[str, Any]]] = {}
+    for raw_source, snapshots in snapshots_by_source.items():
+        source_key = str(raw_source or "").strip().lower()
+        if not source_key or not isinstance(snapshots, dict):
+            continue
+        for raw_signal_id, snapshot in snapshots.items():
+            signal_id = str(raw_signal_id or "").strip()
+            if not signal_id or not isinstance(snapshot, dict):
+                continue
+            snapshot_copy = copy.deepcopy(snapshot)
+            payload_json = snapshot_copy.get("payload_json")
+            if not isinstance(payload_json, dict):
+                payload_json = {}
+            else:
+                payload_json = dict(payload_json)
+            payload_json["signal_emitted_at"] = emitted_at_iso
+            snapshot_copy["payload_json"] = payload_json
+            restamped.setdefault(source_key, {})[signal_id] = snapshot_copy
+    return restamped or None
+
+
 def _queue_pending_runtime_cycle(
     *,
     trader: dict[str, Any],
@@ -378,12 +406,16 @@ async def _launch_pending_runtime_cycle_if_any(trader_id: str) -> None:
     pending = _pending_runtime_cycle_specs.pop(str(trader_id or "").strip(), None)
     if not isinstance(pending, dict):
         return
+    trigger_signal_snapshots_by_source = _restamp_trigger_signal_snapshots_by_source(
+        pending.get("trigger_signal_snapshots_by_source"),
+        emitted_at_iso=utcnow().isoformat(),
+    )
     await _run_trader_once_with_timeout(
         pending["trader"],
         pending["control"],
         process_signals=bool(pending.get("process_signals")),
         trigger_signal_ids_by_source=pending.get("trigger_signal_ids_by_source"),
-        trigger_signal_snapshots_by_source=pending.get("trigger_signal_snapshots_by_source"),
+        trigger_signal_snapshots_by_source=trigger_signal_snapshots_by_source,
         timeout_seconds=float(max(1.0, safe_float(pending.get("timeout_seconds"), 1.0))),
     )
 
@@ -798,6 +830,39 @@ def _json_safe_runtime_signal_value(value: Any) -> Any:
     return value
 
 
+def _runtime_signal_trigger_snapshot(signal: Any, *, emitted_at_iso: str) -> dict[str, Any]:
+    payload_json = dict(getattr(signal, "payload_json", None) or {})
+    payload_json["signal_emitted_at"] = emitted_at_iso
+    snapshot = {
+        "id": str(getattr(signal, "id", "") or "").strip(),
+        "source": str(getattr(signal, "source", "") or "").strip(),
+        "source_item_id": str(getattr(signal, "source_item_id", "") or "").strip(),
+        "signal_type": str(getattr(signal, "signal_type", "") or "").strip(),
+        "strategy_type": str(getattr(signal, "strategy_type", "") or "").strip(),
+        "market_id": str(getattr(signal, "market_id", "") or "").strip(),
+        "market_question": str(getattr(signal, "market_question", "") or "").strip(),
+        "direction": str(getattr(signal, "direction", "") or "").strip(),
+        "entry_price": safe_float(getattr(signal, "entry_price", None), None),
+        "effective_price": safe_float(getattr(signal, "effective_price", None), None),
+        "edge_percent": safe_float(getattr(signal, "edge_percent", None), None),
+        "confidence": safe_float(getattr(signal, "confidence", None), None),
+        "liquidity": safe_float(getattr(signal, "liquidity", None), None),
+        "expires_at": getattr(signal, "expires_at", None),
+        "status": str(getattr(signal, "status", "") or "").strip().lower() or "pending",
+        "payload_json": payload_json,
+        "strategy_context_json": dict(getattr(signal, "strategy_context_json", None) or {}),
+        "quality_passed": getattr(signal, "quality_passed", None),
+        "dedupe_key": str(getattr(signal, "dedupe_key", "") or "").strip(),
+        "runtime_sequence": safe_int(getattr(signal, "runtime_sequence", None), None),
+        "required_token_ids": list(getattr(signal, "required_token_ids", None) or []),
+        "deferred_until_ws": bool(getattr(signal, "deferred_until_ws", False)),
+        "created_at": getattr(signal, "created_at", None),
+        "updated_at": getattr(signal, "updated_at", None),
+    }
+    safe_snapshot = _json_safe_runtime_signal_value(snapshot)
+    return safe_snapshot if isinstance(safe_snapshot, dict) else {}
+
+
 # Round 9-A: in-process LRU of signal_ids we've already attempted to
 # persist in *this* worker process.  The actual INSERT is
 # ``on_conflict_do_nothing``, so on the second+ sighting of a signal_id
@@ -1005,28 +1070,18 @@ _STANDARD_DEFAULT_MAX_SIGNALS_PER_CYCLE = 200
 _HIGH_FREQUENCY_MAX_SIGNALS_PER_CYCLE = 5000
 _HIGH_FREQUENCY_DEFAULT_MAX_SIGNALS_PER_CYCLE = 2000
 _HIGH_FREQUENCY_DEFAULT_SCAN_BATCH_SIZE = 1000
-_STANDARD_RUNTIME_TRIGGER_SIGNAL_LIMIT = 4
-# Crypto/high-freq trader: amortize per-cycle fixed overhead (DB session
-# checkout, orchestrator-control lookup, trader enumeration, live-context
-# build, heartbeat / cursor writes — collectively ~400-600ms) across more
-# than one signal.  At 360ms/signal p50 telemetry with a 10s cycle
-# timeout, limit=8 lands cycles at ~3-4s with >=5s budget slack for the
-# cycle-budget bail (line ~5690) to defer cleanly if a per-signal outlier
-# hits.
-#
-# Historical context: 2026-04 reduced this to 1 because a 32-signal batch
-# was blowing the queue-wake p50 to 4s.  The 2026-05 soak (post Round 1/2
-# fixes) showed the OPPOSITE problem: with limit=1 every overflow signal
-# takes a full round-trip through the lane queue (publish_signal_batch →
-# wait_for_signal_batch coalesce → _build_runtime_trigger_specs → new
-# cycle), so cycle overhead *dominates* per-signal work and the queue
-# backlog climbs 20-50s deep before a signal's turn comes up.  The
-# overflow-truncation path at line ~4510 + the cycle-budget bail at line
-# ~5690 together bound the worst-case cycle length, so raising the
-# per-cycle limit is safe even on bursts.
-_HIGH_FREQUENCY_RUNTIME_TRIGGER_SIGNAL_LIMIT = 8
-_STANDARD_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 4
-_HIGH_FREQUENCY_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 8
+_STANDARD_RUNTIME_TRIGGER_SIGNAL_LIMIT = 1
+# Runtime-trigger releases are single-signal by design. The trader is
+# serialized per trader to keep risk/order state coherent; releasing a
+# multi-signal batch into a serialized executor turns later signals into
+# queue backlog and breaches the 200 ms release-to-submit SLA. Overflow
+# is re-published after the current signal cycle with a fresh release
+# timestamp and snapshot, so market-data freshness gates still use the
+# original observed-at age while execution latency measures the moment a
+# signal is actually eligible to run.
+_HIGH_FREQUENCY_RUNTIME_TRIGGER_SIGNAL_LIMIT = 1
+_STANDARD_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 1
+_HIGH_FREQUENCY_RUNTIME_TRIGGER_SCAN_BATCH_SIZE = 1
 # Max concurrent runtime-trigger cycles per trader.  Allowing N parallel
 # cycles trades a small race window on shared trader state (open-position
 # count, occupied markets) for queue throughput.  Pre-2026-04-29 this
@@ -1578,21 +1633,37 @@ async def _build_triggered_trade_signals(
     if not ordered_ids:
         return []
 
+    snapshots = signal_snapshots_by_source or {}
+    snapshot_ids: set[str] = set()
+    for source_key in ordered_sources:
+        for raw_signal_id in signal_ids_by_source.get(source_key) or []:
+            signal_id = str(raw_signal_id or "").strip()
+            if not signal_id:
+                continue
+            snapshot = (snapshots.get(source_key) or {}).get(signal_id)
+            if snapshot is None and source_key != "__all__":
+                snapshot = (snapshots.get("__all__") or {}).get(signal_id)
+            if isinstance(snapshot, dict):
+                snapshot_ids.add(signal_id)
+    missing_snapshot_ids = [signal_id for signal_id in ordered_ids if signal_id not in snapshot_ids]
+
     try:
-        eligible_rows = await _list_unconsumed_trade_signals_authoritative(
-            session,
-            trader_id=trader_id,
-            sources=list(sources or []),
-            statuses=list(statuses or []),
-            strategy_types_by_source=dict(strategy_types_by_source or {}),
-            cursor_runtime_sequence=cursor_runtime_sequence,
-            cursor_created_at=cursor_created_at,
-            cursor_signal_id=cursor_signal_id,
-            signal_ids=ordered_ids,
-            exclude_market_ids=list(exclude_market_ids or []),
-            limit=max(len(ordered_ids), int(limit)),
-        )
-        await _release_clean_signal_read_transaction(session, eligible_rows)
+        eligible_rows = []
+        if missing_snapshot_ids:
+            eligible_rows = await _list_unconsumed_trade_signals_authoritative(
+                session,
+                trader_id=trader_id,
+                sources=list(sources or []),
+                statuses=list(statuses or []),
+                strategy_types_by_source=dict(strategy_types_by_source or {}),
+                cursor_runtime_sequence=cursor_runtime_sequence,
+                cursor_created_at=cursor_created_at,
+                cursor_signal_id=cursor_signal_id,
+                signal_ids=missing_snapshot_ids,
+                exclude_market_ids=list(exclude_market_ids or []),
+                limit=max(len(missing_snapshot_ids), int(limit)),
+            )
+            await _release_clean_signal_read_transaction(session, eligible_rows)
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
         maybe_mark_db_pressure(exc, component="trader_orchestrator_trigger_signals", ttl_seconds=60.0)
         eligible_rows = []
@@ -1602,7 +1673,6 @@ async def _build_triggered_trade_signals(
         if str(getattr(row, "id", "") or "").strip()
     }
 
-    snapshots = signal_snapshots_by_source or {}
     rows: list[Any] = []
     source_order = [source for source in sources if source in signal_ids_by_source]
     if "__all__" in signal_ids_by_source:
@@ -1843,7 +1913,8 @@ async def _write_orchestrator_snapshot_best_effort(
         _prev_state_sig is not None
         and _prev_state_sig != _orch_snapshot_state_sig(snapshot_kwargs)
     )
-    if not has_pending_writes and not state_changed:
+    completed_cycle_snapshot = snapshot_kwargs.get("last_run_at") is not None
+    if not has_pending_writes and not state_changed and not completed_cycle_snapshot:
         now_mono = time.monotonic()
         last_persisted_at = _orchestrator_snapshot_last_persist_mono.get(lane_key)
         if (
@@ -5042,30 +5113,6 @@ async def _run_trader_once_inner(
                             effective_process_signals = False
                     if effective_process_signals:
                         _trader_idle_maintenance_last_run[trader_id] = now
-                if stream_trigger_mode and prefetched_signals and len(prefetched_signals) > runtime_trigger_signal_limit:
-                    overflow_signals = prefetched_signals[runtime_trigger_signal_limit:]
-                    prefetched_signals = prefetched_signals[:runtime_trigger_signal_limit]
-                    overflow_signal_ids_by_source: dict[str, list[str]] = {}
-                    overflow_seen_ids_by_source: dict[str, set[str]] = {}
-                    for overflow_signal in overflow_signals:
-                        signal_source = normalize_source_key(getattr(overflow_signal, "source", "")) or "__all__"
-                        signal_id = str(getattr(overflow_signal, "id", "") or "").strip()
-                        if not signal_id:
-                            continue
-                        overflow_signal_ids_by_source.setdefault(signal_source, [])
-                        overflow_seen_ids_by_source.setdefault(signal_source, set())
-                        if signal_id in overflow_seen_ids_by_source[signal_source]:
-                            continue
-                        overflow_seen_ids_by_source[signal_source].add(signal_id)
-                        overflow_signal_ids_by_source[signal_source].append(signal_id)
-                    for signal_source, signal_ids in overflow_signal_ids_by_source.items():
-                        await publish_signal_batch(
-                            event_type="upsert_update",
-                            source=None if signal_source == "__all__" else signal_source,
-                            signal_ids=signal_ids,
-                            trigger="runtime_signal_overflow",
-                            reason="trader_orchestrator_trigger_batch_overflow",
-                        )
                 _accumulate("mnt_idle_path", _mnt_idle_path_started)
         open_positions = 0
         occupied_market_ids: set[str] = set()
@@ -8688,18 +8735,27 @@ async def _run_trader_once_inner(
             if stream_trigger_mode and prefetched_signals:
                 _slp_deferred_republish_started = time.monotonic()
                 deferred_signal_ids_by_source: dict[str, list[str]] = {}
+                deferred_signal_snapshots_by_source: dict[str, dict[str, dict[str, Any]]] = {}
                 deferred_seen_ids_by_source: dict[str, set[str]] = {}
+                deferred_emitted_at_iso = utcnow().isoformat()
                 for deferred_signal in prefetched_signals:
                     deferred_source = normalize_source_key(getattr(deferred_signal, "source", "")) or "__all__"
                     deferred_signal_id = str(getattr(deferred_signal, "id", "") or "").strip()
                     if not deferred_signal_id:
                         continue
                     deferred_signal_ids_by_source.setdefault(deferred_source, [])
+                    deferred_signal_snapshots_by_source.setdefault(deferred_source, {})
                     deferred_seen_ids_by_source.setdefault(deferred_source, set())
                     if deferred_signal_id in deferred_seen_ids_by_source[deferred_source]:
                         continue
                     deferred_seen_ids_by_source[deferred_source].add(deferred_signal_id)
                     deferred_signal_ids_by_source[deferred_source].append(deferred_signal_id)
+                    deferred_signal_snapshots_by_source[deferred_source][deferred_signal_id] = (
+                        _runtime_signal_trigger_snapshot(
+                            deferred_signal,
+                            emitted_at_iso=deferred_emitted_at_iso,
+                        )
+                    )
                 for deferred_source, deferred_signal_ids in deferred_signal_ids_by_source.items():
                     await publish_signal_batch(
                         event_type="upsert_update",
@@ -8707,6 +8763,8 @@ async def _run_trader_once_inner(
                         signal_ids=deferred_signal_ids,
                         trigger="runtime_signal_overflow",
                         reason="trader_orchestrator_runtime_trigger_batch_deferred",
+                        emitted_at=deferred_emitted_at_iso,
+                        signal_snapshots=deferred_signal_snapshots_by_source.get(deferred_source) or None,
                     )
                 prefetched_signals = None
                 _accumulate("slp_deferred_republish", _slp_deferred_republish_started)

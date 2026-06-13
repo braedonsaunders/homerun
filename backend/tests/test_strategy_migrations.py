@@ -98,6 +98,27 @@ def test_tail_end_carry_excluded_keyword_rejects_match():
     assert result.detail.get("keyword") == "trump"
 
 
+def test_tail_end_carry_default_exclusions_block_gap_risk_categories():
+    from services.strategies.tail_end_carry import TailEndCarryStrategy
+
+    s = TailEndCarryStrategy()
+    gate = next(g for g in s.get_pre_submit_gates() if g.name == "tail_carry_excluded_keyword")
+
+    blocked_markets = [
+        ("Exact Score: Any Other Score?", "exact score"),
+        ("united-states-vs-paraguay-exact-score-any-other-score", "exact-score"),
+        ("United States vs. Paraguay: O/U 4.5", "o/u"),
+        ("United States vs. Paraguay over/under 4.5", "over/under"),
+        ("Will the price of XRP be between $1.00 and $1.10 on June 13?", "xrp"),
+    ]
+
+    for market_question, expected_keyword in blocked_markets:
+        result = _run_sync(gate, _ctx(signal_payload={"market_question": market_question}))
+        assert result.passed is False
+        assert result.reason == "tail_carry_excluded_keyword"
+        assert result.detail.get("keyword") == expected_keyword
+
+
 def test_tail_end_carry_excluded_keyword_passes_no_match():
     from services.strategies.tail_end_carry import TailEndCarryStrategy
 

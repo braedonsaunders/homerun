@@ -87,12 +87,16 @@ class MarketDataView:
         the pruner guard.
         """
         entries: list[SnapshotEntry] = []
+        seen_paths: set[str] = set()
         for tok, tc in self._coverage.by_token.items():
             rows = self._rows_read.get(tok, 0)
             # Distribute row count across files only when a single file; for
             # multi-file tokens leave per-file rows at 0 (hash uses size+mtime).
             single = len(tc.files) == 1
             for f in tc.files:
+                if f in seen_paths:
+                    continue
+                seen_paths.add(f)
                 from pathlib import Path as _P
                 try:
                     st = _P(f).stat()

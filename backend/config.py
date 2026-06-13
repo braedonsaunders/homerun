@@ -1012,6 +1012,34 @@ async def apply_search_filters():
         object.__setattr__(settings, config_attr, resolved)
 
 
+async def _apply_parquet_root_overrides() -> None:
+    """Hydrate the parquet data-root overrides on THIS process.
+
+    The roots are operator-configured (Data Lab -> Providers -> Parquet,
+    persisted in app_settings.parquet_root_overrides), but historically only
+    the API plane hydrated them at boot — every WORKER plane (including the
+    recording sink and the jobs scanner) silently fell back to the builtin
+    <repo>/data/parquet default, so a configured data directory (e.g. the
+    D:\\homerundata move) would never take effect for the processes that
+    actually write the data. Runs in the same boot hook every plane already
+    calls (apply_runtime_settings_overrides).
+    """
+    try:
+        from models.database import AppSettings, AsyncSessionLocal
+        from services.external_data.parquet_schema import set_parquet_root_overrides
+
+        async with AsyncSessionLocal() as session:
+            row = await session.get(AppSettings, "default")
+        overrides = list(getattr(row, "parquet_root_overrides", None) or []) if row is not None else []
+        set_parquet_root_overrides(overrides)
+    except Exception as exc:  # noqa: BLE001 — never block plane boot on this
+        import logging
+
+        logging.getLogger("homerun.config").warning(
+            "parquet root override hydrate failed; using builtin default root: %s", exc
+        )
+
+
 async def apply_runtime_settings_overrides() -> None:
     """Apply DB runtime overrides with deterministic precedence.
 
@@ -1022,3 +1050,4 @@ async def apply_runtime_settings_overrides() -> None:
     """
     await apply_events_settings()
     await apply_search_filters()
+    await _apply_parquet_root_overrides()
