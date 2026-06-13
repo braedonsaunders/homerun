@@ -55,7 +55,6 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from services.external_data.parquet_schema import (
-    MANIFEST_FILENAME,
     PARTS_DIRNAME,
     bundle_path_for,
     manifest_path_for,

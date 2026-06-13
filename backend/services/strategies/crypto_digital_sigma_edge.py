@@ -604,7 +604,7 @@ class CryptoDigitalSigmaEdgeStrategy(BaseStrategy):
             f"Binary cycle resolution risk ({asset} {timeframe})",
             f"Fair value {fair:.3f} from realized sigma {sigma:.2e}/s over {span_s:.0f}s",
             f"Zero-drift GBM assumption over {seconds_left:.0f}s horizon",
-            f"DOWN-side cost inferred by complement parity" if side == "DOWN"
+            "DOWN-side cost inferred by complement parity" if side == "DOWN"
             else f"Entry at recorded best ask {cost:.3f}",
         ]
         opp.strategy_context = {
