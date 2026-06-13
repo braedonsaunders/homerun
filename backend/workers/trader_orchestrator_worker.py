@@ -1649,7 +1649,7 @@ async def _build_triggered_trade_signals(
 
     try:
         eligible_rows = []
-        if missing_snapshot_ids:
+        if ordered_ids:
             eligible_rows = await _list_unconsumed_trade_signals_authoritative(
                 session,
                 trader_id=trader_id,
@@ -1659,9 +1659,9 @@ async def _build_triggered_trade_signals(
                 cursor_runtime_sequence=cursor_runtime_sequence,
                 cursor_created_at=cursor_created_at,
                 cursor_signal_id=cursor_signal_id,
-                signal_ids=missing_snapshot_ids,
+                signal_ids=ordered_ids,
                 exclude_market_ids=list(exclude_market_ids or []),
-                limit=max(len(missing_snapshot_ids), int(limit)),
+                limit=max(len(ordered_ids), int(limit)),
             )
             await _release_clean_signal_read_transaction(session, eligible_rows)
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:

@@ -1,72 +1,134 @@
 {
-  "runId": 1780757864515,
-  "workflowRunId": 27065353658,
+  "runId": 1781367252292,
+  "workflowRunId": 27471799176,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/27065353658",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/27471799176",
   "branch": "main",
-  "headSha": "b0376ce122d3ed02c18127fac923c64c8b4df1a2",
+  "headSha": "757b956b97d012ee82ef26b0b04ee0a3785c9df8",
   "prNumber": null,
   "passes": [
     {
       "pass": 1,
       "cluster": {
-        "type": "test-failure",
+        "type": "lint",
         "files": [
-          "backend/tests/test_wallet_ws_monitor.py"
+          "backend/services/external_data/parquet_compactor.py",
+          "backend/services/strategies/crypto_digital_sigma_edge.py"
         ],
         "failures": [
           {
-            "type": "test-failure",
-            "file": "backend/tests/test_wallet_ws_monitor.py",
-            "line": null,
-            "column": null,
-            "message": "assert 100 == 101",
-            "rule": null,
-            "rawLog": "FAILED tests/test_wallet_ws_monitor.py::test_handle_block_advances_cursor_when_rpc_succeeds - assert 100 == 101",
-            "confidence": 0.7
+            "type": "lint",
+            "file": "backend/services/external_data/parquet_compactor.py",
+            "line": 58,
+            "column": 5,
+            "message": "[*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused",
+            "rule": "F401",
+            "rawLog": "F401 [*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused\n  --> services/external_data/parquet_compactor.py:58:5",
+            "confidence": 0.95
+          },
+          {
+            "type": "lint",
+            "file": "backend/services/strategies/crypto_digital_sigma_edge.py",
+            "line": 607,
+            "column": 13,
+            "message": "[*] f-string without any placeholders",
+            "rule": "F541",
+            "rawLog": "F541 [*] f-string without any placeholders\n   --> services/strategies/crypto_digital_sigma_edge.py:607:13",
+            "confidence": 0.95
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "79c772c2c3cf879931dc7fad5420b6e1e9814783",
+      "commitSha": "14211232bb68da503c30db42df9eb12cfb208e58",
       "filesChanged": [
-        "backend/tests/test_wallet_ws_monitor.py"
+        "backend/services/external_data/parquet_compactor.py",
+        "backend/services/strategies/crypto_digital_sigma_edge.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 211659
+      "durationMs": 41326
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-06-06T14:57:44.515Z",
+  "startedAt": "2026-06-13T16:14:12.292Z",
   "result": null,
   "commits": [
-    "79c772c2c3cf879931dc7fad5420b6e1e9814783"
+    "14211232bb68da503c30db42df9eb12cfb208e58"
   ],
   "latestFailures": [
     {
       "type": "test-failure",
-      "file": "backend/tests/test_wallet_ws_monitor.py",
+      "file": "backend/tests/test_intent_runtime_ws_freshness.py",
       "line": null,
       "column": null,
-      "message": "assert 100 == 101",
+      "message": "sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedTableError'>: relation \"trade_signals\" does not exist",
       "rule": null,
-      "rawLog": "FAILED tests/test_wallet_ws_monitor.py::test_handle_block_advances_cursor_when_rpc_succeeds - assert 100 == 101",
+      "rawLog": "FAILED tests/test_intent_runtime_ws_freshness.py::test_project_upserts_scopes_source_sweep_by_strategy_type - sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedTableError'>: relation \"trade_signals\" does not exist",
       "confidence": 0.7
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_signal_bus_redis_bridge.py",
+      "file": "backend/tests/test_trader_orchestrator_worker.py",
       "line": null,
       "column": null,
-      "message": "AttributeError: '_SignalDedup' object has no attribute '_ids'",
+      "message": "AssertionError: assert [] == ['trader_orch...gger_signals']",
       "rule": null,
-      "rawLog": "ERROR tests/test_signal_bus_redis_bridge.py::test_dedup_remembers_added_ids - AttributeError: '_SignalDedup' object has no attribute '_ids'",
+      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_triggered_signal_build_uses_snapshots_when_authoritative_db_is_busy - AssertionError: assert [] == ['trader_orch...gger_signals']",
       "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_orchestrator_worker.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: Expected mock to have been awaited once. Awaited 0 times.",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_worker_loop_skips_terminal_stale_watchdog_when_globally_disabled - AssertionError: Expected mock to have been awaited once. Awaited 0 times.",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_orchestrator_worker.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: assert [] == ['flush', 'reseed']",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_worker_loop_releases_session_before_hot_state_maintenance - AssertionError: assert [] == ['flush', 'reseed']",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_trader_orchestrator_worker.py",
+      "line": null,
+      "column": null,
+      "message": "assert 1 == 4",
+      "rule": null,
+      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_trader_once_live_runtime_trigger_processes_runtime_trigger_batch - assert 1 == 4",
+      "confidence": 0.7
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/external_data/parquet_compactor.py",
+      "line": 58,
+      "column": 5,
+      "message": "[*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused",
+      "rule": "F401",
+      "rawLog": "F401 [*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused\n  --> services/external_data/parquet_compactor.py:58:5",
+      "confidence": 0.95
+    },
+    {
+      "type": "lint",
+      "file": "backend/services/strategies/crypto_digital_sigma_edge.py",
+      "line": 607,
+      "column": 13,
+      "message": "[*] f-string without any placeholders",
+      "rule": "F541",
+      "rawLog": "F541 [*] f-string without any placeholders\n   --> services/strategies/crypto_digital_sigma_edge.py:607:13",
+      "confidence": 0.95
     }
   ],
-  "latestParserUsed": "pytest",
-  "latestLogPath": ".greencheck/logs/workflow-run-27065353658.log"
+  "latestParserUsed": "pytest, ruff",
+  "latestLogPath": ".greencheck/logs/workflow-run-27471799176.log"
 }
