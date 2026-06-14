@@ -282,7 +282,7 @@ async def test_triggered_signal_build_uses_snapshots_when_authoritative_db_is_bu
     rows = await trader_orchestrator_worker._build_triggered_trade_signals(
         object(),
         trader_id="trader-1",
-        signal_ids_by_source={"scanner": ["snapshot-signal-1"]},
+        signal_ids_by_source={"scanner": ["snapshot-signal-1", "missing-signal-1"]},
         signal_snapshots_by_source={
             "scanner": {
                 "snapshot-signal-1": {
@@ -486,7 +486,7 @@ async def test_submit_order_executes_without_forcing_decision_persistence():
         trader_id="trader-1",
         signal=SimpleNamespace(id="signal-1"),
         decision_id="decision-1",
-        strategy_key="tail_end_carry",
+        strategy_key="user_directional_strategy",
         strategy_version=1,
         strategy_params={},
         risk_limits={},
@@ -670,7 +670,7 @@ async def test_build_triggered_trade_signals_excludes_consumed_or_stale_ids(monk
                 "signal-1": {
                     "id": "signal-1",
                     "source": "scanner",
-                    "strategy_type": "tail_end_carry",
+                    "strategy_type": "user_directional_strategy",
                     "market_id": "market-1",
                     "direction": "buy_no",
                     "entry_price": 0.08,
@@ -913,7 +913,7 @@ def test_trigger_signal_snapshots_for_trader_filters_by_strategy_type():
         "source_configs": [
             {
                 "source_key": "scanner",
-                "strategy_key": "tail_end_carry",
+                "strategy_key": "user_directional_strategy",
                 "strategy_params": {},
             }
         ]
@@ -921,7 +921,7 @@ def test_trigger_signal_snapshots_for_trader_filters_by_strategy_type():
     trigger = {
         "source_signal_snapshots": {
             "scanner": {
-                "signal-1": {"id": "signal-1", "source": "scanner", "strategy_type": "tail_end_carry"},
+                "signal-1": {"id": "signal-1", "source": "scanner", "strategy_type": "user_directional_strategy"},
                 "signal-2": {"id": "signal-2", "source": "scanner", "strategy_type": "negrisk"},
             }
         }
@@ -931,7 +931,7 @@ def test_trigger_signal_snapshots_for_trader_filters_by_strategy_type():
 
     assert filtered == {
         "scanner": {
-            "signal-1": {"id": "signal-1", "source": "scanner", "strategy_type": "tail_end_carry"},
+            "signal-1": {"id": "signal-1", "source": "scanner", "strategy_type": "user_directional_strategy"},
         }
     }
 
@@ -941,7 +941,7 @@ def test_runtime_trigger_matches_trader_rejects_mismatched_strategy_snapshots():
         "source_configs": [
             {
                 "source_key": "scanner",
-                "strategy_key": "tail_end_carry",
+                "strategy_key": "user_directional_strategy",
                 "strategy_params": {},
             }
         ]
@@ -1036,7 +1036,7 @@ def test_normalize_source_configs_preserves_explicit_params_without_strategy_def
     assert crypto["explicit_strategy_params"] == {"max_signal_age_seconds": 7.5}
 
 
-def test_merged_strategy_params_for_traders_copy_trade_uses_copy_validator(monkeypatch):
+def test_merged_strategy_params_for_traders_source_preserves_strategy_specific_params(monkeypatch):
     monkeypatch.setattr(
         trader_orchestrator_worker,
         "_strategy_instance_for_source_config",
@@ -1046,7 +1046,7 @@ def test_merged_strategy_params_for_traders_copy_trade_uses_copy_validator(monke
     merged = trader_orchestrator_worker._merged_strategy_params_for_source_config(
         {
             "source_key": "traders",
-            "strategy_key": "traders_copy_trade",
+            "strategy_key": "user_defined_copy_logic",
             "strategy_params": {
                 "min_confidence": "0.73",
                 "copy_buys": "false",
@@ -1058,10 +1058,10 @@ def test_merged_strategy_params_for_traders_copy_trade_uses_copy_validator(monke
     )
 
     assert merged["min_confidence"] == 0.73
-    assert merged["copy_buys"] is False
-    assert merged["copy_sells"] is True
-    assert merged["max_signal_age_seconds"] == 45
-    assert "firehose_require_active_signal" not in merged
+    assert merged["copy_buys"] == "false"
+    assert merged["copy_sells"] == "true"
+    assert merged["max_signal_age_seconds"] == "45"
+    assert merged["firehose_require_active_signal"] is False
 
 
 def test_resume_policy_normalizes_to_supported_values():
@@ -1256,7 +1256,7 @@ def test_query_strategy_types_for_configs_maps_each_source():
     source_configs = {
         "scanner": {
             "source_key": "scanner",
-            "strategy_key": "tail_end_carry",
+            "strategy_key": "user_directional_strategy",
             "strategy_params": {},
         },
         "weather": {
@@ -1271,7 +1271,7 @@ def test_query_strategy_types_for_configs_maps_each_source():
         },
     }
     assert trader_orchestrator_worker._query_strategy_types_for_configs(source_configs) == {
-        "scanner": ["tail_end_carry"],
+        "scanner": ["user_directional_strategy"],
         "weather": ["weather_distribution"],
     }
 
@@ -2099,7 +2099,7 @@ async def test_run_trader_once_prefilters_mismatched_source_strategy_type(monkey
         "source_configs": [
             {
                 "source_key": "scanner",
-                "strategy_key": "tail_end_carry",
+                "strategy_key": "user_directional_strategy",
                 "strategy_params": {
                     "max_signals_per_cycle": 2,
                     "scan_batch_size": 2,
@@ -2184,7 +2184,7 @@ async def test_run_trader_once_prefilters_mismatched_source_strategy_type(monkey
     assert any(c.get("signal_id") == "signal-mismatch" and c.get("outcome") == "skipped" for c in consumptions)
     assert any("source strategy filter" in str(c.get("reason", "")) for c in consumptions)
     assert all(
-        call_kwargs.get("strategy_types_by_source") == {"scanner": ["tail_end_carry"]}
+        call_kwargs.get("strategy_types_by_source") == {"scanner": ["user_directional_strategy"]}
         for call_kwargs in list_kwargs
         if "strategy_types_by_source" in call_kwargs
     )
@@ -6764,15 +6764,17 @@ async def test_run_trader_once_live_runtime_trigger_processes_runtime_trigger_ba
         trigger_signal_snapshots_by_source={"scanner": {signal.id: {"id": signal.id} for signal in signals}},
     )
 
-    # Standard lane per-cycle signal limit is 4; with 5 signals queued,
-    # the cycle processes the first 4 and re-publishes signal-5 back to
-    # the runtime-trigger queue for the next cycle.
-    assert decisions_written == 4
+    # Runtime-trigger releases are intentionally single-signal for standard
+    # traders; overflow is re-published with a fresh release timestamp.
+    assert decisions_written == 1
     assert orders_written == 0
-    assert processed_signals == 4
-    assert len(decisions) == 4
+    assert processed_signals == 1
+    assert len(decisions) == 1
     publish_signal_batch_mock.assert_awaited_once()
     assert publish_signal_batch_mock.await_args.kwargs["signal_ids"] == [
+        "signal-2",
+        "signal-3",
+        "signal-4",
         "signal-5",
     ]
 

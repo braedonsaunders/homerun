@@ -68,7 +68,6 @@ from services.opportunity_strategy_catalog import (
 from services.strategy_versioning import normalize_strategy_version, resolve_strategy_version
 from services.strategy_sdk import StrategySDK
 from services.strategies.news_edge import validate_news_edge_config
-from services.strategies.traders_copy_trade import validate_traders_copy_trade_config
 from services.trader_orchestrator.templates import (
     DEFAULT_GLOBAL_RISK,
     TRADER_TEMPLATES,
@@ -996,6 +995,17 @@ def _extract_copy_side_from_payload(payload: Any) -> str:
     if side in {"BUY", "SELL"}:
         return side
     return ""
+
+
+def _has_copy_trade_payload(payload: Any) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    strategy_context = data.get("strategy_context")
+    strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
+    return (
+        isinstance(data.get("copy_attribution"), dict)
+        or isinstance(data.get("source_trade"), dict)
+        or isinstance(strategy_context.get("copy_event"), dict)
+    )
 
 
 async def _resolve_execution_wallet_address() -> str:
@@ -4085,14 +4095,11 @@ async def _validate_strategy_key(session: AsyncSession, strategy_key: str) -> No
         raise ValueError(f"Unknown strategy_key '{strategy_key}'. Valid strategy keys: {allowed}")
 
 
-def _normalize_strategy_params(value: Any, source_key: str, strategy_key: str = "") -> dict[str, Any]:
+def _normalize_strategy_params(value: Any, source_key: str) -> dict[str, Any]:
     params = value if isinstance(value, dict) else {}
     out = dict(params)
     normalized_source = str(source_key or "").strip().lower()
-    normalized_strategy_key = str(strategy_key or "").strip().lower()
     if normalized_source == "traders":
-        if normalized_strategy_key == "traders_copy_trade":
-            return validate_traders_copy_trade_config(out)
         return StrategySDK.validate_trader_filter_config(out)
     if normalized_source == "news":
         return validate_news_edge_config(out)
@@ -4140,7 +4147,7 @@ def _normalize_source_config(raw: Any) -> dict[str, Any]:
             accepted_list.append(requested_strategy_key)
         raw_strategy_params["accepted_signal_strategy_types"] = accepted_list
     strategy_version = normalize_strategy_version(item.get("strategy_version"))
-    strategy_params = _normalize_strategy_params(raw_strategy_params, source_key, strategy_key)
+    strategy_params = _normalize_strategy_params(raw_strategy_params, source_key)
     normalized: dict[str, Any] = {
         "source_key": source_key,
         "strategy_key": strategy_key,
@@ -4348,11 +4355,78 @@ def _serialize_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compose_orchestrator_runtime_state(control: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
+def _empty_entry_signal_eligibility() -> dict[str, Any]:
+    return {
+        "traders_total": 0,
+        "traders_enabled": 0,
+        "traders_running": 0,
+        "entry_enabled_traders": 0,
+        "blocked_running_traders": 0,
+        "paused_traders": 0,
+        "disabled_traders": 0,
+        "can_process_entry_signals": False,
+    }
+
+
+async def get_entry_signal_eligibility(session: AsyncSession) -> dict[str, Any]:
+    running_clause = and_(Trader.is_enabled.is_(True), Trader.is_paused.is_(False))
+    entry_enabled_clause = and_(running_clause, Trader.block_new_orders.is_(False))
+    blocked_running_clause = and_(running_clause, Trader.block_new_orders.is_(True))
+
+    row = (
+        await session.execute(
+            select(
+                func.count(Trader.id).label("traders_total"),
+                func.count(Trader.id).filter(Trader.is_enabled.is_(True)).label("traders_enabled"),
+                func.count(Trader.id).filter(running_clause).label("traders_running"),
+                func.count(Trader.id).filter(entry_enabled_clause).label("entry_enabled_traders"),
+                func.count(Trader.id).filter(blocked_running_clause).label("blocked_running_traders"),
+                func.count(Trader.id)
+                .filter(and_(Trader.is_enabled.is_(True), Trader.is_paused.is_(True)))
+                .label("paused_traders"),
+                func.count(Trader.id).filter(Trader.is_enabled.is_(False)).label("disabled_traders"),
+            )
+        )
+    ).one()
+
+    entry_enabled_traders = int(row.entry_enabled_traders or 0)
+    return {
+        "traders_total": int(row.traders_total or 0),
+        "traders_enabled": int(row.traders_enabled or 0),
+        "traders_running": int(row.traders_running or 0),
+        "entry_enabled_traders": entry_enabled_traders,
+        "blocked_running_traders": int(row.blocked_running_traders or 0),
+        "paused_traders": int(row.paused_traders or 0),
+        "disabled_traders": int(row.disabled_traders or 0),
+        "can_process_entry_signals": entry_enabled_traders > 0,
+    }
+
+
+def _entry_signal_block_reason(entry_signal_eligibility: dict[str, Any]) -> str:
+    running_count = int(entry_signal_eligibility.get("traders_running") or 0)
+    blocked_running_count = int(entry_signal_eligibility.get("blocked_running_traders") or 0)
+    paused_count = int(entry_signal_eligibility.get("paused_traders") or 0)
+    disabled_count = int(entry_signal_eligibility.get("disabled_traders") or 0)
+
+    if running_count > 0 and blocked_running_count == running_count:
+        return "All running traders have per-bot block_new_orders enabled."
+    if running_count <= 0 and paused_count > 0:
+        return "No trader is running; enabled traders are paused."
+    if running_count <= 0 and disabled_count > 0:
+        return "No enabled unpaused trader can process entry signals."
+    return "No running trader can process entry signals."
+
+
+def compose_orchestrator_runtime_state(
+    control: dict[str, Any],
+    worker: dict[str, Any],
+    entry_signal_eligibility: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     desired_enabled = bool(control.get("is_enabled"))
     desired_paused = bool(control.get("is_paused"))
     desired_active = desired_enabled and not desired_paused
     kill_switch = bool(control.get("kill_switch"))
+    entry_signal_eligibility = dict(entry_signal_eligibility or _empty_entry_signal_eligibility())
     worker_running = bool(worker.get("running"))
     worker_stale = bool(worker.get("is_stale"))
     worker_activity = str(worker.get("current_activity") or "").strip()
@@ -4364,6 +4438,8 @@ def compose_orchestrator_runtime_state(control: dict[str, Any], worker: dict[str
     label = "STOPPED"
     reason = "Control is disabled."
     can_place_orders = False
+    global_order_entry_open = False
+    entry_signal_processing_enabled = False
 
     if desired_active and kill_switch:
         state = "blocked"
@@ -4381,7 +4457,12 @@ def compose_orchestrator_runtime_state(control: dict[str, Any], worker: dict[str
         state = "running"
         label = "RUNNING"
         reason = worker_activity or "Worker heartbeat is fresh."
-        can_place_orders = not kill_switch
+        global_order_entry_open = not kill_switch
+        entry_signal_processing_enabled = bool(entry_signal_eligibility.get("can_process_entry_signals"))
+        can_place_orders = global_order_entry_open and entry_signal_processing_enabled
+        if global_order_entry_open and not entry_signal_processing_enabled:
+            label = "MANAGE-ONLY"
+            reason = _entry_signal_block_reason(entry_signal_eligibility)
     elif desired_active and "start command queued" in worker_activity_key:
         state = "starting"
         label = "STARTING"
@@ -4410,6 +4491,9 @@ def compose_orchestrator_runtime_state(control: dict[str, Any], worker: dict[str
         "worker_stale": worker_stale,
         "kill_switch": kill_switch,
         "can_place_orders": can_place_orders,
+        "global_order_entry_open": global_order_entry_open,
+        "entry_signal_processing_enabled": entry_signal_processing_enabled,
+        "entry_signal_eligibility": entry_signal_eligibility,
         "heartbeat_at": worker.get("heartbeat_at") or worker.get("updated_at"),
         "heartbeat_lag_seconds": heartbeat_lag_seconds,
         "stale_after_seconds": stale_after_seconds,
@@ -6278,9 +6362,8 @@ def build_trader_order_row(
         order_payload["strategy_context"] = strategy_context_order_payload
 
     signal_source_key = str(getattr(signal, "source", "") or "").strip().lower()
-    strategy_key_normalized = str(strategy_key or "").strip().lower()
     has_copy_payload = bool(source_trade_payload) or bool(copy_event_payload)
-    if signal_source_key == "traders" and (strategy_key_normalized == "traders_copy_trade" or has_copy_payload):
+    if signal_source_key == "traders" and has_copy_payload:
         copy_attribution = dict(order_payload.get("copy_attribution") or {})
         source_wallet = _extract_copy_source_wallet_from_payload(order_payload)
         if source_wallet and not str(copy_attribution.get("source_wallet") or "").strip():
@@ -9765,8 +9848,7 @@ async def get_trader_copy_analytics(
             continue
         row_payload = dict(row.payload_json or {})
         source_wallet = _extract_copy_source_wallet_from_payload(row_payload)
-        strategy_key = str(row.strategy_key or "").strip().lower()
-        if not source_wallet and strategy_key != "traders_copy_trade":
+        if not source_wallet and not _has_copy_trade_payload(row_payload):
             continue
         filtered_rows.append((row, row_payload, source_wallet or "unknown"))
 
@@ -10574,6 +10656,12 @@ async def get_orchestrator_overview(session: AsyncSession) -> dict[str, Any]:
         worker = dict(worker)
         worker["stats"] = summarize_worker_stats(worker.get("stats"))
     metrics = dict(worker.get("stats") or {}) if isinstance(worker, dict) else {}
+    entry_signal_eligibility = await get_entry_signal_eligibility(session)
+    metrics.update(entry_signal_eligibility)
+    if isinstance(worker, dict):
+        worker_stats = dict(worker.get("stats") or {})
+        worker_stats.update(entry_signal_eligibility)
+        worker["stats"] = worker_stats
     if isinstance(worker, dict):
         metrics.setdefault("traders_total", int(worker.get("traders_total", 0) or 0))
         metrics.setdefault("traders_running", int(worker.get("traders_running", 0) or 0))
@@ -10588,7 +10676,7 @@ async def get_orchestrator_overview(session: AsyncSession) -> dict[str, Any]:
     return {
         "control": control,
         "worker": worker,
-        "runtime_state": compose_orchestrator_runtime_state(control, worker),
+        "runtime_state": compose_orchestrator_runtime_state(control, worker, entry_signal_eligibility),
         "reconciliation_worker": await read_worker_snapshot(session, "trader_reconciliation"),
         "config": await compose_trader_orchestrator_config(session, control=control),
         "metrics": metrics,

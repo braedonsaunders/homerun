@@ -7514,8 +7514,11 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
               : 'STOPPED'
   )
   const orchestratorStatusDetail = String(orchestratorRuntimeState?.reason || worker?.current_activity || '').trim()
+  const orchestratorManageOnly = orchestratorStatusLabel === 'MANAGE-ONLY'
   const orchestratorStatusVariant: 'default' | 'secondary' | 'destructive' = orchestratorHeartbeatStale || orchestratorBlocked
     ? 'destructive'
+    : orchestratorManageOnly
+      ? 'secondary'
     : orchestratorRunning
       ? 'default'
       : 'secondary'
@@ -9495,7 +9498,19 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
     latestSelectedTraderRunTs > (latestSelectedTraderActivityTs + 1000)
   )
 
+  const entrySignalEligibility = orchestratorRuntimeState?.entry_signal_eligibility || null
   const tradersRunningDisplay = orchestratorRunning ? toNumber(metrics?.traders_running) : 0
+  const entryEnabledDisplay = orchestratorRunning
+    ? toNumber(metrics?.entry_enabled_traders ?? entrySignalEligibility?.entry_enabled_traders)
+    : 0
+  const blockedRunningDisplay = orchestratorRunning
+    ? toNumber(metrics?.blocked_running_traders ?? entrySignalEligibility?.blocked_running_traders)
+    : 0
+  const entryBotsTitle = orchestratorRuntimeState?.reason || (
+    blockedRunningDisplay > 0 && entryEnabledDisplay === 0
+      ? 'All running bots have per-bot block new orders enabled.'
+      : 'Entry-capable running bots.'
+  )
   const displayAvgEdge = normalizeEdgePercent(globalSummary.avgEdge)
   const selectedTraderStatus = resolveTraderStatusPresentation(selectedTrader, orchestratorRunning)
   const selectedTraderPendingAction = selectedTrader
@@ -10301,6 +10316,21 @@ export default function TradingPanel({ isConnected = false }: TradingPanelProps 
 
         <div className="hidden lg:flex items-center gap-3 text-[11px] font-mono text-muted-foreground">
           <span>{t('tradingPanel.hub.bots')} {tradersRunningDisplay}/{toNumber(metrics?.traders_total)}</span>
+          <span className="text-border">|</span>
+          <span
+            className={entryEnabledDisplay > 0 ? 'text-emerald-500' : orchestratorRunning ? 'text-amber-500' : undefined}
+            title={entryBotsTitle}
+          >
+            Entry {entryEnabledDisplay}/{tradersRunningDisplay}
+          </span>
+          {blockedRunningDisplay > 0 ? (
+            <>
+              <span className="text-border">|</span>
+              <span className="text-amber-500" title={entryBotsTitle}>
+                Blocked {blockedRunningDisplay}
+              </span>
+            </>
+          ) : null}
           <span className="text-border">|</span>
           <span className={toNumber(metrics?.daily_pnl) >= 0 ? 'text-emerald-500' : 'text-red-500'}>
             {formatCurrency(toNumber(metrics?.daily_pnl))}

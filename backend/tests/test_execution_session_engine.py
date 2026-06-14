@@ -297,6 +297,42 @@ def test_resolve_leg_direction_falls_back_to_bare_buy_for_non_binary_outcome():
     assert direction == "buy"
 
 
+def test_execution_profile_does_not_infer_traders_source_from_strategy_name():
+    signal = SimpleNamespace(
+        source="scanner",
+        strategy_type="traders_custom_directional",
+        payload_json={},
+    )
+
+    profile = session_engine_module._execution_profile_for_signal(
+        signal=signal,
+        strategy_key="traders_custom_directional",
+        legs_count=1,
+    )
+
+    assert profile["policy"] == "SINGLE_LEG"
+    assert profile["price_policy"] == "maker_limit"
+    assert profile["time_in_force"] == "GTC"
+
+
+def test_execution_profile_uses_traders_source_for_copy_execution_policy():
+    signal = SimpleNamespace(
+        source="traders",
+        strategy_type="user_defined_copy_logic",
+        payload_json={},
+    )
+
+    profile = session_engine_module._execution_profile_for_signal(
+        signal=signal,
+        strategy_key="user_defined_copy_logic",
+        legs_count=1,
+    )
+
+    assert profile["policy"] == "REPRICE_LOOP"
+    assert profile["price_policy"] == "taker_limit"
+    assert profile["time_in_force"] == "IOC"
+
+
 @pytest.mark.asyncio
 async def test_execute_signal_rejects_self_crossing_same_token_plan(monkeypatch):
     db = _FailureProjectionDb()
@@ -434,7 +470,7 @@ async def test_execute_signal_flushes_new_trader_orders_before_execution_orders(
         id="signal-strict-flush-order",
         source="scanner",
         trace_id="trace-strict-flush-order",
-        strategy_type="tail_end_carry",
+        strategy_type="user_directional_strategy",
         strategy_context_json={},
         payload_json={},
         market_id="market-strict-flush-order-1",
@@ -448,7 +484,7 @@ async def test_execute_signal_flushes_new_trader_orders_before_execution_orders(
         trader_id="trader-strict-flush-order",
         signal=signal,
         decision_id="decision-strict-flush-order",
-        strategy_key="tail_end_carry",
+        strategy_key="user_directional_strategy",
         strategy_version=None,
         strategy_params={},
         risk_limits={},
@@ -522,7 +558,7 @@ async def test_execute_signal_aborts_before_order_writes_on_pair_lock_violation(
         id="signal-1",
         source="scanner",
         trace_id="trace-1",
-        strategy_type="tail_end_carry",
+        strategy_type="user_directional_strategy",
         strategy_context_json={},
         payload_json={},
         market_id="market-1",
@@ -536,7 +572,7 @@ async def test_execute_signal_aborts_before_order_writes_on_pair_lock_violation(
         trader_id="trader-1",
         signal=signal,
         decision_id="decision-1",
-        strategy_key="tail_end_carry",
+        strategy_key="user_directional_strategy",
         strategy_version=None,
         strategy_params={},
         risk_limits={},
@@ -614,7 +650,7 @@ async def test_execute_signal_sets_hedging_timeout_payload(monkeypatch):
         id="signal-2",
         source="scanner",
         trace_id="trace-2",
-        strategy_type="tail_end_carry",
+        strategy_type="user_directional_strategy",
         strategy_context_json={},
         payload_json={},
         market_id="market-2",
@@ -628,7 +664,7 @@ async def test_execute_signal_sets_hedging_timeout_payload(monkeypatch):
         trader_id="trader-2",
         signal=signal,
         decision_id="decision-2",
-        strategy_key="tail_end_carry",
+        strategy_key="user_directional_strategy",
         strategy_version=None,
         strategy_params=strategy_params,
         explicit_strategy_params={"max_market_data_age_ms": 250},
@@ -726,7 +762,7 @@ async def test_execute_signal_persists_live_submit_placeholder_before_provider_c
         id="signal-live-placeholder",
         source="scanner",
         trace_id="trace-live-placeholder",
-        strategy_type="tail_end_carry",
+        strategy_type="user_directional_strategy",
         strategy_context_json={},
         payload_json={},
         market_id="market-live-1",
@@ -740,7 +776,7 @@ async def test_execute_signal_persists_live_submit_placeholder_before_provider_c
         trader_id="trader-live-placeholder",
         signal=signal,
         decision_id="decision-live-placeholder",
-        strategy_key="tail_end_carry",
+        strategy_key="user_directional_strategy",
         strategy_version=None,
         strategy_params={},
         risk_limits={},
@@ -915,7 +951,7 @@ async def test_execute_signal_finalizes_pre_submit_placeholder_when_live_submit_
         id="signal-live-cancel",
         source="scanner",
         trace_id="trace-live-cancel",
-        strategy_type="tail_end_carry",
+        strategy_type="user_directional_strategy",
         strategy_context_json={},
         payload_json={},
         market_id="market-live-cancel-1",
@@ -930,7 +966,7 @@ async def test_execute_signal_finalizes_pre_submit_placeholder_when_live_submit_
             trader_id="trader-live-cancel",
             signal=signal,
             decision_id="decision-live-cancel",
-            strategy_key="tail_end_carry",
+            strategy_key="user_directional_strategy",
             strategy_version=None,
             strategy_params={},
             risk_limits={},
@@ -1332,7 +1368,7 @@ async def test_execute_signal_failed_projection_flushes_parents_before_signal_st
         id="signal-failed-projection",
         source="scanner",
         trace_id="trace-failed-projection",
-        strategy_type="tail_end_carry",
+        strategy_type="user_directional_strategy",
         strategy_context_json={},
         payload_json={},
         market_id="market-failed-projection",
@@ -1346,7 +1382,7 @@ async def test_execute_signal_failed_projection_flushes_parents_before_signal_st
         trader_id="trader-failed-projection",
         signal=signal,
         decision_id="decision-failed-projection",
-        strategy_key="tail_end_carry",
+        strategy_key="user_directional_strategy",
         strategy_version=None,
         strategy_params={},
         risk_limits={},

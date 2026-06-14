@@ -451,26 +451,6 @@ def _runtime_signal_execution_plan(runtime_signal: Any) -> tuple[dict[str, Any],
     return {}, payload
 
 
-def _runtime_signal_strategy_key(runtime_signal: Any) -> str:
-    payload = getattr(runtime_signal, "payload_json", None)
-    payload = payload if isinstance(payload, dict) else {}
-    strategy_context = payload.get("strategy_context")
-    strategy_context = strategy_context if isinstance(strategy_context, dict) else {}
-    for candidate in (
-        getattr(runtime_signal, "strategy_type", None),
-        getattr(runtime_signal, "strategy_key", None),
-        payload.get("strategy_type"),
-        payload.get("strategy_key"),
-        payload.get("strategy"),
-        strategy_context.get("strategy_type"),
-        strategy_context.get("strategy_key"),
-    ):
-        value = str(candidate or "").strip().lower()
-        if value:
-            return value
-    return ""
-
-
 def _execution_plan_leg_side(leg: dict[str, Any], payload: dict[str, Any], index: int) -> str:
     metadata = leg.get("metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
@@ -838,82 +818,6 @@ def apply_platform_decision_gates(
                 "gate": GATE_NAME_TRADING_SCHEDULE,
                 "status": "skipped",
                 "detail": f"Skipped because strategy decision is '{final_decision}'",
-            }
-        )
-
-    if final_decision == "selected":
-        runtime_payload = getattr(runtime_signal, "payload_json", None)
-        runtime_payload = runtime_payload if isinstance(runtime_payload, dict) else {}
-        strategy_key = _runtime_signal_strategy_key(runtime_signal)
-        is_guaranteed = _coerce_bool(runtime_payload.get("is_guaranteed"), False)
-        live_tail_directional_guard_applies = (
-            live_execution_gates_enabled
-            and execution_mode == "live"
-            and strategy_key == "tail_end_carry"
-            and not is_guaranteed
-        )
-        checks_payload.append(
-            {
-                "check_key": "live_tail_end_carry_directional_guard",
-                "check_label": "Live tail-end carry directional guard",
-                "passed": not live_tail_directional_guard_applies,
-                "score": None,
-                "detail": (
-                    "Non-guaranteed tail_end_carry signals are blocked from live execution"
-                    if live_tail_directional_guard_applies
-                    else "Gate not applicable for this signal"
-                ),
-                "payload": {
-                    "strategy_key": strategy_key or None,
-                    "is_guaranteed": is_guaranteed,
-                    "execution_mode": execution_mode,
-                },
-            }
-        )
-        if live_tail_directional_guard_applies:
-            final_decision = "blocked"
-            final_reason = "Live tail_end_carry is directional and can lose full notional; blocked from live entries"
-            platform_gates.append(
-                {
-                    "gate": "live_tail_end_carry_directional_guard",
-                    "status": "blocked",
-                    "detail": final_reason,
-                    "payload": {
-                        "strategy_key": strategy_key,
-                        "is_guaranteed": is_guaranteed,
-                        "execution_mode": execution_mode,
-                    },
-                }
-            )
-            if invoke_hooks and strategy is not None and hasattr(strategy, "on_blocked"):
-                strategy.on_blocked(
-                    runtime_signal,
-                    BlockReason.RISK_TRADE_NOTIONAL,
-                    {
-                        "strategy_key": strategy_key,
-                        "is_guaranteed": is_guaranteed,
-                        "execution_mode": execution_mode,
-                    },
-                )
-        else:
-            platform_gates.append(
-                {
-                    "gate": "live_tail_end_carry_directional_guard",
-                    "status": "skipped",
-                    "detail": "Gate not applicable for this signal",
-                    "payload": {
-                        "strategy_key": strategy_key or None,
-                        "is_guaranteed": is_guaranteed,
-                        "execution_mode": execution_mode,
-                    },
-                }
-            )
-    else:
-        platform_gates.append(
-            {
-                "gate": "live_tail_end_carry_directional_guard",
-                "status": "skipped",
-                "detail": f"Skipped because decision is '{final_decision}'",
             }
         )
 

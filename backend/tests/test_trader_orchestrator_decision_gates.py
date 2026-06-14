@@ -342,81 +342,14 @@ def test_stop_loss_settlement_upside_guard_blocks_bad_live_risk_reward(monkeypat
     assert round(stop_loss_check["payload"]["settlement_upside"], 2) == 0.10
 
 
-def test_live_tail_end_carry_directional_guard_blocks_non_guaranteed_live_signal(monkeypatch):
+def test_live_directional_signal_uses_normal_risk_gates(monkeypatch):
     monkeypatch.setattr(settings, "MIN_ORDER_SIZE_USD", 1.0)
     result = apply_platform_decision_gates(
         decision_obj=_decision(10.0),
         runtime_signal=_runtime_signal(
             entry_price=0.93,
             direction="buy_no",
-            payload_json={"strategy_type": "tail_end_carry", "is_guaranteed": False},
-        ),
-        strategy=None,
-        checks_payload=[],
-        trading_schedule_ok=True,
-        trading_schedule_config={},
-        global_limits={"max_gross_exposure_usd": 5000.0},
-        effective_risk_limits={"max_trade_notional_usd": 1000.0},
-        allow_averaging=True,
-        occupied_market_ids=set(),
-        portfolio_allocator=None,
-        risk_evaluator=_risk_evaluator,
-        invoke_hooks=False,
-        strategy_params={"enforce_min_exit_notional": False},
-        execution_mode="live",
-    )
-
-    assert result["final_decision"] == "blocked"
-    assert "tail_end_carry is directional" in result["final_reason"]
-    guard_check = next(
-        check for check in result["checks_payload"] if check["check_key"] == "live_tail_end_carry_directional_guard"
-    )
-    assert guard_check["passed"] is False
-    guard_gate = next(
-        gate for gate in result["platform_gates"] if gate["gate"] == "live_tail_end_carry_directional_guard"
-    )
-    assert guard_gate["status"] == "blocked"
-
-
-def test_live_tail_end_carry_directional_guard_skips_backtest_signal(monkeypatch):
-    monkeypatch.setattr(settings, "MIN_ORDER_SIZE_USD", 1.0)
-    result = apply_platform_decision_gates(
-        decision_obj=_decision(10.0),
-        runtime_signal=_runtime_signal(
-            entry_price=0.93,
-            direction="buy_no",
-            payload_json={"strategy_type": "tail_end_carry", "is_guaranteed": False},
-        ),
-        strategy=None,
-        checks_payload=[],
-        trading_schedule_ok=True,
-        trading_schedule_config={},
-        global_limits={"max_gross_exposure_usd": 5000.0},
-        effective_risk_limits={"max_trade_notional_usd": 1000.0},
-        allow_averaging=True,
-        occupied_market_ids=set(),
-        portfolio_allocator=None,
-        risk_evaluator=_risk_evaluator,
-        invoke_hooks=False,
-        strategy_params={"enforce_min_exit_notional": False},
-        execution_mode="backtest",
-    )
-
-    assert result["final_decision"] == "selected"
-    guard_gate = next(
-        gate for gate in result["platform_gates"] if gate["gate"] == "live_tail_end_carry_directional_guard"
-    )
-    assert guard_gate["status"] == "skipped"
-
-
-def test_live_tail_end_carry_directional_guard_allows_guaranteed_signal(monkeypatch):
-    monkeypatch.setattr(settings, "MIN_ORDER_SIZE_USD", 1.0)
-    result = apply_platform_decision_gates(
-        decision_obj=_decision(10.0),
-        runtime_signal=_runtime_signal(
-            entry_price=0.93,
-            direction="buy_no",
-            payload_json={"strategy_type": "tail_end_carry", "is_guaranteed": True},
+            payload_json={"strategy_type": "user_directional_strategy", "is_guaranteed": False},
         ),
         strategy=None,
         checks_payload=[],
@@ -434,10 +367,7 @@ def test_live_tail_end_carry_directional_guard_allows_guaranteed_signal(monkeypa
     )
 
     assert result["final_decision"] == "selected"
-    guard_check = next(
-        check for check in result["checks_payload"] if check["check_key"] == "live_tail_end_carry_directional_guard"
-    )
-    assert guard_check["passed"] is True
+    assert "directional" not in result["final_reason"].lower()
 
 
 def test_stop_loss_settlement_upside_guard_allows_tight_live_stop(monkeypatch):

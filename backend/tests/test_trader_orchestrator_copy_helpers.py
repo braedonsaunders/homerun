@@ -23,7 +23,7 @@ def _build_order(payload: dict) -> SimpleNamespace:
         signal_id="signal-1",
         decision_id="decision-1",
         source="traders",
-        strategy_key="traders_copy_trade",
+        strategy_key="user_defined_copy_logic",
         strategy_version=1,
         market_id="0x" + "1" * 64,
         market_question="Will this resolve?",

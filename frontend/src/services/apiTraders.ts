@@ -713,6 +713,12 @@ export interface TraderOrchestratorOverview {
   metrics: {
     traders_total: number
     traders_running: number
+    traders_enabled?: number
+    entry_enabled_traders?: number
+    blocked_running_traders?: number
+    paused_traders?: number
+    disabled_traders?: number
+    can_process_entry_signals?: boolean
     decisions_count: number
     orders_count: number
     open_orders: number
@@ -734,6 +740,18 @@ export interface TraderOrchestratorRuntimeState {
   worker_stale: boolean
   kill_switch: boolean
   can_place_orders: boolean
+  global_order_entry_open?: boolean
+  entry_signal_processing_enabled?: boolean
+  entry_signal_eligibility?: {
+    traders_total: number
+    traders_enabled: number
+    traders_running: number
+    entry_enabled_traders: number
+    blocked_running_traders: number
+    paused_traders: number
+    disabled_traders: number
+    can_process_entry_signals: boolean
+  }
   heartbeat_at: string | null
   heartbeat_lag_seconds: number | null
   stale_after_seconds: number | null

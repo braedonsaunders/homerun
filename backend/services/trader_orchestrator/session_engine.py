@@ -192,9 +192,6 @@ def _execution_profile_for_signal(
     legs_count: int,
 ) -> dict[str, Any]:
     source_key = str(getattr(signal, "source", "") or "").strip().lower()
-    signal_strategy_type = str(getattr(signal, "strategy_type", "") or "").strip().lower()
-    strategy_slug = str(strategy_key or "").strip().lower()
-
     payload = getattr(signal, "payload_json", None)
     payload = payload if isinstance(payload, dict) else {}
     strategy_context = payload.get("strategy_context")
@@ -214,8 +211,6 @@ def _execution_profile_for_signal(
     is_traders = (
         source_key == "traders"
         or context_source == "traders"
-        or signal_strategy_type.startswith("traders")
-        or strategy_slug.startswith("traders")
     )
     if is_traders:
         return {

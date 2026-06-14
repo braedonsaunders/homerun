@@ -75,7 +75,6 @@ from services.execution_latency_metrics import execution_latency_metrics
 from services.strategy_runtime import refresh_strategy_runtime_if_needed
 from services.strategy_sdk import StrategySDK
 from services.strategies.news_edge import validate_news_edge_config
-from services.strategies.traders_copy_trade import validate_traders_copy_trade_config
 from services.strategy_versioning import normalize_strategy_version, resolve_strategy_version
 from services.runtime_signal_queue import get_queue_depth, publish_signal_batch, wait_for_signal_batch
 from services.runtime_status import runtime_status
@@ -2258,7 +2257,6 @@ def _merged_strategy_params_for_source_config(
     include_strategy_defaults: bool = True,
 ) -> dict[str, Any]:
     source_key = normalize_source_key(source_config.get("source_key"))
-    strategy_key = str(source_config.get("strategy_key") or "").strip().lower()
     explicit_params = dict(source_config.get("strategy_params") or {})
     strategy_defaults: dict[str, Any] = {}
     strategy_version = normalize_strategy_version(source_config.get("strategy_version"))
@@ -2277,10 +2275,7 @@ def _merged_strategy_params_for_source_config(
     merged = {**strategy_defaults, **explicit_params}
 
     if source_key == "traders":
-        if strategy_key == "traders_copy_trade":
-            merged = validate_traders_copy_trade_config(merged)
-        else:
-            merged = StrategySDK.validate_trader_filter_config(merged)
+        merged = StrategySDK.validate_trader_filter_config(merged)
     elif source_key == "news":
         merged = validate_news_edge_config(merged)
 
@@ -7071,7 +7066,7 @@ async def _run_trader_once_inner(
                     copy_risk_context: dict[str, Any] = {}
                     copy_allocation_context: dict[str, Any] = {}
                     copy_inventory_context_for_signal: dict[str, Any] = {}
-                    if signal_source == "traders" and resolved_strategy_key == "traders_copy_trade":
+                    if signal_source == "traders":
                         source_wallet = StrategySDK.extract_primary_trader_signal_wallet(runtime_signal)
                         trader_total_daily_pnl = float(trader_daily_pnl + trader_unrealized_pnl)
                         configured_daily_loss_cap_usd = abs(

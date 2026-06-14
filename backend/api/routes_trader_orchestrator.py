@@ -20,6 +20,7 @@ from services.trader_orchestrator_state import (
     create_live_preflight,
     create_trader_event,
     get_orchestrator_overview,
+    get_entry_signal_eligibility,
     read_orchestrator_control,
     read_orchestrator_snapshot,
     write_orchestrator_snapshot,
@@ -224,13 +225,18 @@ async def get_status(session: AsyncSession = Depends(get_db_session)):
     if isinstance(snapshot, dict):
         snapshot = dict(snapshot)
         snapshot["stats"] = summarize_worker_stats(snapshot.get("stats"))
+    entry_signal_eligibility = await get_entry_signal_eligibility(session)
+    if isinstance(snapshot, dict):
+        stats = dict(snapshot.get("stats") or {})
+        stats.update(entry_signal_eligibility)
+        snapshot["stats"] = stats
     config = await compose_trader_orchestrator_config(session, control=control)
     if session.in_transaction():
         await session.rollback()
     payload = {
         "control": control,
         "snapshot": snapshot,
-        "runtime_state": compose_orchestrator_runtime_state(control, snapshot),
+        "runtime_state": compose_orchestrator_runtime_state(control, snapshot, entry_signal_eligibility),
         "config": config,
     }
     return payload
