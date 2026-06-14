@@ -1,11 +1,11 @@
 {
-  "runId": 1781367252292,
-  "workflowRunId": 27471799176,
+  "runId": 1781480353805,
+  "workflowRunId": 27515514252,
   "workflowId": 230872278,
   "workflowName": "CI",
-  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/27471799176",
+  "workflowUrl": "https://github.com/braedonsaunders/homerun/actions/runs/27515514252",
   "branch": "main",
-  "headSha": "757b956b97d012ee82ef26b0b04ee0a3785c9df8",
+  "headSha": "b77ce68c85e2ae0ec77305413b04e4a214816cdc",
   "prNumber": null,
   "passes": [
     {
@@ -13,51 +13,49 @@
       "cluster": {
         "type": "lint",
         "files": [
-          "backend/services/external_data/parquet_compactor.py",
-          "backend/services/strategies/crypto_digital_sigma_edge.py"
+          "backend/workers/trader_orchestrator_worker.py"
         ],
         "failures": [
           {
             "type": "lint",
-            "file": "backend/services/external_data/parquet_compactor.py",
-            "line": 58,
+            "file": "backend/workers/trader_orchestrator_worker.py",
+            "line": 1647,
             "column": 5,
-            "message": "[*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused",
-            "rule": "F401",
-            "rawLog": "F401 [*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused\n  --> services/external_data/parquet_compactor.py:58:5",
-            "confidence": 0.95
-          },
-          {
-            "type": "lint",
-            "file": "backend/services/strategies/crypto_digital_sigma_edge.py",
-            "line": 607,
-            "column": 13,
-            "message": "[*] f-string without any placeholders",
-            "rule": "F541",
-            "rawLog": "F541 [*] f-string without any placeholders\n   --> services/strategies/crypto_digital_sigma_edge.py:607:13",
+            "message": "Local variable `missing_snapshot_ids` is assigned to but never used",
+            "rule": "F841",
+            "rawLog": "F841 Local variable `missing_snapshot_ids` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:1647:5",
             "confidence": 0.95
           }
         ],
         "strategy": "llm"
       },
-      "commitSha": "14211232bb68da503c30db42df9eb12cfb208e58",
+      "commitSha": "5581f9f36db1cf996e0dd5547cae7b03ca8473be",
       "filesChanged": [
-        "backend/services/external_data/parquet_compactor.py",
-        "backend/services/strategies/crypto_digital_sigma_edge.py"
+        "backend/workers/trader_orchestrator_worker.py"
       ],
       "result": "fixed",
       "newFailures": [],
       "costCents": 1,
-      "durationMs": 41326
+      "durationMs": 47014
     }
   ],
   "totalCostCents": 1,
-  "startedAt": "2026-06-13T16:14:12.292Z",
+  "startedAt": "2026-06-14T23:39:13.805Z",
   "result": null,
   "commits": [
-    "14211232bb68da503c30db42df9eb12cfb208e58"
+    "5581f9f36db1cf996e0dd5547cae7b03ca8473be"
   ],
   "latestFailures": [
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_in_process_runtime_delivery.py",
+      "line": null,
+      "column": null,
+      "message": "AssertionError: snapshot-backed runtime trigger must not query trade_signals",
+      "rule": null,
+      "rawLog": "FAILED tests/test_in_process_runtime_delivery.py::test_triggered_orchestrator_cycle_uses_batch_snapshots_without_db - AssertionError: snapshot-backed runtime trigger must not query trade_signals",
+      "confidence": 0.7
+    },
     {
       "type": "test-failure",
       "file": "backend/tests/test_intent_runtime_ws_freshness.py",
@@ -70,12 +68,22 @@
     },
     {
       "type": "test-failure",
-      "file": "backend/tests/test_trader_orchestrator_worker.py",
+      "file": "backend/tests/test_main_lifespan_smoke.py",
       "line": null,
       "column": null,
-      "message": "AssertionError: assert [] == ['trader_orch...gger_signals']",
+      "message": "AssertionError: FastAPI app has only 50 routes — likely a router include block raised during import and was swallowed",
       "rule": null,
-      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_triggered_signal_build_uses_snapshots_when_authoritative_db_is_busy - AssertionError: assert [] == ['trader_orch...gger_signals']",
+      "rawLog": "FAILED tests/test_main_lifespan_smoke.py::test_app_is_fastapi_with_routes - AssertionError: FastAPI app has only 50 routes — likely a router include block raised during import and was swallowed",
+      "confidence": 0.7
+    },
+    {
+      "type": "test-failure",
+      "file": "backend/tests/test_routes_no_legacy_autotrader.py",
+      "line": null,
+      "column": null,
+      "message": "AttributeError: '_IncludedRouter' object has no attribute 'path'",
+      "rule": null,
+      "rawLog": "FAILED tests/test_routes_no_legacy_autotrader.py::test_legacy_auto_trader_routes_removed - AttributeError: '_IncludedRouter' object has no attribute 'path'",
       "confidence": 0.7
     },
     {
@@ -99,36 +107,16 @@
       "confidence": 0.7
     },
     {
-      "type": "test-failure",
-      "file": "backend/tests/test_trader_orchestrator_worker.py",
-      "line": null,
-      "column": null,
-      "message": "assert 1 == 4",
-      "rule": null,
-      "rawLog": "FAILED tests/test_trader_orchestrator_worker.py::test_run_trader_once_live_runtime_trigger_processes_runtime_trigger_batch - assert 1 == 4",
-      "confidence": 0.7
-    },
-    {
       "type": "lint",
-      "file": "backend/services/external_data/parquet_compactor.py",
-      "line": 58,
+      "file": "backend/workers/trader_orchestrator_worker.py",
+      "line": 1647,
       "column": 5,
-      "message": "[*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused",
-      "rule": "F401",
-      "rawLog": "F401 [*] `services.external_data.parquet_schema.MANIFEST_FILENAME` imported but unused\n  --> services/external_data/parquet_compactor.py:58:5",
-      "confidence": 0.95
-    },
-    {
-      "type": "lint",
-      "file": "backend/services/strategies/crypto_digital_sigma_edge.py",
-      "line": 607,
-      "column": 13,
-      "message": "[*] f-string without any placeholders",
-      "rule": "F541",
-      "rawLog": "F541 [*] f-string without any placeholders\n   --> services/strategies/crypto_digital_sigma_edge.py:607:13",
+      "message": "Local variable `missing_snapshot_ids` is assigned to but never used",
+      "rule": "F841",
+      "rawLog": "F841 Local variable `missing_snapshot_ids` is assigned to but never used\n    --> workers/trader_orchestrator_worker.py:1647:5",
       "confidence": 0.95
     }
   ],
   "latestParserUsed": "pytest, ruff",
-  "latestLogPath": ".greencheck/logs/workflow-run-27471799176.log"
+  "latestLogPath": ".greencheck/logs/workflow-run-27515514252.log"
 }
