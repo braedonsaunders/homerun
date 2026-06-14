@@ -1644,8 +1644,6 @@ async def _build_triggered_trade_signals(
                 snapshot = (snapshots.get("__all__") or {}).get(signal_id)
             if isinstance(snapshot, dict):
                 snapshot_ids.add(signal_id)
-    missing_snapshot_ids = [signal_id for signal_id in ordered_ids if signal_id not in snapshot_ids]
-
     try:
         eligible_rows = []
         if ordered_ids:
