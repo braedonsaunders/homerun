@@ -1644,9 +1644,18 @@ async def _build_triggered_trade_signals(
                 snapshot = (snapshots.get("__all__") or {}).get(signal_id)
             if isinstance(snapshot, dict):
                 snapshot_ids.add(signal_id)
+    # Snapshot fast-path: a snapshot-backed runtime trigger already carries the
+    # authoritative TradeSignal data in its payload, so only the ids WITHOUT an
+    # in-payload snapshot need an authoritative DB read.  When every triggered
+    # id has a snapshot this skips the trade_signals query entirely -- the redundant
+    # authoritative read per triggered cycle was a measurable contributor to the
+    # trader-cycle slowness / mnt_prefetch_signals cost in the 20h soak.  When some
+    # ids lack a snapshot the read still runs (and still drives db-pressure detection)
+    # for exactly those ids.
+    missing_snapshot_ids = [signal_id for signal_id in ordered_ids if signal_id not in snapshot_ids]
     try:
         eligible_rows = []
-        if ordered_ids:
+        if missing_snapshot_ids:
             eligible_rows = await _list_unconsumed_trade_signals_authoritative(
                 session,
                 trader_id=trader_id,
@@ -1656,9 +1665,9 @@ async def _build_triggered_trade_signals(
                 cursor_runtime_sequence=cursor_runtime_sequence,
                 cursor_created_at=cursor_created_at,
                 cursor_signal_id=cursor_signal_id,
-                signal_ids=ordered_ids,
+                signal_ids=missing_snapshot_ids,
                 exclude_market_ids=list(exclude_market_ids or []),
-                limit=max(len(ordered_ids), int(limit)),
+                limit=max(len(missing_snapshot_ids), int(limit)),
             )
             await _release_clean_signal_read_transaction(session, eligible_rows)
     except (OperationalError, DBAPIError, asyncpg.PostgresError, asyncio.TimeoutError, TimeoutError) as exc:
