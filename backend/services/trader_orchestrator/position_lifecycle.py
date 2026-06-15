@@ -1900,6 +1900,53 @@ def _market_has_terminal_resolution_signal(market_info: Optional[dict[str, Any]]
     return False
 
 
+def _market_accepts_live_exit_orders(
+    market_info: Any,
+    *,
+    base_market_tradable: bool,
+    has_live_exit_mark: bool,
+) -> bool:
+    if base_market_tradable:
+        return True
+    if not isinstance(market_info, dict) or not market_info:
+        return bool(base_market_tradable)
+    if _market_has_terminal_resolution_signal(market_info):
+        return False
+
+    closed = _safe_bool(market_info.get("closed"), False)
+    archived = _safe_bool(market_info.get("archived"), False)
+    active = _safe_bool(market_info.get("active"), True)
+    resolved = _safe_bool(
+        market_info.get("resolved")
+        if market_info.get("resolved") is not None
+        else (
+            market_info.get("isResolved")
+            if market_info.get("isResolved") is not None
+            else market_info.get("is_resolved")
+        ),
+        False,
+    )
+    if closed or archived or resolved or not active:
+        return False
+
+    accepting_orders_value = (
+        market_info.get("accepting_orders")
+        if market_info.get("accepting_orders") is not None
+        else market_info.get("acceptingOrders")
+    )
+    enable_order_book_value = (
+        market_info.get("enable_order_book")
+        if market_info.get("enable_order_book") is not None
+        else market_info.get("enableOrderBook")
+    )
+    if _safe_bool(accepting_orders_value, True) is False:
+        return False
+    if _safe_bool(enable_order_book_value, True) is False:
+        return False
+
+    return bool(has_live_exit_mark)
+
+
 def _extract_winning_outcome_index_from_prices(
     market_info: Optional[dict[str, Any]],
     *,
@@ -3657,15 +3704,20 @@ def _extract_market_end_time_naive(market_info: Any) -> Optional[datetime]:
 def _market_seconds_left(market_info: Any, now: datetime) -> Optional[float]:
     if not isinstance(market_info, dict):
         return None
+    cached_seconds: Optional[float] = None
     for key in ("seconds_left", "secondsLeft", "seconds_until_close", "secondsUntilClose"):
         parsed = safe_float(market_info.get(key), None)
         if parsed is not None and parsed >= 0.0:
-            return float(parsed)
+            cached_seconds = float(parsed)
+            break
     end_time = _extract_market_end_time_naive(market_info)
     if end_time is None:
-        return None
+        return cached_seconds
     now_naive = now.astimezone(timezone.utc).replace(tzinfo=None) if now.tzinfo is not None else now
-    return max(0.0, (end_time - now_naive).total_seconds())
+    computed_seconds = max(0.0, (end_time - now_naive).total_seconds())
+    if cached_seconds is None:
+        return computed_seconds
+    return min(cached_seconds, computed_seconds)
 
 
 def _market_end_time_iso(market_info: Any) -> Optional[str]:
@@ -10437,9 +10489,24 @@ async def reconcile_live_positions(
 
         signal_payload = signal_payloads.get(str(row.signal_id), {})
         market_info = market_info_by_id.get(str(row.market_id or ""))
-        market_tradable = polymarket_client.is_market_tradable(market_info, now=now)
+        base_market_tradable = polymarket_client.is_market_tradable(market_info, now=now)
         market_seconds_left = _market_seconds_left(market_info, now)
         market_end_time = _market_end_time_iso(market_info)
+        market_side_price = _extract_market_side_price(market_info, outcome_idx)
+        ws_side_price = ws_mid_prices.get(token_id) if token_id else None
+        clob_side_price = clob_mid_prices.get(token_id) if token_id else None
+        market_tradable = _market_accepts_live_exit_orders(
+            market_info,
+            base_market_tradable=base_market_tradable,
+            has_live_exit_mark=bool(
+                token_id
+                and (
+                    ws_side_price is not None
+                    or clob_side_price is not None
+                    or books_by_token.get(token_id) is not None
+                )
+            ),
+        )
         winning_idx = _extract_winning_outcome_index(market_info)
         winning_idx_inferred = False
         if winning_idx is None and resolution_infer_from_prices:
@@ -10451,9 +10518,6 @@ async def reconcile_live_positions(
             if inferred_idx is not None:
                 winning_idx = inferred_idx
                 winning_idx_inferred = True
-        market_side_price = _extract_market_side_price(market_info, outcome_idx)
-        ws_side_price = ws_mid_prices.get(token_id) if token_id else None
-        clob_side_price = clob_mid_prices.get(token_id) if token_id else None
 
         close_price: Optional[float] = None
         close_trigger: Optional[str] = None

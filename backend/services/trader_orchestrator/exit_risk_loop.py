@@ -40,15 +40,20 @@ from typing import Any, Optional
 
 from sqlalchemy import select
 
-from models.database import FastAsyncSessionLocal, Trader, TraderOrder
+from models.database import AsyncSessionLocal, FastAsyncSessionLocal, Trader, TraderOrder
 from services.polymarket import polymarket_client
 from services.trader_orchestrator import position_lifecycle as pl
+from services.worker_state import write_worker_snapshot
 from utils.converters import safe_float
 from utils.utcnow import utcnow
 
 logger = logging.getLogger("exit_risk_loop")
 
 _SWEEP_INTERVAL_SECONDS = 2.0
+_SNAPSHOT_INTERVAL_SECONDS = 10.0
+_WORKER_NAME = "exit_risk"
+
+
 def _is_fresh_mark_source(src: Any) -> bool:
     """A mark source is 'fresh' (realizable now) if it came from the live WS
     book, a CLOB midpoint, or the liquidation VWAP — NOT from the Gamma
@@ -110,6 +115,7 @@ class ExitRiskLoop:
         self._held_tokens: set[str] = set()       # current held-token index (tick filter)
         self._callback_registered = False
         self._last_fire_at: dict[str, float] = {}  # order_id -> monotonic ts of last exit submit
+        self._last_snapshot_at = 0.0
 
     # ── WS price-change callback (sub-second tick path) ────────────────
     def on_price_change(self, token_id: str, old_mid: float, new_mid: float) -> None:
@@ -141,7 +147,8 @@ class ExitRiskLoop:
             self._wake.clear()
             self._tick_tokens.clear()  # the sweep covers everything; ticks just wake us
             try:
-                await self._sweep()
+                stats = await self._sweep()
+                await self._write_snapshot(stats=stats)
             except asyncio.CancelledError:
                 self._running = False
                 raise
@@ -155,14 +162,17 @@ class ExitRiskLoop:
                 if _is_transient_db_error(exc):
                     logger.warning("Exit-risk sweep transient failure (%s) — retrying once", type(exc).__name__)
                     try:
-                        await self._sweep()
+                        stats = await self._sweep()
+                        await self._write_snapshot(stats=stats)
                     except asyncio.CancelledError:
                         self._running = False
                         raise
                     except Exception as exc2:
                         logger.warning("Exit-risk sweep retry failed: %s", exc2, exc_info=exc2)
+                        await self._write_snapshot(stats=None, error=f"{type(exc2).__name__}: {exc2}")
                 else:
                     logger.warning("Exit-risk sweep failed: %s", exc, exc_info=exc)
+                    await self._write_snapshot(stats=None, error=f"{type(exc).__name__}: {exc}")
 
     def stop(self) -> None:
         self._running = False
@@ -196,10 +206,43 @@ class ExitRiskLoop:
         except Exception as exc:
             logger.debug("Exit-risk loop: WS callback registration deferred: %s", exc)
 
-    async def _sweep(self) -> None:
+    async def _write_snapshot(self, *, stats: Optional[dict[str, Any]], error: Optional[str] = None) -> None:
+        now_mono = time.monotonic()
+        if error is None and (now_mono - self._last_snapshot_at) < _SNAPSHOT_INTERVAL_SECONDS:
+            return
+        self._last_snapshot_at = now_mono
+        stats_payload = dict(stats or {})
+        rows = int(stats_payload.get("rows", 0) or 0)
+        processed = int(stats_payload.get("processed", 0) or 0)
+        activity = "Sweep failed" if error else f"Swept {processed}/{rows} live positions"
+        try:
+            async with AsyncSessionLocal() as session:
+                await write_worker_snapshot(
+                    session,
+                    _WORKER_NAME,
+                    running=True,
+                    enabled=True,
+                    current_activity=activity,
+                    interval_seconds=int(_SWEEP_INTERVAL_SECONDS),
+                    last_run_at=utcnow(),
+                    last_error=error,
+                    stats=stats_payload,
+                    publish_event=False,
+                )
+        except Exception as exc:
+            logger.debug("Exit-risk heartbeat write failed: %s", exc)
+
+    async def _sweep(self) -> dict[str, Any]:
         """Evaluate (and exit if triggered) every open live position."""
         now = utcnow()
         now_naive = now.astimezone(timezone.utc).replace(tzinfo=None) if now.tzinfo else now
+        stats: dict[str, Any] = {
+            "rows": 0,
+            "tokens": 0,
+            "processed": 0,
+            "errors": 0,
+            "results": {},
+        }
 
         async with FastAsyncSessionLocal() as session:
             rows = list(
@@ -214,10 +257,11 @@ class ExitRiskLoop:
                 .scalars()
                 .all()
             )
+            stats["rows"] = len(rows)
             if not rows:
                 self._held_tokens = set()
                 self._last_fire_at.clear()
-                return
+                return stats
 
             # Prune the fire-cooldown map to currently-open orders so it can't
             # grow unbounded across a long soak (closed orders drop out).
@@ -236,6 +280,7 @@ class ExitRiskLoop:
                     token_ids.append(tid)
                     held.add(tid)
             self._held_tokens = held
+            stats["tokens"] = len(held)
 
             # Fresh marks: WS book (strict→relaxed) + CLOB-REST fallback for
             # stale tokens (allow_rest=True — this loop is NOT hot_path_no_rest).
@@ -261,7 +306,7 @@ class ExitRiskLoop:
             submissions = [0]  # per-sweep submission budget (shared with execute_position_exit)
             for row in rows:
                 try:
-                    await self._process_position(
+                    result = await self._process_position(
                         session=session,
                         row=row,
                         now=now,
@@ -274,10 +319,16 @@ class ExitRiskLoop:
                         params=params_by_trader.get(str(row.trader_id), {}),
                         submissions=submissions,
                     )
+                    key = str(result or "processed")
+                    stats["processed"] = int(stats.get("processed", 0) or 0) + 1
+                    results = stats["results"]
+                    results[key] = int(results.get(key, 0) or 0) + 1
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    stats["errors"] = int(stats.get("errors", 0) or 0) + 1
                     logger.warning("Exit-risk: position %s failed: %s", getattr(row, "id", "?"), exc, exc_info=exc)
+        return stats
 
     async def _process_position(
         self,
@@ -293,17 +344,17 @@ class ExitRiskLoop:
         wallet_by_token: dict[str, Any],
         params: dict[str, Any],
         submissions: list[int],
-    ) -> None:
+    ) -> str:
         payload = dict(row.payload_json or {})
 
         token_id = pl._extract_live_token_id(payload)
         filled_notional, filled_size, avg_px = pl._extract_live_fill_metrics(payload)
         entry_price = safe_float(avg_px) or safe_float(row.effective_price) or safe_float(row.entry_price) or 0.0
         if entry_price <= 0.0:
-            return
+            return "skipped_entry_price"
         notional = filled_notional if filled_notional > 0.0 else (safe_float(row.notional_usd) or 0.0)
         if notional <= 0.0:
-            return
+            return "skipped_notional"
         entry_size = filled_size if filled_size > 0.0 else (notional / entry_price)
 
         market_info = market_info_by_id.get(str(row.market_id or ""))
@@ -345,7 +396,7 @@ class ExitRiskLoop:
                     "exit_risk_loop TERMINALIZED order=%s -> %s sold=%.2f/%.2f vwap=%.4f realized_pnl=%.2f",
                     row.id, ns, sold_size, entry_size, vwap, realized,
                 )
-                return
+                return "terminalized"
 
         pe = payload.get("pending_live_exit")
         # Mutex / single-owner handoff: the loop fires only the FIRST exit for
@@ -359,14 +410,27 @@ class ExitRiskLoop:
         # whenever a pending_live_exit dict is present, not just the narrow
         # in-flight subset.
         if isinstance(pe, dict) and str(pe.get("status") or "").strip():
-            return  # an exit attempt exists — its lifecycle belongs to reconcile
+            return "skipped_pending_exit"  # an exit attempt exists — its lifecycle belongs to reconcile
 
         outcome_idx = pl._direction_outcome_index(row.direction, market_info=market_info, token_id=token_id)
         if outcome_idx is None:
-            return
-        market_tradable = polymarket_client.is_market_tradable(market_info, now=now)
+            return "skipped_outcome"
         wallet_mark = pl._extract_wallet_mark_price(wallet_pos)
         market_side_price = pl._extract_market_side_price(market_info, outcome_idx)
+        base_market_tradable = polymarket_client.is_market_tradable(market_info, now=now)
+        has_live_exit_mark = bool(
+            token_id
+            and (
+                ws_mid.get(token_id) is not None
+                or clob_mid.get(token_id) is not None
+                or books.get(token_id) is not None
+            )
+        )
+        market_tradable = pl._market_accepts_live_exit_orders(
+            market_info,
+            base_market_tradable=base_market_tradable,
+            has_live_exit_mark=has_live_exit_mark,
+        )
 
         min_hold_minutes = max(
             0.0, safe_float(pl._payload_exit_param(payload, prefix_key="live", name="min_hold_minutes")) or 0.0
@@ -471,7 +535,7 @@ class ExitRiskLoop:
                 row.payload_json = payload
                 row.updated_at = now
                 await session.commit()
-                return None
+                return "skipped_fire_cooldown"
             self._last_fire_at[order_id] = now_mono
             exit_instance = (
                 await pl._strategy_exit_instance(session, (payload.get("strategy_type") or "").strip().lower())
@@ -525,7 +589,7 @@ class ExitRiskLoop:
         row.payload_json = payload
         row.updated_at = now
         await session.commit()
-        return None
+        return str(decision.action or "processed")
 
 
 _exit_risk_loop: Optional[ExitRiskLoop] = None

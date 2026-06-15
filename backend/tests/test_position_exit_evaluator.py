@@ -138,6 +138,55 @@ async def test_max_hold_fires(monkeypatch):
     assert d.close_trigger == "max_hold"
 
 
+def test_market_seconds_left_recomputes_past_end_time_over_stale_cache():
+    now = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    market_info = {
+        "seconds_left": 86400,
+        "end_date": datetime(2026, 6, 14, tzinfo=timezone.utc).isoformat(),
+    }
+
+    assert pl._market_seconds_left(market_info, now) == 0.0
+
+
+def test_live_exit_tradability_can_override_past_end_date_with_live_book():
+    market_info = {
+        "closed": False,
+        "active": True,
+        "resolved": False,
+        "accepting_orders": True,
+        "enable_order_book": True,
+        "end_date": datetime(2026, 6, 14, tzinfo=timezone.utc).isoformat(),
+    }
+
+    assert (
+        pl._market_accepts_live_exit_orders(
+            market_info,
+            base_market_tradable=False,
+            has_live_exit_mark=True,
+        )
+        is True
+    )
+
+
+def test_live_exit_tradability_does_not_override_terminal_market():
+    market_info = {
+        "closed": True,
+        "active": True,
+        "resolved": False,
+        "accepting_orders": True,
+        "enable_order_book": True,
+    }
+
+    assert (
+        pl._market_accepts_live_exit_orders(
+            market_info,
+            base_market_tradable=False,
+            has_live_exit_mark=True,
+        )
+        is False
+    )
+
+
 @pytest.mark.asyncio
 async def test_liquidation_mark_triggers_stop_mid_would_miss(monkeypatch):
     # WS mid says 0.90 (healthy vs 50% SL), but the realizable bid-side VWAP

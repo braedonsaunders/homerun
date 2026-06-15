@@ -312,6 +312,9 @@ async def test_sweep_retries_once_on_transient_error(monkeypatch):
     # retry rather than dropping the whole 2s cycle (risk-loop resilience).
     loop = erl.ExitRiskLoop()
     monkeypatch.setattr(loop, "_register_callback", lambda: None)
+    async def _no_snapshot(**kwargs):  # noqa: ARG001
+        return None
+    monkeypatch.setattr(loop, "_write_snapshot", _no_snapshot)
     loop._wake.set()  # make the interval wait return immediately
     calls = []
 
@@ -332,6 +335,9 @@ async def test_sweep_not_retried_on_nontransient_error(monkeypatch):
     # real outage); it falls through to the next tick.
     loop = erl.ExitRiskLoop()
     monkeypatch.setattr(loop, "_register_callback", lambda: None)
+    async def _no_snapshot(**kwargs):  # noqa: ARG001
+        return None
+    monkeypatch.setattr(loop, "_write_snapshot", _no_snapshot)
     loop._wake.set()
     calls = []
 
@@ -369,6 +375,43 @@ async def test_telemetry_records_decision(monkeypatch):
     assert led["mark_source"] == "liquidation_vwap"
     assert led["mark_stale"] is False
     assert led["mark"] == 0.40
+
+
+@pytest.mark.asyncio
+async def test_past_end_date_can_still_be_live_exit_tradable(monkeypatch):
+    hold = _close_decision()
+    hold.action = "hold"
+    hold.close_price = None
+    hold.close_trigger = None
+    _patch_derivations(monkeypatch, decision=hold)
+    monkeypatch.setattr(pl.polymarket_client, "is_market_tradable", lambda mi, now=None: False)
+    seen = {}
+
+    async def _spy_eval(**kwargs):
+        seen["market_tradable"] = kwargs["market_tradable"]
+        return hold
+
+    monkeypatch.setattr(pl, "evaluate_position_exit", _spy_eval)
+    loop = erl.ExitRiskLoop()
+    row = _row({"token_id": "tok-1", "strategy_type": "tail_end_carry"})
+    now = datetime.now(timezone.utc)
+    await loop._process_position(
+        session=_FakeSession(), row=row, now=now, now_naive=now.replace(tzinfo=None),
+        ws_mid={}, clob_mid={"tok-1": 0.40}, books={},
+        market_info_by_id={
+            "m1": {
+                "condition_id": "m1",
+                "closed": False,
+                "active": True,
+                "resolved": False,
+                "accepting_orders": True,
+                "enable_order_book": True,
+            }
+        },
+        wallet_by_token={}, params={}, submissions=[0],
+    )
+
+    assert seen["market_tradable"] is True
 
 
 @pytest.mark.asyncio
