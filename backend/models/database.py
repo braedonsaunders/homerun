@@ -3395,6 +3395,18 @@ class TradeSignal(Base):
             ),
         ),
         UniqueConstraint("source", "dedupe_key", name="uq_trade_signals_source_dedupe"),
+        # UNLOGGED (migration 202606160002): trade_signals is a continuously
+        # re-emitted ephemeral signal cache — the producer UPSERT firehose made
+        # it the single biggest WAL source (~52% of all WAL: a tiny ~8.8K-row
+        # table absorbing ~3.7M updates that each rewrite two TOASTed JSON
+        # blobs). It holds no orders/positions/financial state, nothing FK-
+        # references it, every reader tolerates an empty table, and it is fully
+        # reconstructed by the scanner within one cycle (see the recoverability
+        # note at the cross-plane async-commit guardrail below). Truncation on
+        # an unclean crash is operationally identical to a fresh cleanup sweep.
+        # Same lever already applied to trade_signal_emissions + the derived
+        # cache tables (migrations 202605220001 / 202605230001).
+        {"prefixes": ["UNLOGGED"]},
     )
 
 
@@ -4216,9 +4228,15 @@ class TraderDecision(Base):
         nullable=False,
         index=True,
     )
+    # signal_id is a plain reference, NOT a FK: trade_signals is an ephemeral
+    # UNLOGGED cache (migration 202606160002) that is cleaned every ~24h, and
+    # Postgres forbids a permanent table from FK-referencing an unlogged one.
+    # Keeping it unconstrained also preserves the audit link — the old
+    # ON DELETE SET NULL FK would erase signal_id whenever the originating
+    # signal row was pruned. The live DB already had no such FK (model drift);
+    # this aligns the model with it. Index retained for signal_id lookups.
     signal_id = Column(
         String,
-        ForeignKey("trade_signals.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
