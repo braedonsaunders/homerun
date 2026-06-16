@@ -2141,6 +2141,14 @@ class DataSourceRecord(Base):
             text("id DESC"),
         ),
         Index("ix_data_source_records_data_source_id", "data_source_id"),
+        # UNLOGGED (migration 202606160003): a transient, retention-capped raw
+        # ingestion cache rebuilt from external sources every run (idempotent
+        # upsert on (source_slug, external_id); observed_at/ingested_at refreshes
+        # were a top WAL source at 0% HOT). No processed/dedup flag — signal
+        # dedup lives in the already-UNLOGGED trade_signals — so empty-after-
+        # crash causes only harmless re-ingestion. Unlogged child -> permanent
+        # data_sources parent is permitted.
+        {"prefixes": ["UNLOGGED"]},
     )
 
 
@@ -4122,6 +4130,13 @@ class WorkerSnapshot(Base):
     lag_seconds = Column(Float, nullable=True)
     last_error = Column(Text, nullable=True)
     stats_json = Column(JSON, default=dict)
+
+    # UNLOGGED (migration 202606160003): pure latest-status health telemetry —
+    # one row per worker, re-written every cycle for API/WS health surfaces.
+    # No FKs, no consumer depends on crash persistence (a truncated table just
+    # shows empty status until the next heartbeat). The heartbeat upserts were
+    # a top WAL source.
+    __table_args__ = {"prefixes": ["UNLOGGED"]}
 
 
 # ==================== TRADER ORCHESTRATOR PERSISTENCE ====================
