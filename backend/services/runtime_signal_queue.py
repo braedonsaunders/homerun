@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _ACTIONABLE_EVENT_TYPES = frozenset(
     {
@@ -17,7 +21,16 @@ _ACTIONABLE_EVENT_TYPES = frozenset(
 _LANE_GENERAL = "general"
 _LANE_CRYPTO = "crypto"
 _LANES = (_LANE_GENERAL, _LANE_CRYPTO)
-_QUEUE_DRAIN_LIMIT = 256
+# Depth at which a producer compacts the lane's backlog in place (merge by
+# source, loss-free for signal ids) instead of letting it grow unbounded. A live
+# consumer fully drains its lane every cycle (see wait_for_signal_batch), so this
+# only trips when the trader cycle has fallen behind; it caps memory and bounds
+# emit->wake latency to ~one cycle rather than an ever-growing backlog. Any wake
+# trigger collapsed here is still authoritative-readable via the trader cycle's
+# unconsumed-signal DB prefetch, so compaction never drops a tradable signal.
+_QUEUE_COMPACT_THRESHOLD = 512
+_COMPACT_LOG_INTERVAL_S = 30.0
+_last_compact_log_at: dict[str, float] = {}
 _queues: dict[str, asyncio.Queue[dict[str, Any]]] = {
     lane: asyncio.Queue()
     for lane in _LANES
@@ -106,6 +119,71 @@ def _coalesce_batches(batches: list[dict[str, Any]]) -> dict[str, Any] | None:
     }
 
 
+def _merge_same_source_payloads(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse input batches to at most one per source.
+
+    Loss-free for signal ids and snapshots; used to bound a backlogged lane in
+    place. The merged payload keeps the newest batch identity/timestamp.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for payload in payloads:
+        source_key = _normalize_source(payload.get("source")) or "__all__"
+        existing = merged.get(source_key)
+        if existing is None:
+            clone = dict(payload)
+            clone["signal_ids"] = list(payload.get("signal_ids") or [])
+            snap = payload.get("signal_snapshots")
+            if isinstance(snap, dict):
+                clone["signal_snapshots"] = dict(snap)
+            merged[source_key] = clone
+            order.append(source_key)
+            continue
+        seen = {str(s) for s in existing.get("signal_ids") or []}
+        for raw_sid in payload.get("signal_ids") or []:
+            sid = str(raw_sid or "").strip()
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            existing["signal_ids"].append(sid)
+        existing["signal_count"] = len(existing["signal_ids"])
+        new_snap = payload.get("signal_snapshots")
+        if isinstance(new_snap, dict) and new_snap:
+            ex_snap = existing.get("signal_snapshots")
+            if not isinstance(ex_snap, dict):
+                ex_snap = {}
+            ex_snap.update(new_snap)
+            existing["signal_snapshots"] = ex_snap
+        existing["batch_id"] = payload.get("batch_id", existing.get("batch_id"))
+        existing["batch_event_type"] = payload.get("batch_event_type", existing.get("batch_event_type"))
+        existing["emitted_at"] = payload.get("emitted_at", existing.get("emitted_at"))
+    return [merged[key] for key in order]
+
+
+def _compact_lane_queue(lane: str, queue: "asyncio.Queue[dict[str, Any]]") -> None:
+    drained: list[dict[str, Any]] = []
+    while True:
+        try:
+            drained.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    if not drained:
+        return
+    for compacted in _merge_same_source_payloads(drained):
+        queue.put_nowait(compacted)
+    now = time.monotonic()
+    last = _last_compact_log_at.get(lane, 0.0)
+    if now - last >= _COMPACT_LOG_INTERVAL_S:
+        _last_compact_log_at[lane] = now
+        logger.warning(
+            "runtime_signal_queue lane=%s backlog compacted %d->%d batches "
+            "(consumer behind; signals remain DB-authoritative)",
+            lane,
+            len(drained),
+            queue.qsize(),
+        )
+
+
 async def publish_signal_batch(
     *,
     event_type: str,
@@ -143,8 +221,12 @@ async def publish_signal_batch(
 
     target_lane = _default_lane_for_source(str(source or ""))
     payload["lane"] = target_lane
-    for lane in (target_lane,):
-        await _queues[lane].put(copy.deepcopy(payload))
+    queue = _queues[target_lane]
+    # Bound the backlog: if the consumer has fallen behind, collapse the queued
+    # batches into one merged payload per source before enqueuing the new one.
+    if queue.qsize() >= _QUEUE_COMPACT_THRESHOLD:
+        _compact_lane_queue(target_lane, queue)
+    await queue.put(copy.deepcopy(payload))
     return str(payload["batch_id"])
 
 
@@ -163,7 +245,11 @@ async def wait_for_signal_batch(
     except asyncio.TimeoutError:
         return None
     batches = [first]
-    while len(batches) < _QUEUE_DRAIN_LIMIT:
+    # Drain the entire lane every wake. A bounded drain left residue that
+    # compounded across cycles, so emit->wake latency grew without bound over the
+    # 20h soak; draining fully caps it at ~one cycle. Coalescing dedups by signal
+    # id, so the merged trigger size stays bounded by distinct pending signals.
+    while True:
         try:
             batches.append(queue.get_nowait())
         except asyncio.QueueEmpty:

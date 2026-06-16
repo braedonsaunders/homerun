@@ -107,6 +107,83 @@ async def test_close_decision_dispatches_execute(monkeypatch):
     assert calls[0]["reason"] == "exit_risk_loop"
 
 
+def _hold_stale_decision(source="market_mark"):
+    """A HOLD decision marked on a non-fresh source (Gamma market_mark)."""
+    return pl.PositionExitDecision(
+        current_price=0.40, current_price_source=source,
+        highest_price=0.91, lowest_price=0.40,
+        next_state={"last_mark_price": 0.40}, age_minutes=120.0, min_hold_passed=True,
+        pnl_pct=-1.0, action="hold", close_price=None, close_trigger=None,
+        price_source=source, strategy_exit=None,
+    )
+
+
+async def _process_capture(loop, payload):
+    """Run one sweep and return the row so its persisted payload_json (where
+    position_state is written) can be inspected."""
+    now = datetime.now(timezone.utc)
+    row = _row(payload)
+    await loop._process_position(
+        session=_FakeSession(), row=row, now=now,
+        now_naive=now.replace(tzinfo=None),
+        ws_mid={"tok-1": 0.40}, clob_mid={}, books={},
+        market_info_by_id={"m1": {"condition_id": "m1"}},
+        wallet_by_token={}, params={}, submissions=[0],
+    )
+    return row
+
+
+@pytest.mark.asyncio
+async def test_persistent_stale_mark_hold_escalates(monkeypatch):
+    # A capital-at-risk position held on a non-fresh mark while the fail-safe
+    # CLOB read keeps failing must escalate once it crosses the ceiling, rather
+    # than silently holding on a frozen Gamma mark forever (London 0.94->0).
+    _patch_derivations(monkeypatch, decision=_hold_stale_decision())
+
+    async def _no_clob(self, token_id):  # noqa: ARG001
+        return None
+    monkeypatch.setattr(erl.ExitRiskLoop, "_force_fresh_clob_mid", _no_clob)
+    monkeypatch.setattr(erl, "_stale_mark_escalate_seconds", lambda: 30.0)
+
+    loop = erl.ExitRiskLoop()
+    payload = {"token_id": "tok-1", "strategy_type": "tail_end_carry"}
+
+    # First sweep: stale hold begins, below the ceiling -> not escalated.
+    row1 = await _process_capture(loop, payload)
+    ld = row1.payload_json["position_state"]["last_exit_decision"]
+    assert ld["mark_stale"] is True
+    assert not ld.get("stale_mark_escalated")
+    assert "ord-1" in loop._stale_mark_since
+
+    # Backdate the first-stale anchor past the ceiling, sweep again -> escalates.
+    loop._stale_mark_since["ord-1"] -= 31.0
+    row2 = await _process_capture(loop, payload)
+    ld = row2.payload_json["position_state"]["last_exit_decision"]
+    assert ld["stale_mark_escalated"] is True
+    assert ld["stale_mark_seconds"] >= 30.0
+
+
+@pytest.mark.asyncio
+async def test_fresh_mark_clears_stale_anchor(monkeypatch):
+    # Once a fresh mark returns, the stale anchor is cleared so a transient WS
+    # gap never carries stale-duration into a healthy state.
+    _patch_derivations(monkeypatch, decision=_hold_stale_decision())
+
+    async def _no_clob(self, token_id):  # noqa: ARG001
+        return None
+    monkeypatch.setattr(erl.ExitRiskLoop, "_force_fresh_clob_mid", _no_clob)
+
+    loop = erl.ExitRiskLoop()
+    payload = {"token_id": "tok-1", "strategy_type": "tail_end_carry"}
+    await _process_capture(loop, payload)
+    assert "ord-1" in loop._stale_mark_since
+
+    # Next sweep returns a fresh WS mark -> anchor cleared.
+    _patch_derivations(monkeypatch, decision=_hold_stale_decision(source="ws_mid"))
+    await _process_capture(loop, payload)
+    assert "ord-1" not in loop._stale_mark_since
+
+
 @pytest.mark.asyncio
 async def test_fire_cooldown_suppresses_rapid_resubmit(monkeypatch):
     # Regression: reconcile can pop/supersede pending_live_exit (wallet-flat /

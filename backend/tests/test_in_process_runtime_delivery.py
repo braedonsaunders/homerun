@@ -110,6 +110,36 @@ async def test_runtime_signal_queue_coalesces_runtime_batches_for_all_lanes(_fre
     assert get_queue_depth() == {"general": 0, "crypto": 0}
 
 
+@pytest.mark.asyncio
+async def test_runtime_signal_queue_drains_and_compacts_large_backlog(_fresh_runtime_queues) -> None:
+    """A backlog larger than the legacy 256 drain cap must be fully delivered in
+    one wake (no compounding residue), and stay memory-bounded via loss-free
+    in-place compaction while the consumer is behind.
+    """
+    total = 600  # exceeds the old 256 drain cap and the 512 compaction threshold
+    for i in range(total):
+        await publish_signal_batch(
+            event_type="upsert_insert",
+            source="scanner",
+            signal_ids=[f"sig-{i}"],
+            trigger="strategy_signal_bridge",
+            signal_snapshots={f"sig-{i}": {"id": f"sig-{i}", "source": "scanner"}},
+        )
+
+    # Backlog never grows unbounded — compaction keeps it bounded during publish.
+    assert get_queue_depth(lane="general") <= 512
+
+    payload = await wait_for_signal_batch(lane="general", timeout_seconds=0.5)
+    assert payload is not None
+    drained_ids = payload["source_signal_ids"]["scanner"]
+    assert len(drained_ids) == total
+    assert set(drained_ids) == {f"sig-{i}" for i in range(total)}
+    assert len(payload["source_signal_snapshots"]["scanner"]) == total
+    # One wake fully drains the lane — the residue that compounded over the soak
+    # is gone.
+    assert get_queue_depth(lane="general") == 0
+
+
 @pytest.fixture
 def _fresh_runtime_queues():
     """Give each test its own loop-bound runtime_signal_queue lanes.

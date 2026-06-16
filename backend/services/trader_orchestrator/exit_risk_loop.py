@@ -67,6 +67,17 @@ def _is_fresh_mark_source(src: Any) -> bool:
     return "ws" in s or "clob" in s or "liquidation" in s or "vwap" in s
 
 
+def _stale_mark_escalate_seconds() -> float:
+    """Operator-tunable ceiling for persistent stale-mark holds. Read lazily so
+    a Settings change takes effect without a restart; defaults if unreadable."""
+    try:
+        from config import settings
+
+        return max(0.0, float(getattr(settings, "EXIT_RISK_STALE_MARK_ESCALATE_SECONDS", 60.0)))
+    except Exception:
+        return 60.0
+
+
 def _is_transient_db_error(exc: BaseException) -> bool:
     """True for connection-churn errors that a fresh-session retry can clear.
 
@@ -112,6 +123,7 @@ class ExitRiskLoop:
         self._task: Optional[asyncio.Task] = None
         self._wake = asyncio.Event()
         self._tick_tokens: set[str] = set()      # held tokens that moved, pending eval
+        self._stale_mark_since: dict[str, float] = {}  # order_id -> monotonic first-stale
         self._held_tokens: set[str] = set()       # current held-token index (tick filter)
         self._callback_registered = False
         self._last_fire_at: dict[str, float] = {}  # order_id -> monotonic ts of last exit submit
@@ -514,13 +526,41 @@ class ExitRiskLoop:
             "market_tradable": bool(market_tradable),
         }
         decision.next_state = next_state
+        order_id_str = str(row.id)
         if decision.action == "hold" and mark_stale and market_tradable:
-            logger.warning(
-                "exit_risk_loop STALE-MARK HOLD order=%s mark=%s src=%s pnl_pct=%s "
-                "— capital-at-risk held on a non-fresh mark",
-                row.id, decision.current_price, mark_src or "none",
-                None if decision.pnl_pct is None else round(decision.pnl_pct, 1),
-            )
+            # Track CONTINUOUS stale duration. The forced-fresh CLOB read above is
+            # the primary fail-safe, but it can keep returning None (illiquid
+            # token / venue pressure). Without a ceiling, such a position holds on
+            # the frozen Gamma mark indefinitely and its SL/TP never fires (the
+            # London 0.94->0 mode). Past the ceiling we escalate to a distinct
+            # operator-visible alert and stamp the condition into position_state.
+            # We deliberately do NOT auto-close on stale data — closing blind is
+            # its own risk; holding + alerting is the conservative action when no
+            # realizable price is available.
+            now_mono = time.monotonic()
+            first_stale = self._stale_mark_since.setdefault(order_id_str, now_mono)
+            stale_seconds = now_mono - first_stale
+            decision.next_state["last_exit_decision"]["stale_mark_seconds"] = round(stale_seconds, 1)
+            ceiling = _stale_mark_escalate_seconds()
+            if ceiling > 0.0 and stale_seconds >= ceiling:
+                decision.next_state["last_exit_decision"]["stale_mark_escalated"] = True
+                logger.warning(
+                    "exit_risk_loop STALE-MARK ESCALATION order=%s stale_for=%.0fs mark=%s src=%s pnl_pct=%s "
+                    "— no fresh mark for >%.0fs; SL/TP cannot be trusted, operator review required",
+                    order_id_str, stale_seconds, decision.current_price, mark_src or "none",
+                    None if decision.pnl_pct is None else round(decision.pnl_pct, 1), ceiling,
+                )
+            else:
+                logger.warning(
+                    "exit_risk_loop STALE-MARK HOLD order=%s mark=%s src=%s pnl_pct=%s stale_for=%.0fs "
+                    "— capital-at-risk held on a non-fresh mark",
+                    order_id_str, decision.current_price, mark_src or "none",
+                    None if decision.pnl_pct is None else round(decision.pnl_pct, 1), stale_seconds,
+                )
+        else:
+            # Fresh mark (or no longer a tradable hold): clear the stale anchor so
+            # a transient WS gap doesn't carry stale-duration into a healthy state.
+            self._stale_mark_since.pop(order_id_str, None)
 
         payload["position_state"] = decision.next_state
         if decision.action == "close" and decision.close_price is not None:

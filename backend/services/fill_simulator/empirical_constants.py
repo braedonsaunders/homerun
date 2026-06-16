@@ -130,20 +130,36 @@ async def refresh_async(*, session: AsyncSession | None = None) -> EmpiricalCons
       to account for variance.
     """
     # ``session`` is accepted for backwards compatibility but no longer used:
-    # book deltas live in the canonical parquet plane, not SQL.  Aggregate the
-    # last 24h of trade/cancel events from parquet off the event loop.
+    # book deltas live in the canonical parquet plane, not SQL.  Aggregate a
+    # bounded recent window of trade/cancel events from parquet off the event
+    # loop.  The window + timeout are operator-tunable; the previous fixed 24h /
+    # 20s perpetually timed out under load, pinning the constants to stale/default
+    # values for a full 15-min refresh interval and occupying a trading-plane
+    # thread for the whole 20s.
+    from config import settings
+
+    lookback_hours = max(1, int(getattr(settings, "FILL_EMPIRICAL_LOOKBACK_HOURS", 6)))
+    timeout_seconds = max(5.0, float(getattr(settings, "FILL_EMPIRICAL_TIMEOUT_SECONDS", 25.0)))
     try:
         from services.marketdata.deltas import aggregate_delta_events
 
         now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(hours=24)
+        cutoff = now - timedelta(hours=lookback_hours)
         agg = await asyncio.wait_for(
             asyncio.to_thread(aggregate_delta_events, start=cutoff, end=now),
-            timeout=20.0,
+            timeout=timeout_seconds,
         )
-    except (asyncio.TimeoutError, Exception) as exc:
+    except asyncio.TimeoutError:
         logger.warning(
-            "Empirical-constants aggregate timed out / failed; keeping cached values: %s",
+            "Empirical-constants aggregate timed out after %.0fs (lookback=%dh); keeping cached values",
+            timeout_seconds,
+            lookback_hours,
+        )
+        _state.last_refresh_epoch = time.monotonic()
+        return _state.constants
+    except Exception as exc:
+        logger.warning(
+            "Empirical-constants aggregate failed; keeping cached values: %s",
             exc,
         )
         _state.last_refresh_epoch = time.monotonic()

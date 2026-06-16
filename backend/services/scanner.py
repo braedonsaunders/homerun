@@ -2578,7 +2578,7 @@ class ArbitrageScanner:
         from services.shared_state import upsert_scanner_market_history
 
         items = list(changed_history.items())
-        batch_size = 25
+        batch_size = max(1, int(settings.SCANNER_MARKET_HISTORY_PERSIST_BATCH_SIZE))
         for start in range(0, len(items), batch_size):
             batch_items = items[start : start + batch_size]
             batch_history = {market_id: points for market_id, points in batch_items}

@@ -1644,7 +1644,7 @@ class MarketRuntime:
             + publish_elapsed
             + dispatch_elapsed
         )
-        if total_elapsed >= 5.0:
+        if total_elapsed >= float(settings.MARKET_RUNTIME_REFRESH_WARN_SECONDS):
             logger.warning(
                 "Market runtime refresh timing",
                 trigger=trigger,

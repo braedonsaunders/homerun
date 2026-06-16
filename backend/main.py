@@ -911,6 +911,22 @@ async def lifespan(app: FastAPI):
                 interval_hours=cleanup_interval_hours,
             )
 
+            # Partition lifecycle for the daily-partitioned telemetry tables
+            # (trade_signal_emissions, trader_decision_checks): create upcoming
+            # partitions ahead of time and DROP expired ones, so retention is
+            # O(1) partition drops and the footprint stays flat (the 20h-soak
+            # DB-growth slope is structurally gone).
+            partition_maintenance_task = asyncio.create_task(
+                maintenance_service.start_partition_maintenance(
+                    interval_minutes=int(settings.MAINTENANCE_HIGH_VOLUME_RETENTION_MINUTES),
+                )
+            )
+            tasks.append(partition_maintenance_task)
+            logger.info(
+                "Partition-maintenance loop enabled",
+                interval_minutes=int(settings.MAINTENANCE_HIGH_VOLUME_RETENTION_MINUTES),
+            )
+
         # Initialize news intelligence layer (workers own background loops)
         try:
             from services.news.feed_service import news_feed_service

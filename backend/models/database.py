@@ -12,7 +12,10 @@ from sqlalchemy import (
     UniqueConstraint,
     event as _sa_event,
     text,
+    DDL,
 )
+from sqlalchemy.ext.compiler import compiles as _sa_compiles
+from sqlalchemy.schema import CreateTable as _CreateTable
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session as _SyncSessionForEvents
 from sqlalchemy.exc import DBAPIError
@@ -63,6 +66,41 @@ _logging.getLogger("sqlalchemy.pool.impl.AsyncAdaptedQueuePool").addFilter(_Drop
 _logging.getLogger("sqlalchemy.pool").addFilter(_DropFinalizeFairyGCWarning())
 
 Base = declarative_base()
+
+
+# ── Native PostgreSQL declarative partitioning ───────────────────────────────
+# SQLAlchemy core has no first-class RANGE partitioning, but the fresh-DB
+# bootstrap builds the schema from THIS metadata via ``Base.metadata.create_all``
+# (see ``apply_schema`` / ``init_database``).  To keep fresh installs and the
+# alembic migration chain producing identical schema — the contract enforced by
+# ``test_alembic_roundtrip`` / ``test_alembic_replay_base_to_head_on_empty_db`` —
+# teach ``CreateTable`` to append ``PARTITION BY`` for any table flagged with
+# ``info={"partition_by": ...}`` and auto-create its DEFAULT partition.  Ongoing
+# daily partitions + retention are managed at runtime by
+# ``MaintenanceService.maintain_partitions``; existing databases are converted by
+# the matching alembic cutover migration.
+@_sa_compiles(_CreateTable, "postgresql")
+def _emit_partition_by(create, compiler, **kw):
+    sql = compiler.visit_create_table(create, **kw)
+    partition_by = (create.element.info or {}).get("partition_by")
+    if partition_by:
+        sql = f"{sql.rstrip().rstrip(';')} PARTITION BY {partition_by}"
+    return sql
+
+
+def _register_partition_default(table, *, unlogged: bool) -> None:
+    """Auto-create the DEFAULT partition immediately after the partitioned parent
+    on ``create_all`` so a fresh install accepts inserts before the runtime
+    lifecycle job has created any daily partition (the insert-safety net)."""
+    persistence = "UNLOGGED " if unlogged else ""
+    _sa_event.listen(
+        table,
+        "after_create",
+        DDL(
+            f'CREATE {persistence}TABLE IF NOT EXISTS "{table.name}_default" '
+            f'PARTITION OF "{table.name}" DEFAULT'
+        ),
+    )
 
 
 class UTCDateTime(TypeDecorator):
@@ -3397,7 +3435,7 @@ class TradeSignalEmission(Base):
     reason = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
     snapshot_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=_utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False, index=True, primary_key=True)
 
     __table_args__ = (
         Index("idx_trade_signal_emissions_source_created", "source", "created_at"),
@@ -3411,7 +3449,7 @@ class TradeSignalEmission(Base):
         # history re-accumulates.  Matched by migration 202605220001 for
         # existing databases.  ``prefixes`` makes ``create_all`` emit
         # ``CREATE UNLOGGED TABLE``.
-        {"prefixes": ["UNLOGGED"]},
+        {"prefixes": ["UNLOGGED"], "info": {"partition_by": "RANGE (created_at)"}},
     )
 
 
@@ -4222,9 +4260,20 @@ class TraderDecisionCheck(Base):
     score = Column(Float, nullable=True)
     detail = Column(Text, nullable=True)
     payload_json = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False, primary_key=True)
 
-    __table_args__ = (Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),)
+    __table_args__ = (
+        Index("idx_trader_decision_checks_decision_created", "decision_id", "created_at"),
+        {"info": {"partition_by": "RANGE (created_at)"}},
+    )
+
+
+# Auto-create DEFAULT partitions for the partitioned telemetry tables on
+# ``create_all`` (fresh installs).  Daily partitions + retention are handled at
+# runtime by MaintenanceService.maintain_partitions; existing DBs by the cutover
+# migration.
+_register_partition_default(TradeSignalEmission.__table__, unlogged=True)
+_register_partition_default(TraderDecisionCheck.__table__, unlogged=False)
 
 
 class TraderOrder(Base):

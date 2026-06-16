@@ -1513,7 +1513,16 @@ async def _run_reconciliation_cycle(
     global _recovery_next_attempt_at
     summary = _empty_cycle_summary()
     now_mono = time.monotonic()
-    if now_mono >= _recovery_next_attempt_at:
+    # Live order authority recovery is heavy bulk bookkeeping (loads ALL
+    # live_trading_orders, recomputes execution-session rollups, and holds a
+    # transaction-scoped pg_advisory_xact_lock for the duration). Per the A.3
+    # plane split it belongs on the COLD reconciliation plane ONLY: running it on
+    # the trading plane too loaded the trading event loop with a 2s+ write txn
+    # every cycle AND made both planes serialize on the same advisory lock
+    # (redundant work + lock contention, with no added coverage since the cold
+    # plane already runs it). The trading plane keeps only the real-time exit
+    # backstop (the per-trader reconcile loop below).
+    if _IS_COLD_RECONCILE_PLANE and now_mono >= _recovery_next_attempt_at:
         if is_db_pressure_active():
             _recovery_next_attempt_at = time.monotonic() + _RECOVERY_DB_PRESSURE_BACKOFF_SECONDS
             logger.warning(
@@ -1582,7 +1591,10 @@ async def _run_reconciliation_cycle(
     # loads ALL of them — keeping the table small prevents memory spikes.
     global _live_order_cleanup_next_at
     now_mono2 = time.monotonic()
-    if now_mono2 >= _live_order_cleanup_next_at:
+    # Paired with authority recovery above (which loads ALL live_trading_orders):
+    # cold-plane only, so the trading plane does not run a redundant hourly DELETE
+    # that races the cold plane's sweep on the same rows.
+    if _IS_COLD_RECONCILE_PLANE and now_mono2 >= _live_order_cleanup_next_at:
         _live_order_cleanup_next_at = now_mono2 + 3600.0  # 1 hour
         try:
             async with AsyncSessionLocal() as cleanup_session:

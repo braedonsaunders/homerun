@@ -444,6 +444,31 @@ class Settings(BaseSettings):
     # Fill Monitor
     FILL_MONITOR_POLL_SECONDS: int = 5  # Fill monitor polling interval
 
+    # Fill-simulator empirical constants (learned from book-delta parquet).
+    # Bounded lookback + timeout so the off-event-loop aggregate completes
+    # instead of perpetually timing out (24h was too large) and serving
+    # stale/default constants for 15 min. These constants drift over hours, so a
+    # shorter window still has ample samples. Operator-tunable.
+    FILL_EMPIRICAL_LOOKBACK_HOURS: int = 6
+    FILL_EMPIRICAL_TIMEOUT_SECONDS: float = 25.0
+
+    # Exit-risk: how long a capital-at-risk, tradable position may sit on a
+    # non-fresh (Gamma ``market_mark``) price — with the fail-safe CLOB read
+    # also failing — before the loop escalates to a distinct operator alert.
+    # SL/TP cannot be trusted on a frozen mark (the "London 0.94->0" mode); we
+    # hold + alert rather than blind-close on stale data. 0 disables escalation.
+    EXIT_RISK_STALE_MARK_ESCALATE_SECONDS: float = 60.0
+
+    # Market-runtime refresh warn threshold. The external Polymarket Gamma fetch
+    # dominates this timing; operator-tunable to balance observability noise
+    # against genuine-latency alerts.
+    MARKET_RUNTIME_REFRESH_WARN_SECONDS: float = 5.0
+    # Scanner sparkline-history persist batch (markets per UNLOGGED upsert txn on
+    # the detection plane). Smaller batches = shorter transactions that release
+    # the connection faster under detection-plane DB contention (the 7-8s
+    # scanner_market_history holds in the soak were one 25-row fat-JSON insert).
+    SCANNER_MARKET_HISTORY_PERSIST_BATCH_SIZE: int = 10
+
     # CSV Trade Logging
     CSV_TRADE_LOG_ENABLED: bool = True  # Enable append-only CSV trade log
 
@@ -672,6 +697,11 @@ class Settings(BaseSettings):
     # Database Maintenance
     AUTO_CLEANUP_ENABLED: bool = False  # Enable automatic cleanup
     CLEANUP_INTERVAL_HOURS: int = 24  # Run cleanup every X hours
+    # Cadence of the dedicated high-volume retention loop that trims the
+    # unbounded append-only telemetry tables (trade_signal_emissions,
+    # trader_decision_checks) between the heavy 24h full_cleanup passes. Process-
+    # local plumbing; retention WINDOWS (days) stay operator-tunable in Settings.
+    MAINTENANCE_HIGH_VOLUME_RETENTION_MINUTES: int = 60
     CLEANUP_RESOLVED_TRADE_DAYS: int = 30  # Delete resolved trades older than X days
     CLEANUP_OPEN_TRADE_EXPIRY_DAYS: int = 90  # Expire open trades after X days
     CLEANUP_WALLET_TRADE_DAYS: int = 60  # Delete wallet trades older than X days

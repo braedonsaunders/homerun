@@ -3707,31 +3707,21 @@ async def recover_missing_live_trader_orders(
             # earlier in the function (via leg_state_updates / leg_row.x =
             # ...) are the SAME instances returned by the bulk SELECT
             # above, so the in-memory updates are already applied.
-            _apply_execution_session_rollups_from_rows(session_row, legs_for_session)
-            previous_session_status = _normalize_status_key(session_row.status)
-            next_session_status = previous_session_status
-            legs_open = int(session_row.legs_open or 0)
-            legs_completed = int(session_row.legs_completed or 0)
-            legs_failed = int(session_row.legs_failed or 0)
-            if legs_open <= 0:
-                if legs_completed > 0 and legs_failed == 0:
-                    next_session_status = "completed"
-                    session_row.error_message = None
-                elif legs_completed == 0 and legs_failed > 0:
-                    next_session_status = "failed"
-                    if not session_row.error_message:
-                        session_row.error_message = "All execution legs failed during live authority recovery."
-                elif legs_completed > 0 and legs_failed > 0:
-                    next_session_status = "failed"
-                    if not session_row.error_message:
-                        session_row.error_message = "Execution session closed with partial fills and failed legs during live authority recovery."
-            elif previous_session_status in {"pending", "placing", "partial", "hedging"}:
-                next_session_status = "working"
-            if next_session_status in TERMINAL_EXECUTION_SESSION_STATUSES and session_row.completed_at is None:
-                session_row.completed_at = now
-            session_row.status = next_session_status
-            session_row.updated_at = now
-            updated_execution_session_rows[str(session_row.id)] = session_row
+            rollup_changed = _apply_execution_session_rollups_from_rows(session_row, legs_for_session)
+            status_changed = _finalize_execution_session_status(
+                session_row,
+                now=now,
+                all_failed_message="All execution legs failed during live authority recovery.",
+                partial_failed_message=(
+                    "Execution session closed with partial fills and failed legs "
+                    "during live authority recovery."
+                ),
+            )
+            # Only enroll (persist + broadcast) sessions that materially changed —
+            # idempotent recovery passes over the 24h window must not re-touch
+            # unchanged rows (no-op UPDATE + WAL fsync churn seen in the soak).
+            if rollup_changed or status_changed:
+                updated_execution_session_rows[str(session_row.id)] = session_row
 
     if (
         not recovered_rows
@@ -6506,10 +6496,10 @@ async def _refresh_execution_session_rollups(
     session: AsyncSession,
     *,
     session_id: str,
-) -> ExecutionSession | None:
+) -> tuple[ExecutionSession | None, bool]:
     row = await session.get(ExecutionSession, session_id)
     if row is None:
-        return None
+        return None, False
 
     status_key = func.lower(func.coalesce(ExecutionSessionLeg.status, ""))
     side_key = func.lower(func.coalesce(ExecutionSessionLeg.side, ""))
@@ -6530,23 +6520,132 @@ async def _refresh_execution_session_rollups(
         )
     ).one()
 
-    row.legs_total = safe_int(rollup_row.legs_total, 0)
-    row.legs_completed = safe_int(rollup_row.legs_completed, 0)
-    row.legs_failed = safe_int(rollup_row.legs_failed, 0)
-    row.legs_open = safe_int(rollup_row.legs_open, 0)
-    row.executed_notional_usd = safe_float(rollup_row.executed_notional_usd, 0.0)
     buy_notional = safe_float(rollup_row.buy_notional_usd, 0.0)
     sell_notional = safe_float(rollup_row.sell_notional_usd, 0.0)
-    row.unhedged_notional_usd = abs(buy_notional - sell_notional)
-    row.updated_at = _now()
+    changed = _assign_execution_session_rollups(
+        row,
+        legs_total=safe_int(rollup_row.legs_total, 0),
+        legs_completed=safe_int(rollup_row.legs_completed, 0),
+        legs_failed=safe_int(rollup_row.legs_failed, 0),
+        legs_open=safe_int(rollup_row.legs_open, 0),
+        executed_notional_usd=safe_float(rollup_row.executed_notional_usd, 0.0),
+        unhedged_notional_usd=abs(buy_notional - sell_notional),
+    )
     await session.flush()
-    return row
+    return row, changed
+
+
+def _assign_execution_session_rollups(
+    row: ExecutionSession,
+    *,
+    legs_total: int,
+    legs_completed: int,
+    legs_failed: int,
+    legs_open: int,
+    executed_notional_usd: float,
+    unhedged_notional_usd: float,
+) -> bool:
+    """Assign rollup fields to ``row`` only where the value actually moved.
+
+    Returns True iff a persisted field changed (and, in that case, bumps
+    ``updated_at``). Idempotent reconciliation/recovery passes recompute the
+    same rollups every cycle; assigning unconditionally marked the row dirty
+    and forced a no-op UPDATE + WAL fsync each time (the 20h soak showed ~14
+    such dirty ``execution_sessions`` per ``_authority_recovery`` cycle and the
+    same churn on the frequent ``_reconcile_live_state_for_trader`` path). Float
+    notionals use a small tolerance so deterministic recompute / SQL-SUM
+    representation noise does not register as a change.
+    """
+    changed = False
+    if int(row.legs_total or 0) != int(legs_total):
+        row.legs_total = int(legs_total)
+        changed = True
+    if int(row.legs_completed or 0) != int(legs_completed):
+        row.legs_completed = int(legs_completed)
+        changed = True
+    if int(row.legs_failed or 0) != int(legs_failed):
+        row.legs_failed = int(legs_failed)
+        changed = True
+    if int(row.legs_open or 0) != int(legs_open):
+        row.legs_open = int(legs_open)
+        changed = True
+    if row.executed_notional_usd is None or abs(
+        float(row.executed_notional_usd) - float(executed_notional_usd)
+    ) > 1e-6:
+        row.executed_notional_usd = float(executed_notional_usd)
+        changed = True
+    if row.unhedged_notional_usd is None or abs(
+        float(row.unhedged_notional_usd) - float(unhedged_notional_usd)
+    ) > 1e-6:
+        row.unhedged_notional_usd = float(unhedged_notional_usd)
+        changed = True
+    if changed:
+        row.updated_at = _now()
+    return changed
+
+
+def _finalize_execution_session_status(
+    row: ExecutionSession,
+    *,
+    now: datetime,
+    all_failed_message: str,
+    partial_failed_message: str,
+) -> bool:
+    """Derive the terminal/working session status from current rollup counts.
+
+    Shared by the authority-recovery and provider-reconciliation finalizers
+    (previously two near-identical inline blocks). Only mutates
+    status/error_message/completed_at — and bumps ``updated_at`` — when a value
+    actually changes; returns True iff a persisted field changed.
+    """
+    previous_status = _normalize_status_key(row.status)
+    next_status = previous_status
+    legs_open = int(row.legs_open or 0)
+    legs_completed = int(row.legs_completed or 0)
+    legs_failed = int(row.legs_failed or 0)
+    new_error_message = row.error_message
+    new_completed_at = row.completed_at
+    if legs_open <= 0:
+        if legs_completed > 0 and legs_failed == 0:
+            next_status = "completed"
+            new_error_message = None
+        elif legs_completed == 0 and legs_failed > 0:
+            next_status = "failed"
+            if not new_error_message:
+                new_error_message = all_failed_message
+        elif legs_completed > 0 and legs_failed > 0:
+            next_status = "failed"
+            if not new_error_message:
+                new_error_message = partial_failed_message
+    elif previous_status in {"pending", "placing", "partial", "hedging"}:
+        next_status = "working"
+    if next_status in TERMINAL_EXECUTION_SESSION_STATUSES and new_completed_at is None:
+        new_completed_at = now
+
+    changed = False
+    if _normalize_status_key(next_status) != previous_status:
+        row.status = next_status
+        changed = True
+    if new_error_message != row.error_message:
+        row.error_message = new_error_message
+        changed = True
+    if new_completed_at != row.completed_at:
+        row.completed_at = new_completed_at
+        changed = True
+    if changed:
+        row.updated_at = now
+    return changed
 
 
 def _apply_execution_session_rollups_from_rows(
     row: ExecutionSession,
     leg_rows: list[ExecutionSessionLeg],
-) -> None:
+) -> bool:
+    """Recompute session rollups from in-memory leg rows.
+
+    Returns True iff a persisted field changed (see
+    ``_assign_execution_session_rollups`` for the no-op-write rationale).
+    """
     failed_statuses = {"failed", "cancelled", "expired"}
     open_statuses = {"open", "submitted", "placing", "working", "partial", "hedging", "pending"}
     legs_total = 0
@@ -6574,13 +6673,15 @@ def _apply_execution_session_rollups_from_rows(
         else:
             buy_notional_usd += leg_notional
 
-    row.legs_total = legs_total
-    row.legs_completed = legs_completed
-    row.legs_failed = legs_failed
-    row.legs_open = legs_open
-    row.executed_notional_usd = executed_notional_usd
-    row.unhedged_notional_usd = abs(buy_notional_usd - sell_notional_usd)
-    row.updated_at = _now()
+    return _assign_execution_session_rollups(
+        row,
+        legs_total=legs_total,
+        legs_completed=legs_completed,
+        legs_failed=legs_failed,
+        legs_open=legs_open,
+        executed_notional_usd=executed_notional_usd,
+        unhedged_notional_usd=abs(buy_notional_usd - sell_notional_usd),
+    )
 
 
 def build_execution_session_rows(
@@ -6933,7 +7034,7 @@ async def update_execution_leg(
         row.metadata_json = merged
     row.updated_at = _now()
 
-    session_row = await _refresh_execution_session_rollups(session, session_id=row.session_id)
+    session_row, _ = await _refresh_execution_session_rollups(session, session_id=row.session_id)
     if commit:
         await _commit_with_retry(session)
         await session.refresh(row)
@@ -8342,37 +8443,23 @@ async def reconcile_live_provider_orders(
     if touched_session_ids:
         await session.flush()
     for session_id in touched_session_ids:
-        session_row = await _refresh_execution_session_rollups(session, session_id=session_id)
+        session_row, rollup_changed = await _refresh_execution_session_rollups(session, session_id=session_id)
         if session_row is None:
             continue
         previous_session_status = _normalize_status_key(session_row.status)
-        next_session_status = previous_session_status
-        legs_open = int(session_row.legs_open or 0)
-        legs_completed = int(session_row.legs_completed or 0)
-        legs_failed = int(session_row.legs_failed or 0)
-        if legs_open <= 0:
-            if legs_completed > 0 and legs_failed == 0:
-                next_session_status = "completed"
-                session_row.error_message = None
-            elif legs_completed == 0 and legs_failed > 0:
-                next_session_status = "failed"
-                if not session_row.error_message:
-                    session_row.error_message = "All execution legs failed during provider reconciliation."
-            elif legs_completed > 0 and legs_failed > 0:
-                next_session_status = "failed"
-                if not session_row.error_message:
-                    session_row.error_message = "Execution session closed with partial fills and failed legs."
-        elif previous_session_status in {"pending", "placing", "partial", "hedging"}:
-            next_session_status = "working"
-
-        if next_session_status in TERMINAL_EXECUTION_SESSION_STATUSES and session_row.completed_at is None:
-            session_row.completed_at = now
-        session_row.status = next_session_status
-        session_row.updated_at = now
-        updated_sessions += 1
-        if next_session_status != previous_session_status:
-            session_status_changes += 1
-        updated_execution_session_rows[str(session_row.id)] = session_row
+        status_changed = _finalize_execution_session_status(
+            session_row,
+            now=now,
+            all_failed_message="All execution legs failed during provider reconciliation.",
+            partial_failed_message="Execution session closed with partial fills and failed legs.",
+        )
+        # Skip no-op rewrites: only count/enroll sessions whose rollup or status
+        # actually moved this reconciliation pass.
+        if rollup_changed or status_changed:
+            updated_sessions += 1
+            if _normalize_status_key(session_row.status) != previous_session_status:
+                session_status_changes += 1
+            updated_execution_session_rows[str(session_row.id)] = session_row
 
     if commit and (
         updated_orders > 0
@@ -9700,7 +9787,7 @@ async def cleanup_trader_open_orders(
             for session_id in sorted(touched_session_ids):
                 if not session_id:
                     continue
-                session_row = await _refresh_execution_session_rollups(session, session_id=session_id)
+                session_row, _ = await _refresh_execution_session_rollups(session, session_id=session_id)
                 if session_row is None:
                     continue
                 session_status_key = _normalize_status_key(session_row.status)

@@ -5,6 +5,7 @@ Handles cleanup of old trades, expiration of stale data, and database maintenanc
 """
 
 import asyncio
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -30,6 +31,21 @@ from services.market_cache import market_cache_service
 from utils.logger import get_logger
 
 logger = get_logger("maintenance")
+
+# Telemetry tables converted to native daily RANGE partitioning (see the
+# partition hook in models.database + migration 202606150002).  Retention for
+# these is DROP PARTITION via ``maintain_partitions`` — never DELETE.
+_PARTITIONED_TELEMETRY = (
+    ("trade_signal_emissions", True),    # (table, unlogged)
+    ("trader_decision_checks", False),
+)
+_PARTITION_AHEAD_DAYS = 3
+_PARTITION_RELOPTIONS = (
+    "autovacuum_vacuum_threshold = 10000",
+    "autovacuum_vacuum_scale_factor = 0.05",
+    "autovacuum_analyze_threshold = 5000",
+    "autovacuum_analyze_scale_factor = 0.02",
+)
 
 
 class MaintenanceService:
@@ -729,6 +745,24 @@ LIMIT 20
                 "event_type": event_type,
             }
 
+        # Unfiltered retention (the scheduled high-volume sweep) goes through the
+        # batched keyset pruner so a multi-million-row backlog never lands as one
+        # giant DELETE. The prior single-statement DELETE held a long lock, spiked
+        # WAL, and produced a dead-tuple burst on this 1M+-row table. The rare
+        # filtered admin path (source / event_type) keeps the direct DELETE.
+        if not source and not event_type:
+            pruned = await self._prune_table_by_age(
+                "trade_signal_emissions", "created_at", older_than_days, batch_size=10000
+            )
+            return {
+                "status": pruned.get("status", "success"),
+                "trade_signal_emissions_deleted": int(pruned.get("trade_signal_emissions_deleted", 0)),
+                "older_than_days": int(older_than_days),
+                "source": None,
+                "event_type": None,
+                "capped": bool(pruned.get("capped", False)),
+            }
+
         cutoff_date = utcnow() - timedelta(days=older_than_days)
         conditions = [TradeSignalEmission.created_at < cutoff_date]
         if source:
@@ -1189,19 +1223,6 @@ RETURNING target.id
         """Delete smart-money wallet monitor events older than the window."""
         return await self._prune_table_by_age(
             "wallet_monitor_events", "detected_at", older_than_days
-        )
-
-    async def cleanup_trader_decision_checks(
-        self, older_than_days: int = DEFAULT_TRADER_DECISION_CHECKS_AGE
-    ) -> dict:
-        """Delete per-decision gate-audit rows older than the window.
-
-        Independent of ``cleanup_trader_decisions`` — checks carry their own
-        ``created_at`` and a CASCADE FK to trader_decisions, so deleting a
-        check never affects its parent decision.
-        """
-        return await self._prune_table_by_age(
-            "trader_decision_checks", "created_at", older_than_days, batch_size=10000
         )
 
     async def cleanup_trader_decisions(
@@ -1678,7 +1699,8 @@ RETURNING target.id
             ext_results: dict = {}
             for label, fn, days in (
                 ("wallet_monitor_events", self.cleanup_wallet_monitor_events, ext_cfg["wallet_monitor_events_days"]),
-                ("trader_decision_checks", self.cleanup_trader_decision_checks, ext_cfg["trader_decision_checks_days"]),
+                # trader_decision_checks retention is now DROP PARTITION
+                # (maintain_partitions), not a DELETE sweep.
                 ("trader_decisions", self.cleanup_trader_decisions, ext_cfg["trader_decisions_days"]),
                 ("opportunity_history", self.cleanup_opportunity_history, ext_cfg["opportunity_history_days"]),
             ):
@@ -1704,17 +1726,9 @@ RETURNING target.id
             logger.warning("Trade signal update cleanup failed during full maintenance run", error=str(e))
             results["trade_signal_updates"] = {"status": "error", "error": str(e)}
 
-        # 7. Prune old trade signal emission history.
-        try:
-            emission_retention_days = trade_signal_emission_days
-            if emission_retention_days is None:
-                emission_retention_days = int(high_volume_cfg["trade_signal_emission_days"])
-            results["trade_signal_emissions"] = await self.cleanup_trade_signal_emissions(
-                older_than_days=int(emission_retention_days),
-            )
-        except Exception as e:
-            logger.warning("Trade signal emission cleanup failed during full maintenance run", error=str(e))
-            results["trade_signal_emissions"] = {"status": "error", "error": str(e)}
+        # 7. trade_signal_emissions full-retention is now DROP PARTITION
+        # (maintain_partitions), not a DELETE sweep.  The shorter upsert_update
+        # prune above (section 6) remains a within-partition filtered DELETE.
 
         # 7b. Prune aged trade signals (emissions FK-reference them; must run after
         # the emissions cleanup so newer emissions don't block deletion).
@@ -1847,9 +1861,189 @@ RETURNING target.id
 
         logger.info("Background cleanup task stopped")
 
+    async def start_partition_maintenance(self, interval_minutes: int = 60):
+        """Maintain the partitioned telemetry tables: create upcoming daily
+        partitions ahead of time and DROP partitions older than the retention
+        window.
+
+        This replaces DELETE-based retention for ``trade_signal_emissions`` /
+        ``trader_decision_checks`` with O(1) partition drops — no DELETE storm,
+        no dead-tuple churn, no vacuum, and a footprint that stays flat no matter
+        how long the app runs (the 20h-soak growth slope becomes structurally
+        impossible). Retention *windows* (days) stay operator-tunable from the
+        Settings UI (``_high_volume_cleanup_settings`` /
+        ``_extended_retention_settings``); only the cadence is process-local
+        (``MAINTENANCE_HIGH_VOLUME_RETENTION_MINUTES``).
+        """
+        self._hv_running = True
+        interval_seconds = max(60.0, float(interval_minutes) * 60.0)
+        logger.info("Starting partition-maintenance loop", interval_minutes=interval_minutes)
+        # Run an immediate pass at boot so today's partition always exists before
+        # inserts arrive, then settle into the cadence.
+        first = True
+        while self._hv_running:
+            try:
+                result = await self.maintain_partitions()
+                if first:
+                    logger.info("Initial partition-maintenance pass complete", result=result)
+                    first = False
+            except asyncio.CancelledError:
+                logger.info("Partition-maintenance loop cancelled")
+                break
+            except Exception as e:
+                logger.warning("Partition-maintenance pass failed", error=str(e))
+            await asyncio.sleep(interval_seconds)
+            if not self._hv_running:
+                break
+        logger.info("Partition-maintenance loop stopped")
+
+    async def maintain_partitions(self) -> dict:
+        """Create-ahead + drop-expired daily partitions for the partitioned
+        telemetry tables. No-op for any table not yet partitioned (pre-cutover).
+        """
+        today = utcnow().date()
+        hv = await self._high_volume_cleanup_settings()
+        ext = await self._extended_retention_settings()
+        retention_by_table = {
+            "trade_signal_emissions": max(1, int(hv["trade_signal_emission_days"])),
+            "trader_decision_checks": max(1, int(ext["trader_decision_checks_days"])),
+        }
+        results: dict = {}
+        for table, unlogged in _PARTITIONED_TELEMETRY:
+            retention_days = retention_by_table[table]
+            persist = "UNLOGGED " if unlogged else ""
+            try:
+                async with AsyncSessionLocal() as session:
+                    # Cast to text: asyncpg returns pg's "char" type as bytes
+                    # (b'p'), which would never == the str "p".
+                    relkind = await session.scalar(
+                        text("SELECT relkind::text FROM pg_class WHERE relname = :t"), {"t": table}
+                    )
+                    if relkind != "p":
+                        results[table] = {"status": "not_partitioned"}
+                        continue
+                    created = 0
+                    day = today - timedelta(days=retention_days)
+                    end = today + timedelta(days=_PARTITION_AHEAD_DAYS)
+                    while day <= end:
+                        if await self._ensure_daily_partition(session, table, day, persist):
+                            created += 1
+                        # Commit per day so the parent's brief ACCESS EXCLUSIVE
+                        # (and any DEFAULT-drain) is released promptly.
+                        await session.commit()
+                        day += timedelta(days=1)
+                    dropped = await self._drop_expired_partitions(
+                        session, table, cutoff_day=today - timedelta(days=retention_days)
+                    )
+                    await session.commit()
+                    results[table] = {
+                        "created": created,
+                        "dropped": dropped,
+                        "retention_days": retention_days,
+                    }
+            except Exception as exc:
+                logger.warning("Partition maintenance failed", table=table, error=str(exc))
+                results[table] = {"status": "error", "error": str(exc)}
+        return results
+
+    async def _ensure_daily_partition(self, session, table: str, day, persist: str) -> bool:
+        """Create the ``table_YYYYMMDD`` partition for ``day`` if missing.
+
+        Returns True iff it created one. If the DEFAULT partition already holds
+        rows for ``day`` (the lifecycle fell behind), drains them into the new
+        partition first (detach -> create -> move -> reattach) so the create
+        cannot fail on overlapping DEFAULT rows.
+        """
+        pname = f"{table}_{day.strftime('%Y%m%d')}"
+        exists = await session.scalar(
+            text("SELECT 1 FROM pg_class WHERE relname = :p"), {"p": pname}
+        )
+        if exists:
+            return False
+        next_day = day + timedelta(days=1)
+        lo = day.strftime("%Y-%m-%d")          # DDL range-bound literals
+        hi = next_day.strftime("%Y-%m-%d")
+        # asyncpg binds parameters by type — created_at is a timestamp, so the
+        # WHERE bounds must be datetimes (not the strings used in DDL literals).
+        lo_dt = datetime.combine(day, datetime.min.time())
+        hi_dt = datetime.combine(next_day, datetime.min.time())
+        default_name = f"{table}_default"
+        has_default_rows = await session.scalar(
+            text(
+                f"SELECT 1 FROM {default_name} "
+                f"WHERE created_at >= :lo AND created_at < :hi LIMIT 1"
+            ),
+            {"lo": lo_dt, "hi": hi_dt},
+        )
+        if not has_default_rows:
+            await session.execute(
+                text(
+                    f"CREATE {persist}TABLE {pname} PARTITION OF {table} "
+                    f"FOR VALUES FROM ('{lo}') TO ('{hi}')"
+                )
+            )
+        else:
+            await session.execute(text(f"ALTER TABLE {table} DETACH PARTITION {default_name}"))
+            await session.execute(
+                text(
+                    f"CREATE {persist}TABLE {pname} PARTITION OF {table} "
+                    f"FOR VALUES FROM ('{lo}') TO ('{hi}')"
+                )
+            )
+            await session.execute(
+                text(
+                    f"WITH moved AS ("
+                    f"DELETE FROM {default_name} "
+                    f"WHERE created_at >= :lo AND created_at < :hi RETURNING *"
+                    f") INSERT INTO {table} SELECT * FROM moved"
+                ),
+                {"lo": lo_dt, "hi": hi_dt},
+            )
+            await session.execute(
+                text(f"ALTER TABLE {table} ATTACH PARTITION {default_name} DEFAULT")
+            )
+            logger.warning(
+                "Partition DEFAULT-drain executed (lifecycle had fallen behind)",
+                table=table,
+                day=lo,
+            )
+        await session.execute(
+            text(f"ALTER TABLE {pname} SET ({', '.join(_PARTITION_RELOPTIONS)})")
+        )
+        return True
+
+    async def _drop_expired_partitions(self, session, table: str, *, cutoff_day) -> int:
+        """DROP every ``table_YYYYMMDD`` partition whose entire day is older than
+        ``cutoff_day``. Never touches the DEFAULT partition or non-daily children.
+        """
+        rows = await session.execute(
+            text(
+                "SELECT child.relname FROM pg_inherits "
+                "JOIN pg_class parent ON parent.oid = pg_inherits.inhparent "
+                "JOIN pg_class child ON child.oid = pg_inherits.inhrelid "
+                "WHERE parent.relname = :t"
+            ),
+            {"t": table},
+        )
+        dropped = 0
+        pattern = re.compile(rf"^{re.escape(table)}_(\d{{8}})$")
+        for (relname,) in rows.fetchall():
+            m = pattern.match(relname)
+            if not m:
+                continue
+            try:
+                pday = datetime.strptime(m.group(1), "%Y%m%d").date()
+            except ValueError:
+                continue
+            if pday < cutoff_day:
+                await session.execute(text(f"DROP TABLE IF EXISTS {relname}"))
+                dropped += 1
+        return dropped
+
     def stop(self):
         """Stop the background cleanup task"""
         self._running = False
+        self._hv_running = False
 
 
 # Singleton instance
