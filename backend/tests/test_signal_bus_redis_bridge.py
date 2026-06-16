@@ -48,6 +48,29 @@ def _reset_bridge_state():
     signal_bus_redis_bridge._dedup._seen_at.clear()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_runtime_queues():
+    """Give each bridge test its own loop-bound runtime_signal_queue lanes.
+
+    These tests call ``bridge._bridge_emission`` / ``_bridge_batch`` ->
+    ``publish_signal_batch``, which enqueues onto the module-level
+    ``runtime_signal_queue._queues`` (per-lane ``asyncio.Queue`` objects). Left
+    unswapped, those leftover items — bound to this test's event loop — leak into
+    later tests (e.g. ``test_trader_orchestrator_worker`` reads
+    ``get_queue_depth`` in ``run_worker_loop``). Swap in fresh lanes and restore
+    the originals afterward (mirrors the fixture in
+    ``test_in_process_runtime_delivery``).
+    """
+    from services import runtime_signal_queue as _rsq
+
+    original = _rsq._queues
+    _rsq._queues = {lane: asyncio.Queue() for lane in _rsq._LANES}
+    try:
+        yield
+    finally:
+        _rsq._queues = original
+
+
 @pytest.mark.asyncio
 async def test_dedup_remembers_added_ids():
     dedup = signal_bus_redis_bridge._dedup

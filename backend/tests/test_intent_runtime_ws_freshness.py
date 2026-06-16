@@ -491,6 +491,11 @@ async def test_project_upserts_scopes_source_sweep_by_strategy_type(monkeypatch)
 
     expire_mock = AsyncMock(return_value=0)
     monkeypatch.setattr("services.intent_runtime.AsyncSessionLocal", lambda: _SessionContext())
+    # The projection's existing-row skip check rides the dedicated projection
+    # pool (_projection_session -> ProjectionAsyncSessionLocal); patch it too so
+    # it doesn't hit a real DB (mirrors the sibling tests in this file). Without
+    # this the test only passed against a DB that already had trade_signals.
+    monkeypatch.setattr("services.intent_runtime.ProjectionAsyncSessionLocal", lambda: _SessionContext())
     monkeypatch.setattr("services.intent_runtime.upsert_trade_signal", _upsert_trade_signal)
     monkeypatch.setattr("services.intent_runtime.expire_source_signals_except", expire_mock)
 
