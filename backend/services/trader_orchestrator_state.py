@@ -9475,7 +9475,22 @@ async def cleanup_trader_open_orders(
     else:
         raise ValueError("scope must be one of: shadow, live, all")
 
-    query = select(TraderOrder).where(TraderOrder.trader_id == trader_id).where(_visible_trader_order_query_clause())
+    # Push the status filter into SQL (mirrors get_open_position_count_for_trader
+    # above).  Only CLEANUP_ELIGIBLE statuses can ever become candidates — the
+    # Python loop below discards every other status anyway — so loading a
+    # trader's full order history (up to ~10K mostly-"skipped" rows, each
+    # detoasting a ~3 KB payload_json) was pure waste and the single biggest
+    # DB-time consumer in the soak.  Bounding to genuinely-open statuses uses
+    # idx_trader_orders_trader_mode_status and cuts the scan from ~10K rows to
+    # the handful of live/open orders.  _normalize_status_key is strip().lower(),
+    # equivalent to lower(trim(...)) here, so this changes no row semantics.
+    cleanup_status_expr = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
+    query = (
+        select(TraderOrder)
+        .where(TraderOrder.trader_id == trader_id)
+        .where(cleanup_status_expr.in_(tuple(CLEANUP_ELIGIBLE_ORDER_STATUSES)))
+        .where(_visible_trader_order_query_clause())
+    )
     rows = list((await session.execute(query)).scalars().all())
     source_filter = normalize_source_key(source) if source is not None else ""
     cutoff: Optional[datetime] = None
@@ -10433,8 +10448,17 @@ async def get_unrealized_pnl(
     """
     from services.live_price_snapshot import get_live_mid_prices
 
-    # Gather active orders with entry prices and token IDs
-    query = select(TraderOrder).where(_visible_trader_order_query_clause())
+    # Gather active orders with entry prices and token IDs.  Push the active-
+    # status filter into SQL: the Python loop below keeps only rows passing
+    # _is_active_order_status, whose per-mode sets are all OPEN_ORDER_STATUSES,
+    # so this is semantically identical but avoids loading + detoasting a
+    # trader's entire order history (up to ~10K mostly-"skipped" rows).
+    pnl_status_expr = func.lower(func.trim(func.coalesce(TraderOrder.status, "")))
+    query = (
+        select(TraderOrder)
+        .where(pnl_status_expr.in_(tuple(OPEN_ORDER_STATUSES)))
+        .where(_visible_trader_order_query_clause())
+    )
     if trader_id:
         query = query.where(TraderOrder.trader_id == trader_id)
     if mode is not None:
