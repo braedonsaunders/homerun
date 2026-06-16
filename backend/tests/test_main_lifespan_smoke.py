@@ -69,21 +69,15 @@ def test_app_is_fastapi_with_routes() -> None:
     import main
 
     assert isinstance(main.app, FastAPI)
-    # The current app registers ~500 routes; assert a generous lower bound so
-    # this test doesn't churn every time a router is added. Newer Starlette keeps
-    # each ``include_router`` as a nested ``_IncludedRouter`` in ``app.routes``
-    # (no top-level ``.path``) rather than flattening, so count recursively to
-    # stay robust across Starlette versions.
-    def _flatten(routes):
-        for r in routes:
-            yield r
-            sub = getattr(r, "routes", None)
-            if sub:
-                yield from _flatten(sub)
-
-    route_count = sum(1 for r in _flatten(main.app.routes) if hasattr(r, "path"))
-    assert route_count > 100, (
-        f"FastAPI app has only {route_count} routes — likely a router "
+    # The current app registers ~460 OpenAPI paths; assert a generous lower bound
+    # so this test doesn't churn when a router is added. Use the OpenAPI schema
+    # (FastAPI's canonical route enumeration) rather than walking app.routes:
+    # Starlette versions differ in how included routers are nested there (newer
+    # ones keep opaque _IncludedRouter wrappers with no top-level ``.path`` /
+    # ``.routes``), but ``openapi()`` always reflects the real registered paths.
+    path_count = len(main.app.openapi().get("paths", {}))
+    assert path_count > 100, (
+        f"FastAPI app exposes only {path_count} OpenAPI paths — likely a router "
         f"include block raised during import and was swallowed"
     )
 
