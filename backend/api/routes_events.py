@@ -25,7 +25,7 @@ from services.data_source_runner import run_data_source_by_slug
 from services.worker_state import read_worker_snapshot
 
 from utils.converters import to_iso
-from utils.utcnow import utcnow
+from utils.utcnow import as_utc, utcnow
 
 router = APIRouter(tags=["events"])
 logger = logging.getLogger(__name__)
@@ -1634,9 +1634,12 @@ async def get_events_status(
     lag_seconds = None
     stale = False
     if last_scan is not None:
+        # ``_parse_iso`` returns a naive-UTC datetime while ``utcnow()`` is
+        # timezone-aware; normalize both through ``as_utc`` so the subtraction
+        # never trips "can't subtract offset-naive and offset-aware datetimes".
         lag_seconds = max(
             0.0,
-            (utcnow() - last_scan).total_seconds(),
+            (as_utc(utcnow()) - as_utc(last_scan)).total_seconds(),
         )
         stale_after = max(interval_seconds * 2, 900)
         stale = lag_seconds > stale_after

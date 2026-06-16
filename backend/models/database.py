@@ -4322,9 +4322,12 @@ class TraderOrder(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
-        Index("idx_trader_orders_created", "created_at"),
+        # idx_trader_orders_created / idx_trader_orders_trader_created were dropped
+        # in migration 202606160001: the first is prefix-redundant with
+        # idx_trader_orders_created_at_id (84 scans), the second was unused
+        # (0 scans) and redundant with idx_trader_orders_trader_mode_status.
+        # Removing them here keeps create_all == migration-chain (roundtrip).
         Index("idx_trader_orders_status", "status"),
-        Index("idx_trader_orders_trader_created", "trader_id", "created_at"),
         Index("idx_trader_orders_trader_mode_status", "trader_id", "mode", "status"),
     )
 

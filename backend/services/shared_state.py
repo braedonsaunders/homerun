@@ -30,6 +30,7 @@ from models.database import (
     ScannerRun,
     OpportunityState,
     ScannerSloIncident,
+    apply_telemetry_async_commit,
     release_conn,
 )
 from models.opportunity import Opportunity, OpportunityFilter
@@ -217,6 +218,10 @@ async def _project_scanner_state(
                 session,
                 statement_timeout_ms=_SCANNER_STATE_PROJECTION_STATEMENT_TIMEOUT_MS,
             )
+            # The scanner-state projection is a snapshot of in-memory scanner
+            # state, fully re-projected every scan cycle — async commit keeps it
+            # off the group-commit fsync path without risking durable data.
+            await apply_telemetry_async_commit(session)
             event_messages = await _persist_incremental_state(session, payload, status, completed_at)
             await _commit_with_retry(session)
             return event_messages

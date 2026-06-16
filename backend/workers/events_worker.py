@@ -19,6 +19,7 @@ from models.database import (
     DataSource,
     EventsSignal,
     EventsSnapshot,
+    apply_telemetry_async_commit,
     recover_pool,
 )
 from services.data_events import DataEvent, EventType
@@ -277,6 +278,10 @@ async def _persist_signals(signals: list[dict[str, Any]]) -> int:
         try:
             persisted = 0
             async with AsyncSessionLocal() as session:
+                # EventsSignal rows are reconstructible from the events
+                # firehose — async commit keeps them off the group-commit
+                # fsync critical path (no money-path durability impact).
+                await apply_telemetry_async_commit(session)
                 rows = []
                 for signal in signals:
                     signal_id = str(signal.get("signal_id") or "").strip()
@@ -361,6 +366,10 @@ async def _write_snapshot(
     for attempt in range(1, max_attempts + 1):
         try:
             async with AsyncSessionLocal() as session:
+                # The EventsSnapshot "latest" row is a single rolling status
+                # blob, fully reconstructed every write — async commit keeps it
+                # off the fsync critical path.
+                await apply_telemetry_async_commit(session)
                 existing = None
                 if preserve_existing:
                     existing = await session.get(EventsSnapshot, "latest")
