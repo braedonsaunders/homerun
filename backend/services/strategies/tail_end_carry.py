@@ -234,6 +234,17 @@ class TailEndCarryStrategy(BaseStrategy):
         # and the trailing stop locks in losses on temporary adverse scores.
         # Totals are excluded by keyword because they have the same gap risk.
         "block_spread_markets": True,
+        # Discrete-event player-prop gate (structural, not keyword-based).
+        # Individual-player props ("X: 1+ goals", "X: 3+ goals", "to score",
+        # anytime-scorer, etc.) resolve on a SINGLE intra-window event that can
+        # gap the price to 0/1 at any moment — the carry premium is a few cents
+        # but the jump loss is near-full-notional, and NO time-based exit can
+        # protect against an intra-game goal. A tail-carry (short-gamma) book
+        # must not warehouse this unhedgeable jump risk. Identified structurally
+        # via Market.sports_market_type == "props" (same precedent as
+        # block_spread_markets for "spreads"). Toggleable for operators who
+        # want to opt back in with their own protection.
+        "block_sports_props": True,
         "panic_drop_threshold": 0.08,
         "panic_window_points": 6,
         "panic_recovery_ratio_max": 0.20,
@@ -245,7 +256,15 @@ class TailEndCarryStrategy(BaseStrategy):
         "inversion_price_threshold": 0.50,
         "trailing_stop_enabled": True,
         "trailing_stop_pct": 12.0,
-        "sports_inversion_stop_enabled": False,
+        # Re-enabled: the inversion stop is the ONLY instantaneous price-level
+        # trigger (fires the moment the mark crosses the floor, no prior-high or
+        # multi-sample window needed) — i.e. the only stop that can react to a
+        # discrete-event gap. Disabling it for sports (the jump-riskiest class)
+        # was a miscalibrated blanket "loosen all sports defaults" choice with
+        # no measured whipsaw rationale; it left sports gaps caught only by
+        # REACTIVE stops that exit near the bottom. It is the instantaneous
+        # backstop for any sports position the props/spread gates still admit.
+        "sports_inversion_stop_enabled": True,
         "sports_trailing_stop_pct": 30.0,
         # ----------------------------------------------------------------
         # Time-weighted exit shaping (#1, #2, #3)
@@ -306,7 +325,14 @@ class TailEndCarryStrategy(BaseStrategy):
         # carry-to-resolution; default, to preserve existing edge until the
         # operator opts in).  Sports markets use the sports value when set.
         "pre_resolution_force_exit_minutes": 0.0,
-        "sports_pre_resolution_force_exit_minutes": 0.0,
+        # Armed for sports: the remaining admitted sports markets (moneyline /
+        # totals, after props + spreads are gated at entry) still carry binary
+        # gap risk at the resolution instant. Exit ~10m before resolution while
+        # still tradable — the last-minutes carry on a >=0.9 favorite is a few
+        # cents while the gap loss is near-full-notional. Non-sports (e.g.
+        # temperature) resolve gradually, so their value stays 0 (carry-to-
+        # resolution). Tunable by operators.
+        "sports_pre_resolution_force_exit_minutes": 10.0,
         # Exit-trigger mark basis.  "liquidation_vwap" (default) prices
         # stops/take-profits off the realizable bid-side VWAP to clear the
         # position's shares — what we could ACTUALLY exit at — instead of
@@ -592,6 +618,7 @@ class TailEndCarryStrategy(BaseStrategy):
         panic_window_points = max(3, int(safe_float(cfg.get("panic_window_points"), 6)))
         panic_recovery_ratio_max = clamp(safe_float(cfg.get("panic_recovery_ratio_max"), 0.20), 0.0, 0.9)
         block_spread_markets = _is_bool_true(cfg.get("block_spread_markets", True))
+        block_sports_props = _is_bool_true(cfg.get("block_sports_props", True))
         skip_live_games = _is_bool_true(cfg.get("skip_live_games", True))
         live_game_buffer_minutes = max(0.0, safe_float(cfg.get("live_game_buffer_minutes"), 15.0))
         allow_taker_limit_buy_above_signal = _is_bool_true(cfg.get("allow_taker_limit_buy_above_signal", True))
@@ -613,6 +640,7 @@ class TailEndCarryStrategy(BaseStrategy):
             "panic_window_points": panic_window_points,
             "panic_recovery_ratio_max": panic_recovery_ratio_max,
             "block_spread_markets": block_spread_markets,
+            "block_sports_props": block_sports_props,
             "exclude_market_keywords": self._normalize_excluded_keywords(cfg.get("exclude_market_keywords")),
             "skip_live_games": skip_live_games,
             "live_game_buffer_minutes": live_game_buffer_minutes,
@@ -633,6 +661,7 @@ class TailEndCarryStrategy(BaseStrategy):
         category: str,
         blocked_keyword: str | None,
         is_spread: bool,
+        is_sports_prop: bool = False,
         liquidity: float,
         observed_spread: float,
         panic_guard_ok: bool,
@@ -661,6 +690,16 @@ class TailEndCarryStrategy(BaseStrategy):
                 "Not a spread market",
                 not is_spread,
                 detail="Spread markets blocked (volatile mid-game swings)" if is_spread else "ok",
+            ),
+            DecisionCheck(
+                "sports_prop_market",
+                "Not a discrete-event player prop",
+                not is_sports_prop,
+                detail=(
+                    "Player-prop blocked (intra-window goal/point gap risk)"
+                    if is_sports_prop
+                    else "ok"
+                ),
             ),
             DecisionCheck(
                 "keyword_block",
@@ -752,6 +791,7 @@ class TailEndCarryStrategy(BaseStrategy):
         panic_recovery_ratio_max = float(limits["panic_recovery_ratio_max"])
         excluded_keywords = self._normalize_excluded_keywords(cfg.get("exclude_market_keywords"))
         block_spread_markets = bool(limits["block_spread_markets"])
+        block_sports_props = bool(limits["block_sports_props"])
         skip_live_games = bool(limits["skip_live_games"])
         live_game_buffer_minutes = float(limits["live_game_buffer_minutes"])
         allow_taker_limit_buy_above_signal = bool(limits["allow_taker_limit_buy_above_signal"])
@@ -834,6 +874,9 @@ class TailEndCarryStrategy(BaseStrategy):
                     or self._is_spread_market(market_text)
                 )
             )
+            # Discrete-event player prop (intra-window jump risk) — structural,
+            # via Gamma's sports_market_type, not keyword matching.
+            is_sports_prop = bool(block_sports_props and sports_type == "props")
             liquidity = safe_float(getattr(market, "liquidity", 0.0))
             liquidity_ok = liquidity >= min_liquidity
             live_game_detected = bool(
@@ -888,6 +931,7 @@ class TailEndCarryStrategy(BaseStrategy):
                     category=category,
                     blocked_keyword=blocked_keyword,
                     is_spread=is_spread_market,
+                    is_sports_prop=is_sports_prop,
                     liquidity=liquidity,
                     observed_spread=spread,
                     panic_guard_ok=panic_guard_ok,
@@ -1102,6 +1146,21 @@ class TailEndCarryStrategy(BaseStrategy):
         if not is_spread:
             is_spread = self._is_spread_market(signal_text)
 
+        # Discrete-event player prop — structural, from the cached
+        # sports_market_type (set at detect time) or the signal payload.
+        is_sports_prop = False
+        if bool(limits.get("block_sports_props", True)):
+            sports_type = (
+                strategy_context.get("sports_market_type")
+                or payload.get("sports_market_type")
+            )
+            if not sports_type:
+                markets_list = payload.get("markets")
+                if isinstance(markets_list, list) and markets_list:
+                    m0 = markets_list[0] if isinstance(markets_list[0], dict) else {}
+                    sports_type = m0.get("sports_market_type")
+            is_sports_prop = sports_type == "props"
+
         checks = self._tail_end_checks(
             source=source,
             strategy_type=strategy_type,
@@ -1111,6 +1170,7 @@ class TailEndCarryStrategy(BaseStrategy):
             category=category,
             blocked_keyword=blocked_keyword,
             is_spread=is_spread,
+            is_sports_prop=is_sports_prop,
             liquidity=liquidity,
             observed_spread=observed_spread,
             panic_guard_ok=panic_guard_ok,
