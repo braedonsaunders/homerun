@@ -1,6 +1,7 @@
 import os
 import asyncio
 import signal
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -938,10 +939,33 @@ async def lifespan(app: FastAPI):
 
             matcher_ready = False
             try:
-                matcher_ready = await asyncio.wait_for(
-                    asyncio.to_thread(semantic_matcher.initialize),
-                    timeout=5.0,
-                )
+                # Use a daemon thread so that a slow ML model load (e.g. first
+                # import of torch on a cold CI machine) never blocks
+                # asyncio.run()'s shutdown_default_executor() call — non-daemon
+                # threads submitted via asyncio.to_thread() are waited for at
+                # exit and can exceed the lifespan smoke-test's 45 s budget.
+                _matcher_event = asyncio.Event()
+                _matcher_result: list = [False]
+                _matcher_loop = asyncio.get_running_loop()
+
+                def _init_matcher_thread() -> None:
+                    try:
+                        _matcher_result[0] = semantic_matcher.initialize()
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            _matcher_loop.call_soon_threadsafe(_matcher_event.set)
+                        except RuntimeError:
+                            pass  # loop already closed during shutdown
+
+                threading.Thread(
+                    target=_init_matcher_thread,
+                    daemon=True,
+                    name="semantic-matcher-init",
+                ).start()
+                await asyncio.wait_for(_matcher_event.wait(), timeout=5.0)
+                matcher_ready = _matcher_result[0]
             except asyncio.TimeoutError:
                 logger.warning(
                     "Semantic matcher initialization timed out; continuing in deferred mode",
