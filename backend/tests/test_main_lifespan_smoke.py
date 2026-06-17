@@ -112,7 +112,30 @@ async def test_lifespan_startup_and_shutdown_complete() -> None:
     Skips when no writable Postgres is reachable — the
     ``build_postgres_session_factory`` admin connect step would fail
     with a confusing ``ConnectionRefusedError`` otherwise.
+
+    Timeout budget
+    --------------
+    This is a *liveness / no-hang* smoke, not a performance gate.  A
+    genuine hang (a ``stop()`` that never returns, a deadlocked
+    startup) is **unbounded** — the subprocess simply never prints
+    ``LIFESPAN_OK`` — so any generous wall-clock ceiling catches it.
+    A *startup error* fails fast and independently of the timeout: the
+    child exits non-zero immediately and the ``returncode`` check below
+    fires, so a real regression is never masked by a larger budget.
+
+    The boot cost here is irreducible full-app work, not a migration
+    chain.  The throwaway DB has no ``alembic_version`` table, so
+    ``init_database`` takes the fresh-install bootstrap branch
+    (``Base.metadata.create_all`` + ``alembic stamp head``) — it does
+    NOT replay the ~130-migration chain.  Measured warm breakdown:
+    ``import main`` ~2.7 s, lifespan startup ~1.2 s, lifespan shutdown
+    ~3.5 s, ~8.4 s total.  A cold CI runner (cold FS cache, shared CPU,
+    cold import) runs the import+boot several times slower, which is
+    what pushed the old 45 s ceiling into intermittent false failures.
+    Hence a generous default (120 s), overridable via
+    ``LIFESPAN_SMOKE_TIMEOUT_S`` for unusually slow runners.
     """
+    timeout_s = float(os.environ.get("LIFESPAN_SMOKE_TIMEOUT_S", "120"))
     try:
         from models.database import Base  # noqa: F401
         from tests.postgres_test_db import build_postgres_session_factory
@@ -151,14 +174,17 @@ async def test_lifespan_startup_and_shutdown_complete() -> None:
         )
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=45.0
+                proc.communicate(), timeout=timeout_s
             )
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
             pytest.fail(
-                "lifespan smoke subprocess exceeded 45 s — startup or "
-                "shutdown is hanging"
+                f"lifespan smoke subprocess exceeded {timeout_s:.0f} s — "
+                "startup or shutdown is hanging (a slow boot is bounded at "
+                "tens of seconds; this budget is far above worst-case cold "
+                "boot, so blowing it means a true hang). Raise "
+                "LIFESPAN_SMOKE_TIMEOUT_S only for a genuinely slow runner."
             )
 
         if proc.returncode != 0:
