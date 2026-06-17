@@ -353,6 +353,14 @@ class Settings(BaseSettings):
     MAX_DAILY_TRADE_VOLUME: float = 1000.0  # Maximum daily trading volume
     MIN_ACCOUNT_BALANCE_USD: float = 0.0  # Keep this balance untouched for buys
     MIN_ORDER_SIZE_USD: float = 1.0  # Minimum order size
+    # When a live BUY would leave the in-memory collateral keeper with less
+    # than this much post-trade headroom (USD), re-confirm against a FRESH
+    # on-chain balance read before allowing the order.  The keeper can drift
+    # stale-HIGH between reconciles on a near-fully-deployed wallet (accumulated
+    # fees on prior fills aren't reserved), which submitted doomed orders the
+    # venue then rejected with "not enough balance".  Only triggers the extra
+    # chain probe at the margin (rare); 0 disables the guard.
+    LIVE_BUY_GATE_THIN_HEADROOM_USD: float = 5.0
 
     # CTF Redeemer Policy
     # ----------------------------------------------------------------
@@ -1020,6 +1028,7 @@ async def apply_search_filters():
         ("MAX_DAILY_TRADE_VOLUME", "max_daily_trade_volume", 1000.0),
         ("MAX_SLIPPAGE_PERCENT", "max_slippage_percent", 2.0),
         ("MIN_ACCOUNT_BALANCE_USD", "min_account_balance_usd", 0.0),
+        ("LIVE_BUY_GATE_THIN_HEADROOM_USD", "live_buy_gate_thin_headroom_usd", 5.0),
         # CTF Redeemer policy — see Settings class above for semantics.
         ("REDEEMER_MIN_PAYOUT_USD", "redeemer_min_payout_usd", None),
         ("REDEEMER_MAX_GAS_PRICE_GWEI", "redeemer_max_gas_price_gwei", None),

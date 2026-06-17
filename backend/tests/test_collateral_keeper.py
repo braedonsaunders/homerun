@@ -632,3 +632,64 @@ async def test_sell_order_does_not_touch_keeper(monkeypatch):
     )
     assert service._keeper_reserved_since_chain == Decimal("0")
     assert service._keeper_chain_available == Decimal("1000")
+
+
+# ---------------------------------------------------------------------------
+# Thin-headroom fresh-chain guard (LIVE_BUY_GATE_THIN_HEADROOM_USD)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_thin_headroom_rejects_when_fresh_chain_below_required(monkeypatch):
+    """Near-full deployment: keeper reads stale-HIGH, but a fresh chain read
+    shows the settled balance is below required -> reject (no doomed submit)."""
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
+    settings.LIVE_BUY_GATE_THIN_HEADROOM_USD = 5.0
+    service = _make_service(available=12.0, min_balance=0.0)
+    # First call bootstraps the keeper at chain_available=12.
+    ok, _ = await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    assert ok is True  # 12 >= 10 and fresh probe still 12
+    # Chain truth drops to 8 (a prior fill + fees settled); keeper still holds 12.
+    await _drive_balance(service, 8.0)
+    ok, err = await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    assert ok is False
+    assert "fresh on-chain balance below required" in (err or "")
+
+
+@pytest.mark.asyncio
+async def test_gate_thin_headroom_allows_when_fresh_chain_confirms(monkeypatch):
+    """Thin headroom but the fresh chain read confirms >= required -> allow."""
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
+    settings.LIVE_BUY_GATE_THIN_HEADROOM_USD = 5.0
+    service = _make_service(available=12.0, min_balance=0.0)
+    await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    ok, err = await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    assert ok is True and err is None
+
+
+@pytest.mark.asyncio
+async def test_gate_thin_headroom_does_not_block_on_probe_failure(monkeypatch):
+    """If the fresh chain probe is unreachable at thin headroom, don't block —
+    the venue-side gate at submit remains the backstop."""
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
+    settings.LIVE_BUY_GATE_THIN_HEADROOM_USD = 5.0
+    service = _make_service(available=12.0, min_balance=0.0)
+    await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    await _drive_balance(service, None)  # fresh probe returns {"error": ...}
+    ok, err = await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    assert ok is True and err is None
+
+
+@pytest.mark.asyncio
+async def test_gate_comfortable_headroom_skips_fresh_probe(monkeypatch):
+    """Comfortable headroom must NOT trigger the extra chain probe."""
+    monkeypatch.setenv("HOMERUN_COLLATERAL_KEEPER_ENABLED", "1")
+    settings.LIVE_BUY_GATE_THIN_HEADROOM_USD = 5.0
+    service = _make_service(available=1000.0, min_balance=0.0)
+    await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    # Replace get_balance with a raiser: comfortable headroom must not probe.
+    async def _raise(*, force_probe_all: bool = False):
+        raise AssertionError("fresh chain probe must not run at comfortable headroom")
+    service.get_balance = _raise  # type: ignore[assignment]
+    ok, err = await service._enforce_buy_pre_submit_gate(token_id="tok", required_notional_usd=Decimal("10"))
+    assert ok is True and err is None

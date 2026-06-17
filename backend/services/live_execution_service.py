@@ -2044,7 +2044,42 @@ class LiveExecutionService:
             # 4. The hot path: pure in-memory compare.
             effective = self._keeper_effective_available()
             if effective is not None and effective >= required_total_usdc:
-                return True, None
+                # Thin-headroom guard: the in-memory keeper can drift stale-HIGH
+                # between reconciles on a near-fully-deployed wallet (accumulated
+                # fees on prior fills are not reserved), which historically
+                # submitted doomed orders the venue rejected with "not enough
+                # balance". When this BUY would leave less than the configured
+                # post-trade headroom, re-confirm against a FRESH on-chain
+                # balance read before allowing it. Adds a chain probe ONLY at the
+                # margin (rare); comfortable steady-state headroom is unaffected.
+                # Read-only — does not mutate keeper state (the reconciler owns
+                # that), and the atomic reservation still owns concurrency, so a
+                # marginal pass here is still caught downstream.
+                thin_headroom_usd = max(ZERO, _to_decimal(settings.LIVE_BUY_GATE_THIN_HEADROOM_USD))
+                post_trade_headroom = effective - required_total_usdc
+                if thin_headroom_usd <= ZERO or post_trade_headroom >= thin_headroom_usd:
+                    return True, None
+                fresh_chain = await self._fresh_chain_available_or_none()
+                if fresh_chain is None or fresh_chain >= required_total_usdc:
+                    # Chain confirms sufficient, or is unreachable (don't block
+                    # trading on a probe failure — submit_leg is the backstop).
+                    return True, None
+                logger.info(
+                    "Buy pre-submit gate blocked at thin headroom by fresh chain read",
+                    token_id=token_key,
+                    required_total_usdc=str(required_total_usdc),
+                    keeper_effective_usdc=str(effective),
+                    fresh_chain_available_usdc=str(fresh_chain),
+                    thin_headroom_usd=str(thin_headroom_usd),
+                )
+                return False, (
+                    "BUY pre-submit gate failed: fresh on-chain balance below required at thin "
+                    f"keeper headroom. token_id={token_key} "
+                    f"required_total_usdc={required_total_usdc} "
+                    f"fresh_chain_available_usdc={fresh_chain} "
+                    f"keeper_effective_usdc={effective}. "
+                    "Wallet near fully deployed; chain reconciler will refresh on next tick."
+                )
 
             shortfall = max(ZERO, required_total_usdc - (effective or ZERO))
             post_trade_available = max(ZERO, (effective or ZERO) - required_usdc)
@@ -6340,6 +6375,26 @@ class LiveExecutionService:
         if chain is None:
             return None
         return max(ZERO, chain - max(ZERO, self._keeper_reserved_since_chain))
+
+    async def _fresh_chain_available_or_none(self) -> Optional[Decimal]:
+        """Force a fresh (uncached) on-chain collateral read; None on failure.
+
+        Used by the buy gate's thin-headroom guard to confirm a near-fully-
+        deployed wallet against chain truth. Read-only — does NOT mutate keeper
+        state (the background reconciler owns convergence). Returns the settled
+        on-chain available collateral, or None if the probe is unavailable.
+        """
+        try:
+            fresh = await self.get_balance(force_probe_all=True)
+        except Exception as exc:
+            logger.warning("Fresh chain balance probe failed in buy gate", exc_info=exc)
+            return None
+        if not isinstance(fresh, dict) or fresh.get("error"):
+            return None
+        avail = safe_float(fresh.get("available"))
+        if avail is None:
+            return None
+        return max(ZERO, _to_decimal(avail))
 
     async def _keeper_bootstrap_locked(self) -> bool:
         """Fetch the chain balance once and seed the keeper state.
