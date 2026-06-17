@@ -158,6 +158,84 @@ def test_tail_end_carry_min_liquidity_rejects_thin_market():
     assert result.detail.get("min_liquidity") == 1500.0
 
 
+def test_tail_end_carry_blocks_discrete_event_player_props():
+    from services.strategies.tail_end_carry import TailEndCarryStrategy
+
+    s = TailEndCarryStrategy()
+    limits = s._tail_end_limits(dict(s.default_config))
+    assert limits["block_sports_props"] is True
+
+    def _prop_check(is_prop):
+        checks = s._tail_end_checks(
+            source="scanner",
+            strategy_type="tail_end_carry",
+            signal_text="Bradley Barcola: 1+ goals",
+            entry_price=0.945,
+            dtr=0.1,
+            category="sports",
+            blocked_keyword=None,
+            is_spread=False,
+            is_sports_prop=is_prop,
+            liquidity=5000.0,
+            observed_spread=0.01,
+            panic_guard_ok=True,
+            is_live=False,
+            limits=limits,
+        )
+        return next(c for c in checks if c.key == "sports_prop_market")
+
+    assert _prop_check(True).passed is False  # discrete-event player prop blocked
+    assert _prop_check(False).passed is True  # non-prop market allowed
+
+
+def _tail_be_pos(strategy, entry, high, *, enabled=True):
+    cfg = dict(strategy.default_config)
+    cfg["immediate_break_even_stop_enabled"] = enabled
+    return SimpleNamespace(
+        entry_price=entry,
+        highest_price=high,
+        age_minutes=30.0,
+        config=cfg,
+        strategy_context={"market_category": "other"},
+    )
+
+
+def _tail_be_market(cur, token):
+    # seconds_left far from resolution => OUTSIDE the resolution-hold window,
+    # where the break-even stop is active.
+    return {"current_price": cur, "seconds_left": 100000.0, "token_id": token, "is_resolved": False}
+
+
+def test_tail_end_carry_break_even_stop_arms_and_protects():
+    from services.strategies.tail_end_carry import TailEndCarryStrategy
+
+    s = TailEndCarryStrategy()
+    assert s.default_config["immediate_break_even_stop_enabled"] is True
+
+    # Armed: high cleared entry*(1+buffer) and price fell back to it -> close.
+    armed = s.should_exit(_tail_be_pos(s, 0.945, 0.96), _tail_be_market(0.945, "be-1"))
+    assert armed.action == "close"
+    assert "Break-even stop" in armed.reason
+
+    # Not armed: the high never cleared the cushion -> no break-even exit.
+    not_armed = s.should_exit(_tail_be_pos(s, 0.945, 0.946), _tail_be_market(0.945, "be-2"))
+    assert "Break-even" not in (not_armed.reason or "")
+
+    # Armed but price still above the cushion -> not yet triggered.
+    still_up = s.should_exit(_tail_be_pos(s, 0.945, 0.96), _tail_be_market(0.955, "be-3"))
+    assert "Break-even" not in (still_up.reason or "")
+
+
+def test_tail_end_carry_break_even_stop_respects_disable():
+    from services.strategies.tail_end_carry import TailEndCarryStrategy
+
+    s = TailEndCarryStrategy()
+    decision = s.should_exit(
+        _tail_be_pos(s, 0.945, 0.96, enabled=False), _tail_be_market(0.945, "be-off")
+    )
+    assert "Break-even" not in (decision.reason or "")
+
+
 # ---------------------------------------------------------------------
 # news_momentum_breakout
 # ---------------------------------------------------------------------

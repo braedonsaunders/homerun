@@ -343,6 +343,11 @@ class TailEndCarryStrategy(BaseStrategy):
         "time_in_force": "IOC",
         "allow_taker_limit_buy_above_signal": True,
         "aggressive_limit_buy_submit_as_gtc": False,
+        # Break-even stop (wired in should_exit): once price trades up through
+        # entry*(1+buffer_pct/100), arm a protective floor at that level so a
+        # winner can't round-trip into a loss. The cushion sits ABOVE entry to
+        # cover round-trip Polymarket fees (a pure break-even exit would realize
+        # a small loss). Active only outside the resolution-hold window.
         "immediate_break_even_stop_enabled": True,
         "immediate_break_even_stop_buffer_pct": 0.5,
         "max_market_data_age_ms": 15000,
@@ -1732,6 +1737,45 @@ class TailEndCarryStrategy(BaseStrategy):
                         f"{effective_inv_floor:.4f} (entry={entry_price:.4f}, "
                         f"category={category}, minutes_left="
                         f"{(seconds_left or 0)/60.0:.1f})"
+                    ),
+                    close_price=current_price,
+                )
+
+        # -- Break-even stop (don't let a winner round-trip into a loss) --
+        # Once the position has traded UP through a small cushion above entry
+        # (entry * (1 + buffer)), arm a protective floor at that same level.  If
+        # the price then falls back to it, close — locking ~the buffer as a
+        # realized gain.  The cushion is deliberately ABOVE entry, not at it:
+        # Polymarket charges round-trip fees (see fee model), so a pure
+        # break-even exit at ``entry`` would realize a small LOSS; the buffer
+        # covers the fee drag so the worst armed outcome is ~flat, never a loss.
+        # Evaluated only OUTSIDE the resolution-hold window (the function returns
+        # early while in-hold): inside the hold the strategy intentionally
+        # commits to carry-to-resolution on a dominant favorite, backstopped by
+        # the max-loss override + inversion stop, and a break-even exit there
+        # would prematurely abandon the core thesis on transient dips.
+        break_even_enabled = _is_bool_true(config.get("immediate_break_even_stop_enabled", True))
+        break_even_buffer_pct = clamp(
+            safe_float(config.get("immediate_break_even_stop_buffer_pct"), 0.5), 0.0, 50.0
+        )
+        if (
+            break_even_enabled
+            and entry_price > 0.0
+            and highest_price is not None
+            and highest_price > 0.0
+            and current_price > 0.0
+        ):
+            break_even_level = entry_price * (1.0 + (break_even_buffer_pct / 100.0))
+            # Armed only once the position's high actually cleared the cushion,
+            # so a position that never moved into profit is never stopped here.
+            if highest_price >= break_even_level and current_price <= break_even_level:
+                return ExitDecision(
+                    "close",
+                    (
+                        f"Break-even stop: high {highest_price:.4f} cleared "
+                        f"+{break_even_buffer_pct:.2f}% cushion ({break_even_level:.4f}), "
+                        f"price {current_price:.4f} fell back to it "
+                        f"(entry={entry_price:.4f}, category={category})"
                     ),
                     close_price=current_price,
                 )
