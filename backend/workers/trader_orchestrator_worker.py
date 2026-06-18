@@ -2163,6 +2163,7 @@ def _build_execution_latency_sample(
     decision_ready_at: datetime,
     submit_started_at: datetime | None = None,
     submit_completed_at: datetime | None = None,
+    batch_dequeued_at: datetime | None = None,
 ) -> dict[str, Any]:
     payload = getattr(signal, "payload_json", None)
     payload = payload if isinstance(payload, dict) else {}
@@ -2177,9 +2178,17 @@ def _build_execution_latency_sample(
             return None
         return max(0, int((end - start).total_seconds() * 1000))
 
+    # True queue-pickup latency = emit -> batch dequeued off the runtime queue.
+    # Falls back to the per-signal wake stamp when no batch stamp is supplied
+    # (preserves the metric for any caller that doesn't pass batch_dequeued_at).
+    queue_wake_at = batch_dequeued_at or wake_started_at
     sample = {
         "armed_to_ws_release_ms": _delta_ms(armed_at, released_at),
-        "emit_to_queue_wake_ms": _delta_ms(emitted_at, wake_started_at),
+        "emit_to_queue_wake_ms": _delta_ms(emitted_at, queue_wake_at),
+        # Within-batch serial wait: from batch dequeue to when THIS signal's
+        # iteration begins (i.e. time spent grinding earlier signals in-cycle).
+        # This is what previously masqueraded as queue-wake latency.
+        "batch_serial_wait_ms": _delta_ms(batch_dequeued_at, wake_started_at),
         "ws_release_to_decision_ms": _delta_ms(released_at, decision_ready_at),
         "ws_release_to_submit_start_ms": _delta_ms(released_at, submit_started_at),
         "wake_to_context_ready_ms": _delta_ms(wake_started_at, context_ready_at),
@@ -6277,6 +6286,16 @@ async def _run_trader_once_inner(
                 _current_signal_stage = stage_name
                 _current_signal_stage_started = time.monotonic()
 
+            # Stamp once when this BATCH is picked up off the runtime queue, so
+            # emit_to_queue_wake_ms measures true queue-pickup latency (emit ->
+            # loop reaches the batch) rather than batch POSITION. The per-signal
+            # signal_wake_started_at below also includes the serial processing
+            # of earlier signals in this same batch, which inflated the metric
+            # and made it look like a ~2s queue wait when it was really the loop
+            # grinding the prior signals in-cycle. batch_serial_wait_ms now
+            # carries that within-batch wait separately.
+            _batch_dequeued_at = utcnow()
+
             for signal in signals:
                 _now = time.monotonic()
                 if _last_per_signal_started is not None:
@@ -8059,6 +8078,7 @@ async def _run_trader_once_inner(
                             decision_ready_at=decision_ready_at,
                             submit_started_at=submit_started_at,
                             submit_completed_at=submit_completed_at,
+                            batch_dequeued_at=_batch_dequeued_at,
                         )
                         # Attach the decision->submit-start internal sub-spans
                         # (pre-commit DB writes, commit wait, session reset +
