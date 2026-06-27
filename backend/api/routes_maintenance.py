@@ -23,6 +23,7 @@ from models.database import (
     NewsTradeIntent,
     NewsWorkflowFinding,
     NewsWorkflowSnapshot,
+    LiveTradingPosition,
     OpportunityHistory,
     OpportunityLifetime,
     ScannerMarketHistory,
@@ -875,6 +876,55 @@ async def pool_status():
         "invalid": pool.status(),
         "timeout": pool.timeout(),
     }
+
+
+class ReconcilePositionsRequest(BaseModel):
+    """Request to zero resolved-worthless live positions."""
+
+    dry_run: bool = Field(default=True)
+
+
+@router.post("/reconcile-resolved-positions")
+async def reconcile_resolved_positions(
+    req: ReconcilePositionsRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Zero out live positions that have settled worthless.
+
+    Homerun redeems and zeroes *winning* resolved positions, but resolved
+    *losses* (settled to $0 / current_price == 0) keep ``size > 0`` forever as
+    dead rows. They inflate ``get_gross_exposure`` (sum of size*price over
+    size>0 rows), which misleads the risk system and the Cortex into thinking
+    capital is tied up / the account is over-leveraged. This zeroes only rows
+    that are physically worthless (current_price == 0), which is loss-safe.
+    """
+    from sqlalchemy import update
+
+    rows = (
+        await session.execute(
+            select(LiveTradingPosition).where(
+                LiveTradingPosition.size > 0,
+                func.coalesce(LiveTradingPosition.current_price, 0.0) == 0.0,
+            )
+        )
+    ).scalars().all()
+    freed = 0.0
+    samples = []
+    for r in rows:
+        cost = float(r.size or 0) * float(r.average_cost or 0)
+        freed += cost
+        if len(samples) < 10:
+            samples.append({"market": (getattr(r, "market_question", None) or getattr(r, "token_id", ""))[:48],
+                            "size": float(r.size or 0), "cost_value": round(cost, 2)})
+    if not req.dry_run and rows:
+        await session.execute(
+            update(LiveTradingPosition)
+            .where(LiveTradingPosition.size > 0, func.coalesce(LiveTradingPosition.current_price, 0.0) == 0.0)
+            .values(size=0, updated_at=utcnow())
+        )
+        await session.commit()
+    return {"dry_run": req.dry_run, "zeroed_rows": len(rows),
+            "phantom_exposure_cleared_usd": round(freed, 2), "samples": samples}
 
 
 class RepairPnlRequest(BaseModel):
