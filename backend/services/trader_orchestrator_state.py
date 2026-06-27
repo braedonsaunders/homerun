@@ -10145,10 +10145,17 @@ async def get_gross_exposure(session: AsyncSession, mode: Optional[str] = None) 
         for row in wallet_position_rows:
             size = max(0.0, safe_float(row.size, 0.0) or 0.0)
             average_cost = safe_float(row.average_cost, 0.0) or 0.0
-            current_price = safe_float(row.current_price, 0.0) or 0.0
-            price = average_cost if average_cost > 0.0 else current_price
-            if size > 0.0 and price > 0.0:
-                wallet_live_exposure += size * price
+            # Value at the CURRENT mark, not cost basis. A position settled
+            # worthless (resolved loss, current_price == 0) carries no remaining
+            # exposure, but is still held as dead shares in the wallet — counting
+            # it at cost inflated gross_exposure (~$138 vs ~$14 real) and misled
+            # the risk system / Cortex into "over-leveraged". Fall back to cost
+            # only when there is no mark at all (price not yet fetched), so real
+            # open positions are never undercounted.
+            current_price = safe_float(row.current_price, None)
+            mark = current_price if current_price is not None else average_cost
+            if size > 0.0 and mark > 0.0:
+                wallet_live_exposure += size * mark
 
     if mode is not None and _normalize_mode_key(mode) == "live":
         return float(max(live_order_exposure, wallet_live_exposure))
