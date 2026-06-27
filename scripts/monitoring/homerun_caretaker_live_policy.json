@@ -1,0 +1,158 @@
+{
+  "operator": "codex_caretaker",
+  "risk": {
+    "min_account_equity_usd": 30.0,
+    "max_daily_loss_usd": 10.0,
+    "max_gross_exposure_usd": 300.0,
+    "max_open_orders": 6,
+    "max_heartbeat_lag_seconds": 90.0,
+    "stop_live_on_breach": true,
+    "cancel_live_orders_on_critical_breach": true,
+    "block_traders_on_breach": true,
+    "kill_switch_on_breach": true
+  },
+  "live": {
+    "allow_live_start": true,
+    "allow_manual_orders": false,
+    "allow_trader_start": true,
+    "selected_account_id": "live:polymarket",
+    "apply_orchestrator_settings": true,
+    "apply_trader_overrides": true,
+    "unblock_managed_traders": false,
+    "run_managed_traders_once": false,
+    "managed_strategy_slugs": [
+      "tail_end_carry"
+    ],
+    "managed_trader_ids": [
+      "28522044972c41ed8f2aded852d12f6a"
+    ],
+    "global_risk": {
+      "max_gross_exposure_usd": 300.0,
+      "max_daily_loss_usd": 10.0,
+      "max_orders_per_cycle": 3
+    },
+    "global_runtime_live_risk_clamps": {
+      "enforce_allow_averaging_off": true,
+      "min_cooldown_seconds": 0,
+      "max_consecutive_losses_cap": 3,
+      "max_open_orders_cap": 6,
+      "max_open_positions_cap": 20,
+      "max_trade_notional_usd_cap": 10.0,
+      "max_per_market_exposure_usd_cap": 10.0,
+      "max_orders_per_cycle_cap": 2,
+      "enforce_halt_on_consecutive_losses": true,
+      "max_daily_spend_usd_cap": 50.0,
+      "max_spread_bps_cap": 75.0,
+      "slippage_bps_cap": 35.0,
+      "retry_limit_cap": 2,
+      "retry_backoff_ms_cap": 250,
+      "order_ttl_seconds_cap": 1200
+    },
+    "managed_strategy_params": {
+      "tail_end_carry": {
+        "min_probability": 0.85,
+        "max_probability": 0.905,
+        "min_upside_percent": 10.0,
+        "min_liquidity": 3600.0,
+        "max_spread": 0.04,
+        "exclude_market_keywords": [
+          "bitcoin",
+          "btc",
+          "ethereum",
+          "eth",
+          "solana",
+          "sol",
+          "xrp",
+          "ripple",
+          "doge",
+          "crypto",
+          "temperature",
+          "weather",
+          "celsius",
+          "fahrenheit",
+          "\u00b0c",
+          "\u00b0f",
+          "lol:",
+          "counter-strike",
+          "tweets",
+          "league of legends",
+          "esports",
+          "rift legends",
+          "dota",
+          "valorant",
+          "cs2",
+          "cs:",
+          "esl pro",
+          "exact score",
+          "correct score",
+          "o/u",
+          "over/under",
+          "over under",
+          "total goals",
+          "total points",
+          "exact-score"
+        ],
+        "block_spread_markets": true,
+        "block_sports_props": true,
+        "skip_live_games": true,
+        "require_strict_ws_pricing": true,
+        "max_market_data_age_ms": 15000,
+        "base_size_usd": 10.0,
+        "max_size_usd": 10.0,
+        "live_min_order_size_usd": 10.0,
+        "allow_taker_limit_buy_above_signal": true,
+        "aggressive_limit_buy_submit_as_gtc": true,
+        "take_profit_pct": 10.0,
+        "smart_take_profit_enabled": true,
+        "smart_take_profit_min_pnl_pct": 10.0,
+        "trailing_stop_enabled": true,
+        "trailing_stop_pct": 12.0,
+        "time_weighted_stop_enabled": true,
+        "velocity_stop_enabled": true,
+        "resolution_hold_enabled": true
+      }
+    },
+    "managed_risk_limits": {
+      "tail_end_carry": {
+        "max_orders_per_cycle": 2,
+        "max_open_orders": 6,
+        "max_open_positions": 20,
+        "max_position_notional_usd": 10.0,
+        "max_trade_notional_usd": 10.0,
+        "max_per_market_exposure_usd": 10.0,
+        "max_daily_loss_usd": 10.0,
+        "max_daily_spend_usd": 50.0,
+        "max_gross_exposure_usd": 300.0,
+        "allow_averaging": false,
+        "halt_on_consecutive_losses": true,
+        "max_consecutive_losses": 3,
+        "circuit_breaker_drawdown_pct": 8.0
+      }
+    }
+  },
+  "research": {
+    "enabled": true,
+    "candidate_strategy_slugs": [
+      "tail_end_carry"
+    ],
+    "include_running_trader_params": true,
+    "rolling_window_hours": 3,
+    "window_hours": 1,
+    "exclude_recent_minutes": 15,
+    "max_runs_per_cycle": 3,
+    "poll_timeout_seconds": 1800,
+    "poll_interval_seconds": 5.0,
+    "initial_capital_usd": 1000.0,
+    "counterfactual_sample_size": 2,
+    "ensemble_sample_size": 2,
+    "fills_sample_size": 1000
+  },
+  "promotion": {
+    "allow_strategy_updates": false,
+    "allow_trader_config_updates": false,
+    "min_total_return_pct": 0.0,
+    "min_trade_count": 5,
+    "min_return_improvement_pct": 0.02,
+    "require_all_windows_completed": true
+  }
+}

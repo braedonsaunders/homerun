@@ -1463,6 +1463,55 @@ async def get_markets(active: bool = True, limit: int = 100, offset: int = 0):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/markets/{token_id}/orderbook")
+async def get_market_orderbook(
+    token_id: str,
+    depth: int = Query(20, ge=1, le=200, description="Price levels per side to return"),
+):
+    """Live order book (bid/ask/depth) for a single CLOB token.
+
+    Serves the same low-latency WebSocket book the execution engine sees,
+    falling back to an HTTP fetch when the WS cache is stale. Returns best
+    bid/ask, mid, spread (abs + bps) and cumulative depth in USD so callers
+    can evaluate executable prices and size orders without flying blind.
+    """
+    from services.ws_feeds import get_feed_manager
+
+    feed = get_feed_manager()
+    try:
+        book = await feed.get_order_book(token_id)
+    except Exception as exc:  # pragma: no cover - network/runtime guard
+        raise HTTPException(status_code=502, detail=f"order book fetch failed: {exc}")
+    if book is None or (not book.bids and not book.asks):
+        raise HTTPException(status_code=404, detail="No order book available for token")
+
+    bids = [{"price": lvl.price, "size": lvl.size} for lvl in book.bids[:depth]]
+    asks = [{"price": lvl.price, "size": lvl.size} for lvl in book.asks[:depth]]
+    best_bid = book.bids[0].price if book.bids else None
+    best_ask = book.asks[0].price if book.asks else None
+    mid = spread = spread_bps = None
+    if best_bid is not None and best_ask is not None:
+        mid = (best_bid + best_ask) / 2.0
+        spread = best_ask - best_bid
+        if mid > 0:
+            spread_bps = (spread / mid) * 10000.0
+
+    return {
+        "token_id": token_id,
+        "is_fresh": feed.is_fresh(token_id),
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "mid": mid,
+        "spread": spread,
+        "spread_bps": spread_bps,
+        "bid_depth_usd": sum(lvl.price * lvl.size for lvl in book.bids[:depth]),
+        "ask_depth_usd": sum(lvl.price * lvl.size for lvl in book.asks[:depth]),
+        "bids": bids,
+        "asks": asks,
+        "timestamp": utcnow().isoformat(),
+    }
+
+
 @router.get("/events")
 async def get_events(closed: bool = False, limit: int = 100, offset: int = 0):
     """Get events from Polymarket"""

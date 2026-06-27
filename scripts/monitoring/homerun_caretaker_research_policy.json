@@ -1,0 +1,27 @@
+{
+  "operator": "claude_trader",
+  "research": {
+    "enabled": true,
+    "candidate_strategy_slugs": [
+      "tail_end_carry"
+    ],
+    "include_running_trader_params": true,
+    "windows_utc": [
+      {
+        "start": "2026-06-26T15:00:00Z",
+        "end": "2026-06-27T15:00:00Z"
+      }
+    ],
+    "max_runs_per_cycle": 2,
+    "poll_timeout_seconds": 2400,
+    "poll_interval_seconds": 10.0,
+    "initial_capital_usd": 78.0,
+    "counterfactual_sample_size": 2,
+    "ensemble_sample_size": 2,
+    "fills_sample_size": 1000
+  },
+  "promotion": {
+    "allow_strategy_updates": false,
+    "allow_trader_config_updates": false
+  }
+}
