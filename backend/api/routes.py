@@ -687,6 +687,15 @@ async def get_opportunities(
         False,
         description="Block briefly to backfill missing price history if needed.",
     ),
+    validate_book: bool = Query(
+        False,
+        description=(
+            "Annotate each returned opportunity with executable edge priced "
+            "off the live order book (best ask per leg) instead of mid/last. "
+            "Off by default (adds book fetches); use when you need the real, "
+            "fillable edge rather than the mid-price ROI."
+        ),
+    ),
 ):
     """Get current arbitrage opportunities (from DB snapshot)."""
     total = 0
@@ -762,8 +771,69 @@ async def get_opportunities(
     # Set total count header and return serialised list directly.
     # Using Response injection (not JSONResponse) lets FastAPI handle
     # content-negotiation and CORS headers correctly.
+    serialized = [_serialize_with_sub_strategy(o) for o in paginated]
+    if validate_book:
+        await _annotate_executable_edge(serialized)
     response.headers["X-Total-Count"] = str(total)
-    return [_serialize_with_sub_strategy(o) for o in paginated]
+    return serialized
+
+
+async def _annotate_executable_edge(
+    opportunities: list[dict[str, Any]],
+    *,
+    max_markets: int = 30,
+) -> None:
+    """Re-price opportunities against the live order book in place.
+
+    The scanner computes ROI from mid/last prices, which overstates edge —
+    most apparent arbs evaporate at the executable ask (the bid/ask spread on
+    these markets routinely exceeds the mispricing). For each binary
+    opportunity (two CLOB tokens) this adds an ``executable_edge`` block with
+    the real best-ask per leg, the pair cost, the surviving edge %, and the
+    thinner side's USD depth, so callers act on fillable edge, not illusions.
+    """
+    from services.ws_feeds import get_feed_manager
+
+    feed = get_feed_manager()
+
+    async def _ask(token_id: str):
+        try:
+            book = await feed.get_order_book(token_id)
+        except Exception:
+            return None, 0.0, False
+        if not book or not getattr(book, "asks", None):
+            return None, 0.0, False
+        ask = book.asks[0].price
+        depth = sum(lvl.price * lvl.size for lvl in book.asks[:5])
+        return ask, depth, feed.is_fresh(token_id)
+
+    count = 0
+    for opp in opportunities:
+        if count >= max_markets:
+            break
+        markets = opp.get("markets") or []
+        if not markets:
+            continue
+        tokens = (markets[0] or {}).get("clob_token_ids") or []
+        if len(tokens) != 2:
+            continue
+        count += 1
+        (yes_ask, yes_depth, yes_fresh), (no_ask, no_depth, no_fresh) = await asyncio.gather(
+            _ask(str(tokens[0])), _ask(str(tokens[1]))
+        )
+        if yes_ask is None or no_ask is None:
+            opp["executable_edge"] = {"available": False}
+            continue
+        pair_cost = yes_ask + no_ask
+        opp["executable_edge"] = {
+            "available": True,
+            "yes_ask": yes_ask,
+            "no_ask": no_ask,
+            "pair_cost": round(pair_cost, 4),
+            "edge_pct": round((1.0 - pair_cost) * 100.0, 3),
+            "min_depth_usd": round(min(yes_depth, no_depth), 2),
+            "book_fresh": bool(yes_fresh and no_fresh),
+        }
 
 
 @router.get("/opportunities/ids")

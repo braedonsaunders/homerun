@@ -634,6 +634,95 @@ async def get_all_trader_orders_all(
     return await _orders_all_cache.get_or_load(cache_key, _load)
 
 
+@router.get("/orders/pnl-breakdown")
+async def get_orders_pnl_breakdown(
+    group_by: str = Query(
+        default="strategy_version",
+        description="Group field: strategy_version, close_trigger, direction, or status",
+    ),
+    strategy_key: Optional[str] = Query(default=None),
+    since_seconds: int = Query(default=0, ge=0, le=365 * 24 * 3600),
+    limit: int = Query(default=5000, ge=1, le=20000),
+):
+    """Realized NET PnL grouped by a configuration dimension.
+
+    Computes net per terminal order defensively from the cost basis and the
+    win/loss settlement, so it is correct even if a stored ``actual_profit``
+    was written by a legacy (gross/notional) path:
+
+    * ``resolved_win``  -> shares*$1 - cost   (held to settlement)
+    * ``resolved_loss`` -> -cost
+    * ``closed_*``      -> stored actual_profit clamped into [-cost, shares-cost]
+
+    Use to find which strategy versions / exit triggers actually make money
+    (e.g. tail_end_carry's edge lives in held-to-resolution, stops bleed it).
+    """
+    from utils.pnl import TERMINAL_STATES, canonical_terminal_net_pnl
+
+    allowed = {"strategy_version", "close_trigger", "direction", "status"}
+    key = group_by if group_by in allowed else "strategy_version"
+
+    async with AsyncSessionLocal() as session:
+        orders = await list_serialized_trader_orders(
+            session,
+            trader_id=None,
+            status="all",
+            limit=limit,
+            offset=0,
+            since_seconds=int(since_seconds) if since_seconds > 0 else None,
+        )
+
+    def _f(v) -> float:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    buckets: dict[str, dict[str, Any]] = {}
+    grand = {"n": 0, "net": 0.0, "wins": 0, "losses": 0}
+    for o in orders:
+        if strategy_key and str(o.get("strategy_key") or "") != strategy_key:
+            continue
+        status = str(o.get("status") or "")
+        if status not in TERMINAL_STATES:
+            continue
+        entry = _f(o.get("entry_price"))
+        cost = _f(o.get("filled_notional_usd")) or _f(o.get("notional_usd"))
+        shares = _f(o.get("filled_shares")) or (cost / entry if entry > 0 else 0.0)
+        net = canonical_terminal_net_pnl(status, cost, shares, stored_pnl=_f(o.get("actual_profit")))
+        if net is None:
+            continue
+        gk = str(o.get(key))
+        b = buckets.setdefault(gk, {"n": 0, "net": 0.0, "wins": 0, "losses": 0})
+        for tgt in (b, grand):
+            tgt["n"] += 1
+            tgt["net"] += net
+            if net > 0:
+                tgt["wins"] += 1
+            elif net < 0:
+                tgt["losses"] += 1
+
+    rows = []
+    for gk, b in buckets.items():
+        rows.append({
+            "group": gk,
+            "trades": b["n"],
+            "net_pnl": round(b["net"], 2),
+            "avg_pnl": round(b["net"] / b["n"], 4) if b["n"] else 0.0,
+            "win_rate": round(100.0 * b["wins"] / b["n"], 1) if b["n"] else 0.0,
+        })
+    rows.sort(key=lambda r: r["net_pnl"], reverse=True)
+    return {
+        "group_by": key,
+        "strategy_key": strategy_key,
+        "since_seconds": since_seconds,
+        "total_trades": grand["n"],
+        "total_net_pnl": round(grand["net"], 2),
+        "overall_win_rate": round(100.0 * grand["wins"] / grand["n"], 1) if grand["n"] else 0.0,
+        "groups": rows,
+    }
+
+
 # Process-local TTL cache shared by the bots-overview / left-sidebar
 # endpoints.  Three of the routes below are polled by the dashboard on
 # a few-second cadence and each underlying query pulls full rows that

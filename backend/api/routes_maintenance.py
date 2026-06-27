@@ -875,3 +875,103 @@ async def pool_status():
         "invalid": pool.status(),
         "timeout": pool.timeout(),
     }
+
+
+class RepairPnlRequest(BaseModel):
+    """Request to repair physically-impossible realized PnL values."""
+
+    dry_run: bool = Field(default=True)
+    window_days: int = Field(default=120, ge=1, le=3650)
+
+
+@router.post("/repair-implausible-pnl")
+async def repair_implausible_pnl(
+    req: RepairPnlRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Recompute ``actual_profit`` for terminal live orders whose stored value
+    is physically impossible given the entry cost basis.
+
+    A binary position bought for ``cost`` over ``size`` shares can net at most
+    ``size*$1 - cost`` (every share wins) and at least ``-cost`` (total loss).
+    Legacy rows from older resolution-verifier code recorded
+    ``actual_profit == cost`` (the notional) instead of net ``payout - cost``,
+    inflating every surface that sums realized PnL (incl. ``daily_pnl``, which
+    the risk guardian reads). This deterministically corrects only rows that
+    violate those bounds:
+
+    * ``resolved_win``  -> ``size - cost``  (held to a $1 settlement; exact)
+    * ``resolved_loss`` -> ``-cost``        (settled to $0; exact)
+    * ``closed_*``      -> clamp the stored value into ``[-cost, size-cost]``
+
+    Correct rows are left untouched. Defaults to a dry run.
+    """
+    from datetime import timedelta
+
+    from services.polymarket_trade_verifier import (
+        _entry_cost_basis,
+        _entry_fill_size,
+    )
+    from utils.pnl import (
+        LOSS_STATES,
+        WIN_STATES,
+        canonical_terminal_net_pnl,
+        is_implausible_pnl,
+    )
+
+    cutoff = (utcnow() - timedelta(days=req.window_days)).replace(tzinfo=None)
+    rows = (
+        await session.execute(
+            select(TraderOrder).where(
+                TraderOrder.mode == "live",
+                TraderOrder.status.in_(WIN_STATES | LOSS_STATES),
+                TraderOrder.actual_profit.is_not(None),
+                TraderOrder.updated_at >= cutoff,
+            )
+        )
+    ).scalars().all()
+
+    examined = corrected = 0
+    before_sum = after_sum = 0.0
+    samples: list[dict] = []
+    for row in rows:
+        examined += 1
+        cost = _entry_cost_basis(row)
+        size = _entry_fill_size(row)
+        if cost <= 0.0 or size <= 0.0:
+            continue
+        ap = float(row.actual_profit)
+        if not is_implausible_pnl(ap, cost, size):
+            continue  # within physically-possible bounds -> trust it
+        status = str(row.status or "")
+        fixed = canonical_terminal_net_pnl(status, cost, size, stored_pnl=ap)
+        if fixed is None:
+            continue
+        before_sum += ap
+        after_sum += fixed
+        corrected += 1
+        if len(samples) < 12:
+            samples.append({
+                "id": row.id,
+                "status": status,
+                "cost": round(cost, 4),
+                "size": round(size, 4),
+                "old_actual_profit": round(ap, 4),
+                "new_actual_profit": round(fixed, 4),
+            })
+        if not req.dry_run:
+            row.actual_profit = float(fixed)
+            row.updated_at = utcnow()
+
+    if not req.dry_run and corrected:
+        await session.commit()
+
+    return {
+        "dry_run": req.dry_run,
+        "examined": examined,
+        "corrected": corrected,
+        "pnl_before_sum": round(before_sum, 2),
+        "pnl_after_sum": round(after_sum, 2),
+        "delta": round(after_sum - before_sum, 2),
+        "samples": samples,
+    }

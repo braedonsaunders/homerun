@@ -1175,8 +1175,20 @@ async def verify_orders_against_closed_positions(
         # the trade matcher couldn't see.
         existing_status = str(row.verification_status or "").strip().lower()
         if existing_status == "wallet_activity" and row.actual_profit is not None:
-            skipped_already_verified += 1
-            continue
+            # Normally trust an already-verified row. EXCEPT when its stored
+            # PnL is physically impossible for the cost basis (a binary nets at
+            # most size*$1 - cost, at least -cost) — legacy rows recorded the
+            # notional instead of net. Re-heal those via the deterministic
+            # settlement formula below rather than skipping them forever.
+            from utils.pnl import is_implausible_pnl
+
+            if not is_implausible_pnl(
+                float(row.actual_profit),
+                _entry_cost_basis(row),
+                _entry_fill_size(row),
+            ):
+                skipped_already_verified += 1
+                continue
 
         token_id = _entry_token_id(row)
         if not token_id:
