@@ -7,7 +7,7 @@ Endpoints for cleaning up old trades and managing database health.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from utils.utcnow import utcnow
 
