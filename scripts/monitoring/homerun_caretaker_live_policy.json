@@ -1,5 +1,9 @@
 {
   "operator": "codex_caretaker",
+  "managed_canary": {
+    "trader_id": "f4b9762ab4ff4f0e9de515016de7f99b",
+    "kill_net_usd": -8.0
+  },
   "risk": {
     "min_account_equity_usd": 30.0,
     "max_daily_loss_usd": 10.0,

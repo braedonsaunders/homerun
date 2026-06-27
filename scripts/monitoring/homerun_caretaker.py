@@ -1511,12 +1511,89 @@ def build_report(
     }
 
 
+def _order_net_pnl(order: dict[str, Any]) -> float | None:
+    """Canonical net realized PnL for a terminal binary order (stdlib mirror of
+    backend/utils/pnl.py — keep in sync). Win nets shares*$1-cost, loss -cost;
+    early closes trust the stored value clamped to the feasible range."""
+    status = str(order.get("status") or "")
+    entry = to_float(order.get("entry_price"))
+    cost = to_float(order.get("filled_notional_usd")) or to_float(order.get("notional_usd"))
+    shares = to_float(order.get("filled_shares")) or (cost / entry if entry > 0 else 0.0)
+    if cost <= 0.0 or shares <= 0.0:
+        return None
+    max_win = shares - cost
+    if status == "resolved_win":
+        return max_win
+    if status == "resolved_loss":
+        return -cost
+    if status in ("closed_win", "closed_loss"):
+        return max(-cost, min(max_win, to_float(order.get("actual_profit"))))
+    return None
+
+
+def run_operator_cycle(api: HomerunApiClient, policy: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    """Periodic operator: enforce a multi-day cumulative-bleed kill on the
+    managed canary (the per-trader risk limits only catch single-day loss) and
+    keep realized PnL honest. Deterministic; safe to run on a scheduler."""
+    canary = policy.get("managed_canary") if isinstance(policy.get("managed_canary"), dict) else {}
+    operator = str(policy.get("operator") or "caretaker_operator")
+    actions: list[dict[str, Any]] = []
+    canary_net: float | None = None
+    trader_id = str(canary.get("trader_id") or "").strip()
+    kill_net = to_float(canary.get("kill_net_usd"), -8.0)
+
+    if trader_id:
+        orders_call = safe_call("canary_orders", lambda: api.get(f"/api/traders/{trader_id}/orders", {"limit": 500}))
+        if orders_call.get("ok"):
+            raw = orders_call.get("data") or {}
+            items = raw.get("orders") if isinstance(raw, dict) else raw
+            nets = [_order_net_pnl(o) for o in (items or []) if isinstance(o, dict)]
+            nets = [n for n in nets if n is not None]
+            canary_net = round(sum(nets), 4)
+            resolved = len(nets)
+            if canary_net <= kill_net and resolved >= 1:
+                if dry_run:
+                    actions.append({"action": "block_canary", "ok": True, "result": {"dry_run": True, "net": canary_net}})
+                else:
+                    res = safe_call(
+                        "block_canary",
+                        lambda: api.post(
+                            f"/api/traders/{trader_id}/block-new-orders",
+                            {"enabled": True, "requested_by": operator,
+                             "reason": f"cumulative bleed net={canary_net} <= {kill_net}"},
+                        ),
+                    )
+                    actions.append({"action": "block_canary", "ok": bool(res.get("ok")),
+                                    "result": res.get("data") if res.get("ok") else res})
+
+    # PnL hygiene: keep realized PnL (and thus daily_pnl the guardian reads) honest.
+    repair_corrected = 0
+    if not dry_run:
+        dry = safe_call("repair_dry", lambda: api.post("/api/maintenance/repair-implausible-pnl", {"dry_run": True}))
+        if dry.get("ok") and to_int((dry.get("data") or {}).get("corrected")) > 0:
+            real = safe_call("repair_apply", lambda: api.post("/api/maintenance/repair-implausible-pnl", {"dry_run": False}))
+            repair_corrected = to_int((real.get("data") or {}).get("corrected")) if real.get("ok") else 0
+            actions.append({"action": "repair_pnl", "ok": real.get("ok"), "corrected": repair_corrected})
+
+    return {"canary_net": canary_net, "kill_net": kill_net, "actions": actions, "repair_corrected": repair_corrected}
+
+
+def append_operator_log(report_dir: Path, summary: dict[str, Any], op: dict[str, Any]) -> None:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    line = (
+        f"{iso_utc(utc_now())} | mode={summary.get('mode')} | daily_pnl={summary.get('daily_pnl')} "
+        f"| canary_net={op.get('canary_net')} | actions={[a.get('action') for a in op.get('actions', [])]}\n"
+    )
+    with (report_dir / "operator_log.txt").open("a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Homerun caretaker guard and research harness")
     parser.add_argument(
         "command",
-        choices=("status", "guard", "research", "cycle"),
-        help="status reads state, guard enforces risk, research queues backtests, cycle does guard plus optional research",
+        choices=("status", "guard", "research", "cycle", "operator"),
+        help="status reads state, guard enforces risk, research queues backtests, cycle does guard plus optional research, operator runs the canary kill-rule + PnL hygiene",
     )
     parser.add_argument("--api-base-url", default=DEFAULT_API_BASE_URL)
     parser.add_argument("--policy", type=Path, default=None)
@@ -1535,17 +1612,22 @@ def main(argv: list[str] | None = None) -> int:
     api = HomerunApiClient(args.api_base_url)
 
     include_strategies = args.command == "research" or bool(args.run_backtests)
-    # guard/cycle must always read the live balance so the account-equity floor is enforced.
-    deep = bool(args.deep) or args.command in {"guard", "cycle"}
+    # guard/cycle/operator must always read the live balance so the account-equity floor is enforced.
+    deep = bool(args.deep) or args.command in {"guard", "cycle", "operator"}
     state = collect_operational_state(api, include_strategies=include_strategies, deep=deep)
     breaches = evaluate_risk(state, policy)
     actions: list[dict[str, Any]] = []
-    should_enforce = args.command in {"guard", "cycle"} and not bool(args.no_enforce)
+    should_enforce = args.command in {"guard", "cycle", "operator"} and not bool(args.no_enforce)
     if should_enforce:
         actions = enforce_risk_breaches(api, state, breaches, policy, dry_run=bool(args.dry_run))
 
     if args.command in {"guard", "cycle"} and not breaches:
         actions.extend(maintain_live_runtime(api, state, policy, dry_run=bool(args.dry_run)))
+
+    operator_result = None
+    if args.command == "operator" and not breaches:
+        operator_result = run_operator_cycle(api, policy, dry_run=bool(args.dry_run))
+        actions.extend(operator_result.get("actions", []))
 
     research_result = None
     if args.command == "research" or (args.command == "cycle" and bool(args.run_backtests)):
@@ -1569,6 +1651,8 @@ def main(argv: list[str] | None = None) -> int:
     report_path = write_report(report, args.report_dir)
 
     summary = report["summary"]
+    if args.command == "operator":
+        append_operator_log(args.report_dir, summary, operator_result or {})
     print(
         json.dumps(
             {
@@ -1581,6 +1665,7 @@ def main(argv: list[str] | None = None) -> int:
                 "breach_count": len(breaches),
                 "action_count": len(actions),
                 "research_status": (research_result or {}).get("status") if research_result else None,
+                "canary_net": (operator_result or {}).get("canary_net") if operator_result else None,
             },
             indent=2,
             sort_keys=True,
