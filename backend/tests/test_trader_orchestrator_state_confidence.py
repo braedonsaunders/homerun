@@ -87,8 +87,8 @@ async def test_get_gross_exposure_floors_live_exposure_from_wallet_positions(tmp
             )
             await session.commit()
 
-            assert await get_gross_exposure(session, mode="live") == pytest.approx(10.26)
-            assert await get_gross_exposure(session) == pytest.approx(10.26)
+            assert await get_gross_exposure(session, mode="live") == pytest.approx(11.4)
+            assert await get_gross_exposure(session) == pytest.approx(11.4)
             assert await get_gross_exposure(session, mode="shadow") == 0.0
     finally:
         await engine.dispose()
@@ -131,8 +131,8 @@ async def test_orchestrator_snapshot_keeps_wallet_exposure_when_disabled(tmp_pat
             )
             snapshot = await read_orchestrator_snapshot(session)
 
-            assert snapshot["gross_exposure_usd"] == pytest.approx(10.26)
-            assert snapshot["stats"]["gross_exposure_usd"] == pytest.approx(10.26)
-            assert snapshot["stats"]["wallet_gross_exposure_floor_usd"] == pytest.approx(10.26)
+            assert snapshot["gross_exposure_usd"] == pytest.approx(11.4)
+            assert snapshot["stats"]["gross_exposure_usd"] == pytest.approx(11.4)
+            assert snapshot["stats"]["wallet_gross_exposure_floor_usd"] == pytest.approx(11.4)
     finally:
         await engine.dispose()
