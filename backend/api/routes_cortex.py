@@ -38,7 +38,7 @@ router = APIRouter(prefix="/cortex", tags=["cortex"])
 class CortexSettingsRequest(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
-    interval_seconds: Optional[int] = Field(default=None, ge=30, le=3600)
+    interval_seconds: Optional[int] = Field(default=None, ge=30, le=86400)
     max_iterations: Optional[int] = Field(default=None, ge=1, le=50)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     mandate: Optional[str] = None
