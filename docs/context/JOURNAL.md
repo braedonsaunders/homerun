@@ -6,7 +6,7 @@
 - index、当前树和浅克隆可见历史未命中 provider token、私钥、JWT、引号内凭证或敏感路径；本机没有专用 scanner 且历史仅 1 个 commit，结论必须限缩。
 - 全局 Python 环境不匹配，改用隔离 venv；前端 lockfile 构建通过，但 npm 审计有 17 个既有漏洞。
 - 后端单进程在 2092 passed 后因 Windows socket 资源耗尽停止；剩余文件补跑 518 passed/1 个同类 setup error，两个触发用例单独均通过，且退出暴露未清理后台任务。
-- 原 `agents.md` 已按用户要求替换；没有修改业务代码、测试、ADR 或 workflow，并推翻“可直接进入 SRH 实现”的先前安排，先等 `ADR-000`。
+- 原 `agents.md` 已按用户要求替换；没有修改业务代码、测试、ADR 或 workflow。bootstrap 已提交为 PR #317，推翻“可直接进入 SRH 实现”的先前安排，现停下等 `ADR-000`。
 
 ## 2026-08-11 — 钱包共识重新研究与实施计划
 

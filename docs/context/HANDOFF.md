@@ -22,7 +22,7 @@
 - 测试退出还报告未清理的 FeedManager cache eviction、recorded-event flusher 任务和未 await 的连接取消；这属于上游基线资源生命周期风险，尚未修复。
 - 没有真实 forward shadow 订单和 verified PnL；当前不能声称钱包策略可赚钱。
 - 没有完整 Git 历史的密钥审计：本机无 gitleaks/trufflehog/detect-secrets，且 clone 是 shallow。
-- GitHub 用户 `65241946` 的 fork 已建立为本地 `fork` 远端；当前分支尚未 commit/push，也尚未创建上游 PR。
+- GitHub 用户 `65241946` 的 fork 已建立为本地 `fork` 远端；当前分支已推送，上游 PR 为 `braedonsaunders/homerun#317`。
 - Docker 中存在旧 `homerun-pmr` 的停止 PostgreSQL 容器并绑定旧数据目录；本轮未复用或删除它。测试曾走 `127.0.0.1:55433` 的独立 tmpfs 临时数据库，验证后已停止并自动删除。
 
 ## 我正在做的
@@ -33,10 +33,9 @@
 
 ## 下一步我打算做什么
 
-1. 校验四份 context 文档格式、HANDOFF 行数和 Git diff。
-2. 提交当前单一 bootstrap commit。
-3. 推送当前非 main 分支到 `fork` 并创建以 `braedonsaunders/homerun:main` 为 base 的 PR，不向上游 main 直接推送。
-4. 停止，等待 Claude 基线评审并提交 `ADR-000`；之后只按 ADR、issue 和既有失败测试实现。
+1. 停止业务开发，等待 Claude 对 PR #317 做基线评审并提交 `ADR-000`。
+2. 架构方创建带验收标准的 GitHub issue 后，才从新分支按 ADR、issue 和既有失败测试实现。
+3. Windows pytest 资源生命周期、前端依赖漏洞等旁支问题分别建 issue，不混入首个 SRH 功能 PR。
 
 ## 已知的坑 —— 别踩
 
