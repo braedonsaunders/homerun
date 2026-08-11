@@ -80,7 +80,18 @@ backend/scripts/_*_results*.json
 # Secrets
 .env
 .env.local
+.env.*
+!.env.example
 .env.*.local
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.local.json
+service-account.local.json
 secrets.json
 .claude/worktrees/
 .cutover-snapshots/
