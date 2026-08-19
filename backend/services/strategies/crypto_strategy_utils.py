@@ -97,9 +97,16 @@ def spread_pct_from_row(row: dict[str, Any]) -> float:
     return clamp(float(spread), 0.0, 1.0)
 
 
-def taker_fee_pct(entry_price: float) -> float:
+def taker_fee_pct(entry_price: float, *, category: str | None = "crypto") -> float:
+    """Taker fee as a fraction of price.
+
+    Thin wrapper over ``utils.kelly.polymarket_taker_fee_pct`` so there is
+    exactly one implementation of the fee schedule in the tree.  Defaults
+    to the crypto rate because every caller here trades Up/Down crypto
+    binaries.
+    """
     price = clamp(float(entry_price), 0.0001, 0.9999)
-    return 0.25 * ((price * (1.0 - price)) ** 2)
+    return polymarket_taker_fee_pct(price, category=category)
 
 
 def bounded_sigmoid(z: float) -> float:

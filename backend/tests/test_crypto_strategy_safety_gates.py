@@ -70,7 +70,13 @@ def spike_strategy() -> CryptoSpikeReversionStrategy:
 
 
 def test_spike_happy_path_uses_binance_direct(spike_strategy):
-    signal = spike_strategy._score_market(_fresh_btc_row(), dict(spike_strategy.default_config))
+    # move_5m=9% (not the 6% default): under the corrected crypto taker
+    # schedule (0.07 * p * (1-p) => 2.94% of notional at p=0.58) a 2x
+    # fee-clearance gate needs ~5.9% raw edge. The old 6% move only ever
+    # cleared because the retired quadratic understated the fee by 2.24x.
+    signal = spike_strategy._score_market(
+        _fresh_btc_row(move_5m_percent=9.0), dict(spike_strategy.default_config)
+    )
     assert signal is not None
     assert signal["oracle_source_used"] == "binance_direct"
     assert signal["taker_fee_pct"] > 0.5  # Real curve, not flat 0.25
@@ -115,7 +121,8 @@ def test_spike_rejects_when_edge_cant_clear_2x_fee(spike_strategy):
 
 def test_spike_uses_real_timeframe_for_elapsed_ratio(spike_strategy):
     # 1h market, 30 minutes left → elapsed_ratio should be ~0.5, not 0 or 1.
-    row = _fresh_btc_row(timeframe="1h", seconds_left=1800.0)
+    # move_5m=9% so the row clears the fee gate; see the happy-path test.
+    row = _fresh_btc_row(timeframe="1h", seconds_left=1800.0, move_5m_percent=9.0)
     signal = spike_strategy._score_market(row, dict(spike_strategy.default_config))
     assert signal is not None
     assert 0.45 <= signal["elapsed_ratio"] <= 0.55, signal["elapsed_ratio"]
@@ -145,7 +152,12 @@ def _entropy_cfg(strategy: CryptoEntropyMakerStrategy) -> dict:
 
 
 def test_entropy_happy_path_uses_binance_direct(entropy_strategy):
-    row = _fresh_btc_row(up_price=0.49, down_price=0.51)
+    # Oracle 79_500 vs price_to_beat 78_000 (~1.9% drift) rather than the
+    # 78_600 default: the corrected taker curve charges 3.5% of notional at
+    # p≈0.50, so the 1.5x clearance gate needs a materially larger drift
+    # than the retired quadratic (1.56%) implied.
+    row = _fresh_btc_row(up_price=0.49, down_price=0.51, oracle_price=79_500.0)
+    row["oracle_prices_by_source"]["binance_direct"]["price"] = 79_500.0
     signal = entropy_strategy._score_market(row, _entropy_cfg(entropy_strategy))
     assert signal is not None
     assert signal["oracle_source_used"] == "binance_direct"
@@ -202,7 +214,7 @@ def test_entropy_maker_rest_inflates_min_seconds_left_for_entry(entropy_strategy
 def test_entropy_rejects_when_edge_cant_clear_15x_fee(entropy_strategy):
     # Strip the cancel-recovery / orderflow / z-score boosters and pin a tiny
     # oracle-vs-market drift. Edge ≈ diff_pct × entropy_multiplier ≈ <0.05%,
-    # well under 1.5× the ~1.56% taker fee at price ≈ 0.5.
+    # well under 1.5× the 3.5%-of-notional taker fee at price ≈ 0.5.
     now_ms = time.time() * 1000
     row = _fresh_btc_row(
         up_price=0.49,

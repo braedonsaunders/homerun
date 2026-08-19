@@ -603,12 +603,13 @@ class BtcEthMakerQuoteStrategy(BaseStrategy):
     def __init__(self) -> None:
         super().__init__()
         # 15-minute crypto markets have taker-only fees using a price-curve:
-        #   fee_per_share = price * 0.25 * (price * (1 - price))^2
-        # At 50% (where up/down markets sit), this is ~1.56%.
-        # We set self.fee to the midpoint estimate; the scoring methods
-        # use polymarket_fee_curve() for price-specific calculations.
-        # See: https://docs.polymarket.com/polymarket-learn/trading/maker-rebates-program
-        self.fee = _cfg.BTC_ETH_HF_FEE_ESTIMATE  # default ~1.56% at 50% probability
+        #   fee_per_share = feeRate * price * (1 - price)   [crypto feeRate = 0.07]
+        # At 50% (where up/down markets sit) that is $0.0175/share on a
+        # $0.50 contract — 3.5% of notional, the peak of the curve.
+        # We set self.fee to that midpoint estimate; the scoring methods
+        # use utils.kelly.polymarket_taker_fee() for price-specific values.
+        # See: https://docs.polymarket.com/trading/fees
+        self.fee = _cfg.BTC_ETH_HF_FEE_ESTIMATE  # 3.5% of notional at p=0.50
         # Override the global MIN_PROFIT_THRESHOLD (2.5%) gate in create_opportunity().
         # With the edge floor removed, real oracle diffs are typically 0.5-3% — below the
         # global 2.5% gate.  All real edge/confidence filtering happens in evaluate(),
