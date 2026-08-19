@@ -2480,13 +2480,23 @@ class PolymarketClient:
         """Pull a wallet's trade history page-by-page from Polymarket.
 
         Polymarket's ``/trades`` endpoint exposes only offset-based
-        pagination and silently caps offsets at ~3500 (returns 400
-        Bad Request beyond that).  There is no documented timestamp
-        cursor.  We honor that ceiling: on a 400 we stop paging and
-        return what we have, so the caller never sees a crash for
-        a wallet with > 4000 trades — they just get the most recent
-        ~3500.  The cap is logged at INFO so operators know we
-        truncated.
+        pagination and hard-caps the offset at 10 000 — beyond that it
+        returns 400 with ``{"error": "max historical trades offset of
+        10000 exceeded"}`` (measured 2026-08-19; the previous ~3500
+        figure in this docstring was stale).  There is no timestamp
+        cursor and no date-range filter: ``startTs``/``from``/``after``
+        and friends are all silently ignored, so callers wanting a date
+        window must over-fetch and filter client-side.
+
+        We honor the ceiling: on a 400 we stop paging and return what we
+        have, so the caller never sees a crash for a wallet with more
+        than 10 000 trades — they just get the most recent 10 000. The
+        cap is logged at INFO so operators know the series is truncated.
+
+        NOTE: this is a hard upper bound on any wallet-history feature
+        built on this endpoint. Full history for a high-frequency wallet
+        requires indexing ``OrderFilled`` logs on Polygon directly (see
+        ``services.wallet_ws_monitor``), not this REST API.
         """
         # 60s TTL cache, single-flight.  Single-user install + 5-minute
         # verifier cycle = sub-second cache hit on every cycle except
