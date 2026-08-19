@@ -170,6 +170,19 @@ class WalletTradeEvent:
     # because RTDS-source events do not carry these fields at all.
     builder: str = "0x" + "0" * 64
     metadata: str = "0x" + "0" * 64
+    # Ground-truth taker fee for this fill, in USD, straight off the
+    # ``OrderFilled`` log (uint256, USDC 6-decimals). This is the ONLY
+    # non-modelled fee number available anywhere — Polymarket's REST
+    # ``/trades`` payload carries no fee field at all — so it is the
+    # basis for real fee accounting and for maker-rebate attribution
+    # (rebates are a percentage of collected taker fees).
+    # 0.0 for RTDS-source events, which do not carry the field.
+    fee_usd: float = 0.0
+    # Which side of the book the tracked wallet was on for this fill:
+    # ``"maker"`` or ``"taker"`` (``""`` when unknown / RTDS).
+    # Required to interpret ``fee_usd``: only takers are charged, and
+    # only makers accrue rebates, so the fee is meaningless without it.
+    role: str = ""
 
 
 # ==================== SQLALCHEMY MODEL ====================
@@ -192,6 +205,10 @@ class WalletMonitorEvent(Base):
     block_number = Column(Integer, nullable=True)
     detection_latency_ms = Column(Float, nullable=True)
     detected_at = Column(DateTime, default=utcnow)
+    # On-chain taker fee for this fill in USD, and which side of the book
+    # the wallet was on ("maker"/"taker").  See WalletTradeEvent.
+    fee_usd = Column(Float, nullable=True)
+    role = Column(String, nullable=True)
 
     __table_args__ = (
         Index("idx_wme_wallet", "wallet_address"),
@@ -1876,6 +1893,9 @@ class WalletWebSocketMonitor:
             latency_ms=max(latency_ms, 0.0),
             builder=str(parsed.get("builder") or ("0x" + "0" * 64)),
             metadata=str(parsed.get("metadata") or ("0x" + "0" * 64)),
+            # USDC.e is 6-decimal, same scaling as the amount legs above.
+            fee_usd=float(parsed.get("fee") or 0) / 1e6,
+            role="maker" if matched_wallet == maker_lower else "taker",
         )
 
         self._stats["events_detected"] += 1
@@ -1923,6 +1943,8 @@ class WalletWebSocketMonitor:
                         block_number=event.block_number,
                         detection_latency_ms=event.latency_ms,
                         detected_at=event.detected_at,
+                        fee_usd=event.fee_usd,
+                        role=event.role or None,
                     )
                     session.add(db_event)
                     await _commit_with_retry(session)
