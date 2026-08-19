@@ -49,41 +49,101 @@ def kelly_size(
     return min(size, max_size)
 
 
-def polymarket_taker_fee(p: float, fee_rate: float | None = None) -> float:
+# Polymarket taker-fee rates by market category (Fee Structure V2, live
+# since 2026-03-30).  Source: https://docs.polymarket.com/trading/fees
+#
+#     fee_per_share = feeRate * p * (1 - p)
+#
+# The rate is a plain multiplier on the ``p*(1-p)`` curve — NOT a squared
+# term.  Makers are never charged; only takers pay.
+POLYMARKET_TAKER_FEE_RATES: dict[str, float] = {
+    "crypto": 0.07,
+    "sports": 0.05,
+    "economics": 0.05,
+    "culture": 0.05,
+    "weather": 0.05,
+    "other": 0.05,
+    "general": 0.05,
+    "finance": 0.04,
+    "politics": 0.04,
+    "mentions": 0.04,
+    "tech": 0.04,
+    "geopolitics": 0.0,
+}
+
+# Default when the caller has no category on hand.  Deliberately the
+# HIGHEST non-zero rate (crypto): over-estimating fees can only cost a
+# skipped trade, whereas under-estimating books a loser as a winner.
+# Callers that know their category should pass it — see
+# ``polymarket_fee_rate_for_category``.
+POLYMARKET_DEFAULT_TAKER_FEE_RATE: float = 0.07
+
+
+def polymarket_fee_rate_for_category(category: str | None) -> float:
+    """Taker fee rate for a Polymarket market category.
+
+    Unknown/empty categories fall back to
+    ``POLYMARKET_DEFAULT_TAKER_FEE_RATE`` (the conservative crypto rate).
+    Matching is case-insensitive and tolerates the ``"Crypto"`` /
+    ``"crypto"`` / ``" CRYPTO "`` forms Gamma returns.
+    """
+    if not category:
+        return POLYMARKET_DEFAULT_TAKER_FEE_RATE
+    key = str(category).strip().lower()
+    return POLYMARKET_TAKER_FEE_RATES.get(key, POLYMARKET_DEFAULT_TAKER_FEE_RATE)
+
+
+def polymarket_taker_fee(
+    p: float,
+    fee_rate: float | None = None,
+    *,
+    category: str | None = None,
+) -> float:
     """Polymarket taker fee for one contract at price ``p`` (USD per share).
 
-    Polymarket's published taker schedule is a *quadratic* curve, not the
-    linear ``p*(1-p)*rate`` shape this function used to return. The two
-    happen to coincide at ``p=0.50`` (~1.56% of price) but diverge at the
-    tails — the old shape over-charged at p=0.30 by ~4× and at p=0.10 by
-    >20×, which made fee-aware strategies refuse profitable trades.
+    Per Polymarket's published schedule:
 
-    Per Polymarket docs:
-        fee_per_share = p * 0.25 * (p * (1 - p))**2
+        fee_per_share = feeRate * p * (1 - p)
 
-    The maximum fee as a fraction of price is ~1.56% at p=0.50; at p=0.10
-    or p=0.90 it falls to ~0.20%. Makers pay zero.
+    ``feeRate`` is category-dependent (crypto 0.07, sports/economics/
+    culture/weather/other 0.05, finance/politics/mentions/tech 0.04,
+    geopolitics 0.0).  The fee peaks at ``p=0.50`` — for crypto that is
+    ``0.07 * 0.25 = $0.0175`` per share, i.e. **3.5% of notional**, and it
+    decays linearly-in-``p(1-p)`` toward the tails.  Makers pay zero.
 
     Args:
         p: Contract price in [0, 1].
-        fee_rate: Accepted for backward compat and ignored. The Polymarket
-            schedule is fixed; callers that want a different platform's fee
-            should use the relevant helper (e.g. ``kalshi_taker_fee``).
+        fee_rate: Explicit rate override.  Takes precedence over
+            ``category``.
+        category: Polymarket market category used to look up the rate when
+            ``fee_rate`` is not given.
 
     Returns:
         Fee per share in USD.
     """
-    del fee_rate  # legacy parameter, no longer used
+    if fee_rate is None:
+        rate = polymarket_fee_rate_for_category(category)
+    else:
+        rate = float(fee_rate)
     p_clamped = max(0.0, min(1.0, float(p or 0.0)))
-    return p_clamped * 0.25 * (p_clamped * (1.0 - p_clamped)) ** 2
+    return rate * p_clamped * (1.0 - p_clamped)
 
 
-def polymarket_taker_fee_pct(p: float) -> float:
-    """Polymarket taker fee as a fraction of contract price (0.0 – 0.0156)."""
+def polymarket_taker_fee_pct(
+    p: float,
+    fee_rate: float | None = None,
+    *,
+    category: str | None = None,
+) -> float:
+    """Polymarket taker fee as a fraction of contract price.
+
+    At the default (crypto) rate this tops out at 0.035 (3.5%) when
+    ``p=0.50`` and falls toward ``feeRate`` as ``p`` approaches 1.0.
+    """
     p_value = float(p or 0.0)
     if p_value <= 0.0:
         return 0.0
-    return polymarket_taker_fee(p_value) / p_value
+    return polymarket_taker_fee(p_value, fee_rate, category=category) / p_value
 
 
 def kalshi_taker_fee(p: float, contracts: int = 1, fee_rate: float = 0.07) -> float:

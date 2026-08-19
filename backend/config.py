@@ -516,7 +516,10 @@ class Settings(BaseSettings):
     BTC_ETH_HF_SERIES_SOL_4H: str = ""
     BTC_ETH_HF_SERIES_XRP_4H: str = ""
     BTC_ETH_HF_MAKER_MODE: bool = True  # Place maker (limit) orders to avoid fees & earn rebates
-    BTC_ETH_HF_FEE_ESTIMATE: float = 0.0156  # Midpoint taker fee estimate at 50% probability
+    # Crypto taker fee as a fraction of notional at p=0.50, the peak of the
+    # fee curve where Up/Down binaries sit: 0.07 * 0.5 * 0.5 / 0.5 = 0.035.
+    # See utils.kelly.polymarket_taker_fee / https://docs.polymarket.com/trading/fees
+    BTC_ETH_HF_FEE_ESTIMATE: float = 0.035
 
     # Holding Reward Yield Strategy
     HOLDING_REWARD_YIELD_ENABLED: bool = True
