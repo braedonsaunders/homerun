@@ -1,4 +1,4 @@
-"""Tests for the Live Tennis match-state feed (services/livetennis_feed.py).
+"""Tests for the Live Tennis match-state feed (docs/examples/livetennis_feed.py).
 
 Mirrors ``test_chainlink_direct_feed.py``: the credential latch (disabled when
 no key), the auth-failure latch, normalization of a raw match record, the
@@ -11,18 +11,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
+# This self-contained example lives under docs/examples/. Only its own directory
+# needs to be importable — the feed inlines its availability/logger shims.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
-from services.livetennis_feed import (
+from livetennis_feed import (
     LiveTennisFeed,
     TennisMatchState,
     _derive_break_point,
     _market_key,
     _normalize_match,
 )
-from utils.feed_availability import FeedStatus
+from livetennis_feed import FeedStatus
 
 
 def _match(
@@ -219,7 +221,7 @@ async def test_malformed_rows_do_not_break_a_poll():
 
 @pytest.mark.asyncio
 async def test_singleton_requires_key_getter_on_first_call():
-    import services.livetennis_feed as mod
+    import livetennis_feed as mod
 
     mod._instance = None
     with pytest.raises(RuntimeError):

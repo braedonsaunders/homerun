@@ -50,10 +50,102 @@ from typing import Callable, Optional
 
 import httpx
 
-from utils.feed_availability import FeedAvailability, FeedStatus
-from utils.logger import get_logger
+# --- Self-contained example shims -------------------------------------------
+# In the homerun codebase, a real feed would import these from utils.* (this is
+# modeled on services/chainlink_direct_feed.py). To keep this docs example
+# standalone — runnable with only httpx — minimal, faithful equivalents of the
+# feed-availability latch and the logger are inlined below. Swap them for the
+# project's own utils.feed_availability / utils.logger when wiring into core.
+import logging
+from enum import Enum
+
+
+class FeedStatus(str, Enum):
+    UNINITIALIZED = "uninitialized"
+    CONNECTING = "connecting"
+    HEALTHY = "healthy"
+    PARTIAL = "partial"
+    UNAVAILABLE = "unavailable"
+    ERROR = "error"
+    DISABLED = "disabled"
+
+
+@dataclass
+class FeedAvailability:
+    """Credential latch: once creds are missing or auth fails, stays disabled
+    until explicitly re-armed. Mirrors utils.feed_availability.FeedAvailability."""
+
+    has_credentials: Callable[[], bool]
+    name: str = "feed"
+    _disabled: bool = False
+    _disabled_reason: Optional[str] = None
+
+    def check(self) -> bool:
+        if self._disabled:
+            return False
+        if not self.has_credentials():
+            self._disabled = True
+            self._disabled_reason = "missing_credentials"
+            return False
+        return True
+
+    def latch_auth_failure(self, reason: str = "auth_failed") -> None:
+        self._disabled = True
+        self._disabled_reason = reason
+
+    def rearm(self) -> None:
+        self._disabled = False
+        self._disabled_reason = None
+
+    @property
+    def is_disabled(self) -> bool:
+        return self._disabled
+
+    @property
+    def disabled_reason(self) -> Optional[str]:
+        return self._disabled_reason
+
+
+class _StructLogger:
+    """Minimal structlog-style adapter: accepts arbitrary keyword context and
+    appends it to the message, so this example runs on the stdlib logging module
+    without the project's structlog dependency."""
+
+    def __init__(self, name: str) -> None:
+        self._log = logging.getLogger(name)
+
+    def _emit(self, level: int, event: str, *args: object, **kw: object) -> None:
+        if args:
+            try:
+                event = event % args
+            except Exception:
+                event = " ".join([event, *(str(a) for a in args)])
+        if kw:
+            event = event + " " + " ".join(f"{k}={v}" for k, v in kw.items())
+        self._log.log(level, event)
+
+    def debug(self, event: str, *args: object, **kw: object) -> None:
+        self._emit(logging.DEBUG, event, *args, **kw)
+
+    def info(self, event: str, *args: object, **kw: object) -> None:
+        self._emit(logging.INFO, event, *args, **kw)
+
+    def warning(self, event: str, *args: object, **kw: object) -> None:
+        self._emit(logging.WARNING, event, *args, **kw)
+
+    def error(self, event: str, *args: object, **kw: object) -> None:
+        self._emit(logging.ERROR, event, *args, **kw)
+
+    def exception(self, event: str, *args: object, **kw: object) -> None:
+        self._log.exception(event % args if args else event)
+
+
+def get_logger(name: str) -> "_StructLogger":
+    return _StructLogger(name)
+
 
 logger = get_logger(__name__)
+# ---------------------------------------------------------------------------
 
 
 LIVETENNIS_API_BASE = "https://api.livetennisapi.com/api/public/v1"
